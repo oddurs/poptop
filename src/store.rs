@@ -19,12 +19,39 @@ use crate::sample::{IoRates, MemStat, ProcSample, Sample};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Bumped whenever the layout below changes. An old store is dropped, not
 /// migrated: it is a cache of something the machine will produce again in
 /// minutes, and a migration path for it would cost more than it saves.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+
+/// When the machine this sample came from was booted.
+///
+/// Derived rather than collected: `at - uptime` is already in every sample, on
+/// both platforms, and needs no new syscall.
+///
+/// This matters more than it looks. A process is identified throughout ptop by
+/// `(pid, started)`, and `started` is clock ticks *since boot* — unique within
+/// a boot and nowhere else. `series_for` keys on it precisely so that a
+/// recycled pid cannot splice two programs into one graph, and that invariant
+/// held only because every sample in the buffer came from one boot. Restoring
+/// across a reboot breaks it: early-boot processes land on near-identical
+/// starttimes every time, so a live pid 1 would match a restored pid 1 and
+/// render the *previous boot's* CPU as this process's own history.
+pub fn boot_time(s: &Sample) -> SystemTime {
+    s.at.checked_sub(s.uptime).unwrap_or(UNIX_EPOCH)
+}
+
+/// Whether two boot times are the same boot.
+///
+/// Uptime is whole seconds while `at` is not, so the derived instant jitters by
+/// up to a second between samples of the same boot. A few seconds of tolerance
+/// is far below the gap between any two real boots.
+pub fn same_boot(a: SystemTime, b: SystemTime) -> bool {
+    let delta = a.duration_since(b).or_else(|_| b.duration_since(a));
+    delta.is_ok_and(|d| d < Duration::from_secs(5))
+}
 const MAGIC: &[u8; 8] = b"ptophist";
 
 /// A ceiling on the file, independent of the buffer's own bound.
@@ -63,9 +90,18 @@ pub fn path_from(
 /// A little-endian writer. Hand-rolled for the same reason the `/proc` parser
 /// is: the format is a dozen scalars and a string table, and `serde` would be
 /// the largest dependency in the project by an order of magnitude.
+/// Bytes the file carries beyond the sample bodies: magic, version, and the
+/// two counts.
+const HEADER_BYTES: usize = MAGIC.len() + 4 + 4 + 4;
+
 #[derive(Default)]
 struct Out {
     bytes: Vec<u8>,
+    /// What the string table will occupy, tracked as it grows so the trim loop
+    /// can bound the *file* rather than the bodies. Counting only the bodies
+    /// made the "ceiling on the file" in the doc comment untrue by the size of
+    /// the table, which is exactly the part that varies between machines.
+    table_bytes: usize,
     /// Names and users repeat across every process in every retained sample —
     /// the same reason they are `Arc<str>` in memory. Written once and
     /// referenced by index, or the file would be mostly repeated strings.
@@ -103,6 +139,7 @@ impl Out {
             Some(&id) => id,
             None => {
                 let id = self.strings.len() as u32;
+                self.table_bytes += 4 + s.len();
                 self.strings.push(s.clone());
                 self.index.insert(s.clone(), id);
                 id
@@ -172,9 +209,11 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
     let mut out = Out::default();
     for sample in samples.iter().rev() {
         let before = out.bytes.len();
+        let table_before = out.table_bytes;
         write_sample(&mut out, sample);
-        if out.bytes.len() > max_bytes {
+        if HEADER_BYTES + out.table_bytes + out.bytes.len() > max_bytes {
             out.bytes.truncate(before);
+            out.table_bytes = table_before;
             break;
         }
         kept.push(sample);
@@ -188,7 +227,7 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
         write_sample(&mut out, sample);
     }
 
-    let mut file = Vec::with_capacity(out.bytes.len() + 64);
+    let mut file = Vec::with_capacity(HEADER_BYTES + out.table_bytes + out.bytes.len());
     file.extend_from_slice(MAGIC);
     file.extend_from_slice(&VERSION.to_le_bytes());
     file.extend_from_slice(&(out.strings.len() as u32).to_le_bytes());
@@ -357,7 +396,16 @@ pub fn save(samples: &[&Sample]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
+    // Per-process, not a fixed `history.tmp`. Two terminals running ptop is a
+    // normal thing to do, and on a shared temporary both writes interleave
+    // before either rename — publishing a mixed file that `decode` rejects,
+    // losing the whole history. Which is precisely what writing through a
+    // temporary was supposed to prevent.
+    //
+    // The rename still means last-writer-wins between instances: the second to
+    // exit replaces the first's history rather than merging it. Merging two
+    // buffers is a different feature and not one this item asked for.
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&tmp, encode(samples))?;
     std::fs::rename(&tmp, &path)
 }
@@ -611,6 +659,76 @@ mod tests_support {
             forks: Some(1),
             io_collected: false,
             io_denied: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod boot {
+    use super::tests_support::*;
+    use super::*;
+
+    fn at_boot(boot: SystemTime, age: u64) -> Sample {
+        let mut s = big_sample(1.0, 2);
+        s.uptime = Duration::from_secs(3_600 - age);
+        s.at = boot + s.uptime;
+        s
+    }
+
+    #[test]
+    fn a_boot_is_identified_without_collecting_anything_new() {
+        // `at - uptime` is already in every sample on both platforms.
+        let boot = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let s = at_boot(boot, 0);
+        assert!(same_boot(boot_time(&s), boot));
+    }
+
+    #[test]
+    fn samples_of_one_boot_agree_despite_whole_second_uptime() {
+        // Uptime is whole seconds while `at` is not, so the derived instant
+        // jitters between samples of the same boot. Without tolerance every
+        // restore would discard everything.
+        let boot = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut a = at_boot(boot, 0);
+        a.at += Duration::from_millis(900);
+        let b = at_boot(boot, 30);
+        assert!(
+            same_boot(boot_time(&a), boot_time(&b)),
+            "two samples of one boot were read as different boots"
+        );
+    }
+
+    #[test]
+    fn a_reboot_is_not_mistaken_for_the_same_boot() {
+        // The invariant this protects: `started` is ticks since boot, so
+        // `(pid, started)` only identifies a process within one boot. Across a
+        // reboot a live pid 1 matches a restored pid 1, and its history column
+        // would render the previous boot's CPU as this process's own.
+        let boot = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let later = boot + Duration::from_secs(86_400);
+        assert!(!same_boot(boot, later));
+        // Even a reboot a minute later is a different boot, because pid 1's
+        // start time is near-identical every time.
+        assert!(!same_boot(boot, boot + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn the_cap_bounds_the_file_and_not_just_the_bodies() {
+        // The doc comment calls it a ceiling on the file. Counting only the
+        // sample bodies left the header and the whole string table outside it,
+        // and the table is exactly the part that varies between machines.
+        let all: Vec<Sample> = (0..40).map(|i| big_sample(i as f32, 30)).collect();
+        let refs: Vec<&Sample> = all.iter().collect();
+        let whole = encode_within(&refs, usize::MAX).len();
+        for divisor in [2, 3, 4, 8] {
+            let cap = whole / divisor;
+            let bytes = encode_within(&refs, cap);
+            assert!(
+                bytes.len() <= cap,
+                "asked for {cap} bytes, produced {}",
+                bytes.len()
+            );
+            assert!(decode(&bytes).is_some(), "the trimmed file does not parse");
         }
     }
 }

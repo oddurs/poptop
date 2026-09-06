@@ -291,9 +291,22 @@ is capped independently of the buffer's own bound, dropping the *oldest*
 samples to fit: the newest are the ones most likely to explain whatever made
 you open ptop.
 
-A restored buffer needs no special handling to be honest about the join.
-Whatever sits between the old samples and the new — an hour, a reboot — the
-timeline already draws its seam there and the caption already reads real time.
+A restored buffer needs no special handling to be honest about the join: the
+timeline already draws its seam across the gap and the caption already reads
+real time.
+
+**Samples from a previous boot are discarded**, and that is not tidiness. A
+process is identified throughout ptop by `(pid, started)`, and `started` counts
+clock ticks *since boot* — so it means something only within one boot. Early
+processes land on near-identical start times every boot, so a live pid 1 would
+match a restored pid 1 and its `HISTORY` column would render the previous
+boot's CPU as this process's own. ptop compares `at - uptime`, which every
+sample already carries on both platforms, and says how many samples it dropped
+and why.
+
+Two ptop windows with `store = on` are fine — each writes through its own
+temporary file — but the second to exit replaces the first's history rather
+than merging it. Merging two buffers is a different feature.
 
 ### What the table cannot show
 
