@@ -255,6 +255,59 @@ One table defines every setting once, and both the file and the command line
 drive it, so `theme = classic` and `--theme=classic` cannot come to disagree
 about what a value means.
 
+### Keeping history across restarts
+
+Off by default, and that is load-bearing rather than cautious:
+
+```ini
+store = on
+```
+
+ptop's whole position against atop is that **nothing has to have been running
+beforehand** — you can install it during an incident and immediately scrub back
+through the last ten minutes, because the buffer fills from the moment it
+starts. A tool that needs a recorder primed in advance is a different tool, and
+it is the one atop already is and does better. So this is a convenience for a
+machine you sit in front of often, never the path that argument rests on. With
+`store = off` — the default — ptop reads and writes nothing.
+
+Written on a **clean exit** to `$XDG_STATE_HOME/ptop/history`, and read at
+startup. Deliberately not a daemon and not a periodic flush: a background
+writer is exactly the thing that turns a live tool into a recorder. The cost is
+that `kill -9` loses the buffer, which is the right way round for a feature
+that must not become load-bearing.
+
+The format is hand-rolled and versioned, like the config parser and the `/proc`
+parser. A store written by another version is **discarded, not migrated** — it
+is a cache of something the machine will produce again within minutes, and a
+migration path would cost more than it saves. So is a truncated or corrupt one:
+every failure lands on an empty buffer, because the alternatives are refusing
+to start and inventing history.
+
+Names and users are written once into a string table and referenced by index —
+the same reason they are `Arc<str>` in memory. A full store of 600 samples at
+400 processes is **14 MB, and costs about 145 ms to read at startup**. The file
+is capped independently of the buffer's own bound, dropping the *oldest*
+samples to fit: the newest are the ones most likely to explain whatever made
+you open ptop.
+
+A restored buffer needs no special handling to be honest about the join: the
+timeline already draws its seam across the gap and the caption already reads
+real time.
+
+**Samples from a previous boot are discarded**, and that is not tidiness. A
+process is identified throughout ptop by `(pid, started)`, and `started` counts
+clock ticks *since boot* — so it means something only within one boot. Early
+processes land on near-identical start times every boot, so a live pid 1 would
+match a restored pid 1 and its `HISTORY` column would render the previous
+boot's CPU as this process's own. ptop compares `at - uptime`, which every
+sample already carries on both platforms, and says how many samples it dropped
+and why.
+
+Two ptop windows with `store = on` are fine — each writes through its own
+temporary file — but the second to exit replaces the first's history rather
+than merging it. Merging two buffers is a different feature.
+
 ### What the table cannot show
 
 ptop reads `/proc` at an instant, so **a process that lived 200ms never existed

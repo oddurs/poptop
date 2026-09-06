@@ -49,6 +49,13 @@ pub struct Settings {
     /// How much history to retain, in time rather than samples. Sample count
     /// is a fact about the buffer; the span is what the user actually wants.
     pub window: Duration,
+    /// Whether to keep history across restarts.
+    ///
+    /// Off unless asked for, and that is load-bearing rather than cautious.
+    /// ptop's position against atop is that nothing has to have been running
+    /// beforehand; a tool that needs a recorder primed in advance is the tool
+    /// atop already is, and better.
+    pub store: bool,
 }
 
 impl Settings {
@@ -66,6 +73,7 @@ impl Settings {
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
             window: DEFAULT_WINDOW,
+            store: false,
         }
     }
 
@@ -110,6 +118,7 @@ impl Settings {
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
             window: DEFAULT_WINDOW,
+            store: false,
         }
     }
 }
@@ -188,6 +197,14 @@ pub const KEYS: &[(&str, Apply)] = &[
     }),
     ("window", |s, v| {
         s.window = duration(v)?;
+        Ok(())
+    }),
+    ("store", |s, v| {
+        s.store = match v {
+            "on" | "true" | "yes" => true,
+            "off" | "false" | "no" => false,
+            _ => return Err("on or off"),
+        };
         Ok(())
     }),
     ("theme", |s, v| {
@@ -997,6 +1014,18 @@ mod tests {
             GlyphSet::Braille
         );
         assert_eq!(default_glyphs_for(None), GlyphSet::Braille);
+    }
+
+    #[test]
+    fn history_is_not_kept_across_restarts_unless_asked_for() {
+        // Acceptance criterion, and the one that matters: ptop's position
+        // against atop is that nothing has to have been running beforehand.
+        // A default that quietly wrote a store would make ptop a small
+        // recorder, which is the tool atop already is and better.
+        assert!(!Settings::detect().store, "the store defaults to on");
+        assert!(!apply("").0.store);
+        assert!(apply("store = on\n").0.store);
+        assert!(!apply("store = on\nstore = off\n").0.store);
     }
 
     #[test]

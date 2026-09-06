@@ -53,11 +53,11 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`··········` 0% · 0 of 1 done
+`##########` 100% · 1 of 1 done
 
 Good ideas without a date yet.
 
-### backlog
+### done
 
-- [ ] `0014` Persist history across restarts <sup>feature · p3</sup>
+- [x] `0014` Persist history across restarts <sup>feature · p3</sup>
 

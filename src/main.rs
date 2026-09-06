@@ -15,6 +15,7 @@ mod cvd;
 mod glyphs;
 mod history;
 mod sample;
+mod store;
 mod theme;
 mod tree;
 mod ui;
@@ -43,6 +44,9 @@ USAGE:
     --color=TIER    auto (default), mono, 16, 256, or true. Honours NO_COLOR.
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
     --window=SPAN   history retained, as time not samples (default 10m)
+    --store=on|off  keep history across restarts (default off). Written on a
+                    clean exit to $XDG_STATE_HOME/ptop/history and read at
+                    startup. ptop needs nothing running beforehand either way.
     --warn=PCT      where 'getting busy' begins (default 50)
     --critical=PCT  where 'in trouble' begins (default 80). Must exceed --warn.
     --theme=NAME    a built-in (safe, classic, auto) or a file in
@@ -62,6 +66,7 @@ CONFIG:
         critical = 90
         interval = 500ms    # every sample keeps a whole process table,
         window   = 30m      # so these two together decide the memory
+        store    = off      # keep history across restarts
 
     Lowest precedence first: built-in default, config file, NO_COLOR, flag —
     so a wrapper script can override a user's file without editing it.
@@ -256,11 +261,55 @@ fn main() -> io::Result<()> {
 
     // Collect once before drawing so the first frame has real numbers. CPU
     // still reads zero — there is no previous counter to diff against yet.
-    app.push(collector.sample(app.needs())?);
+    let first = collector.sample(app.needs())?;
+
+    // Restored before the first live sample, so the new run's history lands
+    // after the old one rather than being buried by it. Whatever gap sits
+    // between the two, the timeline already draws its seam there and the
+    // caption already reads real time.
+    //
+    // Samples from a previous boot are dropped, and that is not tidiness. A
+    // process is identified by `(pid, started)`, and `started` counts ticks
+    // since *boot* — so across a reboot a live pid 1 matches a restored pid 1,
+    // and its history column would render the previous boot's CPU as this
+    // process's own. Said out loud rather than done quietly, because losing
+    // history is exactly what a user should hear about.
+    if settings.store {
+        let boot = store::boot_time(&first);
+        let restored = store::load().unwrap_or_default();
+        let total = restored.len();
+        let usable: Vec<sample::Sample> = restored
+            .into_iter()
+            .filter(|s| store::same_boot(store::boot_time(s), boot))
+            .collect();
+        if usable.len() < total {
+            warnings.push(config::Warning(format!(
+                "{} stored samples predate this boot and were discarded: a process \
+                 is identified by pid and start time, and start time only means \
+                 anything within one boot",
+                total - usable.len()
+            )));
+        }
+        let skip = usable.len().saturating_sub(app.history.capacity());
+        for s in usable.into_iter().skip(skip) {
+            app.history.push(s);
+        }
+    }
+    app.push(first);
 
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app, &mut collector);
     ratatui::restore();
+    // After the screen is restored, so a write error is a line the user can
+    // actually read. Written on a clean exit only: a periodic flush is what
+    // turns a live tool into a recorder, which is the thing this deliberately
+    // is not.
+    if settings.store
+        && result.is_ok()
+        && let Err(e) = store::save(&app.history.iter().collect::<Vec<_>>())
+    {
+        warnings.push(config::Warning(format!("could not save history: {e}")));
+    }
     flush(&warnings);
     result
 }

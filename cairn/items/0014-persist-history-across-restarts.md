@@ -2,10 +2,10 @@
 id: 14
 title: Persist history across restarts
 type: feature
-status: backlog
+status: done
 milestone: later
 created: 2026-09-05
-updated: 2026-09-05
+updated: 2026-09-06
 priority: p3
 effort: l
 area: collect
