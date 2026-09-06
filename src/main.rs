@@ -15,6 +15,7 @@ mod cvd;
 mod glyphs;
 mod history;
 mod sample;
+mod store;
 mod theme;
 mod tree;
 mod ui;
@@ -43,6 +44,9 @@ USAGE:
     --color=TIER    auto (default), mono, 16, 256, or true. Honours NO_COLOR.
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
     --window=SPAN   history retained, as time not samples (default 10m)
+    --store=on|off  keep history across restarts (default off). Written on a
+                    clean exit to $XDG_STATE_HOME/ptop/history and read at
+                    startup. ptop needs nothing running beforehand either way.
     --warn=PCT      where 'getting busy' begins (default 50)
     --critical=PCT  where 'in trouble' begins (default 80). Must exceed --warn.
     --theme=NAME    a built-in (safe, classic, auto) or a file in
@@ -62,6 +66,7 @@ CONFIG:
         critical = 90
         interval = 500ms    # every sample keeps a whole process table,
         window   = 30m      # so these two together decide the memory
+        store    = off      # keep history across restarts
 
     Lowest precedence first: built-in default, config file, NO_COLOR, flag —
     so a wrapper script can override a user's file without editing it.
@@ -251,6 +256,18 @@ fn main() -> io::Result<()> {
 
     let mut app = App::new(settings.history_len());
     app.interval = settings.interval;
+    // Restored before the first live sample, so the new run's history lands
+    // after the old one rather than being buried by it. Whatever gap sits
+    // between the two — an hour, a reboot — the timeline already draws a seam
+    // there and the caption already reads real time, so a restored buffer
+    // needs no special handling to be honest about the join.
+    if settings.store {
+        let restored = store::load().unwrap_or_default();
+        let skip = restored.len().saturating_sub(app.history.capacity());
+        for s in restored.into_iter().skip(skip) {
+            app.history.push(s);
+        }
+    }
     app.theme = theme;
     app.glyphs = settings.glyphs;
 
@@ -261,6 +278,15 @@ fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app, &mut collector);
     ratatui::restore();
+    // After the screen is restored, so a write error is a line the user can
+    // actually read. Written on a clean exit only: a periodic flush is what
+    // turns a live tool into a recorder, which is the thing this deliberately
+    // is not.
+    if settings.store
+        && let Err(e) = store::save(&app.history.iter().collect::<Vec<_>>())
+    {
+        warnings.push(config::Warning(format!("could not save history: {e}")));
+    }
     flush(&warnings);
     result
 }
