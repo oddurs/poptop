@@ -92,9 +92,6 @@ pub struct Sample {
     pub load: [f64; 3],
     pub procs: Vec<ProcSample>,
     pub uptime: std::time::Duration,
-    /// Whether extended per-process IO was being collected when this sample was
-    /// taken. History predating the column being switched on has this false,
-    /// and says so rather than pretending the machine was idle.
     /// Tasks the kernel has created since boot, or `None` where the platform
     /// will not say.
     ///
@@ -109,6 +106,9 @@ pub struct Sample {
     /// kernel exposes, and because a cumulative counter survives an uneven
     /// interval without needing to know how long it was.
     pub forks: Option<u64>,
+    /// Whether extended per-process IO was being collected when this sample was
+    /// taken. History predating the column being switched on has this false,
+    /// and says so rather than pretending the machine was idle.
     pub io_collected: bool,
     /// Processes whose IO file could not be read at all, as opposed to those
     /// merely awaiting a second reading. Only the former is fixed by running as

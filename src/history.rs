@@ -232,6 +232,15 @@ pub struct Churn {
 
 impl Churn {
     /// Tasks that were created and had already exited by the time ptop looked.
+    ///
+    /// **Tasks, not processes**, and the distinction is not pedantry: a
+    /// surviving process that recycles worker threads creates and destroys
+    /// them inside an interval, leaving its thread count unchanged. Its
+    /// turnover is unseen by exactly this definition, and a thread pool at
+    /// steady state would otherwise show a permanent phantom count of
+    /// short-lived *processes* that do not exist. Only a per-process
+    /// cumulative task counter could separate the two, and `/proc` publishes
+    /// none — so the number is reported as what it honestly is.
     pub fn unseen(&self) -> u64 {
         self.created.saturating_sub(self.visible)
     }
@@ -286,6 +295,23 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
 /// The flag marks the sample *after* the discontinuity — the one whose arrival
 /// is unaccounted for. Index 0 is never a gap: it has no predecessor here, and
 /// inventing one would put a seam at the left edge of every fresh buffer.
+/// The interval above which time is treated as missing.
+///
+/// Floored, because "one missed tick" stops being a meaningful statement as the
+/// interval shrinks. At `interval = 50ms` a frame that took 100ms to draw and
+/// collect would otherwise read as time missing, and a monitor that is merely
+/// busy would paint itself full of seams. Below a quarter of a second there is
+/// no gap worth telling anyone about.
+///
+/// Exposed because the timeline is not the only reader: anything summing across
+/// an interval has to know whether the two ends are adjacent in time, and two
+/// definitions of "adjacent" would eventually disagree about the same pair of
+/// samples.
+pub fn gap_limit(nominal: std::time::Duration) -> std::time::Duration {
+    const FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
+    nominal.saturating_mul(2).max(FLOOR)
+}
+
 pub fn gaps_in(times: &[std::time::SystemTime], nominal: std::time::Duration) -> Vec<bool> {
     // A zero nominal interval has no notion of a missed tick, and `>= 0` would
     // otherwise flag every sample and render the whole graph as seams. Item
@@ -294,13 +320,7 @@ pub fn gaps_in(times: &[std::time::SystemTime], nominal: std::time::Duration) ->
     if nominal.is_zero() {
         return vec![false; times.len()];
     }
-    // Floored, because "one missed tick" stops being a meaningful statement as
-    // the interval shrinks. At `interval = 50ms` a frame that took 100ms to
-    // draw and collect would otherwise read as time missing, and a monitor
-    // that is merely busy would paint itself full of seams. Below a quarter of
-    // a second there is no gap worth telling anyone about.
-    const FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
-    let limit = nominal.saturating_mul(2).max(FLOOR);
+    let limit = gap_limit(nominal);
     times
         .iter()
         .enumerate()

@@ -499,9 +499,20 @@ impl Collector for ProcFs {
             .unwrap_or(Duration::ZERO);
         self.prev_at = Some(now);
 
-        let (cpu_total, cpu_per_core, forks) = self.read_cpu()?;
         let mut io_denied = 0;
         let procs = self.read_procs(elapsed, needs, &mut io_denied)?;
+        // `/proc/stat` is read *after* the process walk, not before, so every
+        // process in `procs` is guaranteed to have been counted by `forks`.
+        // Read first, a task created during the walk appeared in `procs`
+        // without being in `forks` — and on the next sample it was counted as
+        // created while already present in both process lists, fabricating a
+        // `1 task came and went`. A small permanent floor under a figure whose
+        // whole value is that it is exact.
+        //
+        // Free: the file was being read here either way, and the CPU delta is
+        // taken between consecutive reads, so moving both by a millisecond
+        // changes nothing about it.
+        let (cpu_total, cpu_per_core, forks) = self.read_cpu()?;
         Ok(Sample {
             at: now,
             cpu_total,

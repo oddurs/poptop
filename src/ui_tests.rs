@@ -2879,7 +2879,7 @@ fn the_process_panel_says_what_it_could_not_show() {
     app.push(sample_with(Some(1_047), vec![threaded(1, 0, 1)]));
     let frame = render(&app, 100, 30);
     assert!(
-        frame.contains("47 came and went"),
+        frame.contains("47 tasks came and went"),
         "the panel does not disclose the interval's churn"
     );
 
@@ -2888,4 +2888,56 @@ fn the_process_panel_says_what_it_could_not_show() {
     quiet.push(sample_with(Some(1_000), vec![threaded(1, 0, 1)]));
     quiet.push(sample_with(Some(1_000), vec![threaded(1, 0, 1)]));
     assert!(!render(&quiet, 100, 30).contains("came and went"));
+}
+
+#[test]
+fn churn_is_not_summed_across_a_sleep() {
+    // The two samples either side of a suspend can be hours apart, and the
+    // counter would attribute a whole night's task creation to the one second
+    // the table is describing. The timeline already draws a seam there; this
+    // is the same event and must not be summed through it.
+    let mut app = App::new(60);
+    app.history
+        .push(sample_with_at(Some(1_000), 4_000, vec![threaded(1, 0, 1)]));
+    app.history
+        .push(sample_with_at(Some(1_204_331), 0, vec![threaded(1, 0, 1)]));
+    let frame = render(&app, 100, 30);
+    assert!(
+        !frame.contains("came and went"),
+        "a sleep's task creation was billed to one second"
+    );
+
+    // The same two counts one interval apart are reported normally, so the
+    // suppression is about the gap and not about the size of the number.
+    let mut adjacent = App::new(60);
+    adjacent
+        .history
+        .push(sample_with_at(Some(1_000), 1, vec![threaded(1, 0, 1)]));
+    adjacent
+        .history
+        .push(sample_with_at(Some(1_204_331), 0, vec![threaded(1, 0, 1)]));
+    assert!(render(&adjacent, 100, 30).contains("came and went"));
+}
+
+#[test]
+fn the_panel_says_tasks_because_that_is_what_it_counts() {
+    // A thread pool recycling workers advances the kernel's counter without
+    // changing any process's thread count, so its turnover is unseen by this
+    // definition. Calling that "processes" would invent an event — a JVM at
+    // steady state would show a permanent phantom count of short-lived
+    // processes that do not exist.
+    let mut app = App::new(60);
+    app.push(sample_with(Some(1_000), vec![threaded(1, 0, 8)]));
+    app.push(sample_with(Some(1_064), vec![threaded(1, 0, 8)]));
+    let frame = render(&app, 100, 30);
+    assert!(frame.contains("64 tasks came and went"), "{frame:?}");
+}
+
+/// A sample with a fork counter, a process list, and an age in seconds.
+fn sample_with_at(forks: Option<u64>, age_secs: u64, procs: Vec<ProcSample>) -> Sample {
+    Sample {
+        forks,
+        procs,
+        ..sample_at(0.0, age_secs)
+    }
 }

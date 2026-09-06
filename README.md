@@ -267,7 +267,7 @@ ptop cannot show you those processes. What it can do is stop implying they did
 not happen:
 
 ```text
-── processes (312) — sort: CPU · 47 came and went ──────────────────────────
+── processes (312) — sort: CPU · 47 tasks came and went ────────────────────
 ```
 
 `/proc/stat` publishes how many tasks the kernel has created since boot, so the
@@ -276,12 +276,20 @@ Subtract the ones still alive when ptop looked, and the remainder is what came
 and went unseen. Naming that number is the same principle as rendering `—`
 rather than a fabricated zero: an absence stated is not an absence hidden.
 
-Counted in **tasks**, not processes, because the kernel's counter is — a
+It says **tasks**, not processes, because that is what the kernel counts — a
 `clone` for a thread advances it exactly as a `fork` for a process does.
-Comparing it against a count of process rows would report a program that
-spawned sixteen threads as sixteen invisible processes, which is worse than
-saying nothing, so thread growth inside surviving processes counts on the
-visible side too.
+Thread growth inside surviving processes counts on the visible side, but a
+thread *pool* that recycles workers creates and destroys them inside an
+interval and leaves its thread count unchanged, so its turnover lands here too.
+Only a per-process cumulative task counter could separate the two and `/proc`
+publishes none, so the figure is reported as what it honestly is rather than
+being called something more specific than it is.
+
+The figure is suppressed across a sampling gap: the two samples either side of
+a suspend can be hours apart, and billing a whole night's task creation to the
+one second the table is describing would be worse than saying nothing. The
+timeline already draws a seam there, and both read the same definition of
+whether two samples are adjacent.
 
 macOS publishes no equivalent counter, so ptop says nothing there rather than
 zero. "I do not know" and "none happened" are opposite answers.
