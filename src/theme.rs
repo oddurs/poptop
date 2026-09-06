@@ -851,7 +851,11 @@ mod tests {
         // which would make the outward-facing one worthless.
         for tier in [Tier::Ansi256, Tier::TrueColor] {
             let report = crate::check::Report::of("safe", &Theme::new(Palette::Safe, tier));
-            assert!(report.passes(), "{tier:?}:\n{report}");
+            assert_eq!(
+                report.verdict(),
+                crate::check::Verdict::Pass,
+                "{tier:?}:\n{report}"
+            );
         }
     }
 
@@ -887,8 +891,9 @@ mod tests {
         // one that removes the argument for the default.
         let report =
             crate::check::Report::of("classic", &Theme::new(Palette::Classic, Tier::TrueColor));
-        assert!(
-            !report.passes(),
+        assert_eq!(
+            report.verdict(),
+            crate::check::Verdict::Fail,
             "classic now passes its own check; the case for `safe` being the \
              default has changed and the docs need revisiting:\n{report}"
         );

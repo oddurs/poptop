@@ -316,13 +316,49 @@ muddy: FAIL
 ```
 
 Every pair, not only the failures: a theme passing at ΔE 8.1 is a different
-thing from one passing at 30, and the number is the point. It exits non-zero on
-failure, so it works in a script — **a contributed theme can arrive with a
-measurement rather than a screenshot.**
+thing from one passing at 30, and the number is the point. **A contributed
+theme can arrive with a measurement rather than a screenshot.**
+
+**There is a third outcome, and it is not a pass.** An ANSI name or an index
+below 16 is a *slot* — what it looks like belongs to your terminal theme, not
+to ptop — so there is genuinely no hue to measure:
+
+```
+$ ptop --check-theme ansi
+ansi: INCOMPLETE
+  ...
+  not measured: ok, warn, critical. An ANSI name or an index below 16 is a
+  slot, and what it looks like belongs to your terminal theme rather than to
+  ptop — there is no hue here to measure. Spell these as `#rrggbb` or a
+  256-colour index to have them checked.
+```
+
+Only a pass exits zero. A check that could not see the colours has not passed
+them, and a script asking "is this theme legible" must not be told yes by
+silence. The same applies to `selection_bg`: if the selected-row background is
+an unknowable slot, the rows measured against it are absent rather than
+invented.
+
+**The check measures at the top tier, not the one it detects.** In a CI job
+`TERM` is often unset, which detects as monochrome — so a check that read the
+detected tier would find nothing measurable and certify anything, in exactly
+the place this command is meant to run. The question is whether the *theme* is
+legible, which is a property of the colours it names rather than of the
+terminal running the check.
 
 **This is the same instrument CI uses.** The palette tests assert through
 `check::Report` rather than a second copy of the arithmetic, so ptop's own
 check and yours cannot come to disagree about the same colours.
+
+Separation is asked only of the colours that must be told apart. Legibility is
+asked of everything drawn — including `text` and `live`, since a theme that
+makes the interface invisible while keeping its status hues distinct is not a
+theme anyone can use. `chrome` and `text_dim` are meant to recede, so they have
+a lower floor: a border competing with the numbers inside it is a worse border,
+but one nobody can find is worse still. And chrome is measured only against the
+surface, because the process table has no side borders — it never crosses a
+selected row, and a check that fails on things that cannot happen trains people
+to ignore it.
 
 **A failing theme still loads**, with one line saying why:
 

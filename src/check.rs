@@ -12,14 +12,25 @@
 //! other by having its own copy.
 
 use crate::cvd::{self, CVD_TARGET, Cvd};
-use crate::theme::{Theme, Tier, Token};
+use crate::theme::{Theme, Token};
 use std::fmt;
 
-/// Below this a colour is not reliably legible on the background it sits on.
+/// Below this a colour carrying information is not reliably legible.
 ///
 /// WCAG's threshold for large text and graphical objects, which is what a bar
 /// glyph and a two-decimal figure are.
 pub const MIN_CONTRAST: f64 = 3.0;
+
+/// The floor for the parts that are meant to recede.
+///
+/// Chrome and dim text are deliberately quiet — a border that competes with
+/// the numbers inside it is a worse border — so holding them to the
+/// information threshold would fail every theme including the built-ins, and a
+/// check that fails everything says nothing. They still have a floor: a border
+/// nobody can find is worse than no border. The visual hierarchy itself
+/// (chrome < dim < data) is asserted separately in `theme.rs`; this only asks
+/// that the quiet end stays visible.
+pub const MIN_RECESSIVE: f64 = 1.5;
 
 /// The panel background ptop draws over.
 ///
@@ -29,11 +40,10 @@ pub const MIN_CONTRAST: f64 = 3.0;
 /// against, and a figure measured against a stated assumption beats no figure.
 pub const SURFACE: [u8; 3] = [0x1a, 0x1a, 0x19];
 
-/// The tokens that carry meaning, and so must be told apart.
+/// The tokens that carry meaning, and so must be told apart from each other.
 ///
-/// Chrome and text are excluded deliberately: they are not asked to be
-/// distinguished from each other, only to recede. `live` is excluded because it
-/// deliberately shares the `ok` hue.
+/// Chrome and text are excluded: they are not asked to be distinguished, only
+/// to recede. `live` is excluded because it deliberately shares the `ok` hue.
 const MEANINGFUL: [Token; 5] = [
     Token::Ok,
     Token::Warn,
@@ -41,6 +51,65 @@ const MEANINGFUL: [Token; 5] = [
     Token::SeriesCpu,
     Token::SeriesMem,
 ];
+
+/// Every token drawn as foreground, all of which have to be *visible* even
+/// where they do not have to be distinct.
+///
+/// Separation and legibility are different questions and were wrongly sharing
+/// one list: scoping contrast to [`MEANINGFUL`] meant a theme could set `text`
+/// and `text_dim` to 1.01:1 against the surface — the entire interface
+/// invisible — and be reported as passing.
+/// Each with the floor its job asks for, and the backgrounds it is drawn over.
+///
+/// The second is not a detail: chrome is dividers and titles, and the process
+/// table has had no side borders since the panel became a full-width content
+/// line — so chrome never crosses a selected row. Measuring it there would
+/// report a real-looking 1.37:1 for a combination that never appears on
+/// screen, and a check that fails on things that cannot happen trains people
+/// to ignore it.
+const DRAWN: [(Token, f64, bool); 9] = [
+    (Token::Ok, MIN_CONTRAST, true),
+    (Token::Warn, MIN_CONTRAST, true),
+    (Token::Critical, MIN_CONTRAST, true),
+    (Token::SeriesCpu, MIN_CONTRAST, true),
+    (Token::SeriesMem, MIN_CONTRAST, true),
+    (Token::Text, MIN_CONTRAST, true),
+    (Token::Live, MIN_CONTRAST, true),
+    (Token::TextDim, MIN_RECESSIVE, true),
+    (Token::Chrome, MIN_RECESSIVE, false),
+];
+
+/// What a check concluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Pass,
+    Fail,
+    /// Something could not be measured, so nothing can be concluded.
+    ///
+    /// Its own outcome rather than a quiet pass. ANSI names and the low indices
+    /// are *slots*, and what they look like belongs to the user's terminal
+    /// theme — ptop genuinely cannot know. Treating that as "no problems found"
+    /// meant `--check-theme` certified anything on a terminal without 256
+    /// colours, which is most CI jobs: exactly where the README says to run it.
+    Incomplete,
+}
+
+impl Verdict {
+    /// Anything but a pass leaves the shell non-zero. A check that could not
+    /// see the colours has not passed them, and a script asking "is this theme
+    /// legible" must not be told yes by silence.
+    pub fn exit_code(self) -> i32 {
+        i32::from(self != Verdict::Pass)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Verdict::Pass => "PASS",
+            Verdict::Fail => "FAIL",
+            Verdict::Incomplete => "INCOMPLETE",
+        }
+    }
+}
 
 /// How far apart two meaning-bearing colours are, and for whom they are worst.
 pub struct Pair {
@@ -66,20 +135,34 @@ pub struct Legibility {
     pub token: &'static str,
     pub background: &'static str,
     pub ratio: f64,
+    /// What this token has to clear, which depends on what it is for.
+    pub floor: f64,
 }
 
 impl Legibility {
     pub fn passes(&self) -> bool {
-        self.ratio >= MIN_CONTRAST
+        self.ratio >= self.floor
     }
 }
 
-/// Everything measurable about one theme.
+/// Everything measurable about one theme, and what could not be measured.
 pub struct Report {
     pub name: String,
-    pub tier: Tier,
     pub pairs: Vec<Pair>,
     pub legibility: Vec<Legibility>,
+    /// Tokens whose colour ptop cannot know.
+    ///
+    /// An ANSI name or an index below 16 is a *slot*; what it looks like
+    /// belongs to the user's terminal theme. Reported rather than dropped: a
+    /// shorter table that still said PASS could not be read as coverage, and
+    /// `--check-theme` is the artifact a contributed theme arrives with.
+    pub unmeasured: Vec<&'static str>,
+    /// Whether the selected-row background is itself an unknowable slot.
+    ///
+    /// Previously this fell back to the surface colour, so the report printed
+    /// the surface figures under the "selected row" label — a false PASS on
+    /// fabricated data, which is the one thing this module exists not to do.
+    pub selection_unmeasured: bool,
     /// Why a failure is nonetheless intended, when it is.
     ///
     /// `classic` fails on purpose — it exists to restore the green/yellow
@@ -96,14 +179,25 @@ impl Report {
     }
 
     pub fn of(name: &str, theme: &Theme) -> Self {
-        let colours: Vec<(&'static str, [u8; 3])> = MEANINGFUL
-            .iter()
-            .filter_map(|&t| cvd::to_rgb(t.get(theme)).map(|rgb| (t.name(), rgb)))
-            .collect();
+        // Split rather than filtered: what could not be measured is part of
+        // the result, not something to drop on the way to one.
+        let mut unmeasured = Vec::new();
+        let resolve = |t: Token| cvd::to_rgb(t.get(theme)).map(|rgb| (t.name(), rgb));
+
+        let meaningful: Vec<(&'static str, [u8; 3])> =
+            MEANINGFUL.iter().filter_map(|&t| resolve(t)).collect();
+
+        let mut drawn = Vec::new();
+        for (token, floor, over_selection) in DRAWN {
+            match resolve(token) {
+                Some((name, rgb)) => drawn.push((name, rgb, floor, over_selection)),
+                None => unmeasured.push(token.name()),
+            }
+        }
 
         let mut pairs = Vec::new();
-        for (i, &(an, a)) in colours.iter().enumerate() {
-            for &(bn, b) in &colours[i + 1..] {
+        for (i, &(an, a)) in meaningful.iter().enumerate() {
+            for &(bn, b) in &meaningful[i + 1..] {
                 let (delta_e, worst_for) = cvd::worst_cvd(a, b);
                 pairs.push(Pair {
                     a: an,
@@ -117,23 +211,31 @@ impl Report {
         // Both backgrounds, because a colour is drawn over both and clearing
         // one says nothing about the other. The first 256-colour palette
         // cleared ΔE comfortably while sitting at 2.03:1 on the selected row.
-        let selected = cvd::to_rgb(theme.selection_bg).unwrap_or(SURFACE);
+        let selected = cvd::to_rgb(theme.selection_bg);
         let mut legibility = Vec::new();
-        for &(name, rgb) in &colours {
-            for (bg_name, bg) in [("surface", SURFACE), ("selected row", selected)] {
+        for &(name, rgb, floor, over_selection) in &drawn {
+            legibility.push(Legibility {
+                token: name,
+                background: "surface",
+                ratio: cvd::contrast(rgb, SURFACE),
+                floor,
+            });
+            if let Some(bg) = selected.filter(|_| over_selection) {
                 legibility.push(Legibility {
                     token: name,
-                    background: bg_name,
+                    background: "selected row",
                     ratio: cvd::contrast(rgb, bg),
+                    floor,
                 });
             }
         }
 
         Self {
             name: name.to_string(),
-            tier: theme.tier,
             pairs,
             legibility,
+            unmeasured,
+            selection_unmeasured: selected.is_none(),
             caveat: None,
         }
     }
@@ -151,8 +253,16 @@ impl Report {
             .min_by(|x, y| x.ratio.total_cmp(&y.ratio))
     }
 
-    pub fn passes(&self) -> bool {
-        self.pairs.iter().all(Pair::passes) && self.legibility.iter().all(Legibility::passes)
+    pub fn verdict(&self) -> Verdict {
+        // A real failure outranks an incomplete check: something measurable is
+        // definitely wrong, and that is the more useful thing to say.
+        if self.pairs.iter().any(|p| !p.passes()) || self.legibility.iter().any(|l| !l.passes()) {
+            return Verdict::Fail;
+        }
+        if !self.unmeasured.is_empty() || self.selection_unmeasured || self.pairs.is_empty() {
+            return Verdict::Incomplete;
+        }
+        Verdict::Pass
     }
 
     /// One line for a theme that loads anyway.
@@ -160,8 +270,12 @@ impl Report {
     /// A failing theme still loads. It is the user's terminal and their choice;
     /// ptop's job is to have the number and say it, not to refuse — the same
     /// principle as rendering `—` rather than a fabricated zero.
+    ///
+    /// Only a real failure is worth a line at startup. An incomplete check is
+    /// the normal state of a theme written in ANSI names, and saying so on
+    /// every run would be noise about something the user cannot fix.
     pub fn warning(&self) -> Option<String> {
-        if self.passes() {
+        if self.verdict() != Verdict::Fail {
             return None;
         }
         let mut why = Vec::new();
@@ -193,24 +307,16 @@ impl Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.pairs.is_empty() {
-            return writeln!(
-                f,
-                "{}: nothing to measure — {:?} has no hues to tell apart",
-                self.name, self.tier
-            );
-        }
-        writeln!(
-            f,
-            "{}: {}",
-            self.name,
-            if self.passes() { "PASS" } else { "FAIL" }
-        )?;
+        writeln!(f, "{}: {}", self.name, self.verdict().label())?;
 
-        // Every pair and every background, not only the failures. A theme that
-        // passes at 8.1 is a different thing from one that passes at 30, and
-        // the number is the point — a contributed theme should arrive with a
-        // measurement rather than a screenshot.
+        // Every table that has anything in it, unconditionally. An early
+        // return on "no pairs" used to swallow the legibility table too, so a
+        // theme that failed on contrast printed "nothing to measure" and
+        // exited non-zero with no reason given — pointing the user at a
+        // command that contradicted the warning that sent them to it.
+        //
+        // Every pair, not only the failures: a theme passing at ΔE 8.1 is a
+        // different thing from one passing at 30, and the number is the point.
         for p in &self.pairs {
             let vision = p
                 .worst_for
@@ -231,15 +337,41 @@ impl fmt::Display for Report {
             );
             match l.passes() {
                 true => writeln!(f, "{}", row.trim_end())?,
-                false => writeln!(f, "{row}  below {MIN_CONTRAST:.0}:1")?,
+                false => writeln!(f, "{row}  below {:.1}:1", l.floor)?,
             }
         }
-        let worst_pair = self.worst_pair().map_or(0.0, |p| p.delta_e);
-        let worst_contrast = self.worst_contrast().map_or(0.0, |l| l.ratio);
-        writeln!(
-            f,
-            "  worst pair: ΔE {worst_pair:.1}   worst contrast: {worst_contrast:.2}:1"
-        )?;
+
+        if !self.pairs.is_empty() || !self.legibility.is_empty() {
+            let worst_pair = self.worst_pair().map_or(f64::NAN, |p| p.delta_e);
+            let worst_contrast = self.worst_contrast().map_or(f64::NAN, |l| l.ratio);
+            writeln!(
+                f,
+                "  worst pair: ΔE {worst_pair:.1}   worst contrast: {worst_contrast:.2}:1"
+            )?;
+        }
+
+        // What was not measured, named. A shorter table that still said PASS
+        // could not be read as coverage, which is the one job this output has.
+        if !self.unmeasured.is_empty() || self.selection_unmeasured {
+            writeln!(f)?;
+            let mut what: Vec<&str> = self.unmeasured.clone();
+            if self.selection_unmeasured {
+                what.push("selection_bg");
+            }
+            for line in wrap(
+                &format!(
+                    "not measured: {}. An ANSI name or an index below 16 is a slot, and \
+                     what it looks like belongs to your terminal theme rather than to ptop — \
+                     there is no hue here to measure. Spell these as `#rrggbb` or a \
+                     256-colour index to have them checked.",
+                    what.join(", ")
+                ),
+                74,
+            ) {
+                writeln!(f, "  {line}")?;
+            }
+        }
+
         let Some(why) = self.caveat else {
             return Ok(());
         };
@@ -277,7 +409,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Palette, Token};
+    use crate::theme::{Palette, Tier, Token};
     use ratatui::style::Color;
 
     fn themed(overrides: &[(Token, Color)]) -> Theme {
@@ -293,8 +425,10 @@ mod tests {
         // failures could not tell a theme passing at 8.1 from one at 30, and
         // the number is the point.
         let report = Report::of("safe", &themed(&[]));
-        assert_eq!(report.pairs.len(), 10);
-        assert_eq!(report.legibility.len(), 10);
+        assert_eq!(report.pairs.len(), 10, "five meaning colours is ten pairs");
+        // Nine drawn tokens against two backgrounds, less chrome, which is
+        // never drawn over a selected row.
+        assert_eq!(report.legibility.len(), 17);
         // Counted in the rendered text, not just in the data. Asserting that
         // token names appear is satisfied by the contrast rows alone, so a
         // report that printed only its failures still passed.
@@ -306,7 +440,7 @@ mod tests {
         );
         assert_eq!(
             text.lines().filter(|l| l.contains(" on ")).count(),
-            10,
+            17,
             "not every background was printed:\n{text}"
         );
         for token in ["ok", "warn", "critical", "series_cpu", "series_mem"] {
@@ -332,7 +466,7 @@ mod tests {
                 (Token::Warn, Color::Rgb(0x5c, 0xcf, 0xe6)),
             ]),
         );
-        assert!(!report.passes());
+        assert_eq!(report.verdict(), Verdict::Fail);
         let worst = report.worst_pair().unwrap();
         assert_eq!((worst.a, worst.b), ("ok", "warn"));
         assert!(
@@ -352,7 +486,7 @@ mod tests {
             "dark",
             &themed(&[(Token::Critical, Color::Rgb(0x22, 0x22, 0x22))]),
         );
-        assert!(!report.passes());
+        assert_eq!(report.verdict(), Verdict::Fail);
         let worst = report.worst_contrast().unwrap();
         assert_eq!(worst.token, "critical");
         assert!(worst.ratio < MIN_CONTRAST);
@@ -401,10 +535,86 @@ mod tests {
     }
 
     #[test]
-    fn a_monochrome_theme_has_nothing_to_measure() {
+    fn a_check_that_measured_nothing_is_not_a_pass() {
+        // The bug this locks out: `--check-theme` read the *detected* tier, so
+        // in CI — where TERM is often unset and detection lands on monochrome —
+        // nothing was measurable, `passes()` was vacuously true, and a theme
+        // with zero separation and 1:1 contrast was certified by the same
+        // command the README tells people to run.
         let report = Report::of("safe", &Theme::new(Palette::Safe, Tier::Mono));
         assert!(report.pairs.is_empty());
-        assert!(report.passes(), "a report with no measurements cannot fail");
-        assert!(report.to_string().contains("nothing to measure"));
+        assert_eq!(report.verdict(), Verdict::Incomplete);
+        assert_ne!(
+            report.verdict().exit_code(),
+            0,
+            "a check that saw no colours reported success"
+        );
+        assert!(report.to_string().contains("INCOMPLETE"));
+        assert!(report.to_string().contains("not measured"));
+    }
+
+    #[test]
+    fn a_partly_measurable_theme_says_what_it_skipped() {
+        // A shorter table that still said PASS could not be read as coverage,
+        // and coverage is the only thing this output is for.
+        let report = Report::of("mixed", &themed(&[(Token::Ok, Color::Cyan)]));
+        assert!(report.unmeasured.contains(&"ok"), "{report}");
+        assert_eq!(report.verdict(), Verdict::Incomplete);
+        assert!(report.to_string().contains("not measured: ok"), "{report}");
+    }
+
+    #[test]
+    fn an_unknowable_selection_background_is_not_quietly_the_surface() {
+        // It used to fall back to SURFACE, so the report printed the surface
+        // figures under the "selected row" label — a PASS on fabricated data,
+        // which is the one thing this module exists not to do. With
+        // `selection_bg = white` every meaning colour is far below 3:1 there,
+        // and ptop said PASS.
+        let report = Report::of("slotted", &themed(&[(Token::SelectionBg, Color::White)]));
+        assert!(report.selection_unmeasured);
+        assert!(
+            !report
+                .legibility
+                .iter()
+                .any(|l| l.background == "selected row"),
+            "figures were invented for an unknowable background"
+        );
+        assert_eq!(report.verdict(), Verdict::Incomplete);
+        assert!(report.to_string().contains("selection_bg"), "{report}");
+    }
+
+    #[test]
+    fn text_that_cannot_be_read_fails_even_though_it_carries_no_status() {
+        // Separation and legibility are different questions, and scoping
+        // contrast to the meaning-bearing five meant a theme could make the
+        // entire interface invisible and pass.
+        let invisible = Color::Rgb(0x1b, 0x1b, 0x1a);
+        for token in [Token::Text, Token::Live, Token::TextDim] {
+            let report = Report::of("invis", &themed(&[(token, invisible)]));
+            assert_eq!(
+                report.verdict(),
+                Verdict::Fail,
+                "{} at 1.01:1 was accepted:\n{report}",
+                token.name()
+            );
+        }
+    }
+
+    #[test]
+    fn the_recessive_parts_are_held_to_their_own_floor() {
+        // Chrome is meant to recede — a border competing with the numbers
+        // inside it is a worse border — so holding it to the information
+        // threshold would fail every theme including the built-ins, and a
+        // check that fails everything says nothing.
+        let report = Report::of("safe", &themed(&[]));
+        let chrome: Vec<&Legibility> = report
+            .legibility
+            .iter()
+            .filter(|l| l.token == "chrome")
+            .collect();
+        assert_eq!(chrome.len(), 1, "chrome is not drawn over a selected row");
+        assert_eq!(chrome[0].floor, MIN_RECESSIVE);
+        assert!(chrome[0].ratio < MIN_CONTRAST, "chrome is not recessive");
+        assert!(chrome[0].passes(), "chrome is too faint to find");
     }
 }

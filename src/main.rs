@@ -83,9 +83,11 @@ THEMES:
 
     `ptop --check-theme NAME` measures one: the separation between every pair
     of meaning-bearing hues under simulated colour vision deficiency, and the
-    contrast of each against the backgrounds it is drawn over. It exits
-    non-zero on failure, so it works in a script. A failing theme still loads,
-    with one line saying why — it is your terminal and your choice.
+    contrast of everything drawn against the backgrounds it sits on. Only a
+    PASS exits zero — a colour written as an ANSI name is a slot your terminal
+    defines, so it cannot be measured, and that is INCOMPLETE rather than
+    success. A failing theme still loads, with one line saying why: it is your
+    terminal and your choice.
 
 OPTIONS:
     -h, --help      show this help
@@ -170,28 +172,6 @@ fn main() -> io::Result<()> {
     let (theme, skipped) = theme::Theme::new(settings.palette, settings.tier)
         .with_thresholds(settings.warn, settings.critical)
         .with_overrides(&settings.overrides);
-    // A failing theme still loads, with one line saying so. It is the user's
-    // terminal and their choice; ptop's job is to have the number and say it,
-    // not to refuse — the same principle as rendering `—` rather than a
-    // fabricated zero. Only for user themes: a built-in's shortfall is a
-    // decision already made and documented, not news.
-    if !settings.overrides.is_empty()
-        && let Some(warning) = check::Report::of(&settings.theme, &theme).warning()
-    {
-        warnings.push(config::Warning(warning));
-    }
-    // Said once rather than per colour: a 256-colour terminal reading a
-    // true-colour theme would otherwise print ten near-identical lines, and
-    // the useful fact is which terminal you are on, not which token was first.
-    if let Some(note) = config::theme_note(
-        settings.tier,
-        &settings.theme,
-        &theme,
-        &settings.overrides,
-        &skipped,
-    ) {
-        warnings.push(config::Warning(note));
-    }
 
     match args.first().map(String::as_str) {
         Some("--once") => {
@@ -226,7 +206,7 @@ fn main() -> io::Result<()> {
                 eprintln!("ptop: --check-theme needs a theme name");
                 std::process::exit(2);
             };
-            return check_theme(name, settings.tier);
+            return check_theme(name);
         }
         Some("--version" | "-V") => {
             flush(&warnings);
@@ -239,6 +219,34 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
         None => {}
+    }
+
+    // Reported here rather than beside the other config warnings, because
+    // these are about what you will *see*. Emitting them before the argument
+    // paths branch put a note about the configured theme on top of
+    // `--check-theme`'s report of a different one, and on top of its usage
+    // errors — a warning about a theme the user is not asking about.
+    // A failing theme still loads, with one line saying so. It is the user's
+    // terminal and their choice; ptop's job is to have the number and say it,
+    // not to refuse — the same principle as rendering `—` rather than a
+    // fabricated zero. Only for user themes: a built-in's shortfall is a
+    // decision already made and documented, not news.
+    if !settings.overrides.is_empty()
+        && let Some(warning) = check::Report::of(&settings.theme, &theme).warning()
+    {
+        warnings.push(config::Warning(warning));
+    }
+    // Said once rather than per colour: a 256-colour terminal reading a
+    // true-colour theme would otherwise print ten near-identical lines, and
+    // the useful fact is which terminal you are on, not which token was first.
+    if let Some(note) = config::theme_note(
+        settings.tier,
+        &settings.theme,
+        &theme,
+        &settings.overrides,
+        &skipped,
+    ) {
+        warnings.push(config::Warning(note));
     }
 
     let mut app = App::new(settings.history_len());
@@ -262,11 +270,15 @@ fn main() -> io::Result<()> {
 /// The side effect worth having: a contributed theme arrives with a
 /// measurement rather than a screenshot.
 ///
-/// Exits non-zero on failure, so it is usable in a pipeline. The tier is the
-/// detected one, because a theme is only legible on a terminal that can show
-/// it — checking hex against a 16-colour terminal would report on colours that
-/// will never appear.
-fn check_theme(name: &str, tier: theme::Tier) -> io::Result<()> {
+/// Measured at the top tier, not the detected one. The detected tier is read
+/// from the environment, and in a CI job — where `TERM` is often unset, which
+/// detects as monochrome — nothing would be measurable and every theme would
+/// be certified. That is exactly where this command is meant to be run.
+///
+/// The question is whether the *theme* is legible, which is a property of the
+/// colours it names rather than of the terminal that happens to be running the
+/// check.
+fn check_theme(name: &str) -> io::Result<()> {
     let mut warnings = Vec::new();
     let (palette, overrides) =
         match config::resolve_named_theme(name, &config::read_theme, &mut warnings) {
@@ -277,21 +289,15 @@ fn check_theme(name: &str, tier: theme::Tier) -> io::Result<()> {
             }
         };
     flush(&warnings);
-    let (built, skipped) = theme::Theme::new(palette, tier).with_overrides(&overrides);
-    if !skipped.is_empty() {
-        eprintln!(
-            "ptop: {} of this theme's colours need a better terminal than this {tier:?} one, \
-             and are measured as the built-in values they fall back to",
-            skipped.len()
-        );
-    }
+    let (built, _) = theme::Theme::new(palette, theme::Tier::TrueColor).with_overrides(&overrides);
     // A user theme inherits `safe`, which has no caveat; a built-in speaks
     // for itself.
     let report = check::Report::of(name, &built)
         .with_caveat(theme::Palette::parse(name).and_then(theme::Palette::caveat));
     outln!("{report}");
-    if !report.passes() {
-        std::process::exit(1);
+    let code = report.verdict().exit_code();
+    if code != 0 {
+        std::process::exit(code);
     }
     Ok(())
 }
