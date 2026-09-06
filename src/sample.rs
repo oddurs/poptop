@@ -92,6 +92,20 @@ pub struct Sample {
     pub load: [f64; 3],
     pub procs: Vec<ProcSample>,
     pub uptime: std::time::Duration,
+    /// Tasks the kernel has created since boot, or `None` where the platform
+    /// will not say.
+    ///
+    /// The counter that makes short-lived processes *visible as an absence*.
+    /// ptop reads `/proc` at an instant, so a process that lived 200ms never
+    /// existed as far as the table is concerned — and a burst of them is one
+    /// of the commonest causes of exactly the spike you scrubbed back to find.
+    /// The difference between two samples is how many tasks were created in
+    /// between, which the table can then be compared against.
+    ///
+    /// Cumulative rather than a per-interval delta because that is what the
+    /// kernel exposes, and because a cumulative counter survives an uneven
+    /// interval without needing to know how long it was.
+    pub forks: Option<u64>,
     /// Whether extended per-process IO was being collected when this sample was
     /// taken. History predating the column being switched on has this false,
     /// and says so rather than pretending the machine was idle.
@@ -115,6 +129,7 @@ impl Sample {
             load: [0.0; 3],
             procs: Vec::new(),
             uptime: std::time::Duration::ZERO,
+            forks: None,
             io_collected: false,
             io_denied: 0,
         }

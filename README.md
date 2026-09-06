@@ -47,8 +47,9 @@ capable one.
 for years. It writes compressed daily logfiles, keeps 28 days by default, and
 does one thing ptop cannot: it captures processes that started *and finished*
 between two samples. If a burst of short-lived processes spiked your machine,
-atop can show you and ptop currently cannot — see
+atop can name them and ptop cannot — see
 [`docs/roadmaps/05-data-fidelity.md`](docs/roadmaps/05-data-fidelity.md).
+ptop will at least tell you they happened (below), but a count is not a list.
 On raw capability atop is the better tool.
 
 **[zenith](https://github.com/bvaisvil/zenith)** has zoomable scroll-back charts
@@ -253,6 +254,49 @@ has outgrown it.
 One table defines every setting once, and both the file and the command line
 drive it, so `theme = classic` and `--theme=classic` cannot come to disagree
 about what a value means.
+
+### What the table cannot show
+
+ptop reads `/proc` at an instant, so **a process that lived 200ms never existed
+as far as the table is concerned.** That is not an edge case here: a burst of
+short-lived processes is one of the commonest causes of exactly the spike you
+scrubbed back to find, so the table can end up sitting under a graph it cannot
+explain.
+
+ptop cannot show you those processes. What it can do is stop implying they did
+not happen:
+
+```text
+── processes (312) — sort: CPU · 47 tasks came and went ────────────────────
+```
+
+`/proc/stat` publishes how many tasks the kernel has created since boot, so the
+difference between two samples is exactly how many were created in between.
+Subtract the ones still alive when ptop looked, and the remainder is what came
+and went unseen. Naming that number is the same principle as rendering `—`
+rather than a fabricated zero: an absence stated is not an absence hidden.
+
+It says **tasks**, not processes, because that is what the kernel counts — a
+`clone` for a thread advances it exactly as a `fork` for a process does.
+Thread growth inside surviving processes counts on the visible side, but a
+thread *pool* that recycles workers creates and destroys them inside an
+interval and leaves its thread count unchanged, so its turnover lands here too.
+Only a per-process cumulative task counter could separate the two and `/proc`
+publishes none, so the figure is reported as what it honestly is rather than
+being called something more specific than it is.
+
+The figure is suppressed across a sampling gap: the two samples either side of
+a suspend can be hours apart, and billing a whole night's task creation to the
+one second the table is describing would be worse than saying nothing. The
+timeline already draws a seam there, and both read the same definition of
+whether two samples are adjacent.
+
+macOS publishes no equivalent counter, so ptop says nothing there rather than
+zero. "I do not know" and "none happened" are opposite answers.
+
+**Actually capturing those processes** needs `taskstats` over netlink, which
+needs `CAP_NET_ADMIN` — tracked in the roadmap, and the remaining substantive
+capability gap against atop.
 
 ### Themes
 

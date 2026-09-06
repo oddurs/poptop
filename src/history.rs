@@ -52,6 +52,13 @@ impl History {
         self.cursor.is_none()
     }
 
+    /// The sample before the one being displayed, for anything that is a
+    /// property of the *interval* rather than the instant.
+    pub fn previous(&self) -> Option<&Sample> {
+        let i = self.cursor_index();
+        self.samples.get(i.checked_sub(1)?)
+    }
+
     /// The sample currently being displayed.
     pub fn current(&self) -> Option<&Sample> {
         match self.cursor {
@@ -204,6 +211,73 @@ pub fn peak_slots(values: &[f32], zoom: usize, slots: usize) -> Vec<Option<f32>>
     out
 }
 
+/// How much of an interval's task churn the process table can account for.
+///
+/// ptop reads `/proc` at an instant, so a process that lived 200ms never
+/// existed as far as the table is concerned. That is not an edge case for this
+/// tool: a burst of short-lived processes is one of the commonest causes of
+/// exactly the spike you scrubbed back to find, so the table can end up unable
+/// to explain the graph above it.
+///
+/// This cannot show you those processes — that needs taskstats over netlink,
+/// and `CAP_NET_ADMIN` with it. What it can do is stop the table implying they
+/// did not happen. Naming the number is the same principle as rendering `—`
+/// rather than a fabricated zero: an absence stated is not an absence hidden.
+pub struct Churn {
+    /// Tasks the kernel created during the interval, from `/proc/stat`.
+    pub created: u64,
+    /// Tasks visible in the sample that were not in the one before it.
+    pub visible: u64,
+}
+
+impl Churn {
+    /// Tasks that were created and had already exited by the time ptop looked.
+    ///
+    /// **Tasks, not processes**, and the distinction is not pedantry: a
+    /// surviving process that recycles worker threads creates and destroys
+    /// them inside an interval, leaving its thread count unchanged. Its
+    /// turnover is unseen by exactly this definition, and a thread pool at
+    /// steady state would otherwise show a permanent phantom count of
+    /// short-lived *processes* that do not exist. Only a per-process
+    /// cumulative task counter could separate the two, and `/proc` publishes
+    /// none — so the number is reported as what it honestly is.
+    pub fn unseen(&self) -> u64 {
+        self.created.saturating_sub(self.visible)
+    }
+}
+
+/// Compare an interval's task creations against what the table shows.
+///
+/// Counted in **tasks**, not processes, because the kernel's counter is: a
+/// `clone` for a thread advances it exactly as a `fork` for a process does.
+/// Comparing it against a count of process rows would report a program that
+/// spawned sixteen threads as sixteen invisible processes, which is worse than
+/// saying nothing — so thread growth inside surviving processes is counted on
+/// the visible side too.
+///
+/// `None` where the platform does not publish the counter. Not zero: "I do not
+/// know" and "none happened" are opposite answers.
+pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
+    let created = now.forks?.checked_sub(prev.forks?)?;
+    let before: std::collections::HashMap<(i32, u64), u32> = prev
+        .procs
+        .iter()
+        .map(|p| ((p.pid, p.started), p.threads))
+        .collect();
+    // Keyed on pid *and* start time, like `series_for`: on pid alone a
+    // recycled pid looks like a process that was here all along, and its
+    // threads would be credited to the wrong side of the comparison.
+    let visible = now
+        .procs
+        .iter()
+        .map(|p| match before.get(&(p.pid, p.started)) {
+            Some(&was) => u64::from(p.threads.saturating_sub(was)),
+            None => u64::from(p.threads),
+        })
+        .sum();
+    Some(Churn { created, visible })
+}
+
 /// Which samples are not contiguous in time with the one before them.
 ///
 /// A laptop that sleeps, or a box loaded enough to miss its tick, produces
@@ -221,6 +295,23 @@ pub fn peak_slots(values: &[f32], zoom: usize, slots: usize) -> Vec<Option<f32>>
 /// The flag marks the sample *after* the discontinuity — the one whose arrival
 /// is unaccounted for. Index 0 is never a gap: it has no predecessor here, and
 /// inventing one would put a seam at the left edge of every fresh buffer.
+/// The interval above which time is treated as missing.
+///
+/// Floored, because "one missed tick" stops being a meaningful statement as the
+/// interval shrinks. At `interval = 50ms` a frame that took 100ms to draw and
+/// collect would otherwise read as time missing, and a monitor that is merely
+/// busy would paint itself full of seams. Below a quarter of a second there is
+/// no gap worth telling anyone about.
+///
+/// Exposed because the timeline is not the only reader: anything summing across
+/// an interval has to know whether the two ends are adjacent in time, and two
+/// definitions of "adjacent" would eventually disagree about the same pair of
+/// samples.
+pub fn gap_limit(nominal: std::time::Duration) -> std::time::Duration {
+    const FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
+    nominal.saturating_mul(2).max(FLOOR)
+}
+
 pub fn gaps_in(times: &[std::time::SystemTime], nominal: std::time::Duration) -> Vec<bool> {
     // A zero nominal interval has no notion of a missed tick, and `>= 0` would
     // otherwise flag every sample and render the whole graph as seams. Item
@@ -229,13 +320,7 @@ pub fn gaps_in(times: &[std::time::SystemTime], nominal: std::time::Duration) ->
     if nominal.is_zero() {
         return vec![false; times.len()];
     }
-    // Floored, because "one missed tick" stops being a meaningful statement as
-    // the interval shrinks. At `interval = 50ms` a frame that took 100ms to
-    // draw and collect would otherwise read as time missing, and a monitor
-    // that is merely busy would paint itself full of seams. Below a quarter of
-    // a second there is no gap worth telling anyone about.
-    const FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
-    let limit = nominal.saturating_mul(2).max(FLOOR);
+    let limit = gap_limit(nominal);
     times
         .iter()
         .enumerate()

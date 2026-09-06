@@ -940,11 +940,41 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     header_cells.push("COMMAND");
     let header = Row::new(header_cells).style(app.theme.table_header_style());
 
+    // What the table cannot show, said out loud. A process that lived 200ms is
+    // not in this list, and a burst of them is one of the commonest causes of
+    // the spike you scrubbed back to find — so without this the table sits
+    // under a graph it cannot explain and says nothing about why.
+    //
+    // Suppressed across a sampling gap. The two samples either side of a sleep
+    // can be hours apart, and the counter would attribute a whole night's task
+    // creation to the one second the table is describing — `1204331 came and
+    // went` beside a table of one instant. The timeline already draws a seam
+    // there; this is the same event, and it should not be summed through.
+    //
+    // Said in tasks rather than processes because that is what it counts: a
+    // thread pool recycling workers advances the same counter, and calling
+    // those processes would invent an event.
+    let churn = app
+        .history
+        .previous()
+        .zip(app.history.current())
+        .filter(|(prev, now)| {
+            now.at
+                .duration_since(prev.at)
+                .is_ok_and(|d| d < history::gap_limit(app.interval))
+        })
+        .and_then(|(prev, now)| history::churn(prev, now))
+        .filter(|c| c.unseen() > 0)
+        .map_or(String::new(), |c| {
+            format!(" · {} tasks came and went", c.unseen())
+        });
+
     let title = format!(
-        " processes ({}) — sort: {}{}{} ",
+        " processes ({}) — sort: {}{}{}{} ",
         rows_data.len(),
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
+        churn,
         io_status(app, collected, &rows_data)
     );
 

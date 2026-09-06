@@ -99,7 +99,7 @@ impl ProcFs {
         })
     }
 
-    fn read_cpu(&mut self) -> io::Result<(f32, Vec<f32>)> {
+    fn read_cpu(&mut self) -> io::Result<(f32, Vec<f32>, Option<u64>)> {
         let Self {
             buf,
             prev_total,
@@ -110,9 +110,19 @@ impl ProcFs {
         let mut total_now = CpuTimes::default();
         let mut cores_now = Vec::new();
 
+        // `processes` is the count of tasks the kernel has created since boot.
+        // It comes after the cpu lines, so the loop can no longer stop at the
+        // first non-cpu line — but it is one integer parse on a file already
+        // being read, so the cost is a rounding error against the per-process
+        // work that dominates a sample.
+        let mut forks = None;
         for line in stat.lines() {
+            if let Some(n) = line.strip_prefix("processes ") {
+                forks = n.trim().parse().ok();
+                continue;
+            }
             let Some(rest) = line.strip_prefix("cpu") else {
-                break; // cpu lines come first; nothing after them matters here
+                continue;
             };
             match rest.split_once(char::is_whitespace) {
                 // "cpu  ..." — the aggregate line has no digit after "cpu"
@@ -146,7 +156,7 @@ impl ProcFs {
 
         *prev_total = Some(total_now);
         *prev_cores = cores_now;
-        Ok((total_pct, core_pcts))
+        Ok((total_pct, core_pcts, forks))
     }
 
     fn read_mem(&mut self) -> io::Result<MemStat> {
@@ -489,9 +499,20 @@ impl Collector for ProcFs {
             .unwrap_or(Duration::ZERO);
         self.prev_at = Some(now);
 
-        let (cpu_total, cpu_per_core) = self.read_cpu()?;
         let mut io_denied = 0;
         let procs = self.read_procs(elapsed, needs, &mut io_denied)?;
+        // `/proc/stat` is read *after* the process walk, not before, so every
+        // process in `procs` is guaranteed to have been counted by `forks`.
+        // Read first, a task created during the walk appeared in `procs`
+        // without being in `forks` — and on the next sample it was counted as
+        // created while already present in both process lists, fabricating a
+        // `1 task came and went`. A small permanent floor under a figure whose
+        // whole value is that it is exact.
+        //
+        // Free: the file was being read here either way, and the CPU delta is
+        // taken between consecutive reads, so moving both by a millisecond
+        // changes nothing about it.
+        let (cpu_total, cpu_per_core, forks) = self.read_cpu()?;
         Ok(Sample {
             at: now,
             cpu_total,
@@ -500,6 +521,7 @@ impl Collector for ProcFs {
             load: self.read_load()?,
             procs,
             uptime: self.read_uptime()?,
+            forks,
             io_collected: needs.io,
             io_denied,
         })
