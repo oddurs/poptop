@@ -940,11 +940,26 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     header_cells.push("COMMAND");
     let header = Row::new(header_cells).style(app.theme.table_header_style());
 
+    // What the table cannot show, said out loud. A process that lived 200ms is
+    // not in this list, and a burst of them is one of the commonest causes of
+    // the spike you scrubbed back to find — so without this the table sits
+    // under a graph it cannot explain and says nothing about why.
+    let churn = app
+        .history
+        .previous()
+        .zip(app.history.current())
+        .and_then(|(prev, now)| history::churn(prev, now))
+        .filter(|c| c.unseen() > 0)
+        .map_or(String::new(), |c| {
+            format!(" · {} came and went", c.unseen())
+        });
+
     let title = format!(
-        " processes ({}) — sort: {}{}{} ",
+        " processes ({}) — sort: {}{}{}{} ",
         rows_data.len(),
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
+        churn,
         io_status(app, collected, &rows_data)
     );
 

@@ -108,6 +108,12 @@ impl Collector for SysinfoCollector {
             load: [load.one, load.five, load.fifteen],
             procs,
             uptime: Duration::from_secs(System::uptime()),
+            // macOS publishes no equivalent of `/proc/stat`'s `processes`
+            // counter, so ptop cannot say how many tasks were created in an
+            // interval here. `None`, not zero: "I do not know" and "none
+            // happened" are opposite answers, and a fabricated zero would
+            // quietly promise the table is complete.
+            forks: None,
             io_collected: needs.io,
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.

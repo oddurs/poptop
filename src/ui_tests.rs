@@ -51,6 +51,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
             proc_named(99, "nginx", 12.5, 32 << 20),
         ],
         uptime: std::time::Duration::from_secs(90_000),
+        forks: None,
         io_collected: false,
         io_denied: 0,
     }
@@ -2763,4 +2764,128 @@ fn a_colour_the_terminal_cannot_show_is_reported_not_approximated() {
             );
         }
     }
+}
+
+#[test]
+#[ignore]
+fn show_churn_against_a_real_burst() {
+    // The case the item is about: processes that live milliseconds. Run on
+    // Linux, where /proc/stat publishes the counter.
+    use crate::collect::{Collector, Needs, Platform};
+    let mut c = Platform::new().unwrap();
+    let a = c.sample(Needs { io: false }).unwrap();
+    for _ in 0..300 {
+        let _ = std::process::Command::new("/bin/true").status();
+    }
+    let b = c.sample(Needs { io: false }).unwrap();
+    match crate::history::churn(&a, &b) {
+        Some(ch) => println!(
+            "created {} tasks, {} visible in the table, {} came and went",
+            ch.created,
+            ch.visible,
+            ch.unseen()
+        ),
+        None => println!("no fork counter on this platform"),
+    }
+    println!("procs before {} after {}", a.procs.len(), b.procs.len());
+}
+
+/// A sample with a stated fork counter and process list.
+fn sample_with(forks: Option<u64>, procs: Vec<ProcSample>) -> Sample {
+    Sample {
+        forks,
+        procs,
+        ..sample(0.0)
+    }
+}
+
+fn threaded(pid: i32, started: u64, threads: u32) -> ProcSample {
+    ProcSample {
+        started,
+        threads,
+        ..proc_named(pid, "worker", 0.0, 0)
+    }
+}
+
+#[test]
+fn processes_that_lived_and_died_between_samples_are_counted() {
+    // The case the whole item is about: 300 tasks created, none of them still
+    // alive when ptop looked. The table cannot show them; it can refuse to
+    // imply they did not happen.
+    let a = sample_with(Some(1_000), vec![threaded(1, 0, 1)]);
+    let b = sample_with(Some(1_300), vec![threaded(1, 0, 1)]);
+    let churn = crate::history::churn(&a, &b).expect("both samples have the counter");
+    assert_eq!(churn.created, 300);
+    assert_eq!(churn.visible, 0);
+    assert_eq!(churn.unseen(), 300);
+}
+
+#[test]
+fn threads_are_counted_as_the_tasks_they_are() {
+    // The kernel's counter advances on `clone` as well as `fork`, so comparing
+    // it against a count of process *rows* would report a program that spawned
+    // sixteen threads as sixteen invisible processes — worse than saying
+    // nothing, because it invents an event.
+    let a = sample_with(Some(100), vec![threaded(1, 0, 1)]);
+    let b = sample_with(Some(116), vec![threaded(1, 0, 17)]);
+    let churn = crate::history::churn(&a, &b).unwrap();
+    assert_eq!(churn.created, 16);
+    assert_eq!(churn.visible, 16, "thread growth was not credited");
+    assert_eq!(
+        churn.unseen(),
+        0,
+        "sixteen threads were reported as invisible"
+    );
+
+    // A wholly new process brings its threads with it.
+    let c = sample_with(Some(120), vec![threaded(1, 0, 1), threaded(2, 5, 4)]);
+    let churn = crate::history::churn(&a, &c).unwrap();
+    assert_eq!(churn.visible, 4);
+}
+
+#[test]
+fn a_recycled_pid_is_not_mistaken_for_the_process_that_had_it() {
+    // Keyed on pid *and* start time. On pid alone the new process looks like
+    // one that was here all along, so its tasks land on the wrong side and the
+    // interval under-reports what it could not see.
+    let a = sample_with(Some(100), vec![threaded(42, 111, 8)]);
+    let b = sample_with(Some(104), vec![threaded(42, 999, 4)]);
+    let churn = crate::history::churn(&a, &b).unwrap();
+    assert_eq!(
+        churn.visible, 4,
+        "a recycled pid was credited as the old process continuing"
+    );
+    assert_eq!(churn.unseen(), 0);
+}
+
+#[test]
+fn a_platform_that_cannot_say_says_nothing() {
+    // "I do not know" and "none happened" are opposite answers, and a
+    // fabricated zero would quietly promise the table is complete. macOS
+    // publishes no equivalent of /proc/stat's `processes`.
+    let known = sample_with(Some(100), vec![]);
+    let unknown = sample_with(None, vec![]);
+    assert!(crate::history::churn(&unknown, &known).is_none());
+    assert!(crate::history::churn(&known, &unknown).is_none());
+    assert!(crate::history::churn(&unknown, &unknown).is_none());
+}
+
+#[test]
+fn the_process_panel_says_what_it_could_not_show() {
+    // Without this the table sits under a graph it cannot explain and says
+    // nothing about why.
+    let mut app = App::new(60);
+    app.push(sample_with(Some(1_000), vec![threaded(1, 0, 1)]));
+    app.push(sample_with(Some(1_047), vec![threaded(1, 0, 1)]));
+    let frame = render(&app, 100, 30);
+    assert!(
+        frame.contains("47 came and went"),
+        "the panel does not disclose the interval's churn"
+    );
+
+    // …and says nothing when there is nothing to say.
+    let mut quiet = App::new(60);
+    quiet.push(sample_with(Some(1_000), vec![threaded(1, 0, 1)]));
+    quiet.push(sample_with(Some(1_000), vec![threaded(1, 0, 1)]));
+    assert!(!render(&quiet, 100, 30).contains("came and went"));
 }
