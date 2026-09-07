@@ -1596,15 +1596,29 @@ const MIN_COMMAND_W: u16 = 10;
 /// nineteen, one more than the two disk-rate columns together. Knowing the
 /// figure is what lets the name be elided deliberately rather than clipped by
 /// the terminal.
-fn command_width(width: u16, show_io: bool) -> usize {
+/// Width of the `USER` column, and the width `COMMAND` gets back when it is
+/// folded into the title. See [`crate::app::App::one_user`].
+const USER_W: u16 = 10;
+
+#[cfg(test)]
+pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
+    command_width(width, show_io, show_user)
+}
+
+fn command_width(width: u16, show_io: bool, show_user: bool) -> usize {
     let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
+    let (user, columns) = if show_user {
+        (USER_W, columns)
+    } else {
+        (0, columns - 1)
+    };
     // Floored at the column's own `Min`, not at one. Below that width ratatui
     // stops honouring the fixed lengths and squeezes them instead, so the
     // command cell is *wider* than this arithmetic says — and eliding against
     // the arithmetic rendered `Google Chrome Helper (Renderer)` as the single
     // letter `G` on an eighty-column terminal.
     width
-        .saturating_sub(FIXED_COLUMNS + io + (columns - 1))
+        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + (columns - 1))
         .max(MIN_COMMAND_W) as usize
 }
 
@@ -1681,7 +1695,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // the ratchet is a history one, so widening the window brings them back
     // with their history intact.
     let show_io = app.show_io && area.width >= MIN_WIDTH_FOR_IO;
-    let cmd_w = command_width(area.width, show_io);
+    // A column whose every value is the same is telling you one fact, and a
+    // fact belongs in a sentence. See `App::one_user`.
+    let one_user = app.one_user();
+    let show_user = one_user.is_none();
+    let cmd_w = command_width(area.width, show_io, show_user);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -1749,9 +1767,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 // parentage, but clearly not itself a hit.
                 style = style.add_modifier(Modifier::DIM);
             }
-            let mut cells = vec![
-                num(p.pid.to_string()),
-                Cell::from(p.user.to_string()),
+            let mut cells = vec![num(p.pid.to_string())];
+            // Dropped, not blanked: an empty cell still occupies its ten
+            // columns, and giving them to `COMMAND` is the whole point.
+            if show_user {
+                cells.push(Cell::from(p.user.to_string()));
+            }
+            cells.extend([
                 num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
                 // A bar beside the number turns a column that must be read
                 // into one that can be scanned. htop does the same, for the
@@ -1775,7 +1797,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                     Some(n) => n.to_string(),
                     None => "—".into(),
                 }),
-            ];
+            ]);
             if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
@@ -1815,9 +1837,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // `right` marks the numeric ones; the bars and the text columns stay left.
     let right = |s| num(s).style(app.theme.table_header_style());
     let left = |s| Cell::from(s).style(app.theme.table_header_style());
-    let mut header_cells = vec![
-        right("PID"),
-        left("USER"),
+    let mut header_cells = vec![right("PID")];
+    if show_user {
+        header_cells.push(left("USER"));
+    }
+    header_cells.extend([
         right("CPU%"),
         left(""),
         right("RSS"),
@@ -1825,7 +1849,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         left("S"),
         right("THR"),
         left("HISTORY"),
-    ];
+    ]);
     if show_io {
         header_cells.push(right("DISK R"));
         header_cells.push(right("DISK W"));
@@ -1886,10 +1910,16 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         n => format!(" · {n} kernel hidden"),
     };
 
+    // What the column said, said once.
+    let all_one = one_user
+        .as_deref()
+        .map_or(String::new(), |u| format!(" · all {u}"));
+
     let title = format!(
-        " processes ({}){} — sort: {}{}{}{}{} ",
+        " processes ({}){}{} — sort: {}{}{}{}{} ",
         rows_data.len(),
         hidden,
+        all_one,
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
         churn,
@@ -1897,16 +1927,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         axis,
     );
 
-    let mut widths = vec![
-        Constraint::Length(7),
-        Constraint::Length(10),
+    let mut widths = vec![Constraint::Length(7)];
+    if show_user {
+        widths.push(Constraint::Length(USER_W));
+    }
+    widths.extend([
         Constraint::Length(6),
         Constraint::Length(BAR_W as u16 + 1), // bar, plus room for the over-100 mark
         Constraint::Length(8),
         Constraint::Length(BAR_W as u16),
         Constraint::Length(2),
         Constraint::Length(4),
-    ];
+    ]);
     if show_io {
         widths.push(Constraint::Length(9));
         widths.push(Constraint::Length(9));
@@ -2057,9 +2089,60 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         ])
     } else {
         Line::from(Span::styled(
-            "q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · t tree · K kernel · i io · / filter",
+            fit_hints(KEY_HINTS, area.width),
             app.theme.dim_style(),
         ))
     };
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// The key hints, in the order they are given up.
+///
+/// Least useful last, because that is the end a narrow terminal loses. `K` is
+/// the newest and the most niche; `/` is the one people reach for constantly,
+/// and it used to be what fell off — adding `K kernel` pushed the footer two
+/// columns past an eighty-… past a hundred-column terminal and `/ filter`
+/// rendered as `/ filt`.
+#[cfg(test)]
+pub fn fit_hints_for_test(width: u16) -> String {
+    fit_hints(KEY_HINTS, width)
+}
+
+pub const KEY_HINTS: &[&str] = &[
+    "q quit",
+    "←/→ scrub",
+    "+/- zoom",
+    "Space live",
+    "↑/↓ select",
+    "s sort",
+    "/ filter",
+    "t tree",
+    "i io",
+    "K kernel",
+];
+
+/// As many hints as fit, joined, never cut mid-hint.
+///
+/// A clipped footer reads as a key called `filt`. Dropping whole hints from the
+/// end is the same degradation ladder the header figures and the timeline rows
+/// use, and it means what is on screen is always true.
+fn fit_hints(hints: &[&str], width: u16) -> String {
+    const SEP: &str = " · ";
+    let width = width as usize;
+    let mut out = String::new();
+    for h in hints {
+        let need = if out.is_empty() {
+            h.chars().count()
+        } else {
+            out.chars().count() + SEP.chars().count() + h.chars().count()
+        };
+        if need > width {
+            break;
+        }
+        if !out.is_empty() {
+            out.push_str(SEP);
+        }
+        out.push_str(h);
+    }
+    out
 }

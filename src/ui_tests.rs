@@ -754,10 +754,14 @@ fn every_section_rule_uses_the_chrome_token() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
 
+    // A rule is a row that *begins* with the rule glyph, not one that is
+    // mostly made of it. The majority test was a proxy, and it was marginal:
+    // adding eleven characters to the processes title pushed that row under
+    // half and the rule stopped being counted while it was still being drawn.
+    // The tree spine draws `─` too, but indented and never at column zero.
     let mut rules = 0;
     for y in 0..h {
-        let dashes = (0..w).filter(|&x| buf[(x, y)].symbol() == "─").count();
-        if dashes * 2 < w as usize {
+        if buf[(0, y)].symbol() != "─" {
             continue;
         }
         rules += 1;
@@ -4096,6 +4100,13 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     s.procs = (0..9)
         .map(|i| {
             let mut p = proc_named(i + 101, "Google Chrome Helper (Renderer)", 0.0, 1 << 20);
+            // Two users, so the USER column keeps its ten columns. This test is
+            // about a deep tree starving the name, not about a table that has
+            // folded a constant column into its title — which would hand those
+            // ten columns back and hide what is being measured here.
+            if i == 0 {
+                p.user = std::sync::Arc::from("someone-else");
+            }
             p.cpu = 10.0 - i as f32;
             p.ppid = if i == 0 { 0 } else { i + 100 };
             p
@@ -4231,6 +4242,9 @@ fn processes_that_differ_only_by_a_suffix_are_told_apart() {
     s.procs = vec![
         ProcSample {
             cpu: 9.0,
+            // Two users, so the USER column is not folded into the title and
+            // the command column is the width this test is about.
+            user: std::sync::Arc::from("someone-else"),
             ..proc_named(101, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
         },
         ProcSample {
@@ -5459,4 +5473,198 @@ fn pid_two_is_an_ordinary_process_off_linux() {
             "{name} was hidden on a platform with no kthreadd"
         );
     }
+}
+
+/// A sample whose processes all belong to one user, pushed enough times to
+/// clear the constancy window.
+fn settled_single_user(app: &mut App, names: &[&str]) {
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.procs = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| proc_named(i as i32 + 101, n, 20.0 - i as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+}
+
+#[test]
+fn a_column_of_one_repeated_value_gives_its_width_to_the_command() {
+    // Measured in the item: `USER` cost ten columns — more than `CPU%` — to
+    // repeat one word twelve times, while `COMMAND` differed on every row and
+    // had to elide.
+    let mut app = App::new(60);
+    settled_single_user(&mut app, &["postgres", "nginx", "redis"]);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let one = rows(&app, 120, 20);
+    let head = one.iter().find(|l| l.contains("PID")).unwrap();
+    assert!(!head.contains("USER"), "the column stayed: {head:?}");
+    let title = one.iter().find(|l| l.contains("processes")).unwrap();
+    assert!(
+        title.contains("· all root"),
+        "what the column said was not said anywhere: {title:?}"
+    );
+
+    // The width goes to COMMAND, which is the point.
+    let wide = ui::command_width_for_test(120, false, false);
+    let narrow = ui::command_width_for_test(120, false, true);
+    assert_eq!(
+        wide - narrow,
+        11,
+        "the column's width was not handed over: {narrow} -> {wide}"
+    );
+}
+
+#[test]
+fn a_second_user_keeps_the_column() {
+    let mut app = App::new(60);
+    settled_single_user(&mut app, &["postgres", "nginx"]);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "postgres", 20.0, 1 << 20),
+        ProcSample {
+            // Eight characters, so it fits the ten-column USER field. The first
+            // draft used a twelve-character name and asserted on the whole of
+            // it, which the column truncates — the test failed against correct
+            // output.
+            user: std::sync::Arc::from("operator"),
+            ..proc_named(102, "nginx", 19.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let frame = rows(&app, 120, 20);
+    let head = frame.iter().find(|l| l.contains("PID")).unwrap();
+    assert!(
+        head.contains("USER"),
+        "the column was folded away: {head:?}"
+    );
+    assert!(
+        frame.iter().any(|l| l.contains("operator")),
+        "the second user is not on screen anywhere"
+    );
+    assert!(
+        !frame.iter().any(|l| l.contains("\u{b7} all ")),
+        "the title claimed one user over a sample with two"
+    );
+}
+
+#[test]
+fn the_layout_does_not_oscillate_as_a_process_comes_and_goes() {
+    // The failure this guards against: one short-lived `root` process takes the
+    // column away and gives it back a second later, and the whole table shifts
+    // ten columns sideways twice. Expanding is immediate — never hide a fact —
+    // but collapsing waits out the window.
+    let mut app = App::new(60);
+    settled_single_user(&mut app, &["postgres", "nginx"]);
+    let has_user = |app: &App| {
+        rows(app, 120, 20)
+            .iter()
+            .any(|l| l.contains("PID") && l.contains("USER"))
+    };
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(!has_user(&app), "settled, and the column is still there");
+
+    // A second user appears: the column comes back on that very frame.
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "postgres", 20.0, 1 << 20),
+        ProcSample {
+            user: std::sync::Arc::from("someone-else"),
+            ..proc_named(102, "a-visitor", 19.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    assert!(
+        has_user(&app),
+        "a second user did not bring the column back"
+    );
+
+    // It leaves again. The column must not vanish on the next frame — that is
+    // the flicker.
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "postgres", 20.0, 1 << 20)];
+    app.push(s.clone());
+    assert!(
+        has_user(&app),
+        "the column vanished one frame after the visitor left"
+    );
+
+    // …and it does come back, once the window is quiet.
+    for _ in 0..App::CONSTANT_FOR {
+        app.push(s.clone());
+    }
+    assert!(!has_user(&app), "the column never yielded its width again");
+}
+
+#[test]
+fn scrubbing_back_to_two_users_shows_the_column_again() {
+    // The decision is read from the displayed sample and the ones before it,
+    // not from live. A collapsed column while scrubbed back over a moment with
+    // two users would put `· all root` above rows that were not all root.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "postgres", 20.0, 1 << 20),
+        ProcSample {
+            user: std::sync::Arc::from("someone-else"),
+            ..proc_named(102, "a-visitor", 19.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    settled_single_user(&mut app, &["postgres"]);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(
+        !rows(&app, 120, 20).iter().any(|l| l.contains("USER")),
+        "live, one user, and the column is still drawn"
+    );
+
+    app.history.goto_oldest();
+    let frame = rows(&app, 120, 20);
+    assert!(
+        frame
+            .iter()
+            .any(|l| l.contains("PID") && l.contains("USER")),
+        "scrubbed back over two users and the column stayed folded"
+    );
+    assert!(
+        !frame.iter().any(|l| l.contains("· all ")),
+        "the title claimed one user over a sample with two"
+    );
+}
+
+#[test]
+fn the_footer_drops_whole_hints_rather_than_cutting_one() {
+    // A clipped footer reads as a key called `filt`. Adding `K kernel` pushed
+    // the line two columns past a hundred-column terminal and that is exactly
+    // what appeared.
+    for w in 20..=140u16 {
+        let line = ui::fit_hints_for_test(w);
+        assert!(
+            line.chars().count() <= w as usize,
+            "the footer overflowed at {w}: {line:?}"
+        );
+        for hint in line.split(" · ") {
+            assert!(
+                ui::KEY_HINTS.contains(&hint),
+                "a hint was cut in half at {w}: {hint:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_footer_gives_up_the_least_useful_key_first() {
+    // Order is the ladder. `/` is reached for constantly and `K` is the most
+    // niche, so a narrow terminal must lose `K` and keep `/`.
+    let at_100 = ui::fit_hints_for_test(100);
+    assert!(at_100.contains("/ filter"), "{at_100:?}");
+    assert!(!at_100.contains("K kernel"), "{at_100:?}");
+    assert!(
+        ui::fit_hints_for_test(140).contains("K kernel"),
+        "a wide terminal lost a hint it had room for"
+    );
 }

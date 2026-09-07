@@ -289,6 +289,51 @@ impl App {
         })
     }
 
+    /// The one user every process belongs to, if there is only one.
+    ///
+    /// `USER` was measured at ten columns — more than `CPU%` — to repeat the
+    /// word `oddurs` twelve times, while `COMMAND`, which differs on every row
+    /// and is how a reader identifies anything, took what was left and elided.
+    /// poptop already filters *rows* by measurement rather than by name: a
+    /// device appears once it has done IO, an interface once it has carried a
+    /// byte. The same test applies to columns. A column whose values are all
+    /// identical is telling you one fact, and a fact belongs in a sentence.
+    ///
+    /// Read over a window of samples, not just the displayed one. One
+    /// short-lived `root` process would otherwise take the column away and give
+    /// it back a second later, and a layout that moves under the reader is
+    /// worse than the waste it saves. The window makes the two directions
+    /// asymmetric, which is the useful shape: a second user expands the column
+    /// on the frame they appear, and it takes [`Self::CONSTANT_FOR`] quiet
+    /// samples to collapse again.
+    ///
+    /// Unfiltered on purpose. The filter changes with every keystroke, and
+    /// relaying out the table as someone types into it is the same flicker one
+    /// step removed.
+    pub fn one_user(&self) -> Option<std::sync::Arc<str>> {
+        let mut only: Option<&std::sync::Arc<str>> = None;
+        let mut any = false;
+        for s in self.history.window(Self::CONSTANT_FOR) {
+            for p in s.procs.iter().filter(|p| !p.is_kernel_thread()) {
+                any = true;
+                match only {
+                    None => only = Some(&p.user),
+                    Some(u) if **u == *p.user => {}
+                    Some(_) => return None,
+                }
+            }
+        }
+        any.then(|| only.cloned()).flatten()
+    }
+
+    /// How many samples a column must have been constant over before its width
+    /// is taken away.
+    ///
+    /// Five, which is five seconds at the default interval — long enough that a
+    /// process starting and exiting does not move the layout, short enough that
+    /// the width arrives while it is still wanted.
+    pub const CONSTANT_FOR: usize = 5;
+
     pub fn select_delta(&mut self, delta: isize) {
         let n = self.visible_rows().len();
         if n == 0 {

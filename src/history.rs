@@ -101,6 +101,17 @@ impl History {
         self.samples.iter()
     }
 
+    /// The displayed sample and up to `n - 1` samples before it, newest first.
+    ///
+    /// Ends at the cursor rather than at live, so a decision taken from this
+    /// window is the same decision whether the view is tailing or scrubbed back
+    /// — which is the point of having it.
+    pub fn window(&self, n: usize) -> impl Iterator<Item = &Sample> {
+        let end = self.cursor_index() + 1;
+        let start = end.saturating_sub(n);
+        self.samples.range(start..end).rev()
+    }
+
     /// Move the cursor back (negative) or forward (positive) in time.
     ///
     /// Scrubbing forward past the newest sample returns to live tailing rather
