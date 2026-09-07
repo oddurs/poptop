@@ -285,7 +285,6 @@ impl ProcFs {
             names,
             ticks_per_sec,
             page_size,
-            prev_cores,
             io_supported,
             ..
         } = self;
@@ -293,7 +292,6 @@ impl ProcFs {
             prev_jiffies: prev_proc_jiffies,
             ticks_per_sec: *ticks_per_sec,
             page_size: *page_size,
-            cores: prev_cores.len().max(1),
         };
 
         let mut out = Vec::new();
@@ -484,12 +482,12 @@ fn parse_proc_stat(
     let cpu = match ctx.prev_jiffies.get(&pid) {
         Some(&prev) if elapsed_secs > 0.0 => {
             let dj = jiffies.saturating_sub(prev) as f64;
-            let pct = ((dj / ctx.ticks_per_sec / elapsed_secs) * 100.0) as f32;
-            // Clamp to the total the machine can actually deliver. A pid reused
-            // between samples diffs the new process against the old one's
-            // counter and can otherwise report thousands of percent. htop
-            // guards the same way.
-            pct.min(ctx.cores as f32 * 100.0)
+            // Unclamped on purpose. A pid reused between samples diffs the
+            // new process against the old one's counter and lands in the
+            // thousands of percent, but the ceiling that catches it is a fact
+            // about the machine rather than about `/proc` — see
+            // [`Sample::cpu_ceiling`], applied to every backend's output.
+            ((dj / ctx.ticks_per_sec / elapsed_secs) * 100.0) as f32
         }
         _ => 0.0,
     };
@@ -516,7 +514,6 @@ struct StatCtx<'a> {
     prev_jiffies: &'a HashMap<i32, u64>,
     ticks_per_sec: f64,
     page_size: u64,
-    cores: usize,
 }
 
 /// Starting size of the shared read buffer.
@@ -706,7 +703,7 @@ impl Collector for ProcFs {
         self.notes.clone()
     }
 
-    fn sample(&mut self, needs: Needs) -> io::Result<Sample> {
+    fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
         let now = SystemTime::now();
         let elapsed = self
             .prev_at
@@ -758,7 +755,6 @@ mod tests {
             prev_jiffies: &pf.prev_proc_jiffies,
             ticks_per_sec: pf.ticks_per_sec,
             page_size: pf.page_size,
-            cores: pf.prev_cores.len().max(1),
         }
     }
 
@@ -1162,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn proc_cpu_is_clamped_when_a_pid_is_reused() {
+    fn a_reused_pid_produces_an_absurd_delta_for_the_model_to_catch() {
         let mut pf = ProcFs::new().unwrap();
         pf.prev_cores = vec![CpuTimes::default(); 4];
         // The previous occupant of this pid had barely run; the new one shows a
@@ -1181,7 +1177,15 @@ mod tests {
             &ctx(&pf),
         )
         .unwrap();
-        assert_eq!(p.cpu, 400.0, "must clamp to cores * 100");
+        // Left as the raw delta here. The ceiling that catches it belongs to
+        // the model, so this test's job is to show the parser really does
+        // produce the figure the ceiling exists for — a clamp applied to an
+        // input that never exceeds it is a clamp nobody can tell is working.
+        assert!(
+            p.cpu > 4.0 * 100.0,
+            "the delta a pid reuse produces no longer exceeds the ceiling: {}",
+            p.cpu
+        );
     }
 
     #[test]

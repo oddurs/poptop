@@ -696,8 +696,12 @@ them:
   `fstat` took a sample from 3.19ms to 1.41ms.
 - **Clamp CPU percentages.** htop does `MINIMUM(percent_cpu, activeCPUs * 100)`.
   Without it, a pid reused between two samples diffs the new process against the
-  old one's counter and reports thousands of percent. poptop now clamps the same
-  way.
+  old one's counter and reports thousands of percent. poptop clamps the same
+  way, but in the model rather than in a backend: the ceiling is a claim about
+  what the hardware can deliver, not a fact about `/proc`, and it lived in the
+  Linux collector alone for long enough that nothing said whether macOS did not
+  need it or had merely forgotten it. It is now applied to every backend's
+  output by `Collector::sample`, so a third backend gets it by existing.
 - **Guard the sample interval.** htop carries the comment "period might be 0
   after system sleep" — a real bug someone hit on a laptop, worth knowing about
   before it happens to you.

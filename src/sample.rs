@@ -40,6 +40,17 @@ pub struct MemStat {
 }
 
 impl ProcSample {
+    /// How this process is followed from one sample to the next.
+    ///
+    /// `None` when the platform would not give a start time. A caller with no
+    /// key must not fall back to the pid alone: pids are recycled, and a
+    /// recycled pid is precisely the case that produces a graph made of two
+    /// different programs. Better a process with no history than a history
+    /// belonging to something else.
+    pub fn key(&self) -> Option<(i32, u64)> {
+        Some((self.pid, self.started?))
+    }
+
     /// Whether this is a kernel thread rather than a program.
     ///
     /// Everything under `kthreadd` — `kworker/*`, `ksoftirqd`, `irq/*` — plus
@@ -55,17 +66,6 @@ impl ProcSample {
     /// A Linux notion. On macOS pid 2 is an ordinary process, so one process in
     /// several hundred is wrongly excluded from the IO ratio there — which
     /// changes no decision this figure is used for.
-    /// How this process is followed from one sample to the next.
-    ///
-    /// `None` when the platform would not give a start time. A caller with no
-    /// key must not fall back to the pid alone: pids are recycled, and a
-    /// recycled pid is precisely the case that produces a graph made of two
-    /// different programs. Better a process with no history than a history
-    /// belonging to something else.
-    pub fn key(&self) -> Option<(i32, u64)> {
-        Some((self.pid, self.started?))
-    }
-
     pub fn is_kernel_thread(&self) -> bool {
         self.pid == KTHREADD || self.ppid == KTHREADD
     }
@@ -73,6 +73,31 @@ impl ProcSample {
 
 /// `kthreadd`, the parent of every kernel thread, is always pid 2 on Linux.
 const KTHREADD: i32 = 2;
+
+impl Sample {
+    /// The most CPU any one process on this machine can have used, in percent
+    /// of one core.
+    ///
+    /// A claim about what the hardware can deliver, so it lives with the model
+    /// rather than in a backend: `/proc` has nothing to do with it, and the
+    /// next backend should not have to rediscover it. Applied by
+    /// [`crate::collect::Collector::sample`] to every sample, whoever produced
+    /// it.
+    ///
+    /// It matters because a per-process figure is a delta between two counters,
+    /// and a pid recycled between samples diffs the new process against the old
+    /// one's total — which reads as thousands of percent. htop guards the same
+    /// way. See [`ProcSample::key`] for the identity that makes the recycle
+    /// visible in the first place; this is what keeps the number sane in the
+    /// window before it is.
+    ///
+    /// `None` when the core count is unknown, which is the only honest answer:
+    /// clamping to a ceiling of zero would report every process as idle, and a
+    /// fabricated zero is the one thing this tool must not produce.
+    pub fn cpu_ceiling(&self) -> Option<f32> {
+        (!self.cpu_per_core.is_empty()).then_some(self.cpu_per_core.len() as f32 * 100.0)
+    }
+}
 
 impl MemStat {
     /// Reclaimable cache: counted as available, but not free. `None` wherever
@@ -218,9 +243,6 @@ pub struct Sample {
     /// kernel exposes, and because a cumulative counter survives an uneven
     /// interval without needing to know how long it was.
     pub forks: Option<u64>,
-    /// Whether extended per-process IO was being collected when this sample was
-    /// taken. History predating the column being switched on has this false,
-    /// and says so rather than pretending the machine was idle.
     /// Whether this kernel keeps per-process IO accounting at all.
     ///
     /// `CONFIG_TASK_IO_ACCOUNTING` is optional, and some hardened container
@@ -233,6 +255,9 @@ pub struct Sample {
     /// A different question from `io_denied`, which is about this user rather
     /// than this kernel, and the two want different words on screen.
     pub io_supported: bool,
+    /// Whether extended per-process IO was being collected when this sample was
+    /// taken. History predating the column being switched on has this false,
+    /// and says so rather than pretending the machine was idle.
     pub io_collected: bool,
     /// Processes whose IO file could not be read at all, as opposed to those
     /// merely awaiting a second reading. Only the former is fixed by running as
