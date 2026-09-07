@@ -39,6 +39,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
         pressure: None,
+        net: None,
         iowait: None,
         running: None,
         blocked: None,
@@ -2720,6 +2721,124 @@ fn stall_colouring_follows_the_thresholds_the_user_set() {
         ui::stall_heat_for_test(6.1, &t),
         90.0,
         "a raised threshold moved where stall starts warning"
+    );
+}
+
+/// A sample with one busy interface and the given trouble counters.
+fn with_net(rx: u64, tx: u64, retrans: Option<u64>, drops: Option<u64>) -> Sample {
+    use crate::sample::{Link, NetStat};
+    let mut s = sample(10.0);
+    s.net = Some(NetStat {
+        links: vec![
+            Link {
+                name: std::sync::Arc::from("lo0"),
+                rx: 8,
+                tx: 8,
+                rx_packets: 1,
+                tx_packets: 1,
+            },
+            Link {
+                name: std::sync::Arc::from("en0"),
+                rx,
+                tx,
+                rx_packets: 900,
+                tx_packets: 400,
+            },
+        ],
+        errors: Some(0),
+        drops,
+        retrans,
+        listen_drops: Some(0),
+    });
+    s
+}
+
+#[test]
+fn a_healthy_network_spends_no_header_space_saying_so() {
+    // `NET 0 drops` every second would use the scarcest thing here to say
+    // nothing happened.
+    let mut app = App::new(60);
+    app.push(with_net(1 << 20, 1 << 18, Some(0), Some(0)));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(!f.contains("drops"), "a quiet network announced itself");
+    assert!(!f.contains("retrans"));
+    // But the throughput figure is there, and names the busy interface rather
+    // than the loopback.
+    assert!(f.contains("en0"), "the busy interface was not named");
+}
+
+#[test]
+fn the_worst_thing_that_happened_is_the_one_reported() {
+    // Ordered by how much each narrows the problem down, not by size. A machine
+    // with one retransmit and four hundred errors is telling you about the
+    // cable, but the retransmit is what changes what you do next.
+    use crate::sample::NetStat;
+    let n = |retrans, listen, drops, errors| NetStat {
+        links: Vec::new(),
+        errors,
+        drops,
+        retrans,
+        listen_drops: listen,
+    };
+    assert_eq!(
+        n(Some(1), Some(9), Some(9), Some(400)).trouble(),
+        Some(("retrans", 1))
+    );
+    assert_eq!(
+        n(Some(0), Some(2), Some(9), Some(400)).trouble(),
+        Some(("listen drops", 2))
+    );
+    assert_eq!(
+        n(Some(0), Some(0), Some(3), Some(400)).trouble(),
+        Some(("drops", 3))
+    );
+    assert_eq!(
+        n(Some(0), Some(0), Some(0), Some(400)).trouble(),
+        Some(("errors", 400))
+    );
+    assert_eq!(n(Some(0), Some(0), Some(0), Some(0)).trouble(), None);
+    // A platform that does not count a thing is not a platform where none of it
+    // happened, so `None` is skipped rather than read as zero.
+    assert_eq!(n(None, None, None, Some(5)).trouble(), Some(("errors", 5)));
+}
+
+#[test]
+fn a_retransmitting_network_says_so_loudly() {
+    let mut app = App::new(60);
+    app.push(with_net(1 << 20, 1 << 18, Some(37), Some(0)));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(
+        f.contains("37 retrans"),
+        "retransmits went unreported: {f:?}"
+    );
+}
+
+#[test]
+fn a_platform_that_reads_no_network_draws_no_network_row() {
+    let mut absent = App::new(60);
+    let mut present = App::new(60);
+    for _ in 0..20 {
+        absent.push(sample(10.0));
+        present.push(with_net(1 << 20, 1 << 18, Some(0), Some(0)));
+    }
+    absent.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    present.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let gutter = |app: &App| {
+        rows(app, 200, 48)
+            .iter()
+            .skip_while(|l| !l.contains("── timeline"))
+            .take_while(|l| !l.contains("shown,"))
+            .any(|l| l.contains("NET"))
+    };
+    assert!(
+        !gutter(&absent),
+        "a network graph was drawn with no network"
+    );
+    assert!(
+        gutter(&present),
+        "no network graph when the platform reads one"
     );
 }
 

@@ -6,7 +6,7 @@
 use crate::app::{self, App};
 use crate::glyphs::{self, GlyphSet};
 use crate::history;
-use crate::sample::{IoRates, Sample};
+use crate::sample::{IoRates, Link, NetStat, Sample};
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Cell, Paragraph, Row, Table};
@@ -339,6 +339,26 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         });
     }
 
+    // Something went wrong on the network, and only then. A figure reading
+    // `NET 0 drops` every second would spend header space to say nothing, and
+    // the space is the scarcest thing here.
+    //
+    // Treated like `BLOCKED`: any of these above zero is worth the critical
+    // style, because none of them has a healthy amount. A retransmit is not a
+    // slow packet, it is a packet that did not arrive.
+    if let Some((what, n)) = s.net.as_ref().and_then(NetStat::trouble) {
+        figures.push(Figure {
+            rank: 45,
+            spans: vec![
+                Span::styled("NET ", dim),
+                Span::styled(
+                    format!("{n} {what}"),
+                    app.theme.figure_style(app.theme.critical_pct),
+                ),
+            ],
+        });
+    }
+
     // Uninterruptible sleep. Thirty processes on one hung mount give a load
     // average of thirty on a completely idle box, and this is the only figure
     // that says so — so it is heated on any value at all, not on a threshold.
@@ -393,6 +413,22 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // Nothing says the middle segment is cache except its presence, so a
     // platform that cannot separate cache from free simply has none.
     debug_assert!(has_cache || widths[1] == 0);
+    // Throughput, which is what everyone looks for and what least often
+    // explains a slow machine — so it sits below memory and is given up before
+    // it. The interface is named because a laptop has twenty-odd and only one
+    // of them is carrying anything.
+    if let Some(l) = s.net.as_ref().and_then(NetStat::busiest) {
+        figures.push(Figure {
+            rank: 55,
+            spans: vec![
+                Span::styled(format!("{} ", l.name), dim),
+                Span::styled(format!("{}/s", fmt_bytes(l.rx)), dim),
+                Span::styled(" ", dim),
+                Span::styled(format!("{}/s", fmt_bytes(l.tx)), dim),
+            ],
+        });
+    }
+
     figures.push(Figure {
         rank: 50,
         spans: mem_spans,
@@ -685,6 +721,32 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             window
                 .iter()
                 .map(|s| s.pressure.map_or(0.0, |p| p.worst().1))
+                .collect(),
+        ));
+    }
+
+    // Throughput over time, on a scale of its own: bytes per second against the
+    // busiest second in the window, since there is no meaningful percentage to
+    // plot a network against. Last in the list because it is the one series
+    // here that measures how much happened rather than how much stopped.
+    if app.history.current().is_some_and(|s| s.net.is_some()) {
+        let peak = window
+            .iter()
+            .filter_map(|s| s.net.as_ref()?.busiest())
+            .map(Link::bytes)
+            .max()
+            .unwrap_or(0)
+            .max(1) as f32;
+        candidates.push((
+            "NET",
+            window
+                .iter()
+                .map(|s| {
+                    s.net
+                        .as_ref()
+                        .and_then(NetStat::busiest)
+                        .map_or(0.0, |l| l.bytes() as f32 / peak * 100.0)
+                })
                 .collect(),
         ));
     }
@@ -997,7 +1059,7 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
 /// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
 /// silently rendered as `STAL` for exactly as long as the width was a hand-
 /// maintained number with a comment claiming `WAIT` was the longest.
-const SERIES_NAMES: [&str; 5] = ["CPU", "WAIT", "MEM", "DISK", "STALL"];
+const SERIES_NAMES: [&str; 6] = ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET"];
 
 const fn widest(names: &[&str]) -> usize {
     let (mut max, mut i) = (0, 0);

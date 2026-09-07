@@ -6,12 +6,12 @@
 
 use super::procinfo::{self, Kinfo};
 use super::{Collector, Needs};
-use crate::sample::{IoRates, MemStat, ProcSample, Sample};
+use crate::sample::{IoRates, Link, MemStat, NetStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use sysinfo::{ProcessesToUpdate, System, Users};
+use sysinfo::{Networks, ProcessesToUpdate, System, Users};
 
 /// The fastest sysinfo can be sampled and still report the truth.
 ///
@@ -45,6 +45,9 @@ pub struct SysinfoCollector {
     /// pid -> (start time, name). Same key as the Linux collector, and for the
     /// same reason: a recycled pid must not inherit the dead process's name.
     names: HashMap<i32, (Option<u64>, Arc<str>)>,
+    /// Per-interface counters. sysinfo reports these as deltas since the last
+    /// refresh, so unlike the `/proc` backend there is nothing to diff.
+    nets: Networks,
     /// Start times for processes this user does not own, which sysinfo will not
     /// report. `None` if this kernel's `kinfo_proc` is not the one
     /// [`Kinfo::probe`] recognises, in which case sysinfo's answer is used and
@@ -59,6 +62,7 @@ impl SysinfoCollector {
             sys: System::new_all(),
             users: Users::new_with_refreshed_list(),
             names: HashMap::new(),
+            nets: Networks::new_with_refreshed_list(),
             kinfo: Kinfo::probe(),
         })
     }
@@ -117,6 +121,40 @@ impl Collector for SysinfoCollector {
         // a process that slipped from one source to the other would look like a
         // different process — the exact failure this key exists to prevent.
         let starts = self.kinfo.as_mut().map(|k| k.starts());
+
+        // 418us warm for twenty-seven interfaces, measured — about a tenth of a
+        // sample, which is affordable where the disk equivalent at 12ms was
+        // not.
+        self.nets.refresh(false);
+        let net = NetStat {
+            links: self
+                .nets
+                .iter()
+                // Ever carried a byte. This machine publishes twenty-seven
+                // interfaces and thirteen have; the rest are idle tunnels.
+                .filter(|(_, d)| d.total_received() + d.total_transmitted() > 0)
+                .map(|(name, d)| Link {
+                    name: Arc::from(name.as_str()),
+                    rx: d.received(),
+                    tx: d.transmitted(),
+                    rx_packets: d.packets_received(),
+                    tx_packets: d.packets_transmitted(),
+                })
+                .collect(),
+            errors: Some(
+                self.nets
+                    .values()
+                    .map(|d| d.errors_on_received() + d.errors_on_transmitted())
+                    .sum(),
+            ),
+            // sysinfo counts errors and does not separate out drops, and there
+            // is no TCP counter behind it at all. Three em dashes rather than
+            // three zeroes: this platform does not know, which is not the same
+            // as nothing having gone wrong.
+            drops: None,
+            retrans: None,
+            listen_drops: None,
+        };
 
         let Self {
             sys, users, names, ..
@@ -251,6 +289,7 @@ impl Collector for SysinfoCollector {
             // No equivalent on this platform. Not zero: a machine that never
             // stalls and a machine that cannot say are opposite answers.
             pressure: None,
+            net: Some(net),
         })
     }
 }
@@ -300,6 +339,20 @@ fn cached_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_counters_this_platform_lacks_are_absent_rather_than_zero() {
+        // sysinfo counts errors and does not separate drops, and there is no
+        // TCP counter behind it at all. Three zeroes would claim a perfectly
+        // healthy network on a machine that cannot see one.
+        let mut c = SysinfoCollector::new().unwrap();
+        let s = c.collect(Needs::default()).unwrap();
+        let net = s.net.expect("no network at all");
+        assert_eq!(net.drops, None, "drops were invented");
+        assert_eq!(net.retrans, None, "retransmits were invented");
+        assert_eq!(net.listen_drops, None, "listen drops were invented");
+        assert!(net.errors.is_some(), "errors are available and went unread");
+    }
 
     #[test]
     fn the_absence_of_disk_figures_is_announced_once() {
