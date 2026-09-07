@@ -3042,8 +3042,13 @@ fn the_header_gives_up_its_least_diagnostic_figures_first() {
     app.push(stalled());
     let at = |w: u16| render_lines(&app, w, 24)[1].clone();
 
+    // Load ranks last, so it is the last figure to *appear* as the terminal
+    // widens rather than merely the first to go. That is the intended
+    // consequence of ranking it below the two figures that take it apart.
+    assert!(at(180).contains("LOAD"), "{}", at(180));
     let wide = at(140);
-    assert!(wide.contains("LOAD") && wide.contains("UP "), "{wide}");
+    assert!(wide.contains("UP ") && wide.contains("PROCS"), "{wide}");
+    assert!(!wide.contains("LOAD"), "load outranked uptime: {wide}");
 
     // The discriminating pair: swap outranks the memory byte detail, but is
     // built after it. At a width that fits exactly one, rank has to decide —
@@ -3052,6 +3057,13 @@ fn the_header_gives_up_its_least_diagnostic_figures_first() {
     assert!(
         middle.contains("SWP") && !middle.contains("avail"),
         "figures were kept in build order rather than by rank: {middle}"
+    );
+    // …and the wide memory detail does not block the shorter figures behind
+    // it. Under a prefix rule one fat figure costs everything after it, which
+    // cost a hundred-column terminal two figures that fit twice over.
+    assert!(
+        middle.contains("UP ") && middle.contains("PROCS"),
+        "a 29-column figure blocked two that fit: {middle}"
     );
 
     let narrow = at(60);
@@ -3079,4 +3091,14 @@ fn the_header_gives_up_its_least_diagnostic_figures_first() {
             }
         }
     }
+}
+
+#[test]
+fn the_process_count_survives_in_the_header() {
+    // It was in the header before the ranking, and dropping it was an
+    // unannounced regression — `fit`'s own comment cites it as the reason the
+    // ranking exists at all.
+    let mut app = App::new(60);
+    app.push(stalled());
+    assert!(render_lines(&app, 140, 24)[1].contains("PROCS"));
 }

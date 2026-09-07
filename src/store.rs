@@ -466,9 +466,12 @@ mod tests {
             at: UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789),
             cpu_total: cpu,
             cpu_per_core: vec![1.0, 2.5, 99.0],
-            iowait: None,
-            running: None,
-            blocked: None,
+            // Distinct on purpose. Equal values would let a read that swapped
+            // `running` and `blocked` round-trip cleanly, and the field a user
+            // scrubs back to is the one that says whether the box was stuck.
+            iowait: Some(61.25),
+            running: Some(3),
+            blocked: Some(17),
             mem: MemStat {
                 total: 16 << 30,
                 used: 8 << 30,
@@ -493,6 +496,9 @@ mod tests {
         assert_eq!(a.mem.total, b.mem.total);
         assert_eq!(a.mem.swap_used, b.mem.swap_used);
         assert_eq!(a.load, b.load);
+        assert_eq!(a.iowait, b.iowait);
+        assert_eq!(a.running, b.running);
+        assert_eq!(a.blocked, b.blocked);
         assert_eq!(a.uptime, b.uptime);
         assert_eq!(a.forks, b.forks);
         assert_eq!(a.io_collected, b.io_collected);
@@ -535,9 +541,15 @@ mod tests {
         // restored macOS sample into a claim that nothing was created.
         let mut s = sample_of(1.0, 1);
         s.forks = None;
+        s.iowait = None;
+        s.running = None;
+        s.blocked = None;
         s.procs[0].io = None;
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(back[0].forks, None);
+        assert_eq!(back[0].iowait, None);
+        assert_eq!(back[0].running, None);
+        assert_eq!(back[0].blocked, None);
         assert!(back[0].procs[0].io.is_none());
     }
 

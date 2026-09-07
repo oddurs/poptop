@@ -113,14 +113,14 @@ impl Collector for SysinfoCollector {
             // interval here. `None`, not zero: "I do not know" and "none
             // happened" are opposite answers, and a fabricated zero would
             // quietly promise the table is complete.
-            // macOS exposes no equivalent of these three. `None`, not zero:
-            // "I cannot see this" and "there is none of it" are opposite
+            forks: None,
+            // macOS exposes no equivalent of these three either. `None`, not
+            // zero: "I cannot see this" and "there is none of it" are opposite
             // answers, and a fabricated zero would say the box is never
             // blocked on anything.
             iowait: None,
             running: None,
             blocked: None,
-            forks: None,
             io_collected: needs.io,
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.

@@ -362,12 +362,28 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     let s = collector.sample(needs)?;
 
     outln!(
-        "cpu    {:.1}%  ({} cores)",
+        "cpu     {:.1}%  ({} cores)",
         s.cpu_total,
         s.cpu_per_core.len()
     );
+    // The saturation figures belong here as much as in the header, and
+    // arguably more: `--once` exists to be scripted, and a script that reads
+    // only cpu and mem will read a stalled machine as an idle one. Omitted
+    // rather than zeroed where the platform cannot see them.
+    if let Some(iowait) = s.iowait {
+        outln!("wait    {iowait:.1}%  of wall clock, idle with IO outstanding");
+    }
+    if let Some(running) = s.running {
+        outln!(
+            "run     {running}  runnable, on {} cores",
+            s.cpu_per_core.len()
+        );
+    }
+    if let Some(blocked) = s.blocked {
+        outln!("blocked {blocked}  in uninterruptible sleep");
+    }
     outln!(
-        "mem    {:.1}%  {} / {} used, {} available",
+        "mem     {:.1}%  {} / {} used, {} available",
         s.mem.used_pct(),
         human(s.mem.used),
         human(s.mem.total),
@@ -375,14 +391,14 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     );
     if s.mem.swap_total > 0 {
         outln!(
-            "swap   {:.1}%  {} / {}",
+            "swap    {:.1}%  {} / {}",
             s.mem.swap_pct(),
             human(s.mem.swap_used),
             human(s.mem.swap_total)
         );
     }
-    outln!("load   {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]);
-    outln!("procs  {}", s.procs.len());
+    outln!("load    {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]);
+    outln!("procs   {}", s.procs.len());
     if s.io_denied > 0 {
         outln!(
             "io     {}/{} processes unreadable — run as root to see them",

@@ -28,9 +28,6 @@ PID     USER       CPU%         RSS           S  THR  HISTORY    COMMAND
 1       root       0.1          12.0M         S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ systemd
 
 q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · t tree · i
-test ui_tests::readme_frame ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 247 filtered out; finished in 0.01s
 ```
 
 The gutter names each graph and anchors its scale; the dashed lines are the
@@ -227,7 +224,9 @@ claim the box is never stuck.
 
 The header drops its least diagnostic figures first rather than letting the
 terminal clip whatever is rightmost — rightmost is not least useful. At sixty
-columns you still get all four of the figures above.
+columns you still get all four of the figures above. `--once` reports the same
+three, because a script that reads only cpu and memory reads a stalled machine
+as an idle one.
 
 ## Configuration
 

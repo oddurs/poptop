@@ -292,8 +292,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             Span::styled(format!("{mem_pct:>5.1}%"), app.theme.figure_style(mem_pct)),
         ],
     });
+    // Ranked below uptime and the process count despite being about memory,
+    // which is more diagnostic than either. It is twenty-nine columns wide, and
+    // under a prefix rule one wide figure blocks every shorter one behind it:
+    // at a hundred columns it fit nothing and cost two figures that would have.
     figures.push(Figure {
-        rank: 6,
+        rank: 8,
         spans: vec![Span::styled(
             format!(
                 "({} / {}, {} avail)",
@@ -319,15 +323,22 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     }
 
     figures.push(Figure {
-        rank: 7,
+        rank: 6,
         spans: vec![Span::styled("UP ", dim), Span::raw(fmt_uptime(s.uptime))],
+    });
+    figures.push(Figure {
+        rank: 7,
+        spans: vec![
+            Span::styled("PROCS ", dim),
+            Span::raw(s.procs.len().to_string()),
+        ],
     });
     // Last to survive. Load conflates runnable and blocked into one number,
     // which is exactly the confusion `RUN` and `BLOCKED` exist to undo — and
     // the smoothing it adds is what the timeline is for. Kept for the people
     // who look for it, first to go when the line is tight.
     figures.push(Figure {
-        rank: 8,
+        rank: 9,
         spans: vec![
             Span::styled("LOAD ", dim),
             Span::raw(format!(
