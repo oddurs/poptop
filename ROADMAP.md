@@ -47,7 +47,7 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`#######···` 68% · 13 of 19 done · due 2027-01-01
+`#####·····` 48% · 13 of 27 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
 
@@ -59,6 +59,14 @@ Config file, user themes, documented and safe to depend on.
 - [ ] `0044` A row's identity is split across both ends of it <sup>feature · p2</sup>
 - [ ] `0045` The process title mixes four kinds of statement <sup>bug · p2</sup>
 - [ ] `0046` The cursor readout repeats the header and drops the scale <sup>bug · p3</sup>
+- [ ] `0047` The table is always sorted by CPU, even when CPU is not the problem <sup>feature · p1</sup>
+- [ ] `0048` Every node process looks the same, because the table shows comm <sup>bug · p1</sup>
+- [ ] `0049` Filtering is a substring match, so the useful questions cannot be asked <sup>feature · p2</sup>
+- [ ] `0050` Twelve rows of the same program crowd out everything else <sup>feature · p2</sup>
+- [ ] `0051` Scrubbing loses the process you were watching <sup>bug · p2</sup>
+- [ ] `0052` The per-process history is shown at one percent of its value <sup>feature · p2</sup>
+- [ ] `0053` A throttled machine looks identical to a busy one <sup>feature · p2</sup>
+- [ ] `0054` Kernel threads crowd out the processes anyone is looking for <sup>feature · p3</sup>
 
 ### done
 
