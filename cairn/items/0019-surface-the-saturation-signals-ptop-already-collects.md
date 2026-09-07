@@ -1,6 +1,6 @@
 ---
 id: 19
-title: Surface the saturation signals ptop already collects
+title: Surface the saturation signals poptop already collects
 type: feature
 status: done
 milestone: v0.2
@@ -21,9 +21,9 @@ whether it is in trouble.
 The canonical illustration is thirty processes blocked on one hung NFS mount:
 load average 30 on a box whose CPUs are completely idle. "High load, low CPU"
 is named in every troubleshooting guide as *the* confusing case people hit, and
-ptop currently renders it as a calm graph and an unexplained `LOAD 30.00`.
+poptop currently renders it as a calm graph and an unexplained `LOAD 30.00`.
 
-Worse, ptop already collects the answer and throws it away. `CpuTimes::parse`
+Worse, poptop already collects the answer and throws it away. `CpuTimes::parse`
 correctly counts `iowait` as idle — the doc comment says why — and then keeps
 only `idle` and `total`, so the figure that explains the discrepancy is
 discarded. The same `/proc/stat` read carries `procs_running` and
@@ -45,7 +45,7 @@ is a smoothed version of what `RUN` now says exactly.
 `BLOCKED` is the D-state count: the most direct available answer to "why is
 load high when nothing is running".
 
-None of this costs a syscall. All three come from the `/proc/stat` read ptop
+None of this costs a syscall. All three come from the `/proc/stat` read poptop
 already performs every sample.
 
 macOS has no equivalent for the blocked count, so it reports `None` rather than

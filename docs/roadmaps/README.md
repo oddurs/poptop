@@ -14,7 +14,7 @@
 # Roadmaps
 
 Granular, individually shippable items derived from reading the prior art
-(htop, btop, bottom, zenith, atop, sampler, gping, nvtop) and auditing ptop's
+(htop, btop, bottom, zenith, atop, sampler, gping, nvtop) and auditing poptop's
 UI against data-visualisation practice.
 
 Each item states its evidence, so a future reader can judge whether the
@@ -23,12 +23,12 @@ measurable it carries the measurement.
 
 | File | Theme | Items |
 |---|---|---|
-| [00-positioning.md](00-positioning.md) | Honest claims about what ptop is | X1–X2 |
+| [00-positioning.md](00-positioning.md) | Honest claims about what poptop is | X1–X2 |
 | [01-color-and-accessibility.md](01-color-and-accessibility.md) | Palette, theming, colour-vision safety | C1–C6 |
 | [02-chart-legibility.md](02-chart-legibility.md) | Scale, thresholds, labels, cursor readout | G1–G7 |
 | [03-layout-and-density.md](03-layout-and-density.md) | Reclaiming vertical space | L1–L4 |
 | [04-process-table.md](04-process-table.md) | Scanning the table, per-process history | P1–P3 |
-| [05-data-fidelity.md](05-data-fidelity.md) | The gaps that limit what ptop can answer | D1–D4 |
+| [05-data-fidelity.md](05-data-fidelity.md) | The gaps that limit what poptop can answer | D1–D4 |
 | [06-collection-efficiency.md](06-collection-efficiency.md) | Making the collector cheap enough for faster sampling | E1–E2 |
 
 ## Suggested order

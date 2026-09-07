@@ -46,7 +46,7 @@ not the live one, so it stays correct while scrubbed.
 window, drawn from history rather than from the current sample.
 
 **Why this is the one to build.** Every retained `Sample` carries its complete
-`Vec<ProcSample>`, so ptop can already answer "what has *this process* been
+`Vec<ProcSample>`, so poptop can already answer "what has *this process* been
 doing for the last ten minutes" without collecting anything new. No other
 monitor can:
 

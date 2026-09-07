@@ -1,6 +1,6 @@
-//! ptop — a system monitor you can rewind.
+//! poptop — a system monitor you can rewind.
 //!
-//! Copyright (C) 2026  ptop contributors
+//! Copyright (C) 2026  poptop contributors
 //!
 //! This program is free software: you can redistribute it and/or modify it
 //! under the terms of the GNU General Public License as published by the Free
@@ -30,13 +30,13 @@ use std::io;
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
-ptop — a system monitor you can rewind
+poptop — a system monitor you can rewind
 
 USAGE:
-    ptop            interactive mode
-    ptop --once     print one plain-text sample and exit
-    ptop --bench    time 20 collection passes (development)
-    ptop --check-theme NAME
+    poptop            interactive mode
+    poptop --once     print one plain-text sample and exit
+    poptop --bench    time 20 collection passes (development)
+    poptop --check-theme NAME
                     measure a theme and say whether it is legible
 
     --glyphs=SET    timeline drawing: braille (default), block, or ascii.
@@ -45,18 +45,18 @@ USAGE:
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
     --window=SPAN   history retained, as time not samples (default 10m)
     --store=on|off  keep history across restarts (default off). Written on a
-                    clean exit to $XDG_STATE_HOME/ptop/history and read at
-                    startup. ptop needs nothing running beforehand either way.
+                    clean exit to $XDG_STATE_HOME/poptop/history and read at
+                    startup. poptop needs nothing running beforehand either way.
     --warn=PCT      where 'getting busy' begins (default 50)
     --critical=PCT  where 'in trouble' begins (default 80). Must exceed --warn.
     --theme=NAME    a built-in (safe, classic, auto) or a file in
-                    ~/.config/ptop/themes/NAME.theme. 'safe' replaces green with
+                    ~/.config/poptop/themes/NAME.theme. 'safe' replaces green with
                     cyan: green/yellow separates by only dE 3.7 under simulated
                     protanopia, against a target of 8, and red-green deficiency
                     affects roughly 8% of men. 'classic' restores green/yellow/red.
 
 CONFIG:
-    ~/.config/ptop/ptop.conf, honouring $XDG_CONFIG_HOME. Every setting above
+    ~/.config/poptop/poptop.conf, honouring $XDG_CONFIG_HOME. Every setting above
     is a `key = value` line without the leading dashes:
 
         theme    = classic
@@ -71,11 +71,11 @@ CONFIG:
     Lowest precedence first: built-in default, config file, NO_COLOR, flag —
     so a wrapper script can override a user's file without editing it.
 
-    An unknown key warns, naming the key and the line, and ptop starts anyway.
+    An unknown key warns, naming the key and the line, and poptop starts anyway.
     One typo should not cost you the tool.
 
 THEMES:
-    ~/.config/ptop/themes/NAME.theme, one line per colour. Every line is
+    ~/.config/poptop/themes/NAME.theme, one line per colour. Every line is
     optional — a theme inherits `safe` for anything it does not name:
 
         ok         = #8fbcbb    # hex,
@@ -86,7 +86,7 @@ THEMES:
     text_dim, selection_bg, live. The built-ins ship as files too, so the way
     to learn the format is to copy one.
 
-    `ptop --check-theme NAME` measures one: the separation between every pair
+    `poptop --check-theme NAME` measures one: the separation between every pair
     of meaning-bearing hues under simulated colour vision deficiency, and the
     contrast of everything drawn against the backgrounds it sits on. Only a
     PASS exits zero — a colour written as an ANSI name is a slot your terminal
@@ -111,14 +111,14 @@ KEYS:
                     default where they can be read: `/proc/<pid>/io` needs
                     CAP_SYS_PTRACE for other users' processes, so on a box
                     running its services as root they would be a wall of
-                    dashes, and ptop withdraws them after one sample.
+                    dashes, and poptop withdraws them after one sample.
     /               filter by name or pid
 ";
 
 /// Print a line, stopping the program quietly if the reader has gone away.
 ///
 /// Rust ignores SIGPIPE and turns the resulting write error into a panic, so
-/// `ptop --once | head -1` died with a backtrace. `--once` exists to be
+/// `poptop --once | head -1` died with a backtrace. `--once` exists to be
 /// scriptable, and `| head`, `| grep -m1` and `| less` are how a scriptable
 /// thing gets used — a monitor that panics when you page its output is not one.
 ///
@@ -141,7 +141,7 @@ macro_rules! outln {
 /// waits until the terminal is its own again.
 fn flush(warnings: &[config::Warning]) {
     for w in warnings {
-        eprintln!("ptop: {w}");
+        eprintln!("poptop: {w}");
     }
 }
 
@@ -172,7 +172,7 @@ fn main() -> io::Result<()> {
         // wrong would send the user off to fix the flag and rerun into the
         // same silently-ignored config.
         flush(&warnings);
-        eprintln!("ptop: {}", bad.as_flag());
+        eprintln!("poptop: {}", bad.as_flag());
         std::process::exit(2);
     });
     warnings.extend(file_warnings);
@@ -217,19 +217,19 @@ fn main() -> io::Result<()> {
         Some("--check-theme") => {
             flush(&warnings);
             let Some(name) = args.get(1) else {
-                eprintln!("ptop: --check-theme needs a theme name");
+                eprintln!("poptop: --check-theme needs a theme name");
                 std::process::exit(2);
             };
             return check_theme(name);
         }
         Some("--version" | "-V") => {
             flush(&warnings);
-            outln!("ptop {}", env!("CARGO_PKG_VERSION"));
+            outln!("poptop {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         Some(other) => {
             flush(&warnings);
-            eprintln!("ptop: unrecognised option '{other}'\n\n{USAGE}");
+            eprintln!("poptop: unrecognised option '{other}'\n\n{USAGE}");
             std::process::exit(2);
         }
         None => {}
@@ -241,7 +241,7 @@ fn main() -> io::Result<()> {
     // `--check-theme`'s report of a different one, and on top of its usage
     // errors — a warning about a theme the user is not asking about.
     // A failing theme still loads, with one line saying so. It is the user's
-    // terminal and their choice; ptop's job is to have the number and say it,
+    // terminal and their choice; poptop's job is to have the number and say it,
     // not to refuse — the same principle as rendering `—` rather than a
     // fabricated zero. Only for user themes: a built-in's shortfall is a
     // decision already made and documented, not news.
@@ -343,7 +343,7 @@ fn check_theme(name: &str) -> io::Result<()> {
         match config::resolve_named_theme(name, &config::read_theme, &mut warnings) {
             Ok(pair) => pair,
             Err(why) => {
-                eprintln!("ptop: {why}");
+                eprintln!("poptop: {why}");
                 std::process::exit(2);
             }
         };

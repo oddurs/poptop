@@ -13,7 +13,7 @@
 format = 1
 
 [project]
-name = "ptop"
+name = "poptop"
 description = "A system monitor you can rewind."
 dir = "cairn/items"           # where item files live, relative to this file
 id_width = 4              # 0001, 0002, ...
@@ -21,7 +21,7 @@ default_type = "feature"
 default_status = "backlog"
 # filename_max = 255      # longest filename your filesystem accepts, in bytes;
                           # titles are only shortened as much as this demands
-url = "https://github.com/oddurs/ptop/blob/master"
+url = "https://github.com/oddurs/poptop/blob/master"
 
 # ─── Item types ──────────────────────────────────────────────────────────────
 # `template` seeds the body of new items of that type, so every bug report and

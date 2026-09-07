@@ -2741,9 +2741,9 @@ fn write_builtin_theme_files() {
     for palette in [Palette::Safe, Palette::Classic] {
         let th = Theme::new(palette, Tier::TrueColor);
         let mut out = format!(
-            "# ptop's built-in `{}` palette, as a theme file.\n\
+            "# poptop's built-in `{}` palette, as a theme file.\n\
              #\n\
-             # Copy it to ~/.config/ptop/themes/mine.theme and change what you like.\n\
+             # Copy it to ~/.config/poptop/themes/mine.theme and change what you like.\n\
              # Every line is optional: a theme inherits `safe` for anything it does\n\
              # not name, so overriding two colours is two lines.\n\
              #\n\
@@ -2773,7 +2773,7 @@ fn a_colour_the_terminal_cannot_show_is_reported_not_approximated() {
 
     // Each tier takes what it can show and leaves the rest alone. Quantising
     // instead would destroy the separation the palettes were measured for, and
-    // the sixteen ANSI slots are the user's terminal theme, not ptop's to
+    // the sixteen ANSI slots are the user's terminal theme, not poptop's to
     // approximate into.
     for (tier, want_skipped) in [
         (Tier::TrueColor, vec![]),
@@ -2846,7 +2846,7 @@ fn threaded(pid: i32, started: u64, threads: u32) -> ProcSample {
 #[test]
 fn processes_that_lived_and_died_between_samples_are_counted() {
     // The case the whole item is about: 300 tasks created, none of them still
-    // alive when ptop looked. The table cannot show them; it can refuse to
+    // alive when poptop looked. The table cannot show them; it can refuse to
     // imply they did not happen.
     let a = sample_with(Some(1_000), vec![threaded(1, 0, 1)]);
     let b = sample_with(Some(1_300), vec![threaded(1, 0, 1)]);
@@ -3010,7 +3010,7 @@ fn stalled() -> Sample {
 #[test]
 fn a_stalled_machine_does_not_look_like_an_idle_one() {
     // The case every troubleshooting guide names as the confusing one: high
-    // load, idle CPU. Before this, ptop rendered it as a calm 2% and said
+    // load, idle CPU. Before this, poptop rendered it as a calm 2% and said
     // nothing about why the box was on its knees.
     let mut busy = App::new(60);
     busy.push(sample(2.0));
@@ -3556,7 +3556,7 @@ fn io_columns_withdraw_where_they_would_be_a_wall_of_dashes() {
 
 #[test]
 fn the_probe_does_not_fire_on_an_empty_sample() {
-    // The first sample on a machine ptop cannot read at all would otherwise
+    // The first sample on a machine poptop cannot read at all would otherwise
     // divide by zero, or decide from nothing.
     let mut app = App::new(60);
     let mut empty = sample(5.0);

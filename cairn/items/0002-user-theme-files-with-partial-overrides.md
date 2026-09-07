@@ -13,7 +13,7 @@ area: theme
 
 ## Problem
 
-The palette is compiled in. A user who wants ptop to match their terminal
+The palette is compiled in. A user who wants poptop to match their terminal
 colours has to fork it.
 
 btop ships 41 themes because the format is one file and one line per colour;
@@ -22,9 +22,9 @@ decides whether a theme library exists.
 
 ## Proposal
 
-One file per theme, `key = value`, in `~/.config/ptop/themes/`:
+One file per theme, `key = value`, in `~/.config/poptop/themes/`:
 
-    ~/.config/ptop/themes/nord.theme
+    ~/.config/poptop/themes/nord.theme
 
 The themeable tokens are exactly the ones `C1` already named — `ok`, `warn`,
 `critical`, `series_cpu`, `series_mem`, `chrome`, `text`, `text_dim`,
@@ -39,7 +39,7 @@ way to learn the format is to copy one.
 
 ## Acceptance criteria
 
-- [ ] `--theme=NAME` resolves a built-in first, then `~/.config/ptop/themes/NAME.theme`
+- [ ] `--theme=NAME` resolves a built-in first, then `~/.config/poptop/themes/NAME.theme`
 - [ ] A theme may set any subset of tokens; the rest inherit from `safe`
 - [ ] Hex (`#5ccfe6`), 256-index (`80`) and ANSI names all parse
 - [ ] A malformed value warns with the token and line, and that token falls back

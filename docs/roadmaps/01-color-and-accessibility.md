@@ -1,8 +1,8 @@
 # Colour and accessibility
 
-ptop currently calls `Color::Green`, `Color::Yellow`, `Color::Red` directly from
+poptop currently calls `Color::Green`, `Color::Yellow`, `Color::Red` directly from
 `ui.rs`. Three consequences, in increasing order of severity: the palette cannot
-be changed, ptop does not actually control the hues, and the pair it depends on
+be changed, poptop does not actually control the hues, and the pair it depends on
 most is invisible to the most common form of colour blindness.
 
 ## The measurement
@@ -12,12 +12,12 @@ Run against a dark surface (`#1a1a19`), adjacent-pair separation in OKLab ΔE×1
 
 | Palette | protan ΔE | normal ΔE | contrast |
 |---|---|---|---|
-| ptop today — ANSI green/yellow/red | **3.7** | 16.3 | red 2.98:1 (below 3:1) |
+| poptop today — ANSI green/yellow/red | **3.7** | 16.3 | red 2.98:1 (below 3:1) |
 | btop's muted heat `#77ca9b,#cbc06c,#dc4c4c` | 5.8 | **10.3** | pass |
 | `#5ccfe6,#ffd580,#ff6666` | **16.2** | 22.1 | pass |
 | `#73d0ff,#ffcc66,#f28779` | 14.7 | 18.1 | pass |
 
-ptop's green↔yellow pair is **ΔE 3.7** under protanopia — effectively one colour
+poptop's green↔yellow pair is **ΔE 3.7** under protanopia — effectively one colour
 for roughly 8% of men. btop's muted variant is worse still: at ΔE 10.3 it is
 hard to separate even with full colour vision.
 
@@ -33,7 +33,7 @@ read monotonically: 50% CPU looks more prominent than 100%.
 `chrome`, `label_dim`, `cursor`, `series_cpu`, `series_mem` — threaded through
 `ui.rs`. No `Color::` literal survives outside `theme.rs`.
 
-**Why.** Unblocks every other item here. Also enforces a rule ptop currently
+**Why.** Unblocks every other item here. Also enforces a rule poptop currently
 breaks in passing: text should wear text tokens, never a series colour.
 
 **Acceptance.** `grep -rn 'Color::' src/ui.rs` returns nothing. Rendering is
@@ -51,7 +51,7 @@ byte-identical to today under the default theme (assert with an existing
 and `TERM`; override with `--color=auto|mono|16|256|true`.
 
 **Why.** `Color::Green` is an ANSI-16 slot whose actual hue is chosen by *the
-user's terminal theme*, not by ptop — so none of the measurements above are
+user's terminal theme*, not by poptop — so none of the measurements above are
 guaranteed to hold in practice. Only the 256/truecolor tier gives real control.
 Monochrome is not a courtesy tier: it is the proof that no meaning is carried by
 colour alone, which is the requirement `C3` cannot satisfy on its own.

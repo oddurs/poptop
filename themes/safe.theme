@@ -1,6 +1,6 @@
-# ptop's built-in `safe` palette, as a theme file.
+# poptop's built-in `safe` palette, as a theme file.
 #
-# Copy it to ~/.config/ptop/themes/mine.theme and change what you like.
+# Copy it to ~/.config/poptop/themes/mine.theme and change what you like.
 # Every line is optional: a theme inherits `safe` for anything it does
 # not name, so overriding two colours is two lines.
 #

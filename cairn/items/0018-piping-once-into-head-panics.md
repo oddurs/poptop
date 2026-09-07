@@ -13,7 +13,7 @@ area: cli
 
 ## Problem
 
-    ptop --once | head -5
+    poptop --once | head -5
 
 panics with `failed printing to stdout: Broken pipe`. Rust ignores SIGPIPE by
 default and turns the resulting write error into a panic, so any plain-text
@@ -36,6 +36,6 @@ dependency list where it is.
 
 ## Acceptance criteria
 
-- [ ] `ptop --once | head -1` exits quietly, no panic, no backtrace
-- [ ] `ptop --bench | head -1` likewise
+- [ ] `poptop --once | head -1` exits quietly, no panic, no backtrace
+- [ ] `poptop --bench | head -1` likewise
 - [ ] Full output is unchanged when nothing closes the pipe

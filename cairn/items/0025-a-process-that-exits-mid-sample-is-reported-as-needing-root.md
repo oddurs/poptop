@@ -24,7 +24,7 @@ opposite things, and the kernel already tells them apart:
     /proc/1/io:      PermissionDenied  -- needs CAP_SYS_PTRACE
 
 A process that exits between the directory listing and the read is normal and
-needs nothing from anyone. ptop reports it as one more process that "needs
+needs nothing from anyone. poptop reports it as one more process that "needs
 root", in a count it prints in the panel title.
 
 Two consequences beyond the wrong wording:

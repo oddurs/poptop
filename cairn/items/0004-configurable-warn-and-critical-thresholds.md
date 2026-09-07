@@ -22,7 +22,7 @@ numbers already exist as a named pair.
     warn = 50
     critical = 80
 
-in `ptop.conf`. They are already a single pair of constants, so the plumbing is
+in `poptop.conf`. They are already a single pair of constants, so the plumbing is
 small — but three places read them and all must follow:
 
 - the timeline's threshold rules (`G1`)

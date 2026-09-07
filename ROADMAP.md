@@ -39,7 +39,7 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 - [x] `0007` Intern process names <sup>feature · p1</sup>
 - [x] `0012` Mark sampling gaps in the timeline <sup>feature · p2</sup>
 - [x] `0013` Configurable sample interval and window <sup>feature · p2</sup>
-- [x] `0019` Surface the saturation signals ptop already collects <sup>feature · p0</sup>
+- [x] `0019` Surface the saturation signals poptop already collects <sup>feature · p0</sup>
 - [x] `0020` Graph what the machine is waiting on, not what it has used <sup>feature · p0</sup>
 - [x] `0021` Show memory as a composition bar rather than a percentage <sup>feature · p1</sup>
 - [x] `0022` Show disk IO in the default process table <sup>feature · p1</sup>
@@ -58,7 +58,7 @@ Config file, user themes, documented and safe to depend on.
 
 ### done
 
-- [x] `0001` Config file at ~/.config/ptop/ptop.conf <sup>feature · p2</sup>
+- [x] `0001` Config file at ~/.config/poptop/poptop.conf <sup>feature · p2</sup>
 - [x] `0002` User theme files with partial overrides <sup>feature · p2</sup>
 - [x] `0003` Validate user themes and say why one fails <sup>feature · p1</sup>
 - [x] `0004` Configurable warn and critical thresholds <sup>feature · p3</sup>

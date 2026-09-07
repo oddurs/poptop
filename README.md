@@ -1,14 +1,14 @@
-# ptop
+# poptop
 
 A system monitor you can rewind, with nothing to set up first.
 
-ptop keeps every sample it takes — including the full process table — so you can
+poptop keeps every sample it takes — including the full process table — so you can
 scrub backwards and ask what was eating the box forty seconds ago. It starts
 with an empty buffer and fills it as it runs: no daemon, no config, no logfiles,
 nothing that had to be running before you noticed the problem.
 
 ```
- ptop — PAUSED  -18s · warn 50 · crit 80
+ poptop — PAUSED  -18s · warn 50 · crit 80
 CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒▒░░░░░
   4 cores ▇▄▁█
 ── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
@@ -20,7 +20,7 @@ WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤
    0 ⣿⣿⣿⣿⣿⣿⣷⣤⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⣀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣄⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣤⣾⣿⣿⣿⣿
                                               CPU 89.2%  WAIT 26.7% ▐
 2m25s shown, 1s/slot — ←/→ scrub, +/- zoom
-── processes (4) — sort: CPU ─────────────────────────────────────────────────
+── processes (4) — sort: CPU · io: panel too narrow ──────────────────────────
 PID     USER       CPU%         RSS           S  THR  HISTORY    COMMAND
 824     root       88.4   ███▌  512.0M   ▏    S  1    ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ postgres
 1190    root       12.5   ▌     32.0M         S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ nginx
@@ -38,18 +38,18 @@ the cursor is on, down to which half of a braille cell.
 The process table below the timeline is the real one from the moment under the
 cursor, not an interpolation. Sampling continues while you are scrubbing.
 
-## Prior art, and where ptop actually differs
+## Prior art, and where poptop actually differs
 
-ptop is not the first tool to let you look backwards, and it is not the most
+poptop is not the first tool to let you look backwards, and it is not the most
 capable one.
 
 **[atop](https://www.atoptool.nl/)** has recorded historical per-process data
 for years. It writes compressed daily logfiles, keeps 28 days by default, and
-does one thing ptop cannot: it captures processes that started *and finished*
+does one thing poptop cannot: it captures processes that started *and finished*
 between two samples. If a burst of short-lived processes spiked your machine,
-atop can name them and ptop cannot — see
+atop can name them and poptop cannot — see
 [`docs/roadmaps/05-data-fidelity.md`](docs/roadmaps/05-data-fidelity.md).
-ptop will at least tell you they happened (below), but a count is not a list.
+poptop will at least tell you they happened (below), but a count is not a list.
 On raw capability atop is the better tool.
 
 **[zenith](https://github.com/bvaisvil/zenith)** has zoomable scroll-back charts
@@ -61,12 +61,12 @@ the charts but not the table.
 **htop, btop and bottom** keep no history at all. They render the current
 instant.
 
-What ptop offers is narrower than "nobody else does this", and it is a usability
+What poptop offers is narrower than "nobody else does this", and it is a usability
 claim rather than a capability one:
 
 - **Nothing has to have been running.** atop can only replay what its daemon
   already recorded. The common case — you connect to a machine that is slow
-  *now* — is the case where that daemon was not running. ptop gives you the last
+  *now* — is the case where that daemon was not running. poptop gives you the last
   ten minutes from a cold start.
 - **One view, live and historical.** Scrubbing happens inside the running
   monitor, not in a separate replay mode against a logfile.
@@ -75,9 +75,9 @@ claim rather than a capability one:
 
 If you are running a fleet and want history you can rely on after the fact,
 install atop. If you want to know what this box is doing right now and what it
-was doing a few minutes ago, that is what ptop is for.
+was doing a few minutes ago, that is what poptop is for.
 
-|                                        | ptop | htop | btop | bottom | zenith | atop |
+|                                        | poptop | htop | btop | bottom | zenith | atop |
 | -------------------------------------- | :--: | :--: | :--: | :----: | :----: | :--: |
 | Live view                              |  ●   |  ●   |  ●   |   ●    |   ●    |  ●   |
 | Rolling graph of recent values         |  ●   |  ◐¹  |  ●   |   ●    |   ●    |  ○   |
@@ -94,14 +94,14 @@ was doing a few minutes ago, that is what ptop is for.
    history, and it is per-meter rather than per-process.
 2. bottom can freeze the display (`f`), but freezing gates the update
    (`if !app.data_store.is_frozen()`, `lib.rs`) rather than letting you look
-   backwards. ptop keeps sampling while you scrub.
+   backwards. poptop keeps sampling while you scrub.
 3. atop steps through intervals when replaying a logfile (`atop -r`), which is
    a separate mode rather than the live view.
 4. zenith's `HistogramKind` holds only aggregate series; its process table
    renders from a live map that runs
    `.retain(|&k, _| current_pids.contains(&k))`.
 5. atop's history requires its daemon to have been recording in advance. This
-   row is the whole of ptop's argument.
+   row is the whole of poptop's argument.
 
 Every cell above was checked against the tool's source or official
 documentation rather than from memory; the footnotes name where.
@@ -110,7 +110,7 @@ documentation rather than from memory; the footnotes name where.
 
 ```sh
 cargo build --release
-./target/release/ptop
+./target/release/poptop
 ```
 
 ## Keys
@@ -128,8 +128,8 @@ cargo build --release
 | `i` | toggle per-process disk IO columns |
 | `/` | filter by name or pid |
 
-`ptop --once` prints a single plain-text sample and exits, for scripts and cron.
-`ptop --bench` times 20 collection passes, for checking the cost of a change.
+`poptop --once` prints a single plain-text sample and exits, for scripts and cron.
+`poptop --bench` times 20 collection passes, for checking the cost of a change.
 
 `--color=auto|mono|16|256|true` picks the colour tier. Detected from
 `COLORTERM` and `TERM`, and `NO_COLOR` is honoured. Each tier stands on its own:
@@ -141,7 +141,7 @@ without it.
 replaces green with cyan.** Green-and-yellow is the worst available pair for
 red-green colour vision deficiency, which affects roughly 8% of men, and every
 system monitor ships it: measured in OKLab ΔE×100 under Machado 2009 simulation
-against a dark surface, ptop's old green↔yellow separated by **3.7** under
+against a dark surface, poptop's old green↔yellow separated by **3.7** under
 protanopia, against a target of 8. The shipped palette's worst pair among its
 five meaning-bearing hues is **10.3**. `--theme=classic` restores
 green/yellow/red for anyone who wants the convention back.
@@ -172,7 +172,7 @@ at full zoom is real time from before the buffer starts.
 
 A laptop that sleeps, or a box loaded enough to miss its tick, leaves samples
 minutes apart. Drawn as adjacent cells those claim to be one second apart, and
-the x-axis quietly stops meaning anything. ptop draws a `┊` seam wherever at least
+the x-axis quietly stops meaning anything. poptop draws a `┊` seam wherever at least
 one interval went unobserved, full height and in chrome so it cannot be read as
 a bar:
 
@@ -205,7 +205,7 @@ accounting entirely — `kworker/*` and friends are root-owned and unreadable,
 and on a many-core box they outnumber the real processes, so counting them
 would withdraw the columns on exactly the laptop this protects. On a laptop almost every process is
 yours; on a box running its services as root while you are not, the columns
-would be a wall of em dashes. So ptop **probes** — it collects one real sample,
+would be a wall of em dashes. So poptop **probes** — it collects one real sample,
 and if more than half of it came back unreadable it withdraws the columns and
 stops collecting for them. That is a question nothing short of trying can
 answer, and half a millisecond a sample is not worth paying for a column nobody
@@ -234,7 +234,7 @@ load average of thirty on a box whose CPUs are completely idle.
 
 - **WAIT** is the share of the interval the CPU spent idle *with I/O
   outstanding*. It is deliberately not counted in `CPU`, because the CPU
-  genuinely had nothing to run — but leaving it at that would make ptop right
+  genuinely had nothing to run — but leaving it at that would make poptop right
   about the CPU being quiet and silent about the reason.
 - **RUN** is runnable tasks against cores. A bare count is not a fact anyone can
   act on: four is catastrophic on one core and idle on ninety-six.
@@ -256,7 +256,7 @@ exactly rather than smoothed — and the smoothing a load average adds is what
 the timeline is for. `LOAD` is still there, and is the first figure dropped
 when the line is tight.
 
-All three come from the `/proc/stat` read ptop already performs every sample,
+All three come from the `/proc/stat` read poptop already performs every sample,
 so they cost nothing: 1.05 ms per sample at 402 processes, unchanged. macOS
 publishes no equivalent and shows none of them, rather than a zero that would
 claim the box is never stuck.
@@ -269,11 +269,11 @@ as an idle one.
 
 ## Configuration
 
-`~/.config/ptop/ptop.conf`, honouring `$XDG_CONFIG_HOME`. Every flag is a
+`~/.config/poptop/poptop.conf`, honouring `$XDG_CONFIG_HOME`. Every flag is a
 `key = value` line without the leading dashes:
 
 ```ini
-# ~/.config/ptop/ptop.conf
+# ~/.config/poptop/poptop.conf
 theme    = classic
 glyphs   = block    # comments run to the end of the line
 color    = 256
@@ -308,11 +308,11 @@ flag always wins, so a wrapper script can override a user's file without
 editing it; `NO_COLOR` outranks the file because the file records a preference
 in general and the environment is saying something about this terminal now.
 
-**An unknown key warns and ptop starts anyway**, naming the key and the line —
+**An unknown key warns and poptop starts anyway**, naming the key and the line —
 and guessing what you meant:
 
 ```
-ptop: ~/.config/ptop/ptop.conf:6: unknown key `colour` (did you mean `color`?)
+poptop: ~/.config/poptop/poptop.conf:6: unknown key `colour` (did you mean `color`?)
 ```
 
 A bad line in the file warns; a bad flag is fatal. The asymmetry is deliberate:
@@ -320,7 +320,7 @@ a config file is written once and read every run, so one typo must not cost you
 the tool, but a flag was typed for *this* run and quietly ignoring it would do
 something other than what was asked.
 
-Hand-rolled `key = value`, not TOML. ptop's config surface is genuinely flat,
+Hand-rolled `key = value`, not TOML. poptop's config surface is genuinely flat,
 and `serde` + `toml` would be the largest dependency in the project by an order
 of magnitude — in a codebase whose `/proc` parser is deliberately hand-rolled
 with no dependencies at all. htop and btop both use `key = value` and neither
@@ -338,15 +338,15 @@ Off by default, and that is load-bearing rather than cautious:
 store = on
 ```
 
-ptop's whole position against atop is that **nothing has to have been running
+poptop's whole position against atop is that **nothing has to have been running
 beforehand** — you can install it during an incident and immediately scrub back
 through the last ten minutes, because the buffer fills from the moment it
 starts. A tool that needs a recorder primed in advance is a different tool, and
 it is the one atop already is and does better. So this is a convenience for a
 machine you sit in front of often, never the path that argument rests on. With
-`store = off` — the default — ptop reads and writes nothing.
+`store = off` — the default — poptop reads and writes nothing.
 
-Written on a **clean exit** to `$XDG_STATE_HOME/ptop/history`, and read at
+Written on a **clean exit** to `$XDG_STATE_HOME/poptop/history`, and read at
 startup. Deliberately not a daemon and not a periodic flush: a background
 writer is exactly the thing that turns a live tool into a recorder. The cost is
 that `kill -9` loses the buffer, which is the right way round for a feature
@@ -364,34 +364,34 @@ the same reason they are `Arc<str>` in memory. A full store of 600 samples at
 400 processes is **14 MB, and costs about 145 ms to read at startup**. The file
 is capped independently of the buffer's own bound, dropping the *oldest*
 samples to fit: the newest are the ones most likely to explain whatever made
-you open ptop.
+you open poptop.
 
 A restored buffer needs no special handling to be honest about the join: the
 timeline already draws its seam across the gap and the caption already reads
 real time.
 
 **Samples from a previous boot are discarded**, and that is not tidiness. A
-process is identified throughout ptop by `(pid, started)`, and `started` counts
+process is identified throughout poptop by `(pid, started)`, and `started` counts
 clock ticks *since boot* — so it means something only within one boot. Early
 processes land on near-identical start times every boot, so a live pid 1 would
 match a restored pid 1 and its `HISTORY` column would render the previous
-boot's CPU as this process's own. ptop compares `at - uptime`, which every
+boot's CPU as this process's own. poptop compares `at - uptime`, which every
 sample already carries on both platforms, and says how many samples it dropped
 and why.
 
-Two ptop windows with `store = on` are fine — each writes through its own
+Two poptop windows with `store = on` are fine — each writes through its own
 temporary file — but the second to exit replaces the first's history rather
 than merging it. Merging two buffers is a different feature.
 
 ### What the table cannot show
 
-ptop reads `/proc` at an instant, so **a process that lived 200ms never existed
+poptop reads `/proc` at an instant, so **a process that lived 200ms never existed
 as far as the table is concerned.** That is not an edge case here: a burst of
 short-lived processes is one of the commonest causes of exactly the spike you
 scrubbed back to find, so the table can end up sitting under a graph it cannot
 explain.
 
-ptop cannot show you those processes. What it can do is stop implying they did
+poptop cannot show you those processes. What it can do is stop implying they did
 not happen:
 
 ```text
@@ -400,7 +400,7 @@ not happen:
 
 `/proc/stat` publishes how many tasks the kernel has created since boot, so the
 difference between two samples is exactly how many were created in between.
-Subtract the ones still alive when ptop looked, and the remainder is what came
+Subtract the ones still alive when poptop looked, and the remainder is what came
 and went unseen. Naming that number is the same principle as rendering `—`
 rather than a fabricated zero: an absence stated is not an absence hidden.
 
@@ -419,7 +419,7 @@ one second the table is describing would be worse than saying nothing. The
 timeline already draws a seam there, and both read the same definition of
 whether two samples are adjacent.
 
-macOS publishes no equivalent counter, so ptop says nothing there rather than
+macOS publishes no equivalent counter, so poptop says nothing there rather than
 zero. "I do not know" and "none happened" are opposite answers.
 
 **Actually capturing those processes** needs `taskstats` over netlink, which
@@ -429,10 +429,10 @@ capability gap against atop.
 ### Themes
 
 The palette is compiled in, but it is not the only one you can have. A theme is
-one file, one line per colour, in `~/.config/ptop/themes/NAME.theme`:
+one file, one line per colour, in `~/.config/poptop/themes/NAME.theme`:
 
 ```ini
-# ~/.config/ptop/themes/nord.theme
+# ~/.config/poptop/themes/nord.theme
 ok         = #8fbcbb    # hex,
 series_cpu = 67         # a 256-colour index,
 chrome     = darkgray   # or an ANSI name
@@ -462,22 +462,22 @@ approximated.** Hex needs a true-colour terminal, an index needs 256 colours, a
 name works anywhere, and monochrome ignores all of them:
 
 ```
-ptop: theme `nord`: this terminal is Ansi16 and cannot show ok, series_cpu;
+poptop: theme `nord`: this terminal is Ansi16 and cannot show ok, series_cpu;
       keeping ok = cyan, series_cpu = lightblue
 ```
 
 Squeezing 24-bit hex into sixteen slots would destroy exactly the separation
 the palettes were measured for — and those sixteen slots belong to your
-terminal theme, not to ptop.
+terminal theme, not to poptop.
 
 ### Measuring a theme
 
-ptop is the only monitor that measures its own palette, and the moment you can
+poptop is the only monitor that measures its own palette, and the moment you can
 supply your own that guarantee evaporates — unless the validator is turned
 outward. So it is:
 
 ```
-$ ptop --check-theme muddy
+$ poptop --check-theme muddy
 muddy: FAIL
   ok          ↔ warn        ΔE   0.1  tritan    below the target of 8
   ok          ↔ critical    ΔE  54.2  deutan
@@ -493,15 +493,15 @@ theme can arrive with a measurement rather than a screenshot.**
 
 **There is a third outcome, and it is not a pass.** An ANSI name or an index
 below 16 is a *slot* — what it looks like belongs to your terminal theme, not
-to ptop — so there is genuinely no hue to measure:
+to poptop — so there is genuinely no hue to measure:
 
 ```
-$ ptop --check-theme ansi
+$ poptop --check-theme ansi
 ansi: INCOMPLETE
   ...
   not measured: ok, warn, critical. An ANSI name or an index below 16 is a
   slot, and what it looks like belongs to your terminal theme rather than to
-  ptop — there is no hue here to measure. Spell these as `#rrggbb` or a
+  poptop — there is no hue here to measure. Spell these as `#rrggbb` or a
   256-colour index to have them checked.
 ```
 
@@ -519,7 +519,7 @@ legible, which is a property of the colours it names rather than of the
 terminal running the check.
 
 **This is the same instrument CI uses.** The palette tests assert through
-`check::Report` rather than a second copy of the arithmetic, so ptop's own
+`check::Report` rather than a second copy of the arithmetic, so poptop's own
 check and yours cannot come to disagree about the same colours.
 
 Separation is asked only of the colours that must be told apart. Legibility is
@@ -535,11 +535,11 @@ to ignore it.
 **A failing theme still loads**, with one line saying why:
 
 ```
-ptop: theme `muddy`: ok and warn are only ΔE 0.1 apart (tritan), critical is
-      1.09:1 on the surface — run `ptop --check-theme muddy` for the rest
+poptop: theme `muddy`: ok and warn are only ΔE 0.1 apart (tritan), critical is
+      1.09:1 on the surface — run `poptop --check-theme muddy` for the rest
 ```
 
-It is your terminal and your choice; ptop's job is to have the number and say
+It is your terminal and your choice; poptop's job is to have the number and say
 it, not to refuse — the same principle as rendering `—` rather than a
 fabricated zero.
 
@@ -607,11 +607,11 @@ intervals — so the real figures are a few kilobytes above these)
 the structs)
 
 A day of history at one sample a second and ten minutes at sixty a second are
-the same buffer, so ptop bounds the **product** — the sample count — rather
+the same buffer, so poptop bounds the **product** — the sample count — rather
 than either setting, and says what the buffer would cost when it refuses:
 
 ```
-ptop: `window` 86400s at `interval` 500ms is 172801 samples, above the limit
+poptop: `window` 86400s at `interval` 500ms is 172801 samples, above the limit
       of 86401; every sample retains a whole process table, which is about
       6663 MB on a 400-process box
 ```
@@ -626,7 +626,7 @@ The page size is read from `/proc/self/auxv` at startup rather than assumed.
 RSS is a count of pages multiplied by it, so a hardcoded 4096 reports every
 process at a quarter of its real memory on a 16 KiB-page kernel and a sixteenth
 on a 64 KiB one — Asahi and RHEL aarch64 respectively — and nothing about the
-output looks wrong. Where the kernel will not say, ptop assumes 4096 and says
+output looks wrong. Where the kernel will not say, poptop assumes 4096 and says
 that it did.
 
 Two backends behind one `Collector` trait:
@@ -659,19 +659,19 @@ them:
 - **Cache what doesn't change.** htop reads a process's cmdline and start time
   once per process *lifetime*, not once per sample, and gets the uid from a
   single `fstat` on the `/proc/<pid>` directory rather than parsing
-  `/proc/<pid>/status`. ptop originally parsed that file for every process every
+  `/proc/<pid>/status`. poptop originally parsed that file for every process every
   second: at 400 processes that was 58% of total collection time. Switching to
   `fstat` took a sample from 3.19ms to 1.41ms.
 - **Clamp CPU percentages.** htop does `MINIMUM(percent_cpu, activeCPUs * 100)`.
   Without it, a pid reused between two samples diffs the new process against the
-  old one's counter and reports thousands of percent. ptop now clamps the same
+  old one's counter and reports thousands of percent. poptop now clamps the same
   way.
 - **Guard the sample interval.** htop carries the comment "period might be 0
   after system sleep" — a real bug someone hit on a laptop, worth knowing about
   before it happens to you.
 - **Only collect what is displayed.** htop gates expensive reads behind
   `PROCESS_FLAG_*` bits derived from the visible columns, so turning off a
-  column stops the syscalls behind it. ptop collects everything unconditionally;
+  column stops the syscalls behind it. poptop collects everything unconditionally;
   this is the right shape to adopt before adding per-process IO and network.
 - **Spread expensive work across samples.** For costly `/proc/<pid>/maps`
   parsing htop re-checks each process on a randomised interval rather than doing
@@ -692,7 +692,7 @@ column being visible, and it is not cheap: at 400 processes a sample costs
 
 **Gated collection conflicts with rewindable history** in a way htop never has
 to face — enable IO at t=300 and the first 300 samples have nothing to show when
-you scrub back into them. ptop resolves this by making collection a *ratchet*:
+you scrub back into them. poptop resolves this by making collection a *ratchet*:
 showing the columns starts collection, hiding them does not stop it. Toggling
 would otherwise punch holes wherever the column happened to be off, and one
 clean boundary is far easier to reason about while scrubbing than several.

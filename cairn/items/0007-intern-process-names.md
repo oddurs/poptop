@@ -20,7 +20,7 @@ retained, 3.8 MB**, for strings that essentially never change.
 `user` is already interned as `Arc<str>` — the fix that made the uid lookup
 2.26× faster. `name` never got the same treatment. htop reads `comm`/`cmdline`
 once per process *lifetime* (`!preExisting`); btop gates the same reads on
-`no_cache`. ptop has no such gate.
+`no_cache`. poptop has no such gate.
 
 ## Proposal
 

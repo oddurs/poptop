@@ -1,6 +1,6 @@
 //! Fixed-capacity ring buffer of samples, plus the cursor that walks it.
 //!
-//! This is the heart of ptop. A conventional monitor renders the latest
+//! This is the heart of poptop. A conventional monitor renders the latest
 //! snapshot and throws it away; here every sample is retained for the length of
 //! the window, and the UI renders whatever the cursor points at. "Live" is just
 //! the cursor sitting on the newest sample.
@@ -213,7 +213,7 @@ pub fn peak_slots(values: &[f32], zoom: usize, slots: usize) -> Vec<Option<f32>>
 
 /// How much of an interval's task churn the process table can account for.
 ///
-/// ptop reads `/proc` at an instant, so a process that lived 200ms never
+/// poptop reads `/proc` at an instant, so a process that lived 200ms never
 /// existed as far as the table is concerned. That is not an edge case for this
 /// tool: a burst of short-lived processes is one of the commonest causes of
 /// exactly the spike you scrubbed back to find, so the table can end up unable
@@ -231,7 +231,7 @@ pub struct Churn {
 }
 
 impl Churn {
-    /// Tasks that were created and had already exited by the time ptop looked.
+    /// Tasks that were created and had already exited by the time poptop looked.
     ///
     /// **Tasks, not processes**, and the distinction is not pedantry: a
     /// surviving process that recycles worker threads creates and destroys

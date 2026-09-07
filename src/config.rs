@@ -1,6 +1,6 @@
 //! `key = value` configuration.
 //!
-//! Hand-rolled rather than TOML. ptop's config surface is genuinely flat, and
+//! Hand-rolled rather than TOML. poptop's config surface is genuinely flat, and
 //! `serde` + `toml` would be the largest dependency in the project by an order
 //! of magnitude — in a codebase whose `/proc` parser is deliberately hand-rolled
 //! with no dependencies at all. htop and btop both use `key = value` and neither
@@ -25,7 +25,7 @@ use std::time::Duration;
 pub struct Settings {
     pub glyphs: GlyphSet,
     pub tier: Tier,
-    /// The theme asked for: a built-in, or a file in `~/.config/ptop/themes`.
+    /// The theme asked for: a built-in, or a file in `~/.config/poptop/themes`.
     /// Whether it resolves is settled in [`resolve`], which is where the
     /// loader is — the key table cannot read files.
     pub theme: String,
@@ -52,7 +52,7 @@ pub struct Settings {
     /// Whether to keep history across restarts.
     ///
     /// Off unless asked for, and that is load-bearing rather than cautious.
-    /// ptop's position against atop is that nothing has to have been running
+    /// poptop's position against atop is that nothing has to have been running
     /// beforehand; a tool that needs a recorder primed in advance is the tool
     /// atop already is, and better.
     pub store: bool,
@@ -219,7 +219,7 @@ pub const KEYS: &[(&str, Apply)] = &[
     }),
 ];
 
-/// A percentage, which is what every threshold in ptop is.
+/// A percentage, which is what every threshold in poptop is.
 ///
 /// Rejecting the out-of-range value rather than clamping it: `warn = 150` is
 /// someone who has misunderstood the units, and silently turning it into 100
@@ -334,7 +334,7 @@ pub fn apply(settings: &mut Settings, key: &str, value: &str) -> Result<(), Bad>
     }
 }
 
-/// Something ptop could not use, and where it came from.
+/// Something poptop could not use, and where it came from.
 #[derive(Debug)]
 ///
 /// Carried rather than printed at the point of discovery: config is read before
@@ -352,7 +352,7 @@ impl std::fmt::Display for Warning {
 ///
 /// A relative `XDG_CONFIG_HOME` is ignored rather than resolved, as the XDG
 /// spec requires: treating it as relative to the working directory would make
-/// ptop read a different config depending on where it was launched from.
+/// poptop read a different config depending on where it was launched from.
 pub fn path() -> Option<PathBuf> {
     path_from(
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -369,13 +369,13 @@ pub fn path_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBu
         .filter(|p| p.is_absolute())
         .or_else(|| {
             // Relative here is the same hazard, and it happens in stripped-down
-            // containers and under `env -i`: ptop would read a different file
+            // containers and under `env -i`: poptop would read a different file
             // depending on the directory it was launched from.
             home.map(PathBuf::from)
                 .filter(|p| p.is_absolute())
                 .map(|h| h.join(".config"))
         })?;
-    Some(base.join("ptop").join("ptop.conf"))
+    Some(base.join("poptop").join("poptop.conf"))
 }
 
 /// Resolve every source into one set of settings, lowest precedence first:
@@ -562,7 +562,7 @@ pub struct Sources<'a> {
 ///
 /// Built-ins win. A user file called `safe.theme` would otherwise shadow the
 /// palette that everything else in this project is measured against, and
-/// silently — the shadowing would be invisible in every message ptop prints.
+/// silently — the shadowing would be invisible in every message poptop prints.
 pub fn resolve_named_theme(
     name: &str,
     themes: ThemeReader<'_>,
@@ -668,7 +668,7 @@ fn check_thresholds(s: &Settings) -> Result<(), String> {
 
 /// What to blame a cross-key problem on when the file is where it came from.
 fn origin_of(file: &Option<(&str, &str)>) -> String {
-    file.map_or_else(|| "ptop".to_string(), |(origin, _)| origin.to_string())
+    file.map_or_else(|| "poptop".to_string(), |(origin, _)| origin.to_string())
 }
 
 /// Read the user's config file, if there is one.
@@ -676,7 +676,7 @@ fn origin_of(file: &Option<(&str, &str)>) -> String {
 /// A missing file is not an error — the overwhelmingly common case is not
 /// having one — and neither is an unreadable one, which is worth a word rather
 /// than a refusal to start.
-/// Read a named theme from `~/.config/ptop/themes/NAME.theme`.
+/// Read a named theme from `~/.config/poptop/themes/NAME.theme`.
 ///
 /// Beside the config file rather than inside it: a theme is a document people
 /// swap, paste and publish, and a format you can send someone as one file is
@@ -832,7 +832,7 @@ fn closest(key: &str) -> Option<&'static str> {
 /// Two edits, the conventional threshold, rather than a bound that scales with
 /// the candidate's length. Scaling looked reasonable and was far too loose on
 /// short names: `nope` is three edits from `safe` on a four-letter word, and
-/// ptop offered it. A confidently wrong hint is worse than none, and it is
+/// poptop offered it. A confidently wrong hint is worse than none, and it is
 /// worst when the tool sounds sure.
 fn closest_in(key: &str, names: &[&'static str]) -> Option<&'static str> {
     names
@@ -963,7 +963,7 @@ mod tests {
 
     #[test]
     fn a_wild_guess_gets_no_suggestion() {
-        // Three edits on a four-letter word is not a near miss. ptop used to
+        // Three edits on a four-letter word is not a near miss. poptop used to
         // answer `theme = nope` with "did you mean `safe`?" — the name it was
         // about to fall back to anyway.
         assert_eq!(closest_in("nope", &["safe", "classic"]), None);
@@ -1018,9 +1018,9 @@ mod tests {
 
     #[test]
     fn history_is_not_kept_across_restarts_unless_asked_for() {
-        // Acceptance criterion, and the one that matters: ptop's position
+        // Acceptance criterion, and the one that matters: poptop's position
         // against atop is that nothing has to have been running beforehand.
-        // A default that quietly wrote a store would make ptop a small
+        // A default that quietly wrote a store would make poptop a small
         // recorder, which is the tool atop already is and better.
         assert!(!Settings::detect().store, "the store defaults to on");
         assert!(!apply("").0.store);
@@ -1030,16 +1030,16 @@ mod tests {
 
     #[test]
     fn a_relative_xdg_config_home_is_ignored() {
-        // The XDG spec requires it: honouring a relative path would make ptop
+        // The XDG spec requires it: honouring a relative path would make poptop
         // read a different config depending on where it was launched from.
         let os = |s: &str| Some(OsString::from(s));
         assert_eq!(
             path_from(os("relative/path"), os("/home/someone")),
-            Some(PathBuf::from("/home/someone/.config/ptop/ptop.conf"))
+            Some(PathBuf::from("/home/someone/.config/poptop/poptop.conf"))
         );
         assert_eq!(
             path_from(os("/xdg"), os("/home/someone")),
-            Some(PathBuf::from("/xdg/ptop/ptop.conf"))
+            Some(PathBuf::from("/xdg/poptop/poptop.conf"))
         );
         // A relative HOME is the same hazard, and happens under `env -i`.
         assert_eq!(path_from(None, os("relative")), None);
