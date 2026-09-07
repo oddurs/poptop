@@ -17,22 +17,55 @@ pub struct MemStat {
     /// when they ask "how much RAM is this box using".
     pub used: u64,
     pub available: u64,
-    /// Genuinely unused. `available` minus this is reclaimable cache — memory
-    /// the kernel is holding but will hand back under pressure.
+    /// Genuinely unused, where the platform can say. `available` minus this is
+    /// reclaimable cache — memory the kernel is holding but will hand back
+    /// under pressure.
     ///
     /// The distinction is the whole reason to draw memory as a composition
     /// rather than a percentage: "37% used" reads the same on a box with eight
     /// gigabytes free and on one whose only headroom is page cache it is about
     /// to have to drop.
-    pub free: u64,
+    ///
+    /// `None` on macOS, and that is not laziness. There, `used` and `available`
+    /// come from overlapping `vm_stat` quantities and routinely sum to more
+    /// than the machine has — 20.0G used plus 11.5G available on a 24G box —
+    /// so there is no partition to draw. `free_memory()` is no help either: it
+    /// is `free - speculative` with a saturating subtract, which on any warm
+    /// machine is simply zero. A split derived from those would report "no free
+    /// memory, all headroom is reclaimable cache" on a perfectly healthy box,
+    /// which is the exact alarming misreading this figure exists to prevent.
+    pub free: Option<u64>,
     pub swap_total: u64,
     pub swap_used: u64,
 }
 
 impl MemStat {
-    /// Reclaimable cache: counted as available, but not free.
-    pub fn cache(&self) -> u64 {
-        self.available.saturating_sub(self.free)
+    /// Reclaimable cache: counted as available, but not free. `None` wherever
+    /// [`MemStat::free`] is.
+    pub fn cache(&self) -> Option<u64> {
+        Some(self.available.saturating_sub(self.free?))
+    }
+
+    /// The memory bar's segments — used, cache, free — and whether the middle
+    /// one means anything.
+    ///
+    /// Two parts where the platform cannot separate cache from free, three
+    /// where it can. Both partitions sum to `total`, so the bar and the
+    /// percentage beside it can never disagree.
+    pub fn composition(&self) -> ([u64; 3], bool) {
+        match self.cache() {
+            Some(cache) => (
+                [
+                    self.used,
+                    cache,
+                    self.total.saturating_sub(self.used).saturating_sub(cache),
+                ],
+                true,
+            ),
+            // Used against the rest of the machine. Less to say, but nothing
+            // said that is not known.
+            None => ([self.used, 0, self.total.saturating_sub(self.used)], false),
+        }
     }
 
     pub fn used_pct(&self) -> f32 {

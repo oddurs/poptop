@@ -203,10 +203,6 @@ pub fn micro_bar(frac: f32, width: usize) -> String {
     s
 }
 
-/// Ceilings the y-axis is allowed to take.
-///
-/// A small fixed set rather than the observed peak, so the scale is stable
-/// while scrubbing instead of breathing with every sample.
 /// Three shades that read as an order without any colour at all.
 ///
 /// The composition bar has to work at the mono tier like everything else here,
@@ -222,10 +218,13 @@ pub const SEG_FREE: char = '\u{2591}';
 /// exactly `width` — a bar one column short of its box looks like a rendering
 /// fault, and one column long pushes everything after it sideways.
 ///
-/// Any part that is present at all gets at least one column. A hundred bytes
-/// of cache is not worth a column of its own, but *no* column says the cache
-/// does not exist, and the whole reason to draw this is the difference between
-/// "no headroom" and "headroom the kernel is holding".
+/// A part smaller than half a column gets nothing, and that is deliberate. An
+/// earlier version gave every non-zero part a floor of one column so a sliver
+/// of cache could not vanish; at twelve columns that moved the bar by up to
+/// sixteen percentage points, directly beside the figure stating the real one.
+/// A picture that contradicts the number next to it is worse than a picture
+/// that cannot resolve a third of a percent — and at this width, it genuinely
+/// cannot.
 pub fn composition(parts: [u64; 3], width: usize) -> [usize; 3] {
     let total: u64 = parts.iter().sum();
     if total == 0 || width == 0 {
@@ -238,32 +237,23 @@ pub fn composition(parts: [u64; 3], width: usize) -> [usize; 3] {
     let mut out = [0usize; 3];
     for i in 0..3 {
         out[i] = exact[i] as usize;
-        if parts[i] > 0 && out[i] == 0 {
-            out[i] = 1;
-        }
     }
-    // Hand the leftover columns to the largest remainders, and take columns
-    // back from the largest segments if the minimums overspent.
+    // Hand the leftover columns to the largest remainders.
     let mut assigned: usize = out.iter().sum();
     while assigned < width {
         let i = (0..3)
-            .filter(|&i| parts[i] > 0)
             .max_by(|&a, &b| (exact[a] - out[a] as f64).total_cmp(&(exact[b] - out[b] as f64)))
             .unwrap_or(0);
         out[i] += 1;
         assigned += 1;
     }
-    while assigned > width {
-        let i = (0..3).max_by_key(|&i| out[i]).unwrap_or(0);
-        if out[i] == 0 {
-            break;
-        }
-        out[i] -= 1;
-        assigned -= 1;
-    }
     out
 }
 
+/// Ceilings the y-axis is allowed to take.
+///
+/// A small fixed set rather than the observed peak, so the scale is stable
+/// while scrubbing instead of breathing with every sample.
 const CEILINGS: [f32; 4] = [10.0, 25.0, 50.0, 100.0];
 
 /// The axis ceiling for a given peak.
@@ -515,15 +505,41 @@ mod composition_tests {
     }
 
     #[test]
-    fn a_part_that_exists_is_never_invisible() {
-        // The whole reason to draw a composition is the difference between "no
-        // headroom" and "headroom the kernel is holding", so a sliver of cache
-        // must not round away to nothing.
-        let seg = composition([999_999, 1, 1], 10);
+    fn the_bar_never_contradicts_the_figure_beside_it() {
+        // An earlier version floored every non-zero part at one column so a
+        // sliver of cache could not vanish. At twelve columns that moved the
+        // bar by up to sixteen points, next to a figure stating the real one.
+        for width in [8usize, 12, 20] {
+            for parts in [
+                [999u64, 1, 1],
+                [1, 999, 1],
+                [1, 1, 999],
+                [500, 499, 1],
+                [340, 330, 330],
+            ] {
+                let total: u64 = parts.iter().sum();
+                let seg = composition(parts, width);
+                for i in 0..3 {
+                    let want = parts[i] as f64 / total as f64 * width as f64;
+                    assert!(
+                        (seg[i] as f64 - want).abs() <= 1.0,
+                        "{parts:?} at {width}: segment {i} drew {} columns for {want:.2}",
+                        seg[i]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_part_too_small_to_see_is_not_drawn_as_if_it_were() {
+        // Half a column is the line: below it, a segment would have to be
+        // rounded up past its own size to appear at all.
+        let seg = composition([999_999, 1, 1], 12);
+        assert_eq!(seg, [12, 0, 0], "a third of a percent was given a column");
+        // …and a part that can be resolved still is.
+        let seg = composition([10, 1, 1], 12);
         assert!(seg[1] >= 1 && seg[2] >= 1, "{seg:?}");
-        // …and a part that is genuinely absent gets nothing.
-        let seg = composition([10, 0, 5], 8);
-        assert_eq!(seg[1], 0, "{seg:?}");
     }
 
     #[test]

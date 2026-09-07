@@ -271,12 +271,12 @@ fn write_sample(out: &mut Out, s: &Sample) {
         s.mem.total,
         s.mem.used,
         s.mem.available,
-        s.mem.free,
         s.mem.swap_total,
         s.mem.swap_used,
     ] {
         out.u64(v);
     }
+    out.opt_u64(s.mem.free);
     for v in s.load {
         out.f64(v);
     }
@@ -352,9 +352,9 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         total: r.u64()?,
         used: r.u64()?,
         available: r.u64()?,
-        free: r.u64()?,
         swap_total: r.u64()?,
         swap_used: r.u64()?,
+        free: r.opt_u64()?,
     };
     let load = [r.f64()?, r.f64()?, r.f64()?];
     let iowait = r.opt_f32()?;
@@ -478,7 +478,7 @@ mod tests {
                 total: 16 << 30,
                 used: 8 << 30,
                 available: 8 << 30,
-                free: 5 << 30,
+                free: Some(5 << 30),
                 swap_total: 2 << 30,
                 swap_used: 1 << 30,
             },

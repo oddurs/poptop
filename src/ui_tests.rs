@@ -44,7 +44,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
             total: 16 << 30,
             used: 8 << 30,
             available: 8 << 30,
-            free: 5 << 30,
+            free: Some(5 << 30),
             swap_total: 2 << 30,
             swap_used: 1 << 30,
         },
@@ -3064,8 +3064,12 @@ fn the_header_gives_up_its_least_diagnostic_figures_first() {
     // built after it. At a width that fits exactly one, rank has to decide —
     // without the ranking, insertion order keeps the wrong one.
     let middle = at(100);
+    // `avail` used to be the marker here; the memory bar replaced that text,
+    // which quietly made the negative clause unfalsifiable. The byte detail is
+    // still the lower-ranked half of the pair, so it is still the discriminator
+    // — it just has different words now.
     assert!(
-        middle.contains("SWP") && !middle.contains("avail"),
+        middle.contains("SWP") && !middle.contains(" / 16.0G"),
         "figures were kept in build order rather than by rank: {middle}"
     );
     // …and the ranking holds as a rule rather than at one lucky width: under a
@@ -3377,14 +3381,14 @@ fn memory_is_shown_as_a_composition_not_just_a_level() {
         total: 16 << 30,
         used: 6 << 30,
         available: 10 << 30,
-        free: 10 << 30, // all headroom is genuinely free
+        free: Some(10 << 30), // all headroom is genuinely free
         swap_total: 0,
         swap_used: 0,
     };
     roomy.push(s.clone());
 
     let mut cached = App::new(60);
-    s.mem.free = 1 << 30; // …the same level, but the headroom is cache
+    s.mem.free = Some(1 << 30); // …the same level, but the headroom is cache
     cached.push(s);
 
     let bar = |app: &App| {
@@ -3395,8 +3399,8 @@ fn memory_is_shown_as_a_composition_not_just_a_level() {
     };
     assert_eq!(
         bar(&roomy).chars().count(),
-        8,
-        "the bar is not eight columns"
+        12,
+        "the bar is not twelve columns"
     );
     assert_ne!(
         bar(&roomy),
@@ -3416,7 +3420,7 @@ fn the_memory_bar_separates_by_glyph_so_it_survives_monochrome() {
         total: 16 << 30,
         used: 6 << 30,
         available: 10 << 30,
-        free: 4 << 30,
+        free: Some(4 << 30),
         swap_total: 0,
         swap_used: 0,
     };
@@ -3450,7 +3454,7 @@ fn the_memory_bar_is_always_exactly_its_width() {
             total,
             used,
             available,
-            free: available / 2,
+            free: Some(available / 2),
             swap_total: 0,
             swap_used: 0,
         };
@@ -3459,7 +3463,37 @@ fn the_memory_bar_is_always_exactly_its_width() {
             .chars()
             .filter(|c| "█▒░".contains(*c))
             .count();
-        let want = usize::from(total > 0) * 8;
+        let want = usize::from(total > 0) * 12;
         assert_eq!(n, want, "total={total} used={used} avail={available}");
     }
+}
+
+#[test]
+fn a_platform_that_cannot_partition_memory_draws_two_parts_not_three() {
+    // macOS `used` and `available` come from overlapping vm_stat quantities and
+    // routinely sum to more than the machine has — 20.0G used plus 11.5G
+    // available on a 24G box. There is no cache/free split to draw there, and
+    // deriving one reports "no free memory, all headroom is reclaimable cache"
+    // on a healthy machine: the exact alarming misreading this figure exists to
+    // prevent.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.mem = MemStat {
+        total: 24 << 30,
+        used: 18 << 30,
+        available: 11 << 30,
+        free: None,
+        swap_total: 0,
+        swap_used: 0,
+    };
+    app.push(s);
+    let bar: String = render_lines(&app, 120, 24)[1]
+        .chars()
+        .filter(|c| "█▒░".contains(*c))
+        .collect();
+    assert_eq!(bar.chars().count(), 12);
+    assert!(!bar.contains('▒'), "a cache segment was invented: {bar}");
+    // …and the two parts still agree with the figure beside them: 18/24 is 9
+    // of 12.
+    assert_eq!(bar.chars().filter(|c| *c == '█').count(), 9, "{bar}");
 }

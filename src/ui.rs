@@ -289,29 +289,32 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // in. "37% used" reads identically on a box with eight gigabytes free and
     // on one whose only headroom is page cache it is about to have to drop —
     // and the second is the one worth knowing about.
-    const MEM_BAR_W: usize = 8;
+    // Wide enough that the minimum-visible rule cannot distort it much: at
+    // eight columns a sliver rounded up to a whole column moved the bar by
+    // twelve percentage points, beside a figure stating the real one.
+    const MEM_BAR_W: usize = 12;
+    let (parts, has_cache) = s.mem.composition();
     let mut mem_spans = vec![
         Span::styled("MEM ", dim),
         Span::styled(format!("{mem_pct:>5.1}%"), app.theme.figure_style(mem_pct)),
-        Span::raw(" "),
     ];
-    let free = s
-        .mem
-        .total
-        .saturating_sub(s.mem.used)
-        .saturating_sub(s.mem.cache());
-    for ((glyph, style), n) in [
-        (glyphs::SEG_USED, app.theme.figure_style(mem_pct)),
-        (glyphs::SEG_CACHE, dim),
-        (glyphs::SEG_FREE, app.theme.chrome_style()),
-    ]
-    .into_iter()
-    .zip(glyphs::composition(
-        [s.mem.used, s.mem.cache(), free],
-        MEM_BAR_W,
-    )) {
-        mem_spans.push(Span::styled(glyph.to_string().repeat(n), style));
+    let widths = glyphs::composition(parts, MEM_BAR_W);
+    if widths.iter().any(|&n| n > 0) {
+        mem_spans.push(Span::raw(" "));
+        for ((glyph, style), n) in [
+            (glyphs::SEG_USED, app.theme.figure_style(mem_pct)),
+            (glyphs::SEG_CACHE, dim),
+            (glyphs::SEG_FREE, app.theme.chrome_style()),
+        ]
+        .into_iter()
+        .zip(widths)
+        {
+            mem_spans.push(Span::styled(glyph.to_string().repeat(n), style));
+        }
     }
+    // Nothing says the middle segment is cache except its presence, so a
+    // platform that cannot separate cache from free simply has none.
+    debug_assert!(has_cache || widths[1] == 0);
     figures.push(Figure {
         rank: 4,
         spans: mem_spans,
