@@ -2,7 +2,7 @@
 id: 48
 title: Every node process looks the same, because the table shows comm
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -58,7 +58,7 @@ anything.
 
 ## Acceptance criteria
 
-- [ ] Processes distinguished only by their arguments are distinguishable
-- [ ] Measured: the cost per sample, against the current baseline
-- [ ] An empty `cmdline` falls back to the name rather than showing nothing
-- [ ] The choice of how much to show is written down with its reasoning
+- [x] Processes distinguished only by their arguments are distinguishable
+- [x] Measured: the cost per sample, against the current baseline
+- [x] An empty `cmdline` falls back to the name rather than showing nothing
+- [x] The choice of how much to show is written down with its reasoning
