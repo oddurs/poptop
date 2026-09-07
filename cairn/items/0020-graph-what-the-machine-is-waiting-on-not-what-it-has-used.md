@@ -2,7 +2,7 @@
 id: 20
 title: Graph what the machine is waiting on, not what it has used
 type: feature
-status: backlog
+status: done
 milestone: v0.2
 depends_on:
 - 19

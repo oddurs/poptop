@@ -1261,3 +1261,84 @@ impl Theme {
         (self, skipped)
     }
 }
+
+#[test]
+#[ignore]
+fn find_a_sixth_hue() {
+    // A third timeline series needs a sixth meaning-bearing colour, and every
+    // pair of them has to clear the same target the other five are held to.
+    // Searched rather than chosen: picking a hex by eye is exactly what the
+    // CVD work exists to stop.
+    use crate::check::{MIN_CONTRAST, SURFACE};
+    use crate::cvd::{CVD_TARGET, contrast, to_rgb, worst_cvd};
+    let th = Theme::new(Palette::Safe, Tier::TrueColor);
+    // Text and dim text are in the set too: a series that reads as prose is not
+    // an identity, and the first search returned near-whites that beat the
+    // target on lightness rather than on hue.
+    let existing: Vec<[u8; 3]> = [
+        th.ok,
+        th.warn,
+        th.critical,
+        th.series_cpu,
+        th.series_mem,
+        th.text,
+        th.text_dim,
+    ]
+    .iter()
+    .map(|c| to_rgb(*c).unwrap())
+    .collect();
+    let selected = to_rgb(th.selection_bg).unwrap();
+
+    let mut best: Vec<(f64, [u8; 3])> = Vec::new();
+    for r in (0u16..=255).step_by(17) {
+        for g in (0u16..=255).step_by(17) {
+            for b in (0u16..=255).step_by(17) {
+                let c = [r as u8, g as u8, b as u8];
+                if contrast(c, SURFACE) < MIN_CONTRAST || contrast(c, selected) < MIN_CONTRAST {
+                    continue;
+                }
+                // Reject the greys: a colour with no chroma is text, whatever
+                // its separation figure says.
+                if r.max(g).max(b) - r.min(g).min(b) < 70 {
+                    continue;
+                }
+                let worst = existing
+                    .iter()
+                    .map(|e| worst_cvd(c, *e).0)
+                    .fold(f64::INFINITY, f64::min);
+                if worst >= CVD_TARGET {
+                    best.push((worst, c));
+                }
+            }
+        }
+    }
+    best.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // The answer this returned: 77 candidates clear the target. The best is
+    // `#eeaa00` at dE 10.5, against a palette whose existing worst pair is
+    // 10.3 — so a sixth hue is *available*, and an earlier version of this
+    // comment claimed otherwise. It said every candidate sat in the
+    // warning-orange band or beside `ok`, which the output does not support:
+    // `#9999ff` at dE 9.5 sits beside `series_cpu`.
+    //
+    // What the list does show is that every candidate is adjacent to a hue
+    // already in use — orange between `warn` and `critical`, pale cyan beside
+    // `ok`, periwinkle beside `series_cpu`. None opens a new region, because
+    // the safe palette already avoids green, the pair red-green deficiency
+    // destroys.
+    //
+    // So the reason the timeline reuses a hue is cost against benefit, not
+    // impossibility: another key in every user theme, `--check-theme` going
+    // from ten pairs to fifteen, and a new colour that reads as a near-miss of
+    // an existing one — for a row the gutter already names outright.
+    println!("{} candidates clear dE {CVD_TARGET}", best.len());
+    for (d, c) in best.iter().take(12) {
+        println!(
+            "  #{:02x}{:02x}{:02x}  worst dE {d:.1}  surface {:.2}:1  selected {:.2}:1",
+            c[0],
+            c[1],
+            c[2],
+            contrast(*c, SURFACE),
+            contrast(*c, selected)
+        );
+    }
+}

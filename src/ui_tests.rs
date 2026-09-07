@@ -1035,8 +1035,12 @@ fn a_section_too_short_for_both_ends_carries_no_axis_at_all() {
             .map(str::to_string)
             .collect();
         let graph_rows = (h as usize - 1).saturating_sub(2).max(1);
-        let cpu_rows = (graph_rows * 3 / 5).max(1);
-        let mem_rows = graph_rows - cpu_rows;
+        // Asked of the renderer rather than recomputed. A second copy of the
+        // split is a second thing to keep in step, and it was already wrong
+        // once the series stopped being a fixed pair.
+        let split = ui::sections(graph_rows, 2, ui::GUTTER_W);
+        let cpu_rows = split[0];
+        let mem_rows = split.get(1).copied().unwrap_or(0);
 
         for (name, range, n) in [
             ("cpu", 0..cpu_rows, cpu_rows),
@@ -1971,12 +1975,17 @@ fn present_at(app: &App, w: u16, h: u16) -> Present {
         // Scoped to the timeline's gutter columns. Matching "CPU " anywhere
         // finds the header figures, which are always drawn — a false positive
         // that made the gutter look like it never yielded.
-        axis_anchors: timeline
-            .clone()
-            .any(|y| row(y).chars().next().is_some_and(|c| c.is_ascii_digit())),
+        // Read from the gutter and trimmed, rather than anchored to column
+        // zero: the label is right-aligned inside `GUTTER_W`, so hardcoding
+        // either the width or the alignment breaks the moment the constant
+        // moves — which it did the moment a series was called `WAIT`.
+        axis_anchors: timeline.clone().any(|y| {
+            let g: String = row(y).chars().take(ui::GUTTER_W).collect();
+            g.trim().chars().next().is_some_and(|c| c.is_ascii_digit())
+        }),
         series_labels: timeline.clone().any(|y| {
-            let g: String = row(y).chars().take(4).collect();
-            g.starts_with("CPU") || g.starts_with("MEM")
+            let g: String = row(y).chars().take(ui::GUTTER_W).collect();
+            matches!(g.trim(), "CPU" | "WAIT" | "MEM")
         }),
         legend: all.contains("s/slot"),
         graph: timeline.clone().any(|y| {
@@ -3101,4 +3110,245 @@ fn the_process_count_survives_in_the_header() {
     let mut app = App::new(60);
     app.push(stalled());
     assert!(render_lines(&app, 140, 24)[1].contains("PROCS"));
+}
+
+#[test]
+#[ignore]
+fn show_timeline_heights() {
+    // The timeline gains and loses series with height. Reading it at each is
+    // the only way to see whether the ladder is sane.
+    let mut app = App::new(600);
+    for i in (0..200).rev() {
+        let mut s = sample_at(((200 - i) as f32 * 0.4).sin().abs() * 90.0, i as u64);
+        s.iowait = Some(((200 - i) as f32 * 0.13).sin().abs() * 70.0);
+        s.running = Some(2);
+        s.blocked = Some(9);
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    // The narrow-tall case is in here too: without a gutter the series count
+    // is clamped, so it is a different ladder rather than the same one.
+    for (w, h) in [(64u16, 24u16), (64, 34), (64, 50), (28, 50)] {
+        println!("=== {w}x{h} ===");
+        let rows = ui::timeline_rows_range(h);
+        for line in &render_lines(&app, w, h)[rows.start as usize..rows.end as usize] {
+            println!("{}", line.trim_end());
+        }
+    }
+}
+
+/// A history of a machine that is stalled as well as busy.
+fn stalled_history(app: &mut App, n: u64) {
+    for i in (0..n).rev() {
+        let mut s = sample_at(((n - i) as f32 * 0.4).sin().abs() * 90.0, i);
+        s.iowait = Some(((n - i) as f32 * 0.13).sin().abs() * 70.0);
+        s.running = Some(2);
+        s.blocked = Some(9);
+        app.push(s);
+    }
+}
+
+/// The series names the timeline gutter is currently showing, top to bottom.
+fn timeline_series(app: &App, w: u16, h: u16) -> Vec<String> {
+    let rows = ui::timeline_rows_range(h);
+    render_lines(app, w, h)[rows.start as usize..rows.end as usize]
+        .iter()
+        .map(|l| {
+            l.chars()
+                .take(ui::GUTTER_W)
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .filter(|g| matches!(g.as_str(), "CPU" | "WAIT" | "MEM"))
+        .collect()
+}
+
+#[test]
+fn a_short_terminal_keeps_the_two_series_that_answer_the_question() {
+    // Memory over ten minutes is a flat line or a slow ramp that repeats what
+    // the header says. Waiting is the row that turns a stalled machine from a
+    // mystery into a shape, so it is memory that yields.
+    let mut app = App::new(600);
+    stalled_history(&mut app, 200);
+    assert_eq!(timeline_series(&app, 64, 24), ["CPU", "WAIT"]);
+}
+
+#[test]
+fn a_tall_terminal_gets_memory_back() {
+    let mut app = App::new(600);
+    stalled_history(&mut app, 200);
+    assert_eq!(timeline_series(&app, 64, 50), ["CPU", "WAIT", "MEM"]);
+}
+
+#[test]
+fn a_platform_without_iowait_gives_the_row_back_to_memory() {
+    // macOS publishes no iowait. The graph carries memory rather than an empty
+    // row captioned with a figure the platform cannot produce.
+    let mut app = App::new(600);
+    for i in (0..200).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    let series = timeline_series(&app, 64, 24);
+    assert!(!series.contains(&"WAIT".to_string()), "{series:?}");
+    assert_eq!(series, ["CPU", "MEM"]);
+}
+
+#[test]
+fn every_graph_row_starts_at_the_same_column() {
+    // The whole reason to stack them is to read one against another, and a
+    // gutter that is one column wider on one row makes the same instant sit in
+    // different places. `WAIT` is four characters and the gutter reserved
+    // three, so the format width — a minimum, not a maximum — silently let it
+    // through.
+    let mut app = App::new(600);
+    stalled_history(&mut app, 200);
+    let rows = ui::timeline_rows_range(50);
+    let lines = render_lines(&app, 64, 50);
+    let graph_rows: Vec<&String> = lines[rows.start as usize..rows.end as usize]
+        .iter()
+        .filter(|l| l.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)))
+        .collect();
+    assert!(graph_rows.len() >= 6, "expected a stack of graphs");
+    for line in &graph_rows {
+        let first = line
+            .char_indices()
+            .find(|(_, c)| ('\u{2800}'..='\u{28ff}').contains(c))
+            .map(|(i, _)| line[..i].chars().count());
+        assert_eq!(
+            first,
+            Some(ui::GUTTER_W),
+            "a graph row began at a different column: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn the_legend_names_whichever_series_are_on_screen() {
+    // A fixed "cpu · mem" was wrong the moment the series became a decision.
+    let mut app = App::new(600);
+    stalled_history(&mut app, 200);
+    // Narrow enough that the gutter is dropped, so the legend has to do the
+    // naming instead.
+    let all = render(&app, 28, 24);
+    assert!(
+        all.contains("cpu · wait"),
+        "the legend does not name the rows"
+    );
+    assert!(
+        !all.contains("cpu · mem"),
+        "the legend names a row that is not shown"
+    );
+}
+
+#[test]
+fn the_gutter_is_exactly_its_width_whatever_it_is_given() {
+    // A format width is a *minimum*. `WAIT` is four characters against three
+    // reserved, so it widened its own row and shifted that graph sideways
+    // relative to the ones above it — two graphs whose columns are not the
+    // same instant are worse than one graph. The guard has to hold for a name
+    // nobody has added yet, which is the only reason it is worth having.
+    for name in [None, Some("CPU"), Some("WAIT"), Some("NETWORK")] {
+        for row in 0..4 {
+            let g = ui::axis_label_for_test(row, 4, name);
+            assert_eq!(
+                g.chars().count(),
+                ui::GUTTER_W,
+                "row {row} with {name:?} rendered {g:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_scrub_readout_names_the_rows_that_are_on_screen() {
+    // A terminal has no hover, so the marker *is* the crosshair — and a
+    // crosshair that reports a series the graph is not drawing disagrees with
+    // the thing it points at. It said `MEM` while the graph showed `WAIT`.
+    //
+    // Scoped to the timeline: the header always names memory, and searching
+    // the whole frame finds that instead.
+    let readout = |app: &App, h: u16| {
+        let rows = ui::timeline_rows_range(h);
+        render_lines(app, 90, h)[rows.start as usize..rows.end as usize]
+            .iter()
+            .find(|l| l.contains('%'))
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    let mut app = App::new(600);
+    stalled_history(&mut app, 200);
+    app.history.scrub(-10);
+
+    let short = readout(&app, 24);
+    assert!(
+        short.contains("CPU") && short.contains("WAIT"),
+        "the readout omits a row that is drawn: {short:?}"
+    );
+    assert!(
+        !short.contains("MEM"),
+        "the readout names a row that is not drawn: {short:?}"
+    );
+
+    // …and picks memory up again when the graph does.
+    assert!(readout(&app, 50).contains("MEM"));
+}
+
+#[test]
+fn a_panel_with_no_gutter_does_not_stack_three_unnamed_graphs() {
+    // Without a gutter the legend does the naming, in one flat list the reader
+    // has to map onto the stack by position. Workable for two rows, guesswork
+    // for three — and since the hues alternate, a third graph shares the first
+    // one's colour, so position is the *only* thing telling them apart.
+    let tall = 20;
+    assert_eq!(
+        ui::sections(tall, 3, ui::GUTTER_W).len(),
+        3,
+        "the height is not the constraint being tested"
+    );
+    assert_eq!(
+        ui::sections(tall, 3, 0).len(),
+        2,
+        "three graphs were stacked with only a flat legend to name them"
+    );
+
+    // And it is the clamp, not a floor: two candidates still give two.
+    assert_eq!(ui::sections(tall, 2, 0).len(), 2);
+}
+
+#[test]
+fn the_legend_stops_at_a_phrase_boundary_at_every_width() {
+    // The identification grew from a fixed `cpu · mem` to as much as
+    // `cpu · wait · mem`, which pushed the old two-tier legend past a narrow
+    // panel and let the terminal cut `1s/slot` in half — precisely what
+    // dropping the key hints was supposed to prevent.
+    //
+    // Asserted as "ends where a tier ends" rather than by naming the tiers,
+    // so the property survives the wording changing.
+    let mut app = App::new(600);
+    stalled_history(&mut app, 200);
+    for w in 20..=90u16 {
+        let rows = ui::timeline_rows_range(30);
+        let legend = render_lines(&app, w, 30)[rows.start as usize..rows.end as usize]
+            .iter()
+            .find(|l| l.contains("shown") || l.contains(" · "))
+            .cloned()
+            .unwrap_or_default();
+        let trimmed = legend.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        assert!(
+            trimmed.chars().count() <= w as usize,
+            "the legend overflowed at w={w}: {trimmed:?}"
+        );
+        let ends_well = ["zoom", "/slot", "shown", "cpu", "wait", "mem", "missing"]
+            .iter()
+            .any(|s| trimmed.ends_with(s));
+        assert!(
+            ends_well,
+            "the legend was cut mid-phrase at w={w}: {trimmed:?}"
+        );
+    }
 }
