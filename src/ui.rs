@@ -6,7 +6,7 @@
 use crate::app::{self, App};
 use crate::glyphs::{self, GlyphSet};
 use crate::history;
-use crate::sample::{IoRates, Link, NetStat, Sample};
+use crate::sample::{IoRates, NetStat, Sample};
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Cell, Paragraph, Row, Table};
@@ -725,31 +725,15 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
-    // Throughput over time, on a scale of its own: bytes per second against the
-    // busiest second in the window, since there is no meaningful percentage to
-    // plot a network against. Last in the list because it is the one series
-    // here that measures how much happened rather than how much stopped.
-    if app.history.current().is_some_and(|s| s.net.is_some()) {
-        let peak = window
-            .iter()
-            .filter_map(|s| s.net.as_ref()?.busiest())
-            .map(Link::bytes)
-            .max()
-            .unwrap_or(0)
-            .max(1) as f32;
-        candidates.push((
-            "NET",
-            window
-                .iter()
-                .map(|s| {
-                    s.net
-                        .as_ref()
-                        .and_then(NetStat::busiest)
-                        .map_or(0.0, |l| l.bytes() as f32 / peak * 100.0)
-                })
-                .collect(),
-        ));
-    }
+    // No network row. The timeline draws percentages of a fixed denominator —
+    // it prints `100` at the top, rules the warn and critical thresholds across
+    // the graph, and reads out `NET 100.0%` under the cursor. Bytes per second
+    // has no such denominator, and normalising to the window's own peak makes
+    // the busiest sample 100 by construction: an idle laptop moving 8 B/s of
+    // loopback painted a full-scale graph through the critical rule.
+    //
+    // The header figure carries the number until the timeline can draw a series
+    // with a scale of its own — cairn 0032.
 
     let row_split = sections(graph_rows, candidates.len(), gutter);
     candidates.truncate(row_split.len());
@@ -1059,7 +1043,7 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
 /// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
 /// silently rendered as `STAL` for exactly as long as the width was a hand-
 /// maintained number with a comment claiming `WAIT` was the longest.
-const SERIES_NAMES: [&str; 6] = ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET"];
+const SERIES_NAMES: [&str; 5] = ["CPU", "WAIT", "MEM", "DISK", "STALL"];
 
 const fn widest(names: &[&str]) -> usize {
     let (mut max, mut i) = (0, 0);

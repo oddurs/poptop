@@ -403,71 +403,69 @@ impl ProcFs {
 
         let mut links = Vec::new();
         let mut seen = HashMap::new();
-        let mut totals = NetTotals::default();
+        // Summed from per-interface deltas, not from a whole-machine total
+        // diffed against the last one. An interface that appears mid-session —
+        // a NIC plugged in, a namespace settling — brings its lifetime counters
+        // with it, and a difference of sums would charge all of them to this
+        // second. One that disappears would shrink the sum and swallow a real
+        // interval's errors as zero.
+        let (mut errors, mut drops) = (0u64, 0u64);
+        let mut had_baseline = false;
         for line in dev.lines() {
             let Some((name, rest)) = line.split_once(':') else {
                 continue;
             };
             let name = name.trim();
             let now = parse_link(rest);
-            // Counted before the filter, not after. An interface that is
-            // erroring and passing nothing is the worst case there is, and
-            // skipping its counters along with its row would make exactly that
-            // link invisible.
-            totals.errors += now.rx_errs + now.tx_errs;
-            totals.drops += now.rx_drop + now.tx_drop;
-            if now.rx == 0 && now.tx == 0 {
-                continue;
-            }
             let name: Arc<str> = self
                 .prev_links
                 .keys()
                 .find(|k| ***k == *name)
                 .cloned()
                 .unwrap_or_else(|| Arc::from(name));
-            if let Some(prev) = self.prev_links.get(&name)
-                && secs > 0.0
-            {
-                let d = |a: u64, b: u64| (a.saturating_sub(b) as f64 / secs) as u64;
-                links.push(Link {
-                    name: name.clone(),
-                    rx: d(now.rx, prev.rx),
-                    tx: d(now.tx, prev.tx),
-                    rx_packets: d(now.rx_packets, prev.rx_packets),
-                    tx_packets: d(now.tx_packets, prev.tx_packets),
-                });
+            if let Some(prev) = self.prev_links.get(&name) {
+                had_baseline = true;
+                let d = |a: u64, b: u64| a.saturating_sub(b);
+                errors += d(now.rx_errs, prev.rx_errs) + d(now.tx_errs, prev.tx_errs);
+                drops += d(now.rx_drop, prev.rx_drop) + d(now.tx_drop, prev.tx_drop);
+                // Listed only once it has carried something, the same
+                // measurement the disk table uses — but its errors are counted
+                // either way, because an interface erroring and passing nothing
+                // is the worst case there is.
+                if secs > 0.0 && (now.rx > 0 || now.tx > 0) {
+                    let rate = |a: u64, b: u64| (d(a, b) as f64 / secs) as u64;
+                    links.push(Link {
+                        name: name.clone(),
+                        rx: rate(now.rx, prev.rx),
+                        tx: rate(now.tx, prev.tx),
+                        rx_packets: rate(now.rx_packets, prev.rx_packets),
+                        tx_packets: rate(now.tx_packets, prev.tx_packets),
+                    });
+                }
             }
             seen.insert(name, now);
         }
         self.prev_links = seen;
 
-        totals.retrans = snmp_counter(snmp, "Tcp:", "RetransSegs").unwrap_or(0);
-        totals.listen_drops = snmp_counter(netstat, "TcpExt:", "ListenDrops").unwrap_or(0);
-
+        // Each counter carries its own baseline, so a file that was unreadable
+        // last sample reports nothing this sample rather than everything since
+        // boot. `None` here means the counter was not found — which is not the
+        // same as a counter that found nothing.
+        let totals = NetTotals {
+            retrans: snmp_counter(snmp, "Tcp:", "RetransSegs"),
+            listen_drops: snmp_counter(netstat, "TcpExt:", "ListenDrops"),
+        };
         let prev = self.prev_net.replace(totals);
-        // Counts over the interval, not rates: one dropped packet is worth
-        // saying whether it happened in a second or a minute, and "0.4 drops
-        // per second" is a figure nobody has ever wanted.
-        //
-        // Keyed on having a previous read rather than on elapsed time. Those
-        // coincide on the real path — a first sample has no clock to measure
-        // against either — but a delta needs a baseline, and saying so is what
-        // stops a first read reporting the machine's lifetime totals as one
-        // second's worth.
-        let was = prev.unwrap_or_default();
-        let since = |now: u64, before: u64| prev.map(|_| now.saturating_sub(before));
+        // Both halves must be present: a counter needs a reading now *and* a
+        // reading to subtract from.
+        let since =
+            |now: Option<u64>, was: Option<Option<u64>>| Some(now?.saturating_sub(was.flatten()?));
         NetStat {
             links,
-            errors: since(totals.errors, was.errors),
-            drops: since(totals.drops, was.drops),
-            // And absent files stay absent: a kernel that does not publish
-            // retransmits and one reporting none are opposite answers.
-            retrans: (!snmp.is_empty())
-                .then(|| since(totals.retrans, was.retrans))
-                .flatten(),
-            listen_drops: (!netstat.is_empty())
-                .then(|| since(totals.listen_drops, was.listen_drops))
-                .flatten(),
+            errors: had_baseline.then_some(errors),
+            drops: had_baseline.then_some(drops),
+            retrans: since(totals.retrans, prev.map(|p| p.retrans)),
+            listen_drops: since(totals.listen_drops, prev.map(|p| p.listen_drops)),
         }
     }
 
@@ -924,14 +922,16 @@ struct LinkTimes {
     tx_drop: u64,
 }
 
-/// Whole-stack cumulative counters, summed across interfaces where they are
-/// per-interface.
+/// Whole-stack cumulative counters.
+///
+/// Each is an `Option` in its own right, not a number guarded by one shared
+/// flag: `/proc/net/snmp` can be unreadable on one sample and readable on the
+/// next, and a baseline of zero would then report the machine's lifetime
+/// retransmit count as one interval's worth.
 #[derive(Clone, Copy, Default)]
 struct NetTotals {
-    errors: u64,
-    drops: u64,
-    retrans: u64,
-    listen_drops: u64,
+    retrans: Option<u64>,
+    listen_drops: Option<u64>,
 }
 
 /// One `/proc/net/dev` line's counters, after the `iface:` label.
@@ -1750,6 +1750,80 @@ mod tests {
              {:>7}: 500 5 0 0 0 0 0 0 500 5 0 0 0 0 0 0\n",
             "eth0", "utun0", "lo"
         )
+    }
+
+    #[test]
+    fn a_counter_that_becomes_readable_reports_nothing_not_everything() {
+        // `/proc/net/snmp` can be unreadable on one sample and readable on the
+        // next — a transient failure, or a container namespace settling. With a
+        // shared baseline of zero the next sample reported the machine's
+        // lifetime retransmit count as one interval's worth, in critical red.
+        let mut pf = ProcFs::new().unwrap();
+        let dev = net_dev_fixture(1000, 2000, 0, 0);
+        pf.net_from(&dev, "", "", Duration::from_secs(1));
+        let after = pf.net_from(
+            &dev,
+            "Tcp: RetransSegs\nTcp: 5000000\n",
+            "",
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            after.retrans, None,
+            "a lifetime counter was charged to one second"
+        );
+        // And the sample after that, with a baseline, reports the real delta.
+        let then = pf.net_from(
+            &dev,
+            "Tcp: RetransSegs\nTcp: 5000004\n",
+            "",
+            Duration::from_secs(1),
+        );
+        assert_eq!(then.retrans, Some(4));
+    }
+
+    #[test]
+    fn a_counter_the_kernel_does_not_publish_is_absent_not_zero() {
+        // The file exists and does not carry the counter. Reporting zero would
+        // say "this kernel is retransmitting nothing", which is the confident
+        // lie this module refuses everywhere else.
+        let mut pf = ProcFs::new().unwrap();
+        let dev = net_dev_fixture(1000, 2000, 0, 0);
+        let snmp = "Tcp: RtoAlgorithm InErrs\nTcp: 1 0\n";
+        pf.net_from(&dev, snmp, "", Duration::from_secs(1));
+        let net = pf.net_from(&dev, snmp, "", Duration::from_secs(1));
+        assert_eq!(net.retrans, None, "a missing counter became a zero");
+    }
+
+    #[test]
+    fn an_interface_appearing_mid_session_does_not_dump_its_history() {
+        // A NIC plugged in, or a namespace settling, brings its lifetime
+        // counters with it. Diffing whole-machine sums would charge all of
+        // them to this second; diffing per interface charges none of them,
+        // because there is nothing yet to subtract from.
+        let mut pf = ProcFs::new().unwrap();
+        let one = "eth0: 1000 10 5 5 0 0 0 0 2000 20 0 0 0 0 0 0\n";
+        let two = "eth0: 1000 10 5 5 0 0 0 0 2000 20 0 0 0 0 0 0\n\
+                   eth1: 500 5 900 900 0 0 0 0 500 5 0 0 0 0 0 0\n";
+        pf.net_from(one, "", "", Duration::from_secs(1));
+        let net = pf.net_from(two, "", "", Duration::from_secs(1));
+        assert_eq!(
+            net.errors,
+            Some(0),
+            "a new interface's lifetime errors were charged to this interval"
+        );
+    }
+
+    #[test]
+    fn an_interface_going_away_does_not_swallow_a_real_interval() {
+        // The inverse: a VPN tunnel disappearing shrinks a whole-machine sum,
+        // and `saturating_sub` would report a real interval's errors as zero.
+        let mut pf = ProcFs::new().unwrap();
+        let two = "eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n\
+                   utun0: 500 5 100 0 0 0 0 0 500 5 0 0 0 0 0 0\n";
+        let gone = "eth0: 1000 10 7 0 0 0 0 0 2000 20 0 0 0 0 0 0\n";
+        pf.net_from(two, "", "", Duration::from_secs(1));
+        let net = pf.net_from(gone, "", "", Duration::from_secs(1));
+        assert_eq!(net.errors, Some(7), "a real interval's errors were lost");
     }
 
     #[test]

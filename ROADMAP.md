@@ -69,9 +69,13 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`##########` 100% · 1 of 1 done
+`#####·····` 50% · 1 of 2 done
 
 Good ideas without a date yet.
+
+### backlog
+
+- [ ] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 
 ### done
 

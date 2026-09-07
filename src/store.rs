@@ -345,7 +345,10 @@ fn write_sample(out: &mut Out, s: &Sample) {
     }
 
     out.u8(u8::from(s.net.is_some()));
-    let net = s.net.clone().unwrap_or_default();
+    // Borrowed, not cloned: `write_sample` only reads it, and a deep copy of
+    // the link vector per sample is an allocation per sample per persist.
+    let empty = NetStat::default();
+    let net = s.net.as_ref().unwrap_or(&empty);
     out.u32(net.links.len() as u32);
     for l in &net.links {
         out.str(&l.name);

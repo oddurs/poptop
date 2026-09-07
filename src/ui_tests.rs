@@ -2816,30 +2816,32 @@ fn a_retransmitting_network_says_so_loudly() {
 }
 
 #[test]
-fn a_platform_that_reads_no_network_draws_no_network_row() {
-    let mut absent = App::new(60);
-    let mut present = App::new(60);
+fn the_network_gets_no_timeline_row_because_it_has_no_denominator() {
+    // The timeline draws percentages of a fixed denominator: it prints `100` at
+    // the top, rules the warn and critical thresholds across the graph, and
+    // reads out `NET 100.0%` under the cursor. Bytes per second has no such
+    // denominator, and normalising to the window's own peak makes the busiest
+    // sample 100 by construction — an idle laptop moving 8 B/s of loopback
+    // painted a full-scale graph straight through the critical rule.
+    let mut app = App::new(60);
     for _ in 0..20 {
-        absent.push(sample(10.0));
-        present.push(with_net(1 << 20, 1 << 18, Some(0), Some(0)));
+        // Two orders of magnitude apart, so a peak-relative scale would put the
+        // larger one at the top of the graph whatever its absolute size.
+        app.push(with_net(8, 8, Some(0), Some(0)));
+        app.push(with_net(1 << 30, 1 << 30, Some(0), Some(0)));
     }
-    absent.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    present.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let gutter = |app: &App| {
-        rows(app, 200, 48)
-            .iter()
-            .skip_while(|l| !l.contains("── timeline"))
-            .take_while(|l| !l.contains("shown,"))
-            .any(|l| l.contains("NET"))
-    };
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let drawn = rows(&app, 200, 48)
+        .iter()
+        .skip_while(|l| !l.contains("── timeline"))
+        .take_while(|l| !l.contains("shown,"))
+        .any(|l| l.contains("NET"));
     assert!(
-        !gutter(&absent),
-        "a network graph was drawn with no network"
+        !drawn,
+        "a network row was drawn on an axis that cannot mean anything"
     );
-    assert!(
-        gutter(&present),
-        "no network graph when the platform reads one"
-    );
+    // The header still carries the figure, which is where the number lives.
+    assert!(render(&app, 200, 30).contains("en0"));
 }
 
 #[test]

@@ -503,6 +503,14 @@ disk table uses — this laptop publishes twenty-seven and thirteen have. The
 figure names the busiest rather than aggregating, because a total across
 twenty-five idle tunnels and one real link is a number about the tunnels.
 
+There is no network row on the timeline. That panel draws percentages of a fixed
+denominator — it prints `100` at the top, rules the warn and critical thresholds
+across the graph, and reads out `NET 100.0%` under the cursor. Bytes per second
+has no such denominator, and scaling to the window's own peak makes the busiest
+sample 100 by construction: an idle laptop moving 8 B/s of loopback painted a
+full-scale graph straight through the critical rule. The header carries the
+figure until the timeline can draw a series with a scale of its own.
+
 macOS reports throughput and errors, and **em dashes for drops, retransmits and
 listen drops**: `sysinfo` counts errors without separating drops, and there is no
 TCP counter behind it at all. Three zeroes there would claim a perfectly healthy
