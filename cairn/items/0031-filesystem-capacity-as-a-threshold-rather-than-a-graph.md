@@ -2,7 +2,7 @@
 id: 31
 title: Filesystem capacity, as a threshold rather than a graph
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07

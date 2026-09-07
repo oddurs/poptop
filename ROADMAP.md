@@ -47,13 +47,9 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`#########·` 90% · 9 of 10 done · due 2027-01-01
+`##########` 100% · 10 of 10 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
-
-### backlog
-
-- [ ] `0031` Filesystem capacity, as a threshold rather than a graph <sup>feature · p3</sup>
 
 ### done
 
@@ -66,6 +62,7 @@ Config file, user themes, documented and safe to depend on.
 - [x] `0028` System-wide disk saturation: %util, await and queue depth <sup>bug · p1</sup>
 - [x] `0029` Read Pressure Stall Information where the kernel publishes it <sup>feature · p1</sup>
 - [x] `0030` Monitor the network, saturation first <sup>feature · p2</sup>
+- [x] `0031` Filesystem capacity, as a threshold rather than a graph <sup>feature · p3</sup>
 
 ## later — Someday
 
