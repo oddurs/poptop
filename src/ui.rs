@@ -219,6 +219,35 @@ struct Figure<'a> {
     rank: u8,
 }
 
+/// Where a stall percentage sits on the scale the user configured for
+/// *utilisation* percentages.
+///
+/// The two are not the same quantity and cannot share thresholds. A CPU at 50%
+/// is unremarkable; a machine that spent 50% of the last ten seconds with
+/// nothing at all running is in serious trouble. Feeding the raw figure to
+/// `figure_style` would leave it cold until it was catastrophic, and scaling it
+/// by a constant — which is what this did first — silently reinterprets whatever
+/// the user set: at `--warn 90` a quadrupled figure needs 22.5% before it warns,
+/// which is two and a quarter seconds in every ten with the machine stopped.
+///
+/// So the thresholds are stated here, in the units of the thing being measured,
+/// and mapped onto the theme's own scale so a user's colours still apply.
+fn stall_heat(pct: f32, theme: &Theme) -> f32 {
+    /// Half a second in every ten with nothing running.
+    const WARN: f32 = 5.0;
+    /// Two seconds in every ten.
+    const CRITICAL: f32 = 20.0;
+    // Returned as the theme's own boundaries rather than as fixed numbers, so a
+    // user who recoloured warn and critical still gets their colours here.
+    if pct >= CRITICAL {
+        theme.critical_pct
+    } else if pct >= WARN {
+        theme.warn_pct
+    } else {
+        0.0
+    }
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let mem_pct = s.mem.used_pct();
     let dim = app.theme.dim_style();
@@ -286,7 +315,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             spans: vec![
                 Span::styled("STALL ", dim),
                 Span::styled(format!("{what} "), dim),
-                Span::styled(format!("{pct:>4.1}%"), app.theme.figure_style(pct * 4.0)),
+                Span::styled(
+                    format!("{pct:>4.1}%"),
+                    app.theme.figure_style(stall_heat(pct, &app.theme)),
+                ),
             ],
         });
     }
@@ -960,11 +992,31 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
     (0..series).map(|i| base + usize::from(i < extra)).collect()
 }
 
+/// Every name the timeline gutter may have to hold.
+///
+/// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
+/// silently rendered as `STAL` for exactly as long as the width was a hand-
+/// maintained number with a comment claiming `WAIT` was the longest.
+const SERIES_NAMES: [&str; 5] = ["CPU", "WAIT", "MEM", "DISK", "STALL"];
+
+const fn widest(names: &[&str]) -> usize {
+    let (mut max, mut i) = (0, 0);
+    while i < names.len() {
+        if names[i].len() > max {
+            max = names[i].len();
+        }
+        i += 1;
+    }
+    max
+}
+
 /// Width of the scale gutter, and the panel width below which it is dropped.
-/// Five, not four: the widest series name is `WAIT`, and a gutter that cannot
-/// hold its own labels either truncates them to nonsense or lets them push the
-/// graph out of alignment with its neighbours.
-pub const GUTTER_W: usize = 5;
+///
+/// One wider than the longest series name: [`axis_label`] right-aligns into
+/// `gutter - 1` so a label never abuts its graph. Derived rather than written
+/// down, because a gutter that cannot hold its own labels truncates them
+/// silently — nothing looks wrong, the name is simply a letter shorter.
+pub const GUTTER_W: usize = widest(&SERIES_NAMES) + 1;
 const MIN_WIDTH_FOR_GUTTER: usize = 30;
 /// A section shorter than this cannot carry both ends of the scale, so it
 /// carries none: see [`axis_label`].
@@ -975,6 +1027,18 @@ const MIN_ROWS_FOR_LABEL: usize = 3;
 // The gutter must fit inside the panel it is dropped from, or `graph_w`
 // underflows. The two constants are unrelated by construction, so tie them.
 const _: () = assert!(MIN_WIDTH_FOR_GUTTER > GUTTER_W);
+
+/// Exposed for tests: the names the gutter has to be wide enough for.
+#[cfg(test)]
+pub fn series_names() -> &'static [&'static str] {
+    &SERIES_NAMES
+}
+
+/// Exposed for tests: where a stall percentage lands on the theme's scale.
+#[cfg(test)]
+pub fn stall_heat_for_test(pct: f32, theme: &Theme) -> f32 {
+    stall_heat(pct, theme)
+}
 
 /// Exposed for tests: the gutter's width guarantee is a claim about a string,
 /// and the only way to check it is to read one. Same pattern as

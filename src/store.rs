@@ -536,9 +536,6 @@ mod tests {
             // Distinct on purpose. Equal values would let a read that swapped
             // `running` and `blocked` round-trip cleanly, and the field a user
             // scrubs back to is the one that says whether the box was stuck.
-            // Two devices, one with no completed operation in the interval, so
-            // the round trip is made to carry a `None` await as well as a real
-            // one — the pair this format must not collapse.
             pressure: Some(Pressure {
                 cpu: Stall {
                     some: 1.5,
@@ -553,6 +550,9 @@ mod tests {
                     full: 0.25,
                 },
             }),
+            // Two devices, one with no completed operation in the interval, so
+            // the round trip is made to carry a `None` await as well as a real
+            // one — the pair this format must not collapse.
             disks: Some(vec![
                 DiskStat {
                     name: Arc::from("nvme0n1"),

@@ -477,8 +477,14 @@ CPU  27.4%   WAIT   6.7%   vda  34.8% 7.2ms   STALL io  6.1%   RUN 2/14   BLOCKE
 `STALL io 6.1%` is Pressure Stall Information: the share of the last ten seconds
 in which **every runnable task** was stopped waiting for IO. Not "some task was
 waiting", which a busy machine does all day and healthily — every one of them,
-with nothing getting done by anybody. There is no benign reading of it, so it is
-coloured from zero rather than against a threshold.
+with nothing getting done by anybody.
+
+It is coloured against thresholds of its own, 5% and 20%, rather than the warn
+and critical percentages you set for everything else. Those are about
+utilisation, where 50% is unremarkable; a machine that spent 50% of ten seconds
+with nothing at all running is in serious trouble, and borrowing the same
+numbers would leave the figure cold until long past the point of caring. Five
+percent is half a second in every ten with the machine stopped.
 
 It says something `WAIT` cannot. `iowait` is the CPU's view — idle with IO
 outstanding — so a box with plenty of other work to do reports a calm `iowait`
