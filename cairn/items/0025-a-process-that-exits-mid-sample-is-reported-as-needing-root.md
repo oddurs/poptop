@@ -2,7 +2,7 @@
 id: 25
 title: A process that exits mid-sample is reported as needing root
 type: bug
-status: backlog
+status: done
 milestone: v0.2
 created: 2026-09-06
 updated: 2026-09-06
