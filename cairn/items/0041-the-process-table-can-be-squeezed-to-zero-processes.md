@@ -2,7 +2,7 @@
 id: 41
 title: The process table can be squeezed to zero processes
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -53,10 +53,10 @@ answer is not "less resolution" but "no processes".
 
 ## Acceptance criteria
 
-- [ ] The floor is a number of *processes*, and the panel reserves its chrome
+- [x] The floor is a number of *processes*, and the panel reserves its chrome
       on top of that
-- [ ] A filter matching N processes shows some of them at every terminal size
+- [x] A filter matching N processes shows some of them at every terminal size
       the tool runs at
-- [ ] Decided and written down: whether the timeline yields below some height,
+- [x] Decided and written down: whether the timeline yields below some height,
       and to what
-- [ ] A test sweeps terminal heights and asserts a process row is drawn at each
+- [x] A test sweeps terminal heights and asserts a process row is drawn at each

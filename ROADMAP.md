@@ -47,14 +47,12 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`#####·····` 48% · 13 of 27 done · due 2027-01-01
+`######····` 56% · 15 of 27 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
 
 ### backlog
 
-- [ ] `0041` The process table can be squeezed to zero processes <sup>bug · p1</sup>
-- [ ] `0042` Every number in the process table is left-aligned <sup>bug · p1</sup>
 - [ ] `0043` A column of one repeated value costs as much as a column of information <sup>feature · p2</sup>
 - [ ] `0044` A row's identity is split across both ends of it <sup>feature · p2</sup>
 - [ ] `0045` The process title mixes four kinds of statement <sup>bug · p2</sup>
@@ -83,6 +81,8 @@ Config file, user themes, documented and safe to depend on.
 - [x] `0033` The header is a flat list of fourteen figures <sup>bug · p1</sup>
 - [x] `0034` A third of the screen is chrome <sup>bug · p1</sup>
 - [x] `0035` An over-long process name loses the part that identifies it <sup>bug · p2</sup>
+- [x] `0041` The process table can be squeezed to zero processes <sup>bug · p1</sup>
+- [x] `0042` Every number in the process table is left-aligned <sup>bug · p1</sup>
 
 ## later — Someday
 

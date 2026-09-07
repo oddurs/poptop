@@ -2,7 +2,7 @@
 id: 42
 title: Every number in the process table is left-aligned
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -53,6 +53,6 @@ since the unit is the last character.
 
 ## Acceptance criteria
 
-- [ ] Numeric columns right-aligned, text columns left
-- [ ] Headers aligned with their columns
-- [ ] A test asserts a column of mixed-magnitude values shares a right edge
+- [x] Numeric columns right-aligned, text columns left
+- [x] Headers aligned with their columns
+- [x] A test asserts a column of mixed-magnitude values shares a right edge
