@@ -285,7 +285,6 @@ impl ProcFs {
             names,
             ticks_per_sec,
             page_size,
-            prev_cores,
             io_supported,
             ..
         } = self;
@@ -293,7 +292,6 @@ impl ProcFs {
             prev_jiffies: prev_proc_jiffies,
             ticks_per_sec: *ticks_per_sec,
             page_size: *page_size,
-            cores: prev_cores.len().max(1),
         };
 
         let mut out = Vec::new();
@@ -516,7 +514,6 @@ struct StatCtx<'a> {
     prev_jiffies: &'a HashMap<i32, u64>,
     ticks_per_sec: f64,
     page_size: u64,
-    cores: usize,
 }
 
 /// Starting size of the shared read buffer.
@@ -758,7 +755,6 @@ mod tests {
             prev_jiffies: &pf.prev_proc_jiffies,
             ticks_per_sec: pf.ticks_per_sec,
             page_size: pf.page_size,
-            cores: pf.prev_cores.len().max(1),
         }
     }
 

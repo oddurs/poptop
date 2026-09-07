@@ -141,8 +141,13 @@ impl Kinfo {
         }
         // Slack, because processes are forked between the sizing call and the
         // read and the kernel truncates rather than growing. Sixty-four new
-        // processes in that window would be remarkable; if it happens the table
-        // is short for one sample and complete on the next.
+        // processes in that window would be remarkable.
+        //
+        // If it happens anyway the whole table is dropped for that one sample,
+        // not shortened: every process gets `started: None`, so every sparkline
+        // takes a gap in that slot and fills again on the next. A gap is what
+        // this tool draws when it does not know, and a partial table would be a
+        // set of processes silently declared identity-less for one instant.
         self.buf.clear();
         self.buf.resize(len + self.stride * 64, 0);
         len = self.buf.len();
@@ -193,8 +198,23 @@ mod tests {
         let mut k = Kinfo::probe().unwrap();
         let starts = k.starts();
         assert!(starts.len() > 10, "only {} processes", starts.len());
+        // Discriminating power, not exactness. Two processes really can fork in
+        // the same microsecond on a loaded machine, and that costs nothing:
+        // what the rest of the tool needs is that `(pid, started)` is unique,
+        // and the pid half already guarantees that — which is also why
+        // asserting the pairs are distinct would assert nothing at all.
+        //
+        // The failure worth catching is an offset landing on some field that
+        // reads the same for everyone, which would leave a handful of distinct
+        // values across hundreds of processes rather than a couple of
+        // collisions.
         let distinct: std::collections::HashSet<_> = starts.values().collect();
-        assert_eq!(distinct.len(), starts.len(), "two processes share a token");
+        assert!(
+            distinct.len() * 100 >= starts.len() * 95,
+            "only {} distinct start times across {} processes — this is not a start time",
+            distinct.len(),
+            starts.len()
+        );
         assert!(starts.values().all(|&t| t > 0), "a zero token got through");
     }
 
