@@ -55,6 +55,17 @@ impl ProcSample {
     /// A Linux notion. On macOS pid 2 is an ordinary process, so one process in
     /// several hundred is wrongly excluded from the IO ratio there — which
     /// changes no decision this figure is used for.
+    /// How this process is followed from one sample to the next.
+    ///
+    /// `None` when the platform would not give a start time. A caller with no
+    /// key must not fall back to the pid alone: pids are recycled, and a
+    /// recycled pid is precisely the case that produces a graph made of two
+    /// different programs. Better a process with no history than a history
+    /// belonging to something else.
+    pub fn key(&self) -> Option<(i32, u64)> {
+        Some((self.pid, self.started?))
+    }
+
     pub fn is_kernel_thread(&self) -> bool {
         self.pid == KTHREADD || self.ppid == KTHREADD
     }
@@ -136,12 +147,24 @@ pub struct ProcSample {
     pub rss: u64,
     pub threads: u32,
     pub state: char,
-    /// When the process started, in whatever unit the platform counts.
+    /// An opaque token, unique to one run of one process on this machine.
     ///
-    /// Only ever compared for equality, never interpreted — it exists so a
-    /// process can be followed across samples without a recycled pid splicing
-    /// two unrelated processes into one line.
-    pub started: u64,
+    /// Only ever compared for equality, never interpreted: the two backends
+    /// count entirely different things, and nothing is gained by pretending
+    /// otherwise.
+    ///
+    /// - Linux: clock ticks since boot, from `/proc/<pid>/stat` field 22.
+    /// - macOS: microseconds since the epoch, from `sysctl(KERN_PROC_ALL)`.
+    ///
+    /// Because the units differ, a token means nothing outside the machine and
+    /// boot that produced it — see [`crate::store::boot_time`], which refuses
+    /// to restore a buffer across a reboot for exactly this reason.
+    ///
+    /// `None` where the platform will not say. Not zero: zero is a value that
+    /// compares equal to another zero, so two unrelated processes sharing a
+    /// recycled pid would be spliced into one line — the failure this field
+    /// exists to prevent. See [`ProcSample::key`].
+    pub started: Option<u64>,
     /// `None` means no figure is available — either extended collection was off
     /// when this sample was taken, or the process could not be read. The two
     /// cases are told apart by [`Sample::io_collected`], and neither is ever

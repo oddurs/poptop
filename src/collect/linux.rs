@@ -503,7 +503,7 @@ fn parse_proc_stat(
         rss: rss_pages * ctx.page_size,
         threads,
         state,
-        started: starttime,
+        started: Some(starttime),
         io: None,
     })
 }

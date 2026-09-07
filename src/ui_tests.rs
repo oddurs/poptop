@@ -21,7 +21,7 @@ fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
         rss,
         threads: 1,
         state: 'S',
-        started: 0,
+        started: Some(0),
         io: None,
     }
 }
@@ -2368,7 +2368,11 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
     for i in (0..60).rev() {
         let mut s = sample_at(10.0, i as u64);
         // Same pid throughout, but a different process for the first half.
-        let (started, cpu) = if i > 30 { (111, 90.0) } else { (222, 2.0) };
+        let (started, cpu) = if i > 30 {
+            (Some(111), 90.0)
+        } else {
+            (Some(222), 2.0)
+        };
         s.procs = vec![ProcSample {
             cpu,
             started,
@@ -2389,6 +2393,56 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
     assert!(
         ink * 3 < full,
         "sparkline shows the previous process's history: {spark:?}"
+    );
+}
+
+#[test]
+fn a_pid_with_no_start_time_gets_no_history_rather_than_the_wrong_one() {
+    // The macOS case before `kinfo`: sysinfo would not say when a process this
+    // user does not own had started, and the key quietly became the pid alone.
+    // A process with no token must draw nothing, because a line drawn from a
+    // recycled pid is a line made of two different programs — worse than none.
+    let mut app = App::new(600);
+    for i in (0..60).rev() {
+        let mut s = sample_at(10.0, i as u64);
+        let cpu = if i > 30 { 90.0 } else { 2.0 };
+        s.procs = vec![ProcSample {
+            cpu,
+            started: None,
+            ..proc_named(4242, "unknowable", 0.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let spark = spark_for(&app, "unknowable");
+    let ink: u32 = spark
+        .chars()
+        .map(|c| (c as u32).saturating_sub(0x2800).count_ones())
+        .sum();
+    assert_eq!(
+        ink, 0,
+        "a process with no identity was given a graph: {spark:?}"
+    );
+}
+
+#[test]
+fn thread_churn_does_not_credit_growth_across_a_pid_with_no_identity() {
+    // `churn` compares thread counts between two samples. Keyed on pid alone, a
+    // recycled pid looks like a process that shrank from 40 threads to 1, and
+    // the difference is lost. With no identity the new occupant is counted as
+    // new, which is the honest reading of "we cannot tell these apart".
+    use crate::history::churn;
+    let mut fat = threaded(4242, 0, 40);
+    fat.started = None;
+    let mut thin = threaded(4242, 0, 1);
+    thin.started = None;
+    let before = sample_with(Some(100), vec![fat]);
+    let after = sample_with(Some(100), vec![thin]);
+    let c = churn(&before, &after).unwrap();
+    assert_eq!(
+        c.visible, 1,
+        "an unidentifiable process was matched to the previous occupant of its pid"
     );
 }
 
@@ -2838,7 +2892,7 @@ fn sample_with(forks: Option<u64>, procs: Vec<ProcSample>) -> Sample {
 
 fn threaded(pid: i32, started: u64, threads: u32) -> ProcSample {
     ProcSample {
-        started,
+        started: Some(started),
         threads,
         ..proc_named(pid, "worker", 0.0, 0)
     }
@@ -3725,16 +3779,16 @@ fn show_metric_audit() {
 
     let s = c.sample(Needs { io: false }).unwrap();
     let cores = s.cpu_per_core.len();
-    let zero_start = s.procs.iter().filter(|p| p.started == 0).count();
+    let no_start = s.procs.iter().filter(|p| p.started.is_none()).count();
     let over = s
         .procs
         .iter()
         .filter(|p| p.cpu > cores as f32 * 100.0)
         .count();
     println!(
-        "procs {}  started==0 {}  cpu over cores*100 {}  cores {}",
+        "procs {}  no start time {}  cpu over cores*100 {}  cores {}",
         s.procs.len(),
-        zero_start,
+        no_start,
         over,
         cores
     );

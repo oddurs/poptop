@@ -374,13 +374,24 @@ timeline already draws its seam across the gap and the caption already reads
 real time.
 
 **Samples from a previous boot are discarded**, and that is not tidiness. A
-process is identified throughout poptop by `(pid, started)`, and `started` counts
-clock ticks *since boot* — so it means something only within one boot. Early
-processes land on near-identical start times every boot, so a live pid 1 would
-match a restored pid 1 and its `HISTORY` column would render the previous
-boot's CPU as this process's own. poptop compares `at - uptime`, which every
+process is identified throughout poptop by `(pid, started)`, and on Linux
+`started` counts clock ticks *since boot* — so it means something only within
+one boot. Early processes land on near-identical start times every boot, so a
+live pid 1 would match a restored pid 1 and its `HISTORY` column would render
+the previous boot's CPU as this process's own. macOS counts from the epoch and
+does not collide, but the check runs on both: the token is deliberately opaque,
+and a guard that holds only on the platform whose units you happened to check is
+a guard waiting for a third backend. poptop compares `at - uptime`, which every
 sample already carries on both platforms, and says how many samples it dropped
 and why.
+
+Where the platform will not say when a process started, the token is absent
+rather than zero, and that process gets no `HISTORY` sparkline at all. A zero
+compares equal to another zero, so two unrelated programs that happened to share
+a recycled pid would be drawn as one line — worse than drawing nothing. On macOS
+this used to be 171 of 600 processes, because `sysinfo` reports a start time
+only for processes you own; poptop now reads `sysctl(KERN_PROC_ALL)` directly,
+the same call `ps` uses for `lstart`, and the figure is 0 of 623.
 
 Two poptop windows with `store = on` are fine — each writes through its own
 temporary file — but the second to exit replaces the first's history rather
