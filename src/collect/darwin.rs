@@ -4,7 +4,7 @@
 //! project's worth of unsafe. This backend exists so the tool runs on a dev
 //! laptop; the `/proc` backend is the one to read for how any of it works.
 
-use super::kinfo::Kinfo;
+use super::procinfo::{self, Kinfo};
 use super::{Collector, Needs};
 use crate::sample::{IoRates, MemStat, ProcSample, Sample};
 use std::collections::HashMap;
@@ -162,9 +162,10 @@ impl Collector for SysinfoCollector {
                         .unwrap_or_else(|| std::sync::Arc::from("?")),
                     cpu: if first { 0.0 } else { p.cpu_usage() },
                     rss: p.memory(),
-                    // sysinfo exposes tasks only on Linux, where we use the other
-                    // backend anyway.
-                    threads: 1,
+                    // sysinfo exposes tasks only on Linux, so this is read
+                    // directly — a flat `1` beside a CPU figure of several
+                    // hundred percent was the table contradicting itself.
+                    threads: procinfo::threads(id),
                     state: status_char(p.status()),
                     started,
                     // sysinfo already reports these as bytes since the last

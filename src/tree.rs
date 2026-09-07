@@ -174,7 +174,7 @@ mod tests {
             user: Arc::from("root"),
             cpu,
             rss: 1024,
-            threads: 1,
+            threads: Some(1),
             state: 'S',
             started: Some(0),
             io: None,

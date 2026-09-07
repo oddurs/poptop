@@ -19,7 +19,7 @@ fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
         user: std::sync::Arc::from("root"),
         cpu,
         rss,
-        threads: 1,
+        threads: Some(1),
         state: 'S',
         started: Some(0),
         io: None,
@@ -2397,6 +2397,50 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
 }
 
 #[test]
+fn an_unknown_thread_count_is_a_dash_not_a_one() {
+    // macOS reported a flat `1` for every process, which beside the CPU column
+    // was not merely missing but contradictory: this process is using three
+    // cores, and one thread cannot do that.
+    //
+    // Compared against a process that really does have one thread, rather than
+    // looked for as a dash. Other cells render dashes too, so "the row contains
+    // an em dash" passes even when the count is fabricated — the question is
+    // whether the two rows can be told apart at all.
+    let row = |threads| {
+        let mut app = App::new(60);
+        let mut s = sample(10.0);
+        s.procs = vec![ProcSample {
+            cpu: 301.3,
+            threads,
+            ..proc_named(1, "zzsentinel", 0.0, 1 << 30)
+        }];
+        app.push(s);
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        render(&app, 200, 40)
+            .lines()
+            .find(|l| l.contains("zzsentinel"))
+            .expect("no process row")
+            .to_string()
+    };
+
+    let unknown = row(None);
+    let one = row(Some(1));
+    assert_ne!(
+        unknown, one,
+        "a process with no thread count rendered identically to one with a single thread"
+    );
+    assert!(
+        unknown.contains('—'),
+        "an unknown thread count was not an em dash: {unknown:?}"
+    );
+    assert_eq!(
+        row(Some(36)).matches("36").count(),
+        1,
+        "a real thread count went missing"
+    );
+}
+
+#[test]
 fn a_pid_with_no_start_time_gets_no_history_rather_than_the_wrong_one() {
     // The macOS case before `kinfo`: sysinfo would not say when a process this
     // user does not own had started, and the key quietly became the pid alone.
@@ -2893,7 +2937,7 @@ fn sample_with(forks: Option<u64>, procs: Vec<ProcSample>) -> Sample {
 fn threaded(pid: i32, started: u64, threads: u32) -> ProcSample {
     ProcSample {
         started: Some(started),
-        threads,
+        threads: Some(threads),
         ..proc_named(pid, "worker", 0.0, 0)
     }
 }

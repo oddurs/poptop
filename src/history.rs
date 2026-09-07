@@ -262,7 +262,7 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
     let before: std::collections::HashMap<(i32, u64), u32> = prev
         .procs
         .iter()
-        .filter_map(|p| Some((p.key()?, p.threads)))
+        .filter_map(|p| Some((p.key()?, p.threads?)))
         .collect();
     // Keyed on pid *and* start time, like `series_for`: on pid alone a
     // recycled pid looks like a process that was here all along, and its
@@ -273,10 +273,18 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
         // A process with no key counts as new. It may not be, but the honest
         // alternatives are to drop it — undercounting real growth — or to match
         // it on pid alone, which is the splice this key exists to prevent.
-        .map(|p| match p.key().and_then(|k| before.get(&k)) {
-            Some(&was) => u64::from(p.threads.saturating_sub(was)),
-            None => u64::from(p.threads),
-        })
+        // A process with no thread count contributes nothing rather than a
+        // guess. That undercounts `visible`, which inflates `unseen` — but
+        // `unseen` is derived from `forks`, which no platform lacking thread
+        // counts publishes, so the two never meet. On Linux, where `unseen` is
+        // real, every process has a count.
+        .map(
+            |p| match (p.threads, p.key().and_then(|k| before.get(&k))) {
+                (Some(now), Some(&was)) => u64::from(now.saturating_sub(was)),
+                (Some(now), _) => u64::from(now),
+                (None, _) => 0,
+            },
+        )
         .sum();
     Some(Churn { created, visible })
 }
