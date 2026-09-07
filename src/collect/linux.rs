@@ -101,6 +101,8 @@ pub struct ProcFs {
     path: String,
     ticks_per_sec: f64,
     page_size: u64,
+    /// What this backend had to assume rather than read.
+    notes: Vec<String>,
 }
 
 /// Everything one `/proc/stat` read yields.
@@ -123,6 +125,7 @@ struct StatRead {
 
 impl ProcFs {
     pub fn new() -> io::Result<Self> {
+        let (page_size, notes) = read_page_size();
         Ok(Self {
             prev_total: None,
             prev_cores: Vec::new(),
@@ -137,7 +140,8 @@ impl ProcFs {
             // honest way is sysconf(_SC_CLK_TCK), but that needs libc, and the
             // point of this backend is to need nothing.
             ticks_per_sec: 100.0,
-            page_size: 4096,
+            page_size,
+            notes,
         })
     }
 
@@ -503,6 +507,72 @@ struct StatCtx<'a> {
 /// kilobytes — and is the price of never reallocating during a sample.
 const READ_BUF: usize = 8192;
 
+/// The size of a page on this kernel, and what to say if we had to guess.
+///
+/// Read rather than assumed, because `/proc/<pid>/stat` reports RSS as a count
+/// of pages and the multiplication is the whole figure. A 16 KiB-page kernel —
+/// Asahi, several ARM distributions — would otherwise report every process's
+/// memory at a quarter of its real size, and a 64 KiB one, which has been the
+/// RHEL aarch64 default, at a sixteenth. Nothing about the output would look
+/// wrong.
+///
+/// From `/proc/self/auxv` rather than `/proc/self/smaps`, which was the first
+/// attempt. auxv is what the kernel handed this process at exec, so it is there
+/// whatever the kernel was built with; it is one 336-byte read rather than a
+/// walk over every mapping; and it cannot be misled by a process whose first
+/// mapping is a huge page, where smaps says `2048 kB` and the only thing
+/// between that and a sixteen-fold error is a sanity clamp.
+///
+/// Deriving it from `statm` pages against `status` `VmRSS` does not work at
+/// all: the two files are read microseconds apart and RSS moves in between,
+/// which measured 4084 against a real 4096.
+fn read_page_size() -> (u64, Vec<String>) {
+    page_size_from(std::fs::read("/proc/self/auxv").ok().as_deref())
+}
+
+/// The file split out, so the fallback can be tested on a machine that can read
+/// it. The same shape as `Tier::detect_from` and `config::path_from`.
+fn page_size_from(auxv: Option<&[u8]>) -> (u64, Vec<String>) {
+    const ASSUMED: u64 = 4096;
+    match auxv.and_then(parse_page_size) {
+        Some(n) => (n, Vec::new()),
+        None => (
+            ASSUMED,
+            vec![format!(
+                "could not read the page size from /proc/self/auxv; assuming \
+                 {ASSUMED} bytes. Every process memory figure is a page count \
+                 times this, so they are all wrong by a whole factor if this \
+                 kernel disagrees."
+            )],
+        ),
+    }
+}
+
+/// `AT_PAGESZ` out of an auxiliary vector.
+///
+/// A flat list of `usize` key/value pairs in native order, terminated by a zero
+/// key. Sized from `usize` rather than assuming eight bytes: the layout follows
+/// the pointer width, and this is the one place that matters.
+fn parse_page_size(auxv: &[u8]) -> Option<u64> {
+    const AT_PAGESZ: usize = 6;
+    let w = size_of::<usize>();
+    for pair in auxv.chunks_exact(w * 2) {
+        let key = usize::from_ne_bytes(pair[..w].try_into().ok()?);
+        if key == 0 {
+            break;
+        }
+        if key == AT_PAGESZ {
+            let v = usize::from_ne_bytes(pair[w..].try_into().ok()?) as u64;
+            // Sanity rather than trust: a page is a power of two between 4 KiB
+            // and 64 KiB on every architecture Linux runs on, and a figure
+            // outside that is a read that went wrong rather than an exotic
+            // machine — which would otherwise be indistinguishable.
+            return (v.is_power_of_two() && (4096..=65536).contains(&v)).then_some(v);
+        }
+    }
+    None
+}
+
 /// Read a file into `buf` and return it as text.
 ///
 /// `File::open` + `read` rather than `fs::read_to_string`, which calls
@@ -570,6 +640,10 @@ fn parse_passwd() -> HashMap<u32, Arc<str>> {
 }
 
 impl Collector for ProcFs {
+    fn notes(&self) -> Vec<String> {
+        self.notes.clone()
+    }
+
     fn sample(&mut self, needs: Needs) -> io::Result<Sample> {
         let now = SystemTime::now();
         let elapsed = self
@@ -974,5 +1048,90 @@ mod tests {
         )
         .unwrap();
         assert!((p.cpu - 50.0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod page_size_tests {
+    use super::*;
+
+    /// One auxv entry, in the native layout.
+    fn entry(key: usize, value: usize) -> Vec<u8> {
+        let mut v = key.to_ne_bytes().to_vec();
+        v.extend_from_slice(&value.to_ne_bytes());
+        v
+    }
+
+    #[test]
+    fn the_page_size_is_read_from_the_kernel_not_assumed() {
+        // RSS is a count of pages multiplied by this, so a wrong constant
+        // reports every process at a quarter of its real memory on a 16 KiB
+        // kernel — and nothing about the output looks wrong.
+        //
+        // Where auxv is absent the fallback is the documented behaviour, so
+        // that is what gets asserted: a test that panics on the machines a
+        // fallback exists for is testing the wrong thing.
+        let Ok(raw) = std::fs::read("/proc/self/auxv") else {
+            let (size, notes) = read_page_size();
+            assert_eq!(size, 4096);
+            assert_eq!(notes.len(), 1, "assumed silently where auxv is absent");
+            return;
+        };
+
+        let (size, notes) = read_page_size();
+        assert!(notes.is_empty(), "could not read it here: {notes:?}");
+        // Against the file rather than against 4096: a test that hardcodes the
+        // answer cannot fail on the machines this exists for.
+        assert_eq!(size, parse_page_size(&raw).expect("auxv carries AT_PAGESZ"));
+        assert!(size.is_power_of_two() && size >= 4096);
+    }
+
+    #[test]
+    fn an_auxv_that_says_nothing_useful_is_not_believed() {
+        // A read that went wrong looks exactly like an exotic machine, so the
+        // figure is bounded by what a page can actually be.
+        assert_eq!(parse_page_size(&entry(6, 16384)), Some(16384));
+        assert_eq!(parse_page_size(&entry(6, 65536)), Some(65536));
+
+        let mut later = entry(3, 0x40_0000);
+        later.extend(entry(6, 4096));
+        assert_eq!(parse_page_size(&later), Some(4096), "later keys are missed");
+
+        for bad in [
+            entry(6, 0),
+            entry(6, 3000),    // not a power of two
+            entry(6, 1024),    // smaller than any architecture
+            entry(6, 2 << 20), // a huge page, which is not the page size
+            entry(3, 4096),    // the right value under the wrong key
+            Vec::new(),
+            vec![0u8; 3], // truncated past a whole pair
+        ] {
+            assert_eq!(parse_page_size(&bad), None, "believed {bad:?}");
+        }
+
+        // A zero key terminates the vector, so nothing after it is read.
+        let mut after_end = entry(0, 0);
+        after_end.extend(entry(6, 16384));
+        assert_eq!(parse_page_size(&after_end), None);
+    }
+
+    #[test]
+    fn a_kernel_that_will_not_say_is_reported_rather_than_guessed_at_silently() {
+        // The fallback is almost always right, which is exactly why it has to
+        // be announced: an assumption nobody hears about is indistinguishable
+        // from a wrong number.
+        for absent in [None, Some(&[][..]), Some(&entry(3, 4096)[..])] {
+            let (size, notes) = page_size_from(absent);
+            assert_eq!(size, 4096, "the fallback is not the common case");
+            assert_eq!(notes.len(), 1, "assumed silently");
+            assert!(notes[0].contains("4096"), "{}", notes[0]);
+            assert!(
+                notes[0].contains("wrong by a whole factor"),
+                "the note does not say what is at stake: {}",
+                notes[0]
+            );
+        }
+        // …and a kernel that does say gets no note at all.
+        assert!(page_size_from(Some(&entry(6, 16384))).1.is_empty());
     }
 }

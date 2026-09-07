@@ -23,6 +23,17 @@ pub trait Collector {
     /// Take one snapshot. Backends hold whatever raw counters they need to
     /// turn cumulative kernel numbers into per-interval rates.
     fn sample(&mut self, needs: Needs) -> std::io::Result<Sample>;
+
+    /// What the backend could not determine about this machine, said once at
+    /// startup rather than folded into every figure that depends on it.
+    ///
+    /// A backend that has to assume something is still usable — the assumption
+    /// is almost always right — but an assumption nobody is told about is the
+    /// same shape as a wrong number, and that is the one thing this tool is
+    /// not allowed to produce.
+    fn notes(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[cfg(target_os = "linux")]
