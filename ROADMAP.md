@@ -47,9 +47,15 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`##########` 100% · 10 of 10 done · due 2027-01-01
+`########··` 77% · 10 of 13 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
+
+### backlog
+
+- [ ] `0033` The header is a flat list of fourteen figures <sup>bug · p1</sup>
+- [ ] `0034` A third of the screen is chrome <sup>bug · p1</sup>
+- [ ] `0035` An over-long process name loses the part that identifies it <sup>bug · p2</sup>
 
 ### done
 
@@ -66,13 +72,14 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`#####·····` 50% · 1 of 2 done
+`####······` 33% · 1 of 3 done
 
 Good ideas without a date yet.
 
 ### backlog
 
 - [ ] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
+- [ ] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
 
 ### done
 

@@ -1493,7 +1493,9 @@ fn status_colour_is_kept_where_it_answers_is_this_bad() {
                 .map(|x| format!("{:?}", buf[(x, y)].fg))
                 .collect::<String>()
         };
-        (row(1), row(2))
+        // Figures then cores. Taken from `HEADER_H` rather than written down:
+        // the header lost a row and every hardcoded index moved with it.
+        (row(0), row(ui::HEADER_H - 1))
     };
     let (h_idle, c_idle) = styles_at(5.0);
     let (h_busy, c_busy) = styles_at(95.0);
@@ -1594,7 +1596,10 @@ fn the_heat_ramp_states_its_scale() {
             .join("\n")
     };
 
-    let wide = render(100);
+    // Wide enough that the figures leave room for it. The scale shares a row
+    // with them now — it used to have one of its own, which is a whole row of a
+    // thirty-row terminal spent on a reference that never changes.
+    let wide = render(160);
     assert!(wide.contains("warn 50"), "heat ramp has no scale:\n{wide}");
     assert!(wide.contains("crit 80"));
 
@@ -1616,11 +1621,11 @@ fn the_scale_survives_a_host_with_no_per_core_data() {
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(160, 30)).unwrap();
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let text: String = (0..30u16)
-        .flat_map(|y| (0..100u16).map(move |x| (x, y)))
+        .flat_map(|y| (0..160u16).map(move |x| (x, y)))
         .map(|(x, y)| buf[(x, y)].symbol())
         .collect();
     assert!(
@@ -1671,10 +1676,12 @@ fn the_stated_scale_matches_the_colouring_it_describes() {
         let mut app = App::new(60);
         app.push(sample(50.0));
         app.theme = th;
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        // Wide enough for the legend, which now shares the figures' row and
+        // appears only when every figure fits beside it.
+        let mut term = Terminal::new(TestBackend::new(170, 30)).unwrap();
         term.draw(|f| ui::draw(f, &app)).unwrap();
         let buf = term.backend().buffer();
-        let row: String = (0..100u16).map(|x| buf[(x, 0)].symbol()).collect();
+        let row: String = (0..170u16).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(
             row.contains(&format!("warn {warn}")),
             "the header does not print warn {warn}: {row:?}"
@@ -1818,7 +1825,9 @@ fn a_many_core_machine_summarises_rather_than_clipping() {
             let mut term = Terminal::new(TestBackend::new(w, 30)).unwrap();
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
-            let row: String = (0..w).map(|x| buf[(x, 2)].symbol()).collect();
+            let row: String = (0..w)
+                .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+                .collect();
             let drawn = row.chars().filter(|c| BAR_GLYPHS.contains(c)).count();
             // Whatever it degrades to, the count itself is always stated.
             assert!(
@@ -1864,7 +1873,9 @@ fn a_host_with_no_per_core_data_says_so() {
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
-    let row: String = (0..100u16).map(|x| buf[(x, 2)].symbol()).collect();
+    let row: String = (0..100u16)
+        .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+        .collect();
     assert!(
         row.contains("not reported"),
         "silent about missing cores: {row:?}"
@@ -1884,7 +1895,9 @@ fn show_core_overflow() {
             let mut term = Terminal::new(TestBackend::new(w, 30)).unwrap();
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
-            let row: String = (0..w).map(|x| buf[(x, 2)].symbol()).collect();
+            let row: String = (0..w)
+                .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+                .collect();
             println!("  {cores:>4} cores, w={w:<4} |{}|", row);
         }
     }
@@ -2017,7 +2030,12 @@ fn present_at(app: &App, w: u16, h: u16) -> Present {
     let timeline = ui::timeline_rows_range(h);
     Present {
         heat_scale: all.contains("warn 50"),
-        core_meters: row(2).contains('▇') || row(2).contains('▄') || row(2).contains('▁'),
+        // The last header row, whichever that is. Written down as `2` it kept
+        // pointing at the timeline the moment the header lost a row.
+        core_meters: {
+            let r = row(ui::HEADER_H - 1);
+            r.contains('▇') || r.contains('▄') || r.contains('▁')
+        },
         // Scoped to the timeline's gutter columns. Matching "CPU " anywhere
         // finds the header figures, which are always drawn — a false positive
         // that made the gutter look like it never yielded.
@@ -2061,8 +2079,11 @@ fn the_degradation_ladder_holds_at_every_size() {
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // Widest: everything on.
-    let full = present_at(&app, 120, 40);
+    // Widest: everything on. Wider than it was, because the heat legend shares
+    // the figures' row now — it appears only when there is room for every
+    // figure beside it, which is what makes it strictly the first thing given
+    // up rather than something that comes and goes as the figures shuffle.
+    let full = present_at(&app, 170, 40);
     assert!(full.heat_scale && full.core_meters && full.axis_anchors);
     assert!(full.series_labels && full.legend && full.graph && full.table_rows);
 
@@ -2226,7 +2247,9 @@ fn core_meters_are_countable_in_groups() {
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
-    let row: String = (0..100u16).map(|x| buf[(x, 2)].symbol()).collect();
+    let row: String = (0..100u16)
+        .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+        .collect();
     let meters = row.trim_end().split_once("cores ").unwrap().1;
     // Fourteen cores in groups of four: three gaps.
     assert_eq!(
@@ -3217,6 +3240,15 @@ fn measure_render_with_sparklines() {
 
 /// The rendered frame as one string per terminal row, for tests that care
 /// about geometry rather than the presence of a substring.
+/// The row carrying the header figures.
+///
+/// Named rather than indexed. The header lost a row when the live/paused marker
+/// moved down into the figures, and a dozen assertions had been reading line 1
+/// by number — every one of them silently repointed at the per-core meters.
+fn figures_line(app: &App, w: u16, h: u16) -> String {
+    render_lines(app, w, h)[0].clone()
+}
+
 fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| ui::draw(f, app)).unwrap();
@@ -3398,7 +3430,16 @@ fn the_caption_reports_real_time_not_sample_count() {
         .into_iter()
         .find(|l| l.contains(" shown, "))
         .expect("the timeline captions its span");
-    let span = caption.split_whitespace().next().unwrap();
+    // Taken from around " shown", not from the start of the line: the caption
+    // is centred between the `past` and `now` anchors now, so the first token
+    // on the row is `past`.
+    let span = caption
+        .split(" shown")
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .unwrap();
 
     // Asserted as a range, not a figure: the fixture builds its timestamps
     // from repeated `now()` calls, so the span is 379s give or take the time
@@ -3795,8 +3836,8 @@ fn a_stalled_machine_does_not_look_like_an_idle_one() {
     let mut stuck = App::new(60);
     stuck.push(stalled());
 
-    let idle_header = render_lines(&busy, 120, 24)[1].clone();
-    let stalled_header = render_lines(&stuck, 120, 24)[1].clone();
+    let idle_header = figures_line(&busy, 120, 24).clone();
+    let stalled_header = figures_line(&stuck, 120, 24).clone();
     assert_ne!(
         idle_header, stalled_header,
         "a machine with 23 tasks stuck in D reads identically to an idle one"
@@ -3815,7 +3856,7 @@ fn runnable_is_reported_against_the_cores_it_competes_for() {
     s.cpu_per_core = vec![1.0; 96];
     app.push(s);
     assert!(
-        render_lines(&app, 120, 24)[1].contains("RUN 4/96"),
+        figures_line(&app, 120, 24).contains("RUN 4/96"),
         "the runnable count is missing its denominator"
     );
 }
@@ -3826,7 +3867,7 @@ fn a_platform_that_cannot_see_a_signal_omits_it_rather_than_showing_zero() {
     // it" are opposite answers, and a zero would claim the box is never stuck.
     let mut app = App::new(60);
     app.push(sample(2.0)); // iowait/running/blocked all None
-    let header = render_lines(&app, 120, 24)[1].clone();
+    let header = figures_line(&app, 120, 24).clone();
     for absent in ["WAIT", "RUN ", "BLOCKED"] {
         assert!(
             !header.contains(absent),
@@ -3840,13 +3881,358 @@ fn a_platform_that_cannot_see_a_signal_omits_it_rather_than_showing_zero() {
 }
 
 #[test]
+fn a_group_separator_is_measured_in_columns_not_bytes() {
+    // `│` is one column and three bytes. Charging its byte length overstated
+    // every group boundary by two, so the header dropped figures that fitted
+    // and left a fistful of columns unused.
+    let mut app = App::new(60);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // The units, directly. `│` is one column and three bytes, so a separator
+    // that looks five characters long is seven bytes long — and the byte length
+    // is what the fitting arithmetic used, while `full_width` had the correct
+    // five written out by hand. The two disagreed, and the header dropped
+    // figures that fitted while leaving columns unused.
+    let (near_cols, near_bytes, far_cols, far_bytes) = ui::separator_widths_for_test();
+    assert_eq!(near_cols, 2);
+    assert_eq!(far_cols, 5, "the group separator is not five columns wide");
+    assert_ne!(
+        far_cols, far_bytes,
+        "this proves nothing unless columns and bytes differ"
+    );
+    assert_eq!(near_cols, near_bytes, "the narrow separator is plain ASCII");
+
+    // And every figure is still there when there is room for it.
+    let line = figures_line(&app, 300, 24);
+    for label in [
+        "CPU", "WAIT", "RUN", "BLOCKED", "LOAD", "MEM", "SWP", "UP ", "PROCS",
+    ] {
+        assert!(
+            line.contains(label),
+            "{label} missing at 300 columns: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn a_deep_tree_never_leaves_a_row_without_a_name() {
+    // A tree prefix grows three columns a level against a command column that
+    // is nineteen wide, so a deep enough chain elided the name to nothing and
+    // the row rendered as a bare `└`. Before eliding, the terminal clipped —
+    // which at least kept the head — so this was a regression against doing
+    // nothing.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = (0..9)
+        .map(|i| {
+            let mut p = proc_named(i + 1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20);
+            p.cpu = 10.0 - i as f32;
+            p.ppid = if i == 0 { 0 } else { i };
+            p
+        })
+        .collect();
+    app.push(s);
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let rows: Vec<String> = rows(&app, 104, 24)
+        .into_iter()
+        .filter(|l| l.contains("Chrome") || l.contains('…'))
+        .collect();
+    assert_eq!(rows.len(), 9, "expected nine rows: {rows:?}");
+    for r in &rows {
+        let row = r.trim_end();
+        // The last whitespace-separated token is the name. A bare connector or
+        // a single letter is the failure this test exists for.
+        let name = row.rsplit(' ').next().unwrap_or("");
+        assert!(
+            row.ends_with(')'),
+            "a row lost the end of its name to the indent: {row:?}"
+        );
+        let (head, tail) = name
+            .split_once('…')
+            .unwrap_or_else(|| panic!("name {name:?} was not elided at all: {row:?}"));
+        assert!(
+            !head.is_empty() && !tail.is_empty(),
+            "the indent left only {name:?}: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn a_narrow_table_does_not_elide_the_name_to_a_letter() {
+    // Below its floor ratatui squeezes the fixed columns instead of honouring
+    // them, so the command cell is wider than the arithmetic says. Eliding
+    // against the arithmetic rendered a thirty-character name as `G`.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cpu: 9.0,
+        ..proc_named(1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
+    }];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // Below `FIXED_COLUMNS + spacing + MIN_COMMAND_W` — about 75 — ratatui
+    // stops honouring the fixed lengths, which is exactly where the arithmetic
+    // and the drawing part company.
+    for w in [64u16, 70, 74, 80, 100] {
+        let row = rows(&app, w, 20)
+            .into_iter()
+            .find(|l| l.contains("Google") || l.contains('…'))
+            .unwrap_or_else(|| panic!("no process row at w={w}"));
+        let name: String = row
+            .trim_end()
+            .chars()
+            .rev()
+            .take_while(|c| *c != ' ')
+            .collect();
+        assert!(
+            name.chars().count() >= 8,
+            "the name was cut to {:?} at w={w}",
+            name.chars().rev().collect::<String>()
+        );
+    }
+}
+
+#[test]
+fn a_tree_prefix_is_charged_against_the_name_it_indents() {
+    // The prefix and the name share one column. Eliding the name against the
+    // column's full width lets `│  └─ ` push its tail off the end — the tail
+    // being the half that says which of several similar processes this is.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    let long = "Google Chrome Helper (Renderer)";
+    s.procs = vec![
+        proc_named(1, "launchd", 0.1, 1 << 20),
+        ProcSample {
+            cpu: 9.0,
+            ..proc_named(42, long, 0.0, 1 << 20)
+        },
+    ];
+    s.procs[1].ppid = 1;
+    app.push(s);
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let row = rows(&app, 104, 20)
+        .into_iter()
+        .find(|l| l.contains("Chrome") || l.contains('…'))
+        .expect("no row for the nested process");
+    let row = row.trim_end();
+    assert!(
+        row.ends_with("nderer)"),
+        "the indent pushed the identifying tail off the line: {row:?}"
+    );
+    assert!(
+        row.chars().count() <= 104,
+        "the row overflowed its terminal: {row:?}"
+    );
+}
+
+#[test]
+fn a_long_name_keeps_both_ends() {
+    // Cutting the tail is what the terminal does on its own, and for a process
+    // name it removes exactly the part that tells two of them apart.
+    assert_eq!(ui::elide_middle_for_test("short", 20), "short");
+    assert_eq!(ui::elide_middle_for_test("exactlyten", 10), "exactlyten");
+
+    let cut = ui::elide_middle_for_test("Google Chrome Helper (Renderer)", 20);
+    assert_eq!(cut.chars().count(), 20);
+    assert!(cut.starts_with("Google"), "the head was lost: {cut:?}");
+    assert!(
+        cut.ends_with("nderer)"),
+        "the identifying tail was lost: {cut:?}"
+    );
+    assert!(cut.contains('…'), "no elision mark: {cut:?}");
+
+    // Absurd widths do not panic or produce something wider than asked for.
+    for w in 0..8 {
+        assert!(
+            ui::elide_middle_for_test("Google Chrome Helper", w)
+                .chars()
+                .count()
+                <= w
+        );
+    }
+}
+
+#[test]
+fn processes_that_differ_only_by_a_suffix_are_told_apart() {
+    // Three rows reading `Google Chrome Helpe` are a renderer, a GPU process
+    // and a network service, and the table said nothing about which was which.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            cpu: 9.0,
+            ..proc_named(1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
+        },
+        ProcSample {
+            cpu: 8.0,
+            ..proc_named(2, "Google Chrome Helper (GPU)", 0.0, 1 << 20)
+        },
+        ProcSample {
+            cpu: 7.0,
+            ..proc_named(3, "Google Chrome Helper (Network Service)", 0.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let shown: Vec<String> = rows(&app, 104, 20)
+        .into_iter()
+        .filter(|l| l.contains("Chrome") || l.contains('…'))
+        .map(|l| l.trim_end().to_string())
+        .collect();
+    assert_eq!(shown.len(), 3, "expected three rows: {shown:?}");
+
+    // The distinguishing tail, not the whole row. Whole rows differ by pid
+    // whatever the name does, so comparing them passes even when every command
+    // reads `Google Chrome Helpe` — which is the bug.
+    for tail in ["Renderer)", "(GPU)", "Service)"] {
+        assert!(
+            shown.iter().any(|l| l.ends_with(tail)),
+            "no row identifies itself as {tail}: {shown:?}"
+        );
+    }
+    // And each was actually shortened, so the test is not passing because the
+    // column happened to be wide enough.
+    assert!(
+        shown.iter().all(|l| l.contains('…')),
+        "nothing was elided, so this proves nothing: {shown:?}"
+    );
+}
+
+#[test]
+fn figures_sit_with_the_resource_they_are_about() {
+    // Ranked and ordered by one number, the header read compute, storage,
+    // compute, network, memory, network, memory, machine — network split in
+    // half with memory in between, and `LOAD`, the most compute figure there
+    // is, after uptime.
+    let mut app = App::new(60);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let line = figures_line(&app, 220, 24);
+
+    let at = |s: &str| {
+        line.find(s)
+            .unwrap_or_else(|| panic!("no {s:?} in {line:?}"))
+    };
+    // Compute, all of it, before memory.
+    assert!(at("CPU") < at("WAIT"));
+    assert!(at("WAIT") < at("RUN"));
+    assert!(at("RUN") < at("BLOCKED"));
+    assert!(at("BLOCKED") < at("LOAD"), "load left its own group");
+    assert!(
+        at("LOAD") < at("MEM"),
+        "compute did not finish before memory"
+    );
+    // Then memory, whole — and in the order it is written rather than the order
+    // it is ranked. `MEM`, its byte detail and `SWP` rank 50, 90 and 60, so
+    // sorting the group by rank would put the byte figure after swap, away from
+    // the bar it belongs to. That is what makes the sort's stability load
+    // bearing rather than incidental.
+    assert!(at("MEM") < at("SWP"));
+    let bytes = at(" / ");
+    assert!(
+        at("MEM") < bytes && bytes < at("SWP"),
+        "the byte detail left the bar it explains: {line:?}"
+    );
+    // Then the machine facts, last.
+    assert!(at("SWP") < at("UP "));
+    assert!(at("UP ") < at("PROCS"));
+}
+
+#[test]
+fn a_group_boundary_looks_different_from_a_gap_inside_one() {
+    // A boundary that reads like the gap within a group is not a boundary. The
+    // mark carries on a terminal with no colour to spend, which the dimmer
+    // separator alone would not.
+    let mut app = App::new(60);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::Mono);
+    let line = figures_line(&app, 220, 24);
+    assert!(line.contains('│'), "no group boundary drawn: {line:?}");
+    // One boundary per gap between adjacent groups present.
+    let rules = line.matches('│').count();
+    assert!((2..=5).contains(&rules), "{rules} boundaries in {line:?}");
+    // And the figures inside a group are not separated by one.
+    let compute = &line[..line.find('│').unwrap()];
+    assert!(compute.contains("CPU") && compute.contains("WAIT"));
+}
+
+#[test]
+fn the_state_marker_is_never_given_up_for_room() {
+    // Reading a stale process table as the current one is the single worst
+    // thing this tool could let you do, so the one figure that cannot be
+    // dropped is the one saying whether it is stale.
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.history.scrub(-20);
+    for w in [200u16, 120, 80, 60, 40, 24] {
+        let line = figures_line(&app, w, 24);
+        assert!(
+            line.contains("PAUSED"),
+            "the staleness warning was dropped at w={w}: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn one_row_under_the_graph_carries_the_axis_and_the_scale() {
+    // Two rows said the same thing: `past … now` and `2s shown, 1s/slot` are
+    // both about the x-axis, and on a thirty-row terminal a duplicated chrome
+    // row is a process the table cannot show.
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let range = ui::timeline_rows_range(30);
+    let lines = render_lines(&app, 120, 30);
+    let under: Vec<&String> = lines[range.start as usize..range.end as usize]
+        .iter()
+        .filter(|l| l.contains("past") || l.contains("shown"))
+        .collect();
+    assert_eq!(under.len(), 1, "the axis still costs two rows: {under:?}");
+    let row = under[0];
+    assert!(row.contains("past") && row.contains("now"), "{row:?}");
+    assert!(row.contains("shown"), "the scale was lost: {row:?}");
+}
+
+#[test]
+fn the_axis_row_repeats_no_key_that_the_footer_lists() {
+    // A reminder that is always on screen twice is not a reminder.
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let range = ui::timeline_rows_range(30);
+    let lines = render_lines(&app, 160, 30);
+    let timeline = lines[range.start as usize..range.end as usize].join("\n");
+    assert!(
+        !timeline.contains("scrub"),
+        "the timeline repeats the footer's keys: {timeline:?}"
+    );
+    // …and the footer still has them.
+    assert!(lines.last().unwrap().contains("scrub"));
+}
+
+#[test]
 fn the_header_gives_up_its_least_diagnostic_figures_first() {
     // Letting ratatui clip drops whatever is rightmost, and rightmost is not
     // least useful. The four figures that answer "why is this slow" have to
     // outlive uptime and a load average that conflates the two of them.
     let mut app = App::new(60);
     app.push(stalled());
-    let at = |w: u16| render_lines(&app, w, 24)[1].clone();
+    let at = |w: u16| figures_line(&app, w, 24).clone();
 
     // Load ranks last, so it is the last figure to *appear* as the terminal
     // widens rather than merely the first to go. That is the intended
@@ -3922,7 +4308,7 @@ fn the_process_count_survives_in_the_header() {
     // ranking exists at all.
     let mut app = App::new(60);
     app.push(stalled());
-    assert!(render_lines(&app, 140, 24)[1].contains("PROCS"));
+    assert!(figures_line(&app, 140, 24).contains("PROCS"));
 }
 
 #[test]
@@ -4148,7 +4534,15 @@ fn the_legend_stops_at_a_phrase_boundary_at_every_width() {
             .find(|l| l.contains("shown") || l.contains(" · "))
             .cloned()
             .unwrap_or_default();
-        let trimmed = legend.trim_end();
+        // The caption shares its row with the `past`/`now` anchors now, so the
+        // phrase to check is what sits between them rather than the whole line.
+        let trimmed = legend
+            .trim_end()
+            .trim_end_matches("now")
+            .trim_end()
+            .trim_start()
+            .trim_start_matches("past")
+            .trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -4188,7 +4582,7 @@ fn memory_is_shown_as_a_composition_not_just_a_level() {
     cached.push(s);
 
     let bar = |app: &App| {
-        render_lines(app, 120, 24)[1]
+        figures_line(app, 120, 24)
             .chars()
             .filter(|c| "█▒░".contains(*c))
             .collect::<String>()
@@ -4223,7 +4617,7 @@ fn the_memory_bar_separates_by_glyph_so_it_survives_monochrome() {
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::Mono);
 
-    let line = render_lines(&app, 120, 24)[1].clone();
+    let line = figures_line(&app, 120, 24).clone();
     for glyph in ['█', '▒', '░'] {
         assert!(
             line.contains(glyph),
@@ -4255,7 +4649,7 @@ fn the_memory_bar_is_always_exactly_its_width() {
             swap_used: 0,
         };
         app.push(s);
-        let n = render_lines(&app, 120, 24)[1]
+        let n = figures_line(&app, 120, 24)
             .chars()
             .filter(|c| "█▒░".contains(*c))
             .count();
@@ -4283,7 +4677,7 @@ fn a_platform_that_cannot_partition_memory_draws_two_parts_not_three() {
         swap_used: 0,
     };
     app.push(s);
-    let bar: String = render_lines(&app, 120, 24)[1]
+    let bar: String = figures_line(&app, 120, 24)
         .chars()
         .filter(|c| "█▒░".contains(*c))
         .collect();

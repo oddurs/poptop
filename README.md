@@ -247,6 +247,29 @@ one, so widening the window brings them back with their history intact.
 ## Reading the header
 
 ```text
+ LIVE CPU  33.0%  │  MEM  84.1% ██████████░░  20.7G / 24.0G  SWP  73.3%  │  / 86.4% full  │  en0 598B/s 887B/s  │  UP 4d 14h  PROCS 844  · warn 50 · crit 80
+ 14 cores ▄▃▂▂ ▅▅▄▃ ▄▃▂▃ ▂▂
+```
+
+Figures sit with the resource they are about — compute, memory, storage,
+network, then the two facts that are neither symptom nor cause — and the rules
+between the groups are wider than the gaps inside them. The order is the one the
+question "why is this slow" walks through.
+
+**Where a figure sits and when it is given up are separate decisions.** One
+number used to do both, and it read compute, storage, compute, network, memory,
+network, memory, machine: the network split in half with memory between the
+halves, and `LOAD` — the most compute figure there is — after uptime. Rank still
+governs what a narrow terminal drops; it no longer governs where anything sits.
+
+`LIVE` and `PAUSED -12s` sit with the figures because they qualify them: paused
+means *these numbers are twelve seconds old*. The marker is the one thing on the
+row that is never dropped for room — reading a stale process table as the
+current one is the single worst thing this tool could let you do.
+
+
+
+```text
 CPU  12.4%   WAIT  61.2%   RUN 1/14   BLOCKED 23   MEM  37.5%
 ```
 
@@ -612,6 +635,26 @@ present on every kernel checked here — but checking four container images test
 than it looks. Nothing in the default view depends on it: an absent
 `/proc/pressure` means no figure and no graph row rather than a zero, and the
 row goes back to the graphs that were already there.
+
+### Identifying a row
+
+The command is the column that says which process a row is, and it is the one
+that takes whatever the fixed columns left — at 104 columns with the disk
+columns shown, nineteen, one more than the two disk-rate columns together.
+
+That is not enough for a name like `Google Chrome Helper (Renderer)`, and
+letting the terminal clip it removes exactly the part that tells three such rows
+apart. So the middle goes and both ends stay:
+
+```text
+81977   oddurs   17.3  ▊   6.1G  █   S  34   Google Chr…(Renderer)
+5613    oddurs   20.0  ▊   514M  ▏   S  27   Google Chr…er (GPU)
+```
+
+The head is what a reader scans down the column for; the tail carries the role.
+Cutting either alone loses a distinction the other cannot supply. In tree mode
+the indent is charged against the name rather than the column, so `│  └─ ` does
+not push the tail off the end.
 
 ### What the table cannot show
 
