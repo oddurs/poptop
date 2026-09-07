@@ -29,10 +29,17 @@
 //! back our own pid. A shifted layout fails that immediately, at startup, and
 //! the caller falls back to sysinfo rather than reporting fiction.
 //!
-//! That check is also what makes this safe to compile for every non-Linux
-//! target rather than macOS alone. Another BSD has its own `kinfo_proc`, the
-//! pid would not read back, and the probe returns `None` — the same path as a
-//! macOS that changed the layout out from under us.
+//! It is the same path a macOS that changed the layout out from under us would
+//! take, and it is checked once at startup rather than trusted.
+//!
+//! An earlier version of this note claimed the check also made the module safe
+//! on another BSD, which has its own `kinfo_proc`. It does not, and the claim
+//! was never testable: `sysinfo` is a macOS-only dependency in `Cargo.toml`
+//! while the backend around this one compiles for every non-Linux target, so
+//! `cargo check --target x86_64-unknown-freebsd` has never got as far as this
+//! file. Linux and macOS are the platforms; the `target_vendor` gate below is
+//! there so a future third one fails to *run* a Darwin-only call rather than
+//! failing to link over it.
 //!
 //! # Thread counts, via `proc_pidinfo(PROC_PIDTASKINFO)`
 //!
@@ -58,8 +65,15 @@ use std::ffi::c_void;
 
 // libSystem, already linked by std. Declared here rather than taking a
 // dependency on `libc` for one function.
+// `libproc`, and Apple's alone — unlike `sysctl`, which every BSD has. Split
+// into its own block so a non-Apple target does not fail to *link* over a
+// symbol this module is careful to degrade from at runtime.
+#[cfg(target_vendor = "apple")]
 unsafe extern "C" {
     fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, buffersize: i32) -> i32;
+}
+
+unsafe extern "C" {
     fn sysctl(
         name: *mut i32,
         namelen: u32,
@@ -210,8 +224,11 @@ impl Kinfo {
 /// `PROC_PIDTASKINFO`, and the size `struct proc_taskinfo` has to be for the
 /// offset below to mean what it says.
 const PROC_PIDTASKINFO: i32 = 4;
-/// Six `uint64_t` then ten `int32_t`. A kernel writing any other number of
-/// bytes is not writing the structure this module was written against.
+/// Six `uint64_t` then twelve `int32_t`: 48 + 48. A kernel writing any other
+/// number of bytes is not writing the structure this module was written
+/// against. Counted out because the count is what a future reader would check
+/// `OFF_THREADNUM` against, and an off-by-two here moves the offset off the
+/// field.
 const TASKINFO_SIZE: i32 = 96;
 /// `pti_policy` 48, `pti_faults` 52, `pti_pageins` 56, `pti_cow_faults` 60,
 /// `pti_messages_sent` 64, `_received` 68, `pti_syscalls_mach` 72,
@@ -228,6 +245,15 @@ const OFF_THREADNUM: usize = 84;
 /// Validated the same way as everything else here: the call reports how many
 /// bytes it wrote, and anything but the expected size means the structure is
 /// not the one these offsets were written against.
+#[cfg(not(target_vendor = "apple"))]
+pub fn threads(_pid: i32) -> Option<u32> {
+    // Another BSD has `proc_pidinfo` nowhere, or somewhere else. Saying nothing
+    // is the same answer this gives for a process it may not read, and the
+    // column already renders that.
+    None
+}
+
+#[cfg(target_vendor = "apple")]
 pub fn threads(pid: i32) -> Option<u32> {
     let mut buf = [0u8; TASKINFO_SIZE as usize];
     let n = unsafe {
@@ -251,6 +277,10 @@ pub fn threads(pid: i32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
 
     #[test]
     fn the_layout_check_agrees_with_this_kernel() {
@@ -331,7 +361,8 @@ mod tests {
 
         // Sixty-four of them, so the expected figure is nowhere near the small
         // numbers several other fields hold. Blocked on a barrier rather than
-        // spinning, so they are threads without also being *running* threads.
+        // spinning, so they are threads without also being *running* threads —
+        // `pti_numrunning` is the very next field along.
         let gate = std::sync::Arc::new(std::sync::Barrier::new(65));
         let up = std::sync::Arc::new(std::sync::Barrier::new(65));
         let mut handles = Vec::new();
@@ -344,42 +375,67 @@ mod tests {
         }
         up.wait();
 
-        let out = std::process::Command::new("ps")
+        // Bracketed, because `ps` is a fork and an exec and takes milliseconds,
+        // and libtest is running three hundred other cases in this same process
+        // meanwhile — each free to start and join threads of its own. A single
+        // reading either side of that gap drifts by more than any tolerance
+        // tight enough to be worth having: an earlier version compared one
+        // reading with a tolerance of 8 and failed one run in three, at 68
+        // against 79.
+        let before = threads(me);
+        let ps = std::process::Command::new("ps")
             .args(["-M", "-p", &me.to_string()])
-            .output()
-            .expect("ps -M");
-        // One header line, then one line per thread.
-        let expected = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .count()
-            .saturating_sub(1);
-        let got = threads(me).expect("no thread count for our own process");
+            .output();
+        let after = threads(me);
 
+        // Released before anything can panic. A failed assertion above this
+        // line would leave 64 threads parked on the barrier for the rest of the
+        // suite, inflating exactly the figure under test.
         gate.wait();
         for h in handles {
             h.join().unwrap();
         }
 
+        let ps = ps.expect("ps -M");
+        // One header line, then one line per thread.
+        let expected = String::from_utf8_lossy(&ps.stdout)
+            .lines()
+            .count()
+            .saturating_sub(1) as u32;
+        let (before, after) = (
+            before.expect("no thread count for our own process"),
+            after.expect("no thread count for our own process"),
+        );
+
         assert!(
             expected >= 60,
             "ps saw {expected} threads, so the 64 never started and this proves nothing"
         );
-        // A tolerance, because the test harness runs cases in parallel and the
-        // two readings are microseconds apart — but a small one, since every
-        // field this could be confused with is out by forty or more.
+        // `ps` looked somewhere inside the bracket, so its answer has to land
+        // inside it too, give or take the threads that came and went while the
+        // three readings were taken. Still nothing like loose enough to admit a
+        // neighbouring field: those are out by forty or more.
+        let lo = before.min(after).saturating_sub(8);
+        let hi = before.max(after) + 8;
         assert!(
-            got.abs_diff(expected as u32) <= 8,
-            "ps -M counted {expected} threads, we read {got}"
+            (lo..=hi).contains(&expected),
+            "ps -M counted {expected} threads; we read {before} before it and {after} after"
         );
     }
 
     #[test]
     fn a_process_that_is_not_ours_reports_nothing_rather_than_one() {
-        // pid 1 is launchd, owned by root. A `1` here would be a fabricated
-        // figure sitting next to a CPU percentage that can contradict it.
-        assert_eq!(threads(1), None, "a thread count was invented for launchd");
-        // And a pid that cannot exist.
+        // A pid that cannot exist, whoever is asking.
         assert_eq!(threads(-1), None);
+
+        // pid 1 is launchd, owned by root. A `1` here would be a fabricated
+        // figure sitting next to a CPU percentage that can contradict it — but
+        // only an unprivileged caller is refused, and this project supports
+        // running as root precisely so that more of the table becomes readable.
+        // Asserting unconditionally would fail under `sudo cargo test`.
+        if unsafe { geteuid() } != 0 {
+            assert_eq!(threads(1), None, "a thread count was invented for launchd");
+        }
     }
 
     #[test]
