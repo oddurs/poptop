@@ -127,6 +127,26 @@ pub struct ProcFs {
     /// recycled pid would otherwise inherit the dead process's name, which is
     /// a correctness bug wearing an optimisation's clothes.
     names: HashMap<i32, (u64, Arc<str>)>,
+    /// pid -> (start time, command line). Keyed exactly like `names`, and for
+    /// the same reason: a recycled pid must not inherit the dead process's
+    /// command line.
+    ///
+    /// Held for the same reason `names` is, and it is mostly about allocation
+    /// rather than syscalls. A command line is an `Arc<str>` shared by every
+    /// retained sample: read once per process, the buffer holds 227 of them on
+    /// this machine; read afresh each sample it would hold 227 x 600, and
+    /// allocate 136,000 identical strings to get there.
+    ///
+    /// The syscall saving is real but small. Measured with `--bench` against
+    /// the VM's own `/proc`, 227 processes: 630us a sample with this cache and
+    /// 676us with `CMD_REFRESH` set to 1 so every process is re-read every
+    /// time. Seven percent — worth having, and nowhere near the 45% a
+    /// standalone loop over the same files suggested, because that loop
+    /// allocated a path per read where the collector reuses one buffer.
+    cmds: HashMap<i32, (u64, Option<Arc<str>>)>,
+    /// Which sample this is, so `cmdline` re-reads can be spread across
+    /// samples rather than all landing on one. See [`CMD_REFRESH`].
+    tick: u64,
     /// Reused across every file read, so a sample allocates no buffers.
     buf: Vec<u8>,
     /// Reused path, so `/proc/<pid>/stat` costs no allocation either.
@@ -178,6 +198,8 @@ impl ProcFs {
             prev_at: None,
             users: parse_passwd(),
             names: HashMap::new(),
+            cmds: HashMap::new(),
+            tick: 0,
             buf: vec![0; READ_BUF],
             path: String::with_capacity(32),
             // USER_HZ is fixed at 100 on effectively every Linux build. The
@@ -549,6 +571,8 @@ impl ProcFs {
             prev_proc_io,
             users,
             names,
+            cmds,
+            tick,
             ticks_per_sec,
             page_size,
             io_supported,
@@ -560,6 +584,8 @@ impl ProcFs {
             page_size: *page_size,
         };
 
+        *tick = tick.wrapping_add(1);
+        let tick = *tick;
         let mut out = Vec::new();
         let mut seen = HashMap::new();
         let mut seen_io = HashMap::new();
@@ -596,6 +622,12 @@ impl ProcFs {
             else {
                 continue;
             };
+            // A kernel thread's `cmdline` is empty, so the open and the read
+            // buy nothing. Skipped for the same reason the IO probe skips them,
+            // one branch down.
+            if !p.is_kernel_thread() {
+                p.cmd = cmdline(pid, p.started.unwrap_or(0), tick, cmds, path, buf);
+            }
             // Kernel threads are skipped rather than attempted and counted as
             // denied. They are root-owned and unreadable to an ordinary user,
             // and on a many-core box they outnumber the real processes — so
@@ -617,6 +649,7 @@ impl ProcFs {
         // Drop cached names for processes that have exited, or the map grows
         // without bound exactly like the counters would.
         names.retain(|pid, _| seen.contains_key(pid));
+        cmds.retain(|pid, _| seen.contains_key(pid));
         *prev_proc_jiffies = seen;
         // Cleared rather than kept while collection is off. Rates are a delta
         // against the previous read divided by one interval, so counters left
@@ -700,6 +733,84 @@ fn read_proc_io(
     }))
 }
 
+/// How many samples a command line is trusted for before it is read again.
+///
+/// A command line is not quite immutable: `setproctitle` rewrites `argv` in
+/// place, which is how postgres shows `postgres: writer process` and nginx
+/// shows `nginx: worker process`. Those are exactly the processes this column
+/// is most useful for, so a cache that never expired would freeze the one title
+/// worth watching.
+///
+/// Re-reads are staggered by pid rather than run all at once, so the cost is
+/// one thirtieth of a full pass on every sample instead of a full pass every
+/// thirtieth. At the default interval a rewritten title is at most half a
+/// minute stale.
+const CMD_REFRESH: u64 = 30;
+
+/// How much of `cmdline` is read at all.
+///
+/// Four kilobytes against a stored two hundred characters. The slack is for the
+/// reduction that happens after: the cap is on raw bytes, and `argv[0]`'s
+/// directory — dropped a moment later — can be most of a long path on its own.
+const CMD_READ_MAX: usize = 4096;
+
+/// The command line for a process, read at most once per `CMD_REFRESH` samples.
+///
+/// `None` means the file was empty or unreadable. Empty is the common case and
+/// means what it says — a kernel thread has no command line — and unreadable is
+/// a process that exited while we walked the directory. Neither is an error and
+/// both render as the `comm` fallback, so they are not told apart here.
+fn cmdline(
+    pid: i32,
+    started: u64,
+    tick: u64,
+    cache: &mut HashMap<i32, (u64, Option<Arc<str>>)>,
+    path: &mut String,
+    buf: &mut Vec<u8>,
+) -> Option<Arc<str>> {
+    // Spread by pid so every process is not re-read on the same sample.
+    let due = tick % CMD_REFRESH == pid.unsigned_abs() as u64 % CMD_REFRESH;
+    if let Some((t, cmd)) = cache.get(&pid)
+        && *t == started
+        && !due
+    {
+        return cmd.clone();
+    }
+    path.clear();
+    let _ = write!(path, "/proc/{pid}/cmdline");
+    // Capped, not read whole: see `read_capped`. Generous against `CMD_MAX`,
+    // because the cap is on bytes before `argv[0]`'s directory is dropped and a
+    // long path can eat most of it on its own.
+    let cmd = read_capped(path, buf, CMD_READ_MAX)
+        .ok()
+        .and_then(parse_cmdline)
+        .map(Arc::from);
+    cache.insert(pid, (started, cmd.clone()));
+    cmd
+}
+
+/// `/proc/<pid>/cmdline` into the line poptop stores.
+///
+/// The file is `argv` with a NUL after every element, including the last, so a
+/// naive split leaves a trailing empty string. Interior empties are kept: an
+/// empty argument is a real argument, and dropping it would silently rewrite
+/// the command.
+///
+/// Lossy rather than strict: an argument that is not UTF-8 is a real argument,
+/// and refusing the whole command line over one byte would lose the identity of
+/// a process running perfectly well.
+fn parse_cmdline(raw: &[u8]) -> Option<String> {
+    let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
+    if raw.is_empty() {
+        return None;
+    }
+    let argv: Vec<std::borrow::Cow<'_, str>> = raw
+        .split(|b| *b == 0)
+        .map(String::from_utf8_lossy)
+        .collect();
+    crate::sample::command_from_argv(argv.iter().map(|a| a.as_ref()))
+}
+
 /// Turn one `/proc/<pid>/stat` line into a sample.
 #[allow(clippy::too_many_arguments)]
 fn parse_proc_stat(
@@ -768,6 +879,7 @@ fn parse_proc_stat(
         threads: Some(threads),
         state,
         started: Some(starttime),
+        cmd: None,
         io: None,
     })
 }
@@ -1218,25 +1330,51 @@ fn parse_page_size(auxv: &[u8]) -> Option<u64> {
 /// came from. htop does the same thing with `openat` on a cached directory fd
 /// and one `read` into a fixed buffer.
 fn read_into<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b str> {
+    let raw = read_bytes(path, buf)?;
+    std::str::from_utf8(raw).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "not utf-8"))
+}
+
+/// The same read without the UTF-8 check, for a file that is not text.
+///
+/// `cmdline` is NUL-separated `argv`, and an argument that is not UTF-8 is
+/// still a real argument — refusing the whole command line over one byte would
+/// lose the identity of a process running perfectly well. Everything else in
+/// `/proc` goes through [`read_into`], which does check.
+fn read_bytes<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b [u8]> {
+    read_capped(path, buf, usize::MAX)
+}
+
+/// The same read, stopping after `cap` bytes.
+///
+/// For `cmdline`, which is the one `/proc` file with no useful bound on its
+/// size: a `java` invocation carries its whole classpath, and a glob-expanded
+/// command carries every filename it matched. Reading those whole would
+/// allocate megabytes to keep two hundred characters, and — because `buf` is
+/// the collector's shared buffer and it ratchets up and never shrinks — would
+/// leave every later read in the sample carrying that allocation.
+fn read_capped<'b>(path: &str, buf: &'b mut Vec<u8>, cap: usize) -> io::Result<&'b [u8]> {
     let mut f = File::open(path)?;
     if buf.len() < READ_BUF {
         buf.resize(READ_BUF, 0);
     }
     let mut n = 0;
     loop {
+        if n >= cap {
+            break;
+        }
         if n == buf.len() {
             // Only for a file larger than anything /proc is expected to serve.
             buf.resize(buf.len() * 2, 0);
         }
-        match f.read(&mut buf[n..]) {
+        let room = buf.len().min(cap);
+        match f.read(&mut buf[n..room]) {
             Ok(0) => break,
             Ok(k) => n += k,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         }
     }
-    std::str::from_utf8(&buf[..n])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "not utf-8"))
+    Ok(&buf[..n])
 }
 
 /// Cumulative block-layer bytes from `/proc/<pid>/io`.
@@ -1346,6 +1484,205 @@ mod tests {
             ticks_per_sec: pf.ticks_per_sec,
             page_size: pf.page_size,
         }
+    }
+
+    #[test]
+    fn a_cmdline_becomes_one_line() {
+        // The file is argv with a NUL after every element, including the last,
+        // so a naive split leaves a trailing empty string and the line ends in
+        // a space.
+        let raw = b"/usr/bin/node\0/srv/api/server.js\0--port\x003000\0";
+        assert_eq!(
+            parse_cmdline(raw).unwrap(),
+            "node /srv/api/server.js --port 3000"
+        );
+    }
+
+    #[test]
+    fn an_enormous_cmdline_does_not_inflate_the_shared_buffer() {
+        // A java invocation carries its whole classpath and a glob-expanded
+        // command carries every filename it matched. Read whole, that allocates
+        // megabytes to keep two hundred characters — and `buf` is the
+        // collector's shared buffer, which ratchets up and never shrinks, so
+        // every later read in the sample would carry the allocation too.
+        let dir = std::env::temp_dir().join(format!("poptop-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("huge");
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"/usr/bin/java\0");
+        for i in 0..40_000 {
+            raw.extend_from_slice(format!("/opt/lib/jar-{i}.jar").as_bytes());
+            raw.push(0);
+        }
+        assert!(raw.len() > 700_000, "the fixture is not large enough");
+        std::fs::write(&file, &raw).unwrap();
+
+        let mut buf = vec![0u8; READ_BUF];
+        let (read, named) = {
+            let got = read_capped(file.to_str().unwrap(), &mut buf, CMD_READ_MAX).unwrap();
+            (got.len(), parse_cmdline(got))
+        };
+        assert!(read <= CMD_READ_MAX, "read {read} bytes");
+        assert_eq!(
+            buf.len(),
+            READ_BUF,
+            "the shared buffer was inflated to {}",
+            buf.len()
+        );
+        // And the process is still named.
+        let named = named.expect("no command line");
+        assert!(named.starts_with("java "), "{named:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_kernel_thread_has_no_command_line() {
+        // Its cmdline is empty and its bracketed comm is the only identity it
+        // has. `None`, not an empty string.
+        assert_eq!(parse_cmdline(b""), None);
+        assert_eq!(parse_cmdline(b"\0"), None);
+    }
+
+    #[test]
+    fn a_live_process_with_a_bad_byte_in_argv_is_still_named() {
+        // Through `cmdline`, not `parse_cmdline`: the parse is lossy either
+        // way, and what this pins is that the *read* does not go through the
+        // strict UTF-8 check. With `read_into` in there the file comes back as
+        // `InvalidData` and the process shows as a blank.
+        //
+        // `arg0`, not a shell. The first version ran `sh -c 'sleep 5' <bad>`,
+        // and a shell whose script is a single command execs it directly —
+        // replacing the argv this test had just planted. Whether the read
+        // landed before or after that exec was a race: it passed locally every
+        // time and failed in CI. `sleep` execs nothing, so its argv is the one
+        // it was given, and `spawn` returning `Ok` already means the exec
+        // happened.
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::process::CommandExt as _;
+        let bad = std::ffi::OsStr::from_bytes(b"\xff\xfe-bad");
+        let mut child = std::process::Command::new("sleep")
+            .arg0(bad)
+            .arg("30")
+            .spawn()
+            .expect("could not spawn");
+
+        // Polled rather than read once. Between the fork and the exec, the
+        // child's `cmdline` still shows the *parent's* argv — the copied image
+        // has not been replaced yet — so a single read a moment after `spawn`
+        // returns can come back as the test harness's own command line. It did:
+        // one full-suite run in six, reporting `poptop-de69… --quiet`.
+        //
+        // The loop does not weaken what this pins. With the strict UTF-8 read
+        // in place every attempt returns `None`, so it times out and the
+        // expectation below still fails.
+        let mut cache = HashMap::new();
+        let (mut path, mut buf) = (String::new(), Vec::new());
+        let pid = child.id() as i32;
+        let mut got = None;
+        for _ in 0..200 {
+            cache.clear();
+            got = cmdline(pid, 1, 0, &mut cache, &mut path, &mut buf);
+            if got.as_deref().is_some_and(|c| c.ends_with(" 30")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let got = got.expect("a command line with one bad byte was refused entirely");
+        assert!(
+            got.ends_with(" 30"),
+            "the readable arguments were lost: {got:?}"
+        );
+        assert!(
+            got.contains('\u{fffd}'),
+            "the bad byte was not the one under test: {got:?}"
+        );
+    }
+
+    #[test]
+    fn an_argument_that_is_not_utf8_does_not_lose_the_command_line() {
+        // A process running perfectly well with one bad byte in its arguments
+        // still has an identity, and `read_into`'s strict check would have
+        // thrown the whole line away.
+        let raw = b"/bin/grep\0\xff\xfe\0/etc/passwd\0";
+        let got = parse_cmdline(raw).expect("the command line was refused");
+        assert!(got.starts_with("grep "), "{got:?}");
+        assert!(got.ends_with("/etc/passwd"), "{got:?}");
+    }
+
+    #[test]
+    fn a_command_line_is_read_once_and_then_cached() {
+        // The cache is mostly about allocation — see the field's comment —
+        // but it only saves anything if it is actually consulted.
+        let mut cache = HashMap::new();
+        let (mut path, mut buf) = (String::new(), Vec::new());
+        let me = std::process::id() as i32;
+
+        let first = cmdline(me, 100, 1, &mut cache, &mut path, &mut buf);
+        assert!(first.is_some(), "this process has no command line");
+
+        // A tick that is not this pid's refresh slot must not re-read. Proved
+        // by poisoning the cache: if the file is read again the poison is gone.
+        cache.insert(me, (100, Some(Arc::from("poison"))));
+        let quiet = (0..CMD_REFRESH)
+            .find(|t| t % CMD_REFRESH != me.unsigned_abs() as u64 % CMD_REFRESH)
+            .unwrap();
+        let again = cmdline(me, 100, quiet, &mut cache, &mut path, &mut buf);
+        assert_eq!(again.as_deref(), Some("poison"), "the file was read again");
+    }
+
+    #[test]
+    fn a_rewritten_title_is_picked_up_within_the_refresh_window() {
+        // postgres and nginx rewrite argv in place, and those are exactly the
+        // processes this column is most useful for. A cache that never expired
+        // would freeze the one title worth watching.
+        let mut cache = HashMap::new();
+        let (mut path, mut buf) = (String::new(), Vec::new());
+        let me = std::process::id() as i32;
+        cache.insert(me, (100, Some(Arc::from("stale"))));
+
+        let due = me.unsigned_abs() as u64 % CMD_REFRESH;
+        let got = cmdline(me, 100, due, &mut cache, &mut path, &mut buf);
+        assert_ne!(
+            got.as_deref(),
+            Some("stale"),
+            "the command line was never re-read"
+        );
+    }
+
+    #[test]
+    fn a_recycled_pid_does_not_inherit_the_dead_process_command_line() {
+        // Same guard as the name cache, one field over.
+        let mut cache = HashMap::new();
+        let (mut path, mut buf) = (String::new(), Vec::new());
+        let me = std::process::id() as i32;
+        cache.insert(me, (100, Some(Arc::from("the dead one"))));
+        // A different start time is a different process wearing the same pid.
+        let quiet = (0..CMD_REFRESH)
+            .find(|t| t % CMD_REFRESH != me.unsigned_abs() as u64 % CMD_REFRESH)
+            .unwrap();
+        let got = cmdline(me, 200, quiet, &mut cache, &mut path, &mut buf);
+        assert_ne!(got.as_deref(), Some("the dead one"));
+    }
+
+    #[test]
+    fn the_command_line_cache_does_not_grow_without_bound() {
+        // Every other per-pid map in this collector is pruned against `seen`,
+        // and one that is not is a leak on a box with process churn — which is
+        // the kind poptop gets pointed at.
+        let mut pf = ProcFs::new().unwrap();
+        pf.collect(Needs::default()).unwrap();
+        let before = pf.cmds.len();
+        pf.cmds.insert(-12345, (0, Some(Arc::from("a ghost"))));
+        pf.collect(Needs::default()).unwrap();
+        assert!(
+            !pf.cmds.contains_key(&-12345),
+            "an exited process was kept: {} entries, was {before}",
+            pf.cmds.len()
+        );
     }
 
     #[test]

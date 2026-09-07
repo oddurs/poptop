@@ -1608,12 +1608,6 @@ fn command_width(width: u16, show_io: bool) -> usize {
         .max(MIN_COMMAND_W) as usize
 }
 
-/// Exposed for tests: eliding is a claim about a string.
-#[cfg(test)]
-pub fn elide_middle_for_test(name: &str, w: usize) -> String {
-    elide_middle(name, w)
-}
-
 /// A tree prefix trimmed so the name it indents still has room to be read.
 ///
 /// Returns the prefix to draw and the columns left for the name. Deep enough
@@ -1646,7 +1640,7 @@ fn fit_prefix(prefix: &str, cmd_w: usize) -> (String, usize) {
 /// So both ends stay and the middle goes. The head keeps slightly more, because
 /// it is what a reader scans down the column for; the tail keeps enough to carry
 /// a parenthetical role.
-fn elide_middle(name: &str, w: usize) -> String {
+pub fn elide_middle(name: &str, w: usize) -> String {
     let n = name.chars().count();
     if n <= w {
         return name.to_string();
@@ -1811,7 +1805,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             let (prefix, room) = fit_prefix(&r.prefix, cmd_w);
             cells.push(Cell::from(Line::from(vec![
                 Span::styled(prefix, app.theme.chrome_style()),
-                Span::raw(elide_middle(&p.name, room)),
+                Span::raw(elide_middle(p.command(), room)),
             ])));
             Row::new(cells).style(style)
         })

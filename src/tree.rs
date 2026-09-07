@@ -177,6 +177,7 @@ mod tests {
             threads: Some(1),
             state: 'S',
             started: Some(0),
+            cmd: None,
             io: None,
         }
     }

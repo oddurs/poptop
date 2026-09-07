@@ -69,6 +69,81 @@ impl ProcSample {
     pub fn is_kernel_thread(&self) -> bool {
         self.pid == KTHREADD || self.ppid == KTHREADD
     }
+
+    /// What to write in the identity column: the command line if there is one,
+    /// and `comm` if there is not.
+    ///
+    /// A kernel thread has no command line and `[kworker/3:1]` is a real name,
+    /// so the fallback is a name rather than a blank.
+    pub fn command(&self) -> &str {
+        self.cmd.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// The longest command line poptop keeps.
+///
+/// Chrome's renderer runs to 1.4KB of flags — seatbelt handles, shared-memory
+/// descriptors, a variations seed. None of it identifies anything to a person,
+/// all of it is retained in every sample in the buffer, and the column it goes
+/// in is a few dozen characters wide. Cut with an ellipsis so a truncated line
+/// says it was truncated.
+const CMD_MAX: usize = 200;
+
+/// The command line poptop stores for a process, built from its `argv`.
+///
+/// The rule, and the reasoning, because a heuristic nobody can state is one
+/// nobody can fix:
+///
+/// 1. **`argv[0]` is reduced to its basename.** `/usr/bin/python3` and
+///    `/opt/homebrew/bin/python3` are both `python3`: the directory is the
+///    longest part of the string and the part every row shares. htop shows the
+///    same by default.
+/// 2. **Every argument after it is kept verbatim.** The tempting next step is
+///    to shorten path *arguments* the same way, and it is wrong — `node
+///    /srv/api/server.js` and `node /srv/web/server.js` both reduce to `node
+///    server.js`, destroying exactly the distinction the column exists to draw.
+///    The arguments are where the identity lives, so they are not touched.
+/// 3. **Reduced here, where `argv` is still a list, rather than at render.**
+///    Splitting a joined command line back on its first space finds the wrong
+///    boundary the moment a path contains one, and on macOS they nearly all do:
+///    `Google Chrome.app/Contents/…/Google Chrome Helper` has four. Doing it
+///    here means the boundary is known rather than guessed.
+///
+/// The cost of that choice is that the full path is not recoverable from a
+/// stored sample, so there is no htop-style toggle back to it. That is the
+/// trade taken deliberately: the alternative is a second copy of every command
+/// line in every retained sample, and the buffer is what poptop spends its
+/// memory on.
+///
+/// `None` for an empty `argv` — see [`ProcSample::cmd`].
+pub fn command_from_argv<'a>(argv: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut argv = argv.into_iter();
+    let argv0 = argv.next()?;
+    // `rsplit('/').next()` is never `None`, and on a path with no separator it
+    // is the whole string — so this is a no-op rather than a special case.
+    let mut out = String::new();
+    // Control characters are replaced, not passed through. An argument
+    // containing a newline is routine — an `awk` program, a `sed` script, a
+    // multi-line `grep -e` pattern — and one of them turns one row of `--once`
+    // into several, breaking the line-oriented output that mode exists to give.
+    // An ESC sequence in `argv` would otherwise reach the terminal directly.
+    // The TUI is safe either way because ratatui drops control characters when
+    // it writes a cell, but that is ratatui's guarantee and not this one's.
+    let push = |s: &str, out: &mut String| {
+        out.extend(s.chars().map(|c| if c.is_control() { ' ' } else { c }))
+    };
+    push(argv0.rsplit('/').next().unwrap_or(argv0), &mut out);
+    for arg in argv {
+        out.push(' ');
+        push(arg, &mut out);
+    }
+    if out.is_empty() {
+        return None;
+    }
+    if out.chars().count() > CMD_MAX {
+        out = out.chars().take(CMD_MAX - 1).collect::<String>() + "…";
+    }
+    Some(out)
 }
 
 /// `kthreadd`, the parent of every kernel thread, is always pid 2 on Linux.
@@ -457,6 +532,20 @@ pub struct ProcSample {
     /// recycled pid would be spliced into one line — the failure this field
     /// exists to prevent. See [`ProcSample::key`].
     pub started: Option<u64>,
+    /// The command line, as the process was invoked, arguments joined by
+    /// spaces.
+    ///
+    /// `comm` — the name one field up — is what `/proc/<pid>/stat` publishes,
+    /// and the kernel truncates it to fifteen characters. For anything under an
+    /// interpreter or a runtime it is the interpreter's name, so four services
+    /// are four rows reading `node` and the table says nothing about any of
+    /// them. This is the field that tells them apart.
+    ///
+    /// `None` where there is no command line to read: a kernel thread has an
+    /// empty `cmdline`, and its bracketed `comm` is the only identity it has.
+    /// Not an empty string — that would render as a blank row where a name
+    /// belongs.
+    pub cmd: Option<Arc<str>>,
     /// `None` means no figure is available — either extended collection was off
     /// when this sample was taken, or the process could not be read. The two
     /// cases are told apart by [`Sample::io_collected`], and neither is ever
@@ -584,5 +673,132 @@ impl Sample {
             net: None,
             filesystems: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    fn label(argv: &[&str]) -> Option<String> {
+        command_from_argv(argv.iter().copied())
+    }
+
+    #[test]
+    fn the_program_is_named_without_its_directory() {
+        assert_eq!(label(&["/usr/bin/python3"]).unwrap(), "python3");
+        // No separator: the whole string, not a special case.
+        assert_eq!(label(&["node"]).unwrap(), "node");
+    }
+
+    #[test]
+    fn processes_differing_only_in_arguments_are_told_apart() {
+        // The whole point of the item. Four rows reading `node` become four
+        // services.
+        let rows = [
+            label(&["/usr/local/bin/node", "/srv/api/server.js"]).unwrap(),
+            label(&["/usr/local/bin/node", "/srv/web/bundler.js", "--watch"]).unwrap(),
+            label(&["/usr/local/bin/node", "/srv/api/worker.js"]).unwrap(),
+        ];
+        let distinct: std::collections::HashSet<&String> = rows.iter().collect();
+        assert_eq!(distinct.len(), 3, "rows are not distinguishable: {rows:?}");
+        assert_eq!(rows[1], "node /srv/web/bundler.js --watch");
+    }
+
+    #[test]
+    fn a_path_argument_keeps_its_directory() {
+        // The rejected heuristic, kept as a test because it is the tempting one.
+        // Shortening path *arguments* the way `argv[0]` is shortened collapses
+        // these two to `node server.js` and destroys the distinction the column
+        // exists to draw.
+        let api = label(&["node", "/srv/api/server.js"]).unwrap();
+        let web = label(&["node", "/srv/web/server.js"]).unwrap();
+        assert_ne!(api, web, "the argument's directory was stripped");
+    }
+
+    #[test]
+    fn a_program_path_containing_spaces_is_still_reduced() {
+        // macOS bundles put spaces in nearly every path, and splitting a joined
+        // command line back on its first space finds a boundary inside the
+        // directory rather than at the end of it. Reducing here, where argv is
+        // still a list, is what makes this work — and it did not, when the
+        // split happened at render time.
+        let got = label(&[
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome Helper (Renderer)",
+            "--type=renderer",
+        ])
+        .unwrap();
+        assert_eq!(got, "Google Chrome Helper (Renderer) --type=renderer");
+    }
+
+    #[test]
+    fn an_empty_argv_has_no_command_line() {
+        // Not an empty string: a kernel thread has no command line, and a blank
+        // renders as a row with no name where `[kworker/3:1]` belongs.
+        assert_eq!(label(&[]), None);
+        assert_eq!(label(&[""]), None);
+    }
+
+    #[test]
+    fn a_process_without_a_command_line_falls_back_to_its_name() {
+        let mut p = ProcSample {
+            pid: 2,
+            ppid: 0,
+            name: Arc::from("[kworker/3:1]"),
+            user: Arc::from("root"),
+            cpu: 0.0,
+            rss: 0,
+            threads: Some(1),
+            state: 'S',
+            started: Some(1),
+            cmd: None,
+            io: None,
+        };
+        assert_eq!(p.command(), "[kworker/3:1]");
+        p.cmd = Some(Arc::from("node server.js"));
+        assert_eq!(p.command(), "node server.js");
+    }
+
+    #[test]
+    fn an_enormous_command_line_is_cut_and_says_so() {
+        // A Chrome renderer runs to 1.4KB of seatbelt handles and shared-memory
+        // descriptors, retained in every sample in the buffer, for a column a
+        // few dozen characters wide.
+        let long = "x".repeat(4000);
+        let got = label(&["chrome", &long]).unwrap();
+        assert_eq!(got.chars().count(), CMD_MAX);
+        assert!(got.ends_with('…'), "a cut line does not say it was cut");
+        assert!(
+            got.starts_with("chrome "),
+            "the cut took the identifying end"
+        );
+    }
+
+    #[test]
+    fn a_newline_in_an_argument_stays_on_one_line() {
+        // `awk` programs, `sed` scripts and multi-line `grep -e` patterns all
+        // carry newlines routinely, and one of them turns one row of `--once`
+        // into several — breaking the line-oriented output that mode exists to
+        // give.
+        let got = label(&["awk", "BEGIN {\n  print 1\n}", "file"]).unwrap();
+        assert!(!got.contains('\n'), "the argument broke the row: {got:?}");
+        assert!(got.starts_with("awk BEGIN"), "{got:?}");
+    }
+
+    #[test]
+    fn an_escape_sequence_in_an_argument_does_not_reach_the_terminal() {
+        // `argv` is attacker-controlled by anyone who can start a process, and
+        // `--once` writes straight to stdout. The TUI is safe either way
+        // because ratatui drops control characters as it writes a cell, but
+        // that is ratatui's guarantee rather than this one's.
+        let got = label(&["sh", "-c", "\x1b[2J\x1b[1;31mred"]).unwrap();
+        assert!(!got.contains('\x1b'), "an escape survived: {got:?}");
+    }
+
+    #[test]
+    fn an_empty_argument_is_kept() {
+        // `sh -c ''` really did run with an empty argument, and dropping it
+        // would show a different command from the one that is running.
+        assert_eq!(label(&["sh", "-c", "", "x"]).unwrap(), "sh -c  x");
     }
 }

@@ -266,6 +266,7 @@ mod tests {
                     threads: Some(1),
                     state: 'R',
                     started: Some(1),
+                    cmd: None,
                     io: None,
                 })
                 .collect(),
