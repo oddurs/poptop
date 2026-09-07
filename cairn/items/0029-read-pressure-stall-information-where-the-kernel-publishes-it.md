@@ -2,7 +2,7 @@
 id: 29
 title: Read Pressure Stall Information where the kernel publishes it
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
