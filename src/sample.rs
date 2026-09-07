@@ -40,6 +40,17 @@ pub struct MemStat {
 }
 
 impl ProcSample {
+    /// How this process is followed from one sample to the next.
+    ///
+    /// `None` when the platform would not give a start time. A caller with no
+    /// key must not fall back to the pid alone: pids are recycled, and a
+    /// recycled pid is precisely the case that produces a graph made of two
+    /// different programs. Better a process with no history than a history
+    /// belonging to something else.
+    pub fn key(&self) -> Option<(i32, u64)> {
+        Some((self.pid, self.started?))
+    }
+
     /// Whether this is a kernel thread rather than a program.
     ///
     /// Everything under `kthreadd` — `kworker/*`, `ksoftirqd`, `irq/*` — plus
@@ -55,17 +66,6 @@ impl ProcSample {
     /// A Linux notion. On macOS pid 2 is an ordinary process, so one process in
     /// several hundred is wrongly excluded from the IO ratio there — which
     /// changes no decision this figure is used for.
-    /// How this process is followed from one sample to the next.
-    ///
-    /// `None` when the platform would not give a start time. A caller with no
-    /// key must not fall back to the pid alone: pids are recycled, and a
-    /// recycled pid is precisely the case that produces a graph made of two
-    /// different programs. Better a process with no history than a history
-    /// belonging to something else.
-    pub fn key(&self) -> Option<(i32, u64)> {
-        Some((self.pid, self.started?))
-    }
-
     pub fn is_kernel_thread(&self) -> bool {
         self.pid == KTHREADD || self.ppid == KTHREADD
     }

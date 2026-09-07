@@ -144,14 +144,9 @@ impl Collector for SysinfoCollector {
                         s => Some(s * 1_000_000),
                     },
                 };
-                let name = match names.get(&id) {
-                    Some((t, n)) if *t == started => n.clone(),
-                    _ => {
-                        let n: Arc<str> = Arc::from(p.name().to_string_lossy().as_ref());
-                        names.insert(id, (started, n.clone()));
-                        n
-                    }
-                };
+                let name = cached_name(names, id, started, || {
+                    Arc::from(p.name().to_string_lossy().as_ref())
+                });
                 ProcSample {
                     pid: id,
                     // sysinfo reports no parent for processes this user does not
@@ -249,5 +244,73 @@ fn status_char(s: sysinfo::ProcessStatus) -> char {
         Stop => 'T',
         Zombie => 'Z',
         _ => '?',
+    }
+}
+
+/// The cached name for a process, allocating one only when this is not the
+/// process the cache last saw under that pid.
+///
+/// The allocation is the point: a name is an `Arc<str>` shared by every
+/// retained sample, so the ring buffer holds one per process rather than one
+/// per row per second.
+///
+/// Matched on `Some(t) == Some(t)` and never on two `None`s. An unknown start
+/// time is not evidence of sameness, and treating it as such lets a pid
+/// recycled between two samples inherit the dead process's name — the same
+/// splice [`crate::sample::ProcSample::key`] refuses, one field over. That path
+/// is live whenever [`Kinfo::probe`] found no usable `kinfo_proc` and sysinfo
+/// is answering instead.
+fn cached_name(
+    names: &mut HashMap<i32, (Option<u64>, Arc<str>)>,
+    pid: i32,
+    started: Option<u64>,
+    fresh: impl FnOnce() -> Arc<str>,
+) -> Arc<str> {
+    match names.get(&pid) {
+        Some((Some(t), n)) if Some(*t) == started => n.clone(),
+        _ => {
+            let n = fresh();
+            names.insert(pid, (started, n.clone()));
+            n
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_process_seen_again_keeps_the_name_it_already_had() {
+        // The whole reason the cache exists — one allocation per process, not
+        // one per row per sample.
+        let mut names = HashMap::new();
+        let first = cached_name(&mut names, 7, Some(100), || Arc::from("shell"));
+        let again = cached_name(&mut names, 7, Some(100), || Arc::from("shell"));
+        assert!(Arc::ptr_eq(&first, &again), "the name was reallocated");
+    }
+
+    #[test]
+    fn a_recycled_pid_does_not_inherit_the_dead_process_name() {
+        let mut names = HashMap::new();
+        cached_name(&mut names, 7, Some(100), || Arc::from("shell"));
+        let after = cached_name(&mut names, 7, Some(200), || Arc::from("compiler"));
+        assert_eq!(&*after, "compiler");
+    }
+
+    #[test]
+    fn two_unknown_start_times_are_not_treated_as_the_same_process() {
+        // `None == None` is true and would be a cache hit, so a pid recycled
+        // while neither occupant could be timed would show the dead one's name.
+        // This is the path taken whenever `Kinfo::probe` finds no usable
+        // `kinfo_proc` and sysinfo, which cannot time other users' processes,
+        // is answering instead.
+        let mut names = HashMap::new();
+        cached_name(&mut names, 7, None, || Arc::from("shell"));
+        let after = cached_name(&mut names, 7, None, || Arc::from("compiler"));
+        assert_eq!(
+            &*after, "compiler",
+            "an unknown start time was taken as proof of sameness"
+        );
     }
 }

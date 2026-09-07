@@ -310,8 +310,7 @@ fn write_sample(out: &mut Out, s: &Sample) {
         out.u64(p.rss);
         out.u32(p.threads);
         out.u8(p.state as u8);
-        out.u8(u8::from(p.started.is_some()));
-        out.u64(p.started.unwrap_or(0));
+        out.opt_u64(p.started);
         out.u8(u8::from(p.io.is_some()));
         let io = p.io.unwrap_or_default();
         out.u64(io.read);
@@ -388,8 +387,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         let rss = r.u64()?;
         let threads = r.u32()?;
         let state = r.u8()? as char;
-        let has_started = r.u8()? != 0;
-        let started = r.u64()?;
+        let started = r.opt_u64()?;
         let has_io = r.u8()? != 0;
         let read = r.u64()?;
         let write = r.u64()?;
@@ -402,7 +400,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
             rss,
             threads,
             state,
-            started: has_started.then_some(started),
+            started,
             io: has_io.then_some(IoRates { read, write }),
         });
     }
