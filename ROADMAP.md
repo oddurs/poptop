@@ -23,14 +23,13 @@ Timeline, scrubbing, process tree, colour that survives a colourblind reader and
 
 ## v0.2 — Cheap enough to run
 
-`########··` 75% · 9 of 12 done · due 2026-11-01
+`#########·` 83% · 10 of 12 done · due 2026-11-01
 
 Collector fast enough for sub-second sampling, and the data-fidelity gaps against atop closed or disclosed.
 
 ### backlog
 
 - [ ] `0011` Capture processes that live and die between samples <sup>feature · p0</sup>
-- [ ] `0024` Per-process CPU is wrong on macOS below a 200ms sample interval <sup>bug · p1</sup>
 - [ ] `0025` A process that exits mid-sample is reported as needing root <sup>bug · p1</sup>
 
 ### done
@@ -44,6 +43,7 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 - [x] `0021` Show memory as a composition bar rather than a percentage <sup>feature · p1</sup>
 - [x] `0022` Show disk IO in the default process table <sup>feature · p1</sup>
 - [x] `0023` RSS is wrong by an integer factor on any kernel without 4K pages <sup>bug · p0</sup>
+- [x] `0024` Per-process CPU is wrong on macOS below a 200ms sample interval <sup>bug · p1</sup>
 
 ## v1.0 — Yours to configure
 

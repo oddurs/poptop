@@ -19,6 +19,16 @@ pub struct Needs {
     pub io: bool,
 }
 
+/// The fastest this backend can be sampled and still report the truth.
+///
+/// A property of the backend, not of the tool. The `/proc` floor is a cost
+/// argument — a pass is about 1ms at 400 processes, so 50ms spends 2% of a core
+/// — while sysinfo's is a correctness one: below its refresh minimum the CPU
+/// figures it returns are not noisy, they are wrong. Sharing one constant
+/// between them meant applying the Linux reasoning to a platform it was never
+/// about.
+pub use backend::{MIN_INTERVAL, MIN_INTERVAL_WHY};
+
 pub trait Collector {
     /// Take one snapshot. Backends hold whatever raw counters they need to
     /// turn cumulative kernel numbers into per-interval rates.
@@ -39,9 +49,13 @@ pub trait Collector {
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+use linux as backend;
+#[cfg(target_os = "linux")]
 pub use linux::ProcFs as Platform;
 
 #[cfg(not(target_os = "linux"))]
 mod darwin;
+#[cfg(not(target_os = "linux"))]
+use darwin as backend;
 #[cfg(not(target_os = "linux"))]
 pub use darwin::SysinfoCollector as Platform;

@@ -12,7 +12,33 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use sysinfo::{ProcessesToUpdate, System, Users};
 
+/// The fastest sysinfo can be sampled and still report the truth.
+///
+/// A correctness argument rather than a cost one. sysinfo documents a minimum
+/// interval between CPU refreshes, and below it the figures are not noisy —
+/// they are wrong, with nothing on screen to say so. Measured on an idle-ish
+/// machine, the busiest process reported:
+///
+/// ```text
+///   50ms -> 3.5%      100ms -> 262.9%      1000ms -> 323.8%
+/// ```
+///
+/// Two and a half cores of work, reported as three and a half percent.
+/// Taken from sysinfo rather than transcribed. The number and the sentence
+/// describing it were separately maintained for about an hour, which is long
+/// enough: a message stating a figure the code no longer enforces is worse than
+/// one stating none.
+pub const MIN_INTERVAL: std::time::Duration = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+
+/// Deliberately without the number in it — the caller already prints
+/// `MIN_INTERVAL`, and a second copy is a second thing to keep in step.
+pub const MIN_INTERVAL_WHY: &str = "sysinfo needs that long between CPU refreshes on this platform, and below \
+     it the per-process figures are wrong rather than merely noisy";
+
 pub struct SysinfoCollector {
+    /// Whether a sample has been taken yet. See `sample`: the first one cannot
+    /// carry valid CPU figures, so it reports none.
+    primed: bool,
     sys: System,
     users: Users,
     /// pid -> (start time, name). Same key as the Linux collector, and for the
@@ -23,6 +49,7 @@ pub struct SysinfoCollector {
 impl SysinfoCollector {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
+            primed: false,
             sys: System::new_all(),
             users: Users::new_with_refreshed_list(),
             names: HashMap::new(),
@@ -32,18 +59,37 @@ impl SysinfoCollector {
 
 impl Collector for SysinfoCollector {
     fn sample(&mut self, needs: Needs) -> io::Result<Sample> {
+        // `System::new_all` has already refreshed by the time this runs, and
+        // this call lands microseconds later — far inside the interval sysinfo
+        // needs between CPU refreshes. So the first sample's CPU figures are
+        // exactly what the interval floor exists to refuse, and they would
+        // otherwise be drawn as the first frame, pushed into history, and
+        // persisted.
+        //
+        // Reported as zero rather than waited out. The `/proc` backend already
+        // says zero for its first sample — there is no previous counter to diff
+        // against — so this makes the two agree, instead of making the first
+        // frame arrive a fifth of a second late.
+        let first = !self.primed;
+        self.primed = true;
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
 
-        let cpu_per_core: Vec<f32> = self.sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+        let cpu_per_core: Vec<f32> = if first {
+            vec![0.0; self.sys.cpus().len()]
+        } else {
+            self.sys.cpus().iter().map(|c| c.cpu_usage()).collect()
+        };
         let cpu_total = if cpu_per_core.is_empty() {
             0.0
         } else {
             cpu_per_core.iter().sum::<f32>() / cpu_per_core.len() as f32
         };
 
-        let Self { sys, users, names } = self;
+        let Self {
+            sys, users, names, ..
+        } = self;
 
         // Whose processes we can actually see the IO of.
         //
@@ -92,7 +138,7 @@ impl Collector for SysinfoCollector {
                         .and_then(|uid| users.get_user_by_id(uid))
                         .map(|u| std::sync::Arc::from(u.name()))
                         .unwrap_or_else(|| std::sync::Arc::from("?")),
-                    cpu: p.cpu_usage(),
+                    cpu: if first { 0.0 } else { p.cpu_usage() },
                     rss: p.memory(),
                     // sysinfo exposes tasks only on Linux, where we use the other
                     // backend anyway.

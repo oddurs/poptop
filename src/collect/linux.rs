@@ -81,6 +81,16 @@ impl CpuTimes {
     }
 }
 
+/// The fastest `/proc` can be walked without the monitor becoming the load.
+///
+/// A cost argument, and the number is the argument: a pass is about 1ms at 400
+/// processes, so 50ms spends 2% of a core and 10ms would spend 10%. A monitor
+/// that is itself the load is not measuring the machine, it is measuring
+/// itself.
+pub const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+pub const MIN_INTERVAL_WHY: &str = "a /proc pass costs about 1ms at 400 processes, so anything faster spends \
+     more of the machine on watching it than is worth knowing";
+
 pub struct ProcFs {
     prev_total: Option<CpuTimes>,
     prev_cores: Vec<CpuTimes>,

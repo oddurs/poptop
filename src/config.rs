@@ -126,14 +126,11 @@ impl Settings {
 /// Ten minutes, the span the buffer has always held at one sample a second.
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(600);
 
-/// Bounds on the sample rate.
+/// The ceiling on the sample rate. Above it the timeline stops being one.
 ///
-/// Below the floor the collector is most of what the machine is doing: a pass
-/// costs about 1ms at 400 processes, so 50ms spends 2% of a core and 10ms
-/// would spend 10% — a monitor that is itself the load is not measuring the
-/// machine, it is measuring itself. Above the ceiling the timeline stops being
-/// a timeline.
-const MIN_INTERVAL: Duration = Duration::from_millis(50);
+/// The floor belongs to the backend rather than here: see
+/// [`crate::collect::MIN_INTERVAL`]. One shared constant meant applying a
+/// `/proc` cost argument to a platform where the limit is about correctness.
 const MAX_INTERVAL: Duration = Duration::from_secs(60);
 const MIN_WINDOW: Duration = Duration::from_secs(10);
 
@@ -607,9 +604,20 @@ fn check_settings(s: &Settings) -> Result<(), String> {
 /// its own says nothing: a day of history at one sample a second and ten
 /// minutes at sixty a second are the same buffer.
 fn check_buffer(s: &Settings) -> Result<(), String> {
-    if s.interval < MIN_INTERVAL || s.interval > MAX_INTERVAL {
+    if s.interval < crate::collect::MIN_INTERVAL {
+        // The reason travels with the number. A floor that differs by platform
+        // and does not say why reads as an arbitrary limit.
         return Err(format!(
-            "`interval` is {:?}; it must be between {MIN_INTERVAL:?} and {MAX_INTERVAL:?}",
+            "`interval` is {:?}; the fastest this build can sample is {:?}, because {}",
+            s.interval,
+            crate::collect::MIN_INTERVAL,
+            crate::collect::MIN_INTERVAL_WHY,
+        ));
+    }
+    if s.interval > MAX_INTERVAL {
+        return Err(format!(
+            "`interval` is {:?}; the slowest is {MAX_INTERVAL:?}, past which the \
+             timeline stops being a timeline",
             s.interval
         ));
     }
@@ -1339,12 +1347,27 @@ mod rate {
     fn a_rate_the_collector_cannot_sustain_is_rejected() {
         // A pass costs about 1ms at 400 processes, so 50ms already spends 2%
         // of a core. A monitor that is itself the load is measuring itself.
-        for bad in ["1ms", "10ms", "5m"] {
+        // Below the backend's own floor, whichever backend this is.
+        let too_fast = crate::collect::MIN_INTERVAL / 2;
+        for bad in [
+            format!("{}ms", too_fast.as_millis()),
+            "1ms".into(),
+            "5m".into(),
+        ] {
+            let bad = bad.as_str();
             let (s, w) = run(&format!("interval = {bad}\n"), &[]).unwrap();
             assert_eq!(s.interval, crate::app::DEFAULT_INTERVAL, "`{bad}` stuck");
             assert!(!w.is_empty(), "`{bad}` went unreported");
         }
-        assert!(run("interval = 50ms\n", &[]).unwrap().1.is_empty());
+        // …and the floor itself is accepted, so the bound is inclusive.
+        let floor = format!(
+            "interval = {}ms\n",
+            crate::collect::MIN_INTERVAL.as_millis()
+        );
+        assert!(
+            run(&floor, &[]).unwrap().1.is_empty(),
+            "the floor is rejected"
+        );
         assert!(run("interval = 60s\n", &[]).unwrap().1.is_empty());
     }
 
@@ -1608,5 +1631,73 @@ mod themes {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod floors {
+    use super::*;
+
+    #[test]
+    fn each_backend_states_its_own_floor_and_why() {
+        // One shared constant applied a `/proc` cost argument to a platform
+        // where the limit is about correctness, so 50ms was accepted on macOS
+        // and returned per-process figures that were wrong rather than noisy.
+        let floor = crate::collect::MIN_INTERVAL;
+        let why = crate::collect::MIN_INTERVAL_WHY;
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(floor, Duration::from_millis(50), "the /proc floor moved");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            floor,
+            Duration::from_millis(200),
+            "sysinfo's documented CPU refresh minimum"
+        );
+
+        assert!(!why.is_empty(), "a floor with no reason reads as arbitrary");
+        // The floor lives in one place. Supporting evidence may carry figures
+        // of its own — the `/proc` reason cites 1ms at 400 processes — but a
+        // sentence restating *the floor* is a second copy to keep in step, and
+        // that one drifted within the hour of being written.
+        assert!(
+            !why.contains(&format!("{floor:?}")),
+            "the reason restates the floor, which the caller already prints: {why}"
+        );
+        assert!(floor <= MAX_INTERVAL, "the bounds cross");
+    }
+
+    #[test]
+    fn a_rejected_interval_says_what_the_limit_is_and_why() {
+        let fast = format!(
+            "interval = {}ms\n",
+            crate::collect::MIN_INTERVAL.as_millis() / 2
+        );
+        let (_, w) = resolve(
+            Settings::fixed(),
+            Sources {
+                file: Some(("conf", &fast)),
+                no_color: false,
+                themes: &no_themes,
+            },
+            &[],
+        )
+        .map(|(s, _, w)| (s, w))
+        .unwrap();
+        assert_eq!(
+            w.len(),
+            1,
+            "{:?}",
+            w.iter().map(|x| &x.0).collect::<Vec<_>>()
+        );
+        let msg = &w[0].0;
+        assert!(
+            msg.contains(&format!("{:?}", crate::collect::MIN_INTERVAL)),
+            "the message does not name the limit: {msg}"
+        );
+        assert!(
+            msg.contains(crate::collect::MIN_INTERVAL_WHY),
+            "the message does not say why: {msg}"
+        );
     }
 }
