@@ -102,6 +102,11 @@ impl Collector for SysinfoCollector {
                 total: self.sys.total_memory(),
                 used: self.sys.used_memory(),
                 available: self.sys.available_memory(),
+                // Not `free_memory()`. See `MemStat::free`: on macOS it is
+                // `free - speculative` with a saturating subtract, which is
+                // zero on any warm machine — and `used` and `available` overlap
+                // anyway, so there is no partition here to draw.
+                free: None,
                 swap_total: self.sys.total_swap(),
                 swap_used: self.sys.used_swap(),
             },

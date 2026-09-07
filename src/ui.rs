@@ -285,12 +285,39 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         });
     }
 
+    // A percentage says how much; a composition says how much trouble you are
+    // in. "37% used" reads identically on a box with eight gigabytes free and
+    // on one whose only headroom is page cache it is about to have to drop —
+    // and the second is the one worth knowing about.
+    // Wide enough that the minimum-visible rule cannot distort it much: at
+    // eight columns a sliver rounded up to a whole column moved the bar by
+    // twelve percentage points, beside a figure stating the real one.
+    const MEM_BAR_W: usize = 12;
+    let (parts, has_cache) = s.mem.composition();
+    let mut mem_spans = vec![
+        Span::styled("MEM ", dim),
+        Span::styled(format!("{mem_pct:>5.1}%"), app.theme.figure_style(mem_pct)),
+    ];
+    let widths = glyphs::composition(parts, MEM_BAR_W);
+    if widths.iter().any(|&n| n > 0) {
+        mem_spans.push(Span::raw(" "));
+        for ((glyph, style), n) in [
+            (glyphs::SEG_USED, app.theme.figure_style(mem_pct)),
+            (glyphs::SEG_CACHE, dim),
+            (glyphs::SEG_FREE, app.theme.chrome_style()),
+        ]
+        .into_iter()
+        .zip(widths)
+        {
+            mem_spans.push(Span::styled(glyph.to_string().repeat(n), style));
+        }
+    }
+    // Nothing says the middle segment is cache except its presence, so a
+    // platform that cannot separate cache from free simply has none.
+    debug_assert!(has_cache || widths[1] == 0);
     figures.push(Figure {
         rank: 4,
-        spans: vec![
-            Span::styled("MEM ", dim),
-            Span::styled(format!("{mem_pct:>5.1}%"), app.theme.figure_style(mem_pct)),
-        ],
+        spans: mem_spans,
     });
     // Ranked below uptime and the process count despite being about memory,
     // which is more diagnostic than either. It is twenty-nine columns wide, and
@@ -298,13 +325,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // at a hundred columns it fit nothing and cost two figures that would have.
     figures.push(Figure {
         rank: 8,
+        // Shorter than it was: the bar shows what is available, so saying it
+        // again in words was the third statement of one fact on one line.
         spans: vec![Span::styled(
-            format!(
-                "({} / {}, {} avail)",
-                fmt_bytes(s.mem.used),
-                fmt_bytes(s.mem.total),
-                fmt_bytes(s.mem.available)
-            ),
+            format!("{} / {}", fmt_bytes(s.mem.used), fmt_bytes(s.mem.total)),
             dim,
         )],
     });

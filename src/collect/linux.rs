@@ -237,6 +237,7 @@ impl ProcFs {
         };
         let total = get("MemTotal:");
         let available = get("MemAvailable:");
+        let free = get("MemFree:");
         let swap_total = get("SwapTotal:");
         let swap_free = get("SwapFree:");
         Ok(MemStat {
@@ -245,6 +246,11 @@ impl ProcFs {
             // the "really in use" figure rather than the alarming one.
             used: total.saturating_sub(available),
             available,
+            // Clamped: `MemFree` and `MemAvailable` are read from the same
+            // snapshot but computed differently, and on a box with almost no
+            // cache the estimate can land just under free — which would make
+            // the cache segment of the bar negative and wrap.
+            free: Some(free.min(available)),
             swap_total,
             swap_used: swap_total.saturating_sub(swap_free),
         })
@@ -840,6 +846,49 @@ mod tests {
                 &mut Vec::new()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn memory_reads_a_composition_that_holds_together() {
+        // Against the live `/proc/meminfo`, because the parse is the thing that
+        // can silently return zero — and a zero `free` makes every byte of
+        // headroom look like cache the kernel is about to have to drop.
+        let mut pf = ProcFs::new().unwrap();
+        let m = pf.read_mem().unwrap();
+        assert!(m.total > 0, "no total memory");
+        assert!(m.available <= m.total, "available exceeds total");
+
+        // Compared against the file rather than against a threshold. Asserting
+        // `free > 0` conflates "the parse failed" with "this box has no free
+        // pages", and the second is a legitimate state for a container to be
+        // in — the test would fail for the right reason on the wrong machine.
+        let raw = std::fs::read_to_string("/proc/meminfo").unwrap();
+        let field = |key: &str| -> u64 {
+            raw.lines()
+                .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse().ok())
+                .map(|v: u64| v * 1024)
+                .unwrap_or(0)
+        };
+        assert!(
+            field("MemFree:") > 0,
+            "the fixture file has no MemFree line"
+        );
+        assert_eq!(
+            m.free,
+            Some(field("MemFree:").min(field("MemAvailable:"))),
+            "MemFree was not read"
+        );
+
+        // The partition the bar draws has to account for the whole machine.
+        // Asserted on the real expression rather than on `a + (t - a) == t`,
+        // which is true of any `a` and can only fail by panicking.
+        let (parts, has_cache) = m.composition();
+        assert!(has_cache, "Linux can separate cache from free");
+        assert_eq!(
+            parts.iter().sum::<u64>(),
+            m.total,
+            "the three segments do not account for the whole machine"
         );
     }
 

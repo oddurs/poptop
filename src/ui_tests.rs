@@ -44,6 +44,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
             total: 16 << 30,
             used: 8 << 30,
             available: 8 << 30,
+            free: Some(5 << 30),
             swap_total: 2 << 30,
             swap_used: 1 << 30,
         },
@@ -3063,17 +3064,33 @@ fn the_header_gives_up_its_least_diagnostic_figures_first() {
     // built after it. At a width that fits exactly one, rank has to decide —
     // without the ranking, insertion order keeps the wrong one.
     let middle = at(100);
+    // `avail` used to be the marker here; the memory bar replaced that text,
+    // which quietly made the negative clause unfalsifiable. The byte detail is
+    // still the lower-ranked half of the pair, so it is still the discriminator
+    // — it just has different words now.
     assert!(
-        middle.contains("SWP") && !middle.contains("avail"),
+        middle.contains("SWP") && !middle.contains(" / 16.0G"),
         "figures were kept in build order rather than by rank: {middle}"
     );
-    // …and the wide memory detail does not block the shorter figures behind
-    // it. Under a prefix rule one fat figure costs everything after it, which
-    // cost a hundred-column terminal two figures that fit twice over.
-    assert!(
-        middle.contains("UP ") && middle.contains("PROCS"),
-        "a 29-column figure blocked two that fit: {middle}"
-    );
+    // …and the ranking holds as a rule rather than at one lucky width: under a
+    // prefix rule a lower-ranked figure can never appear without every figure
+    // above it. A fat figure ranked high blocks everything behind it, which
+    // once cost a hundred-column terminal two figures that fit twice over.
+    for w in 20..=200u16 {
+        let line = at(w);
+        let has = |s: &str| line.contains(s);
+        for (lower, higher) in [
+            ("8.0G / 16.0G", "PROCS"),
+            ("PROCS", "UP "),
+            ("UP ", "SWP"),
+            ("LOAD", "PROCS"),
+        ] {
+            assert!(
+                !has(lower) || has(higher),
+                "at w={w} `{lower}` appeared without `{higher}`: {line}"
+            );
+        }
+    }
 
     let narrow = at(60);
     for kept in ["CPU", "WAIT", "RUN", "BLOCKED"] {
@@ -3351,4 +3368,132 @@ fn the_legend_stops_at_a_phrase_boundary_at_every_width() {
             "the legend was cut mid-phrase at w={w}: {trimmed:?}"
         );
     }
+}
+
+#[test]
+fn memory_is_shown_as_a_composition_not_just_a_level() {
+    // "37% used" reads identically on a box with eight gigabytes free and on
+    // one whose only headroom is page cache it is about to have to drop. The
+    // level is the same and the situation is not.
+    let mut roomy = App::new(60);
+    let mut s = sample(5.0);
+    s.mem = MemStat {
+        total: 16 << 30,
+        used: 6 << 30,
+        available: 10 << 30,
+        free: Some(10 << 30), // all headroom is genuinely free
+        swap_total: 0,
+        swap_used: 0,
+    };
+    roomy.push(s.clone());
+
+    let mut cached = App::new(60);
+    s.mem.free = Some(1 << 30); // …the same level, but the headroom is cache
+    cached.push(s);
+
+    let bar = |app: &App| {
+        render_lines(app, 120, 24)[1]
+            .chars()
+            .filter(|c| "█▒░".contains(*c))
+            .collect::<String>()
+    };
+    assert_eq!(
+        bar(&roomy).chars().count(),
+        12,
+        "the bar is not twelve columns"
+    );
+    assert_ne!(
+        bar(&roomy),
+        bar(&cached),
+        "two very different machines drew the same memory bar"
+    );
+    assert!(bar(&cached).contains('▒'), "the cache segment is missing");
+}
+
+#[test]
+fn the_memory_bar_separates_by_glyph_so_it_survives_monochrome() {
+    // Every other meaning-bearing element here is legible without colour, and
+    // a bar whose segments are only told apart by hue would be the exception.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.mem = MemStat {
+        total: 16 << 30,
+        used: 6 << 30,
+        available: 10 << 30,
+        free: Some(4 << 30),
+        swap_total: 0,
+        swap_used: 0,
+    };
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::Mono);
+
+    let line = render_lines(&app, 120, 24)[1].clone();
+    for glyph in ['█', '▒', '░'] {
+        assert!(
+            line.contains(glyph),
+            "the {glyph} segment vanished at the mono tier: {line}"
+        );
+    }
+}
+
+#[test]
+fn the_memory_bar_is_always_exactly_its_width() {
+    // A bar one column short of its box reads as a rendering fault, and one
+    // column long pushes every figure after it sideways.
+    let shapes = [
+        (16u64 << 30, 0u64, 16u64 << 30),
+        (16 << 30, 16 << 30, 0),
+        (16 << 30, 1, 16 << 30),
+        (16 << 30, 15 << 30, 1 << 30),
+        (0, 0, 0),
+    ];
+    for (total, used, available) in shapes {
+        let mut app = App::new(60);
+        let mut s = sample(5.0);
+        s.mem = MemStat {
+            total,
+            used,
+            available,
+            free: Some(available / 2),
+            swap_total: 0,
+            swap_used: 0,
+        };
+        app.push(s);
+        let n = render_lines(&app, 120, 24)[1]
+            .chars()
+            .filter(|c| "█▒░".contains(*c))
+            .count();
+        let want = usize::from(total > 0) * 12;
+        assert_eq!(n, want, "total={total} used={used} avail={available}");
+    }
+}
+
+#[test]
+fn a_platform_that_cannot_partition_memory_draws_two_parts_not_three() {
+    // macOS `used` and `available` come from overlapping vm_stat quantities and
+    // routinely sum to more than the machine has — 20.0G used plus 11.5G
+    // available on a 24G box. There is no cache/free split to draw there, and
+    // deriving one reports "no free memory, all headroom is reclaimable cache"
+    // on a healthy machine: the exact alarming misreading this figure exists to
+    // prevent.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.mem = MemStat {
+        total: 24 << 30,
+        used: 18 << 30,
+        available: 11 << 30,
+        free: None,
+        swap_total: 0,
+        swap_used: 0,
+    };
+    app.push(s);
+    let bar: String = render_lines(&app, 120, 24)[1]
+        .chars()
+        .filter(|c| "█▒░".contains(*c))
+        .collect();
+    assert_eq!(bar.chars().count(), 12);
+    assert!(!bar.contains('▒'), "a cache segment was invented: {bar}");
+    // …and the two parts still agree with the figure beside them: 18/24 is 9
+    // of 12.
+    assert_eq!(bar.chars().filter(|c| *c == '█').count(), 9, "{bar}");
 }

@@ -9,7 +9,7 @@ nothing that had to be running before you noticed the problem.
 
 ```
  ptop — PAUSED  -18s · warn 50 · crit 80
-CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5%   SWP  50.0%
+CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒▒░░░░░
   4 cores ▇▄▁█
 ── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
  100 ⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣆⠀⣴⠀⣰⡀⢠⡆⢀⣆⠤⣴⠤⣰⡀⢰⡆⢀⣆⠀⣶⠀⣰⡀⢰⡆⢀⣆⠤⣶⠤⣰⡀⢰⡆⢀⣆⠀⣶
@@ -209,6 +209,16 @@ load average of thirty on a box whose CPUs are completely idle.
   about the CPU being quiet and silent about the reason.
 - **RUN** is runnable tasks against cores. A bare count is not a fact anyone can
   act on: four is catastrophic on one core and idle on ninety-six.
+- **MEM** is drawn as a composition, not just a level: used, reclaimable cache,
+  and genuinely free. "37% used" reads identically on a box with eight
+  gigabytes free and on one whose only headroom is page cache it is about to
+  have to drop, and the second is the one worth knowing about. The segments
+  separate by glyph density — `█` `▒` `░` — so the bar means the same thing on
+  a monochrome terminal as everywhere else. On macOS it is two parts, not
+  three: `used` and `available` there come from overlapping `vm_stat`
+  quantities that routinely sum to more than the machine has, so there is no
+  cache/free split to draw and inventing one would report "no free memory" on a
+  perfectly healthy box.
 - **BLOCKED** is tasks in uninterruptible sleep — the D-state count. There is no
   healthy amount of "stuck in the kernel", so any value at all is coloured.
 

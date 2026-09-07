@@ -2,7 +2,7 @@
 id: 21
 title: Show memory as a composition bar rather than a percentage
 type: feature
-status: backlog
+status: done
 milestone: v0.2
 created: 2026-09-06
 updated: 2026-09-06

@@ -23,14 +23,13 @@ Timeline, scrubbing, process tree, colour that survives a colourblind reader and
 
 ## v0.2 — Cheap enough to run
 
-`#######···` 67% · 6 of 9 done · due 2026-11-01
+`########··` 78% · 7 of 9 done · due 2026-11-01
 
 Collector fast enough for sub-second sampling, and the data-fidelity gaps against atop closed or disclosed.
 
 ### backlog
 
 - [ ] `0011` Capture processes that live and die between samples <sup>feature · p0</sup>
-- [ ] `0021` Show memory as a composition bar rather than a percentage <sup>feature · p1</sup>
 - [ ] `0022` Show disk IO in the default process table <sup>feature · p1</sup>
 
 ### done
@@ -41,6 +40,7 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 - [x] `0013` Configurable sample interval and window <sup>feature · p2</sup>
 - [x] `0019` Surface the saturation signals ptop already collects <sup>feature · p0</sup>
 - [x] `0020` Graph what the machine is waiting on, not what it has used <sup>feature · p0</sup>
+- [x] `0021` Show memory as a composition bar rather than a percentage <sup>feature · p1</sup>
 
 ## v1.0 — Yours to configure
 

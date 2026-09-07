@@ -203,6 +203,53 @@ pub fn micro_bar(frac: f32, width: usize) -> String {
     s
 }
 
+/// Three shades that read as an order without any colour at all.
+///
+/// The composition bar has to work at the mono tier like everything else here,
+/// so the segments separate by glyph density first and hue second: solid, half,
+/// empty. Nobody needs to be told which end is which.
+pub const SEG_USED: char = '\u{2588}';
+pub const SEG_CACHE: char = '\u{2592}';
+pub const SEG_FREE: char = '\u{2591}';
+
+/// Split `width` columns between three parts in proportion.
+///
+/// Largest-remainder rather than plain rounding, so the three always sum to
+/// exactly `width` — a bar one column short of its box looks like a rendering
+/// fault, and one column long pushes everything after it sideways.
+///
+/// A part smaller than half a column gets nothing, and that is deliberate. An
+/// earlier version gave every non-zero part a floor of one column so a sliver
+/// of cache could not vanish; at twelve columns that moved the bar by up to
+/// sixteen percentage points, directly beside the figure stating the real one.
+/// A picture that contradicts the number next to it is worse than a picture
+/// that cannot resolve a third of a percent — and at this width, it genuinely
+/// cannot.
+pub fn composition(parts: [u64; 3], width: usize) -> [usize; 3] {
+    let total: u64 = parts.iter().sum();
+    if total == 0 || width == 0 {
+        return [0, 0, 0];
+    }
+    let exact: Vec<f64> = parts
+        .iter()
+        .map(|&p| p as f64 / total as f64 * width as f64)
+        .collect();
+    let mut out = [0usize; 3];
+    for i in 0..3 {
+        out[i] = exact[i] as usize;
+    }
+    // Hand the leftover columns to the largest remainders.
+    let mut assigned: usize = out.iter().sum();
+    while assigned < width {
+        let i = (0..3)
+            .max_by(|&a, &b| (exact[a] - out[a] as f64).total_cmp(&(exact[b] - out[b] as f64)))
+            .unwrap_or(0);
+        out[i] += 1;
+        assigned += 1;
+    }
+    out
+}
+
 /// Ceilings the y-axis is allowed to take.
 ///
 /// A small fixed set rather than the observed peak, so the scale is stable
@@ -426,5 +473,86 @@ mod tests {
         assert_eq!(GlyphSet::parse("block"), Some(GlyphSet::Block));
         assert_eq!(GlyphSet::parse("ascii"), Some(GlyphSet::Ascii));
         assert_eq!(GlyphSet::parse("nonsense"), None);
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+
+    #[test]
+    fn the_segments_always_fill_the_bar_exactly() {
+        // A bar one column short of its box reads as a rendering fault, and one
+        // column long pushes everything after it sideways.
+        for width in 1..=24usize {
+            for parts in [
+                [1u64, 1, 1],
+                [100, 0, 0],
+                [0, 0, 100],
+                [999, 1, 1],
+                [1, 999, 1],
+                [7, 3, 90],
+                [u64::MAX / 3, u64::MAX / 3, u64::MAX / 3],
+            ] {
+                let seg = composition(parts, width);
+                assert_eq!(
+                    seg.iter().sum::<usize>(),
+                    width,
+                    "{parts:?} at {width} gave {seg:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_bar_never_contradicts_the_figure_beside_it() {
+        // An earlier version floored every non-zero part at one column so a
+        // sliver of cache could not vanish. At twelve columns that moved the
+        // bar by up to sixteen points, next to a figure stating the real one.
+        for width in [8usize, 12, 20] {
+            for parts in [
+                [999u64, 1, 1],
+                [1, 999, 1],
+                [1, 1, 999],
+                [500, 499, 1],
+                [340, 330, 330],
+            ] {
+                let total: u64 = parts.iter().sum();
+                let seg = composition(parts, width);
+                for i in 0..3 {
+                    let want = parts[i] as f64 / total as f64 * width as f64;
+                    assert!(
+                        (seg[i] as f64 - want).abs() <= 1.0,
+                        "{parts:?} at {width}: segment {i} drew {} columns for {want:.2}",
+                        seg[i]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_part_too_small_to_see_is_not_drawn_as_if_it_were() {
+        // Half a column is the line: below it, a segment would have to be
+        // rounded up past its own size to appear at all.
+        let seg = composition([999_999, 1, 1], 12);
+        assert_eq!(seg, [12, 0, 0], "a third of a percent was given a column");
+        // …and a part that can be resolved still is.
+        let seg = composition([10, 1, 1], 12);
+        assert!(seg[1] >= 1 && seg[2] >= 1, "{seg:?}");
+    }
+
+    #[test]
+    fn nothing_at_all_draws_nothing() {
+        assert_eq!(composition([0, 0, 0], 8), [0, 0, 0]);
+        assert_eq!(composition([1, 2, 3], 0), [0, 0, 0]);
+    }
+
+    #[test]
+    fn the_shades_read_as_an_order_without_colour() {
+        // They have to separate at the mono tier like everything else here.
+        assert_ne!(SEG_USED, SEG_CACHE);
+        assert_ne!(SEG_CACHE, SEG_FREE);
+        assert_ne!(SEG_USED, SEG_FREE);
     }
 }
