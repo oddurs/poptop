@@ -63,11 +63,13 @@ impl ProcSample {
     /// process the user cares about is readable, and every process they do not
     /// is a kernel thread.
     ///
-    /// A Linux notion. On macOS pid 2 is an ordinary process, so one process in
-    /// several hundred is wrongly excluded from the IO ratio there — which
-    /// changes no decision this figure is used for.
+    /// A Linux notion, and stated only there. macOS has no `kthreadd`; pid 2 is
+    /// either absent or an ordinary process, and answering `true` for it would
+    /// hide a real row from the table and drop a real process from the IO
+    /// ratio. The `cfg!` is what keeps the claim on the platform where it is a
+    /// fact.
     pub fn is_kernel_thread(&self) -> bool {
-        self.pid == KTHREADD || self.ppid == KTHREADD
+        cfg!(target_os = "linux") && (self.pid == KTHREADD || self.ppid == KTHREADD)
     }
 
     /// What to write in the identity column: the command line if there is one,

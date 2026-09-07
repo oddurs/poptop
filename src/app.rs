@@ -94,6 +94,17 @@ pub struct App {
     pub tree: bool,
     /// Whether the IO columns are shown.
     pub show_io: bool,
+    /// Show kernel threads — `kworker/*`, `ksoftirqd/*`, `irq/*` — in the
+    /// table.
+    ///
+    /// Off. On a many-core Linux box they outnumber the real processes several
+    /// times over, and none of them is what anyone opened a monitor to find.
+    /// poptop already excludes them from the IO ratio on the grounds that
+    /// including them distorts a figure; the same argument applies to the panel
+    /// they were crowding out.
+    ///
+    /// A no-op on macOS, where [`ProcSample::is_kernel_thread`] is never true.
+    pub show_kernel: bool,
     /// Whether IO is being collected. Deliberately a ratchet: hiding the
     /// columns does not stop collection, because resuming later would punch a
     /// hole in the middle of history. One clean boundary between "not collected
@@ -125,6 +136,7 @@ impl App {
             // real sample where most of it turns out to be unreadable; see
             // `probe_io`.
             show_io: true,
+            show_kernel: false,
             io_ratchet: true,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
@@ -225,6 +237,7 @@ impl App {
             return Vec::new();
         };
         let needle = self.filter.to_lowercase();
+        let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
 
         if self.tree {
             // A filtered tree keeps matches plus their ancestors; `tree::build`
@@ -233,16 +246,22 @@ impl App {
                 sample
                     .procs
                     .iter()
+                    .filter(shown)
                     .filter(|p| matches(p, &needle))
                     .map(|p| p.pid)
                     .collect()
             });
-            return tree::build(&sample.procs, self.sort, matched.as_ref());
+            // Withheld from the tree rather than filtered out of its rows: a
+            // hidden kernel thread must not survive as somebody's visible
+            // ancestor, and `kthreadd` is the ancestor of every one of them.
+            let procs: Vec<&ProcSample> = sample.procs.iter().filter(shown).collect();
+            return tree::build(&procs, self.sort, matched.as_ref());
         }
 
         let mut v: Vec<&ProcSample> = sample
             .procs
             .iter()
+            .filter(shown)
             .filter(|p| matches(p, &needle))
             .collect();
         v.sort_by(|a, b| self.sort.compare(a, b));
@@ -254,6 +273,79 @@ impl App {
             })
             .collect()
     }
+
+    /// Kernel threads withheld from the table right now.
+    ///
+    /// Said out loud in the panel title. Every other omission in poptop states
+    /// itself — an idle interface, a device that has done no IO, a filesystem
+    /// with no blocks — and a table quietly two hundred rows shorter than the
+    /// process count above it would be the one that did not.
+    pub fn hidden_kernel_threads(&self) -> usize {
+        if self.show_kernel {
+            return 0;
+        }
+        // Filtered, like the count it sits beside. Counting every kernel
+        // thread in the sample made `processes (1) · 250 kernel hidden` while a
+        // filter for `nginx` was active, implying two hundred and fifty rows
+        // were withheld from a list that had one candidate.
+        let needle = self.filter.to_lowercase();
+        self.history.current().map_or(0, |s| {
+            s.procs
+                .iter()
+                .filter(|p| p.is_kernel_thread() && matches(p, &needle))
+                .count()
+        })
+    }
+
+    /// The one user every process belongs to, if there is only one.
+    ///
+    /// `USER` was measured at ten columns — more than `CPU%` — to repeat the
+    /// word `oddurs` twelve times, while `COMMAND`, which differs on every row
+    /// and is how a reader identifies anything, took what was left and elided.
+    /// poptop already filters *rows* by measurement rather than by name: a
+    /// device appears once it has done IO, an interface once it has carried a
+    /// byte. The same test applies to columns. A column whose values are all
+    /// identical is telling you one fact, and a fact belongs in a sentence.
+    ///
+    /// Read over a window of samples, not just the displayed one. One
+    /// short-lived `root` process would otherwise take the column away and give
+    /// it back a second later, and a layout that moves under the reader is
+    /// worse than the waste it saves. The window makes the two directions
+    /// asymmetric, which is the useful shape: a second user expands the column
+    /// on the frame they appear, and it takes [`Self::CONSTANT_FOR`] quiet
+    /// samples to collapse again.
+    ///
+    /// Unfiltered on purpose. The filter changes with every keystroke, and
+    /// relaying out the table as someone types into it is the same flicker one
+    /// step removed.
+    pub fn one_user(&self) -> Option<std::sync::Arc<str>> {
+        let mut only: Option<&std::sync::Arc<str>> = None;
+        let mut any = false;
+        // The same rows the table draws. Scanning only user processes while `K`
+        // is showing two hundred root-owned kworkers put `· all alice` above
+        // rows that were not alice's — the panel making a claim that is false
+        // about the lines directly under it.
+        let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
+        for s in self.history.window(Self::CONSTANT_FOR) {
+            for p in s.procs.iter().filter(shown) {
+                any = true;
+                match only {
+                    None => only = Some(&p.user),
+                    Some(u) if **u == *p.user => {}
+                    Some(_) => return None,
+                }
+            }
+        }
+        any.then(|| only.cloned()).flatten()
+    }
+
+    /// How many samples a column must have been constant over before its width
+    /// is taken away.
+    ///
+    /// Five, which is five seconds at the default interval — long enough that a
+    /// process starting and exiting does not move the layout, short enough that
+    /// the width arrives while it is still wanted.
+    pub const CONSTANT_FOR: usize = 5;
 
     pub fn select_delta(&mut self, delta: isize) {
         let n = self.visible_rows().len();

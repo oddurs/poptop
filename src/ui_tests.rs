@@ -11,6 +11,12 @@ use crate::ui;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
+/// A process for a fixture.
+///
+/// Keep pids and ppids away from 2: on Linux that is `kthreadd`, so a fixture
+/// using it builds a kernel thread by accident and the table hides it by
+/// default. Three tests here did exactly that with incidental low pids, and
+/// passed on macOS while failing in the container.
 fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
     ProcSample {
         pid,
@@ -748,10 +754,14 @@ fn every_section_rule_uses_the_chrome_token() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
 
+    // A rule is a row that *begins* with the rule glyph, not one that is
+    // mostly made of it. The majority test was a proxy, and it was marginal:
+    // adding eleven characters to the processes title pushed that row under
+    // half and the rule stopped being counted while it was still being drawn.
+    // The tree spine draws `─` too, but indented and never at column zero.
     let mut rules = 0;
     for y in 0..h {
-        let dashes = (0..w).filter(|&x| buf[(x, y)].symbol() == "─").count();
-        if dashes * 2 < w as usize {
+        if buf[(0, y)].symbol() != "─" {
             continue;
         }
         rules += 1;
@@ -2429,8 +2439,8 @@ fn the_cpu_bar_marks_a_process_using_more_than_one_core() {
     let mut app = App::new(60);
     let mut s = sample(50.0);
     s.procs = vec![
-        proc_named(1, "single", 100.0, 1 << 20),
-        proc_named(2, "threaded", 400.0, 1 << 20),
+        proc_named(101, "single", 100.0, 1 << 20),
+        proc_named(102, "threaded", 400.0, 1 << 20),
     ];
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -4089,9 +4099,16 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     let mut s = sample(10.0);
     s.procs = (0..9)
         .map(|i| {
-            let mut p = proc_named(i + 1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20);
+            let mut p = proc_named(i + 101, "Google Chrome Helper (Renderer)", 0.0, 1 << 20);
+            // Two users, so the USER column keeps its ten columns. This test is
+            // about a deep tree starving the name, not about a table that has
+            // folded a constant column into its title — which would hand those
+            // ten columns back and hide what is being measured here.
+            if i == 0 {
+                p.user = std::sync::Arc::from("someone-else");
+            }
             p.cpu = 10.0 - i as f32;
-            p.ppid = if i == 0 { 0 } else { i };
+            p.ppid = if i == 0 { 0 } else { i + 100 };
             p
         })
         .collect();
@@ -4225,15 +4242,18 @@ fn processes_that_differ_only_by_a_suffix_are_told_apart() {
     s.procs = vec![
         ProcSample {
             cpu: 9.0,
-            ..proc_named(1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
+            // Two users, so the USER column is not folded into the title and
+            // the command column is the width this test is about.
+            user: std::sync::Arc::from("someone-else"),
+            ..proc_named(101, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
         },
         ProcSample {
             cpu: 8.0,
-            ..proc_named(2, "Google Chrome Helper (GPU)", 0.0, 1 << 20)
+            ..proc_named(102, "Google Chrome Helper (GPU)", 0.0, 1 << 20)
         },
         ProcSample {
             cpu: 7.0,
-            ..proc_named(3, "Google Chrome Helper (Network Service)", 0.0, 1 << 20)
+            ..proc_named(103, "Google Chrome Helper (Network Service)", 0.0, 1 << 20)
         },
     ];
     app.push(s);
@@ -4949,6 +4969,13 @@ fn the_io_columns_drop_rather_than_squeezing_the_table() {
 }
 
 #[test]
+// Linux only, because a kernel thread is a Linux notion and
+// `is_kernel_thread` now says so — pid 2 is `kthreadd` there and either absent
+// or an ordinary process here, and answering `true` for it on macOS would drop
+// a real row from the table and a real process from this ratio. So the
+// scenario below cannot arise on a Mac, and building it out of pids that mean
+// nothing on this platform would assert about nothing.
+#[cfg(target_os = "linux")]
 fn kernel_threads_do_not_trigger_the_io_probe() {
     // They are root-owned and unreadable to an ordinary user, and on a
     // many-core box they outnumber the real processes — so counting them would
@@ -5244,5 +5271,618 @@ fn sorting_by_name_orders_by_what_the_column_shows() {
             "node /srv/api/worker.js",
             "node /srv/web/bundler.js",
         ]
+    );
+}
+
+/// Kernel threads for a fixture: `kthreadd` itself and a crowd of workers under
+/// it, matching what [`ProcSample::is_kernel_thread`] recognises.
+#[cfg(target_os = "linux")]
+fn with_kernel_threads(s: &mut Sample, n: i32) {
+    let mut kthreadd = proc_named(2, "kthreadd", 0.0, 0);
+    kthreadd.ppid = 0;
+    s.procs.push(kthreadd);
+    for i in 0..n {
+        let mut k = proc_named(1000 + i, &format!("kworker/{i}:1"), 0.0, 0);
+        k.ppid = 2;
+        s.procs.push(k);
+    }
+}
+
+// Linux only: a kernel thread is a Linux notion, `is_kernel_thread` says so,
+// and on macOS these fixtures are ordinary processes that are never hidden.
+#[cfg(target_os = "linux")]
+#[test]
+fn kernel_threads_are_hidden_and_a_key_shows_them() {
+    // On a many-core box they outnumber the real processes several times over,
+    // and none of them is what anyone opened a monitor to find.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "nginx", 9.0, 1 << 20),
+        proc_named(102, "postgres", 8.0, 1 << 20),
+    ];
+    with_kernel_threads(&mut s, 60);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let named = |app: &App| -> Vec<String> {
+        rows(app, 120, 40)
+            .into_iter()
+            .filter(|l| l.contains("kworker") || l.contains("kthreadd") || l.contains("nginx"))
+            .collect()
+    };
+
+    let hidden = named(&app);
+    assert!(
+        hidden.iter().any(|l| l.contains("nginx")),
+        "the real process went missing: {hidden:?}"
+    );
+    assert!(
+        !hidden
+            .iter()
+            .any(|l| l.contains("kworker") || l.contains("kthreadd")),
+        "a kernel thread was drawn: {hidden:?}"
+    );
+
+    app.show_kernel = true;
+    let shown = named(&app);
+    assert!(
+        shown.iter().any(|l| l.contains("kworker")),
+        "the key showed nothing: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|l| l.contains("kthreadd")),
+        "kthreadd itself stayed hidden: {shown:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_number_of_hidden_kernel_threads_is_stated() {
+    // Every other omission in poptop states itself — an idle interface, a
+    // device that has done no IO. A table quietly sixty rows shorter than the
+    // process count beside it would be the one that did not.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 60);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // Sixty workers plus kthreadd.
+    assert_eq!(app.hidden_kernel_threads(), 61);
+    let frame = rows(&app, 120, 40).join("\n");
+    assert!(
+        frame.contains("61 kernel hidden"),
+        "the omission is silent: {:?}",
+        frame.lines().next()
+    );
+
+    app.show_kernel = true;
+    assert_eq!(app.hidden_kernel_threads(), 0);
+    assert!(
+        !rows(&app, 120, 40).join("\n").contains("kernel hidden"),
+        "nothing is hidden and it still says so"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hiding_kernel_threads_does_not_orphan_their_children_in_the_tree() {
+    // `kthreadd` is the ancestor of every kernel thread, so a tree that hides
+    // it must not keep it alive as somebody's visible ancestor — nor drop a
+    // real process that happens to descend from a hidden one.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 3);
+    app.push(s);
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let frame = rows(&app, 120, 40).join("\n");
+    assert!(frame.contains("nginx"), "the real process went missing");
+    assert!(!frame.contains("kthreadd"), "the hidden ancestor was drawn");
+    assert!(!frame.contains("kworker"), "a hidden child was drawn");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_filter_does_not_bring_hidden_kernel_threads_back() {
+    // Filtering narrows what is shown; it does not overrule what is withheld.
+    // Searching for `kworker` with them hidden should find nothing, not
+    // everything.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 6);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for tree in [false, true] {
+        app.tree = tree;
+        app.filter = "kworker".into();
+        assert_eq!(
+            app.visible_rows().len(),
+            0,
+            "a filter resurrected hidden kernel threads (tree: {tree})"
+        );
+        app.show_kernel = true;
+        assert_eq!(
+            app.visible_rows()
+                .iter()
+                .filter(|r| !r.context_only)
+                .count(),
+            6,
+            "the same filter with them shown found the wrong number (tree: {tree})"
+        );
+        app.show_kernel = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_selection_stays_in_range_when_kernel_threads_are_hidden() {
+    // Toggling them off shrinks the list under the cursor, exactly as a filter
+    // does — and a selection past the end draws no highlight at all.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 40);
+    app.push(s);
+    app.show_kernel = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    app.selected = app.visible_rows().len() - 1;
+    app.show_kernel = false;
+    app.clamp_selection();
+    assert!(
+        app.selected < app.visible_rows().len(),
+        "the selection was left past the end of the list"
+    );
+}
+
+// macOS only: this asserts the *absence* of the Linux rule, which on Linux is
+// the rule.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn pid_two_is_an_ordinary_process_off_linux() {
+    // `kthreadd` is pid 2 on Linux and nowhere else. Applying that rule here
+    // would hide a real row from the table by default, and drop a real process
+    // from the IO ratio — on the strength of a number that means nothing on
+    // this platform.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    let mut two = proc_named(2, "a-real-process", 9.0, 1 << 20);
+    two.ppid = 1;
+    let mut child = proc_named(3, "its-child", 8.0, 1 << 20);
+    child.ppid = 2;
+    s.procs = vec![two, child];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    assert_eq!(
+        app.hidden_kernel_threads(),
+        0,
+        "a real process was counted as a kernel thread"
+    );
+    let frame = rows(&app, 120, 30).join("\n");
+    for name in ["a-real-process", "its-child"] {
+        assert!(
+            frame.contains(name),
+            "{name} was hidden on a platform with no kthreadd"
+        );
+    }
+}
+
+/// A sample whose processes all belong to one user, pushed enough times to
+/// clear the constancy window.
+fn settled_single_user(app: &mut App, names: &[&str]) {
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.procs = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| proc_named(i as i32 + 101, n, 20.0 - i as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+}
+
+#[test]
+fn a_column_of_one_repeated_value_gives_its_width_to_the_command() {
+    // Measured in the item: `USER` cost ten columns — more than `CPU%` — to
+    // repeat one word twelve times, while `COMMAND` differed on every row and
+    // had to elide.
+    let mut app = App::new(60);
+    settled_single_user(&mut app, &["postgres", "nginx", "redis"]);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let one = rows(&app, 120, 20);
+    let head = one.iter().find(|l| l.contains("PID")).unwrap();
+    assert!(!head.contains("USER"), "the column stayed: {head:?}");
+    let title = one.iter().find(|l| l.contains("processes")).unwrap();
+    assert!(
+        title.contains("· all root"),
+        "what the column said was not said anywhere: {title:?}"
+    );
+
+    // The width goes to COMMAND, which is the point.
+    let wide = ui::command_width_for_test(120, false, false);
+    let narrow = ui::command_width_for_test(120, false, true);
+    assert_eq!(
+        wide - narrow,
+        11,
+        "the column's width was not handed over: {narrow} -> {wide}"
+    );
+}
+
+#[test]
+fn a_second_user_keeps_the_column() {
+    let mut app = App::new(60);
+    settled_single_user(&mut app, &["postgres", "nginx"]);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "postgres", 20.0, 1 << 20),
+        ProcSample {
+            // Eight characters, so it fits the ten-column USER field. The first
+            // draft used a twelve-character name and asserted on the whole of
+            // it, which the column truncates — the test failed against correct
+            // output.
+            user: std::sync::Arc::from("operator"),
+            ..proc_named(102, "nginx", 19.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let frame = rows(&app, 120, 20);
+    let head = frame.iter().find(|l| l.contains("PID")).unwrap();
+    assert!(
+        head.contains("USER"),
+        "the column was folded away: {head:?}"
+    );
+    assert!(
+        frame.iter().any(|l| l.contains("operator")),
+        "the second user is not on screen anywhere"
+    );
+    assert!(
+        !frame.iter().any(|l| l.contains("\u{b7} all ")),
+        "the title claimed one user over a sample with two"
+    );
+}
+
+#[test]
+fn the_layout_does_not_oscillate_as_a_process_comes_and_goes() {
+    // The failure this guards against: one short-lived `root` process takes the
+    // column away and gives it back a second later, and the whole table shifts
+    // ten columns sideways twice. Expanding is immediate — never hide a fact —
+    // but collapsing waits out the window.
+    let mut app = App::new(60);
+    settled_single_user(&mut app, &["postgres", "nginx"]);
+    let has_user = |app: &App| {
+        rows(app, 120, 20)
+            .iter()
+            .any(|l| l.contains("PID") && l.contains("USER"))
+    };
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(!has_user(&app), "settled, and the column is still there");
+
+    // A second user appears: the column comes back on that very frame.
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "postgres", 20.0, 1 << 20),
+        ProcSample {
+            user: std::sync::Arc::from("someone-else"),
+            ..proc_named(102, "a-visitor", 19.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    assert!(
+        has_user(&app),
+        "a second user did not bring the column back"
+    );
+
+    // It leaves again. The column must not vanish on the next frame — that is
+    // the flicker.
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "postgres", 20.0, 1 << 20)];
+    app.push(s.clone());
+    assert!(
+        has_user(&app),
+        "the column vanished one frame after the visitor left"
+    );
+
+    // …and it does come back, once the window is quiet.
+    for _ in 0..App::CONSTANT_FOR {
+        app.push(s.clone());
+    }
+    assert!(!has_user(&app), "the column never yielded its width again");
+}
+
+#[test]
+fn scrubbing_back_to_two_users_shows_the_column_again() {
+    // The decision is read from the displayed sample and the ones before it,
+    // not from live. A collapsed column while scrubbed back over a moment with
+    // two users would put `· all root` above rows that were not all root.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "postgres", 20.0, 1 << 20),
+        ProcSample {
+            user: std::sync::Arc::from("someone-else"),
+            ..proc_named(102, "a-visitor", 19.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    settled_single_user(&mut app, &["postgres"]);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(
+        !rows(&app, 120, 20).iter().any(|l| l.contains("USER")),
+        "live, one user, and the column is still drawn"
+    );
+
+    app.history.goto_oldest();
+    let frame = rows(&app, 120, 20);
+    assert!(
+        frame
+            .iter()
+            .any(|l| l.contains("PID") && l.contains("USER")),
+        "scrubbed back over two users and the column stayed folded"
+    );
+    assert!(
+        !frame.iter().any(|l| l.contains("· all ")),
+        "the title claimed one user over a sample with two"
+    );
+}
+
+#[test]
+fn the_footer_drops_whole_hints_rather_than_cutting_one() {
+    // A clipped footer reads as a key called `filt`. Adding `K kernel` pushed
+    // the line two columns past a hundred-column terminal and that is exactly
+    // what appeared.
+    for w in 20..=140u16 {
+        let line = ui::fit_hints_for_test(w);
+        assert!(
+            line.chars().count() <= w as usize,
+            "the footer overflowed at {w}: {line:?}"
+        );
+        for hint in line.split(" · ") {
+            assert!(
+                ui::KEY_HINTS.contains(&hint),
+                "a hint was cut in half at {w}: {hint:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_footer_gives_up_the_least_useful_key_first() {
+    // Order is the ladder. `/` is reached for constantly and `K` is the most
+    // niche, so a narrow terminal must lose `K` and keep `/`.
+    let at_100 = ui::fit_hints_for_test(100);
+    assert!(at_100.contains("/ filter"), "{at_100:?}");
+    assert!(!at_100.contains("K kernel"), "{at_100:?}");
+    assert!(
+        ui::fit_hints_for_test(140).contains("K kernel"),
+        "a wide terminal lost a hint it had room for"
+    );
+}
+
+#[test]
+fn the_column_headers_name_the_columns_under_them() {
+    // `Table` pairs header and body cells by index, and the two lists had
+    // diverged: with the IO columns shown, `HISTORY` sat over DISK R, `DISK R`
+    // over DISK W, and `DISK W` over the sparkline. Every one of the three
+    // named the column beside it.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        s.procs = vec![ProcSample {
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 1 << 21,
+            }),
+            ..proc_named(101, "postgres", 20.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    app.show_io = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let frame = rows(&app, 140, 16);
+    let head = frame.iter().find(|l| l.contains("PID")).unwrap();
+    let body = frame.iter().find(|l| l.contains("postgres")).unwrap();
+
+    // The read rate renders as `1.0M/s` and the write as `2.0M/s`, so each
+    // label must sit over the value it names. Compared by the column each ends
+    // at, counted in chars — the sparkline glyphs are multi-byte.
+    let col = |l: &str, pat: &str| {
+        l.find(pat)
+            .map(|b| l[..b].chars().count())
+            .unwrap_or_else(|| panic!("{pat:?} not in {l:?}"))
+    };
+    let r_head = col(head, "DISK R") + "DISK R".len();
+    let w_head = col(head, "DISK W") + "DISK W".len();
+    let r_body = col(body, "1.0M/s") + "1.0M/s".len();
+    let w_body = col(body, "2.0M/s") + "2.0M/s".len();
+    assert_eq!(
+        r_head, r_body,
+        "DISK R does not sit over the read rate\n{head}\n{body}"
+    );
+    assert_eq!(
+        w_head, w_body,
+        "DISK W does not sit over the write rate\n{head}\n{body}"
+    );
+    // And HISTORY is past both of them, over the sparkline.
+    assert!(
+        col(head, "HISTORY") > w_head,
+        "HISTORY is still to the left of the disk columns\n{head}"
+    );
+}
+
+#[test]
+fn a_window_on_an_empty_history_is_empty_rather_than_a_panic() {
+    // `cursor_index` saturates to zero on an empty buffer, so the range was
+    // `0..1` against a deque of length zero. Every other accessor here is
+    // empty-safe; this one was safe only because `main` happens to push a
+    // sample before the first draw.
+    let app = App::new(10);
+    assert_eq!(app.history.window(5).count(), 0);
+    assert_eq!(app.one_user(), None, "an empty history claimed a user");
+    assert_eq!(app.hidden_kernel_threads(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn showing_kernel_threads_stops_the_title_claiming_one_user() {
+    // With `K` pressed the table draws root-owned kworkers. A title reading
+    // `· all alice` above them is a claim that is false about the rows
+    // directly underneath it.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.procs = vec![ProcSample {
+            user: std::sync::Arc::from("alice"),
+            ..proc_named(101, "postgres", 20.0, 1 << 20)
+        }];
+        with_kernel_threads(&mut s, 8);
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert_eq!(
+        app.one_user().as_deref(),
+        Some("alice"),
+        "hidden kernel threads should not count against the user"
+    );
+
+    app.show_kernel = true;
+    assert_eq!(
+        app.one_user(),
+        None,
+        "the kworkers are on screen and root, and the title still says one user"
+    );
+    let frame = rows(&app, 120, 30).join("\n");
+    assert!(
+        !frame.contains("· all "),
+        "the title claims one user: {frame:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_hidden_count_is_filtered_like_the_count_beside_it() {
+    // `processes (1) · 250 kernel hidden` under a filter for `nginx` implies
+    // two hundred and fifty rows were withheld from a list that had one
+    // candidate.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 20.0, 1 << 20)];
+    with_kernel_threads(&mut s, 20);
+    app.push(s);
+
+    assert_eq!(app.hidden_kernel_threads(), 21);
+    app.filter = "nginx".into();
+    assert_eq!(
+        app.hidden_kernel_threads(),
+        0,
+        "kernel threads that the filter would have excluded anyway were counted as hidden"
+    );
+    app.filter = "kworker/3".into();
+    assert_eq!(
+        app.hidden_kernel_threads(),
+        1,
+        "the one match was not counted"
+    );
+}
+
+#[test]
+fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
+    // A clipped title reads as a message called `io: panel too narr`. The io
+    // status is the one thing this panel guarantees — without it the `i` key
+    // looks broken — so it outranks the sort label, the tree marker and the
+    // axis.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        s.io_denied = 3;
+        s.procs = (0..4)
+            .map(|i| proc_named(101 + i, "postgres", 20.0 - i as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for w in 40..=160u16 {
+        let frame = rows(&app, w, 20);
+        let title = frame.iter().find(|l| l.contains("processes")).unwrap();
+        let text = title.trim_end_matches(['─', ' ']);
+        // Nothing is ever cut mid-clause.
+        for tail in ["too narr", "need roo", "histor ", "sort: C "] {
+            assert!(!text.ends_with(tail), "clipped mid-clause at {w}: {text:?}");
+        }
+        assert!(
+            text.contains("processes ("),
+            "the panel lost its own name at {w}: {text:?}"
+        );
+        // Wide enough for the io message, and it is there.
+        if w >= 100 {
+            assert!(
+                text.contains(" · io"),
+                "the io message went missing at {w}: {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn folding_the_user_column_lets_the_io_columns_appear_sooner() {
+    // `command_width` learned that the folded column's ten columns are free;
+    // this sibling threshold did not, so the disk columns went on refusing to
+    // appear until the terminal was ten columns wider than they needed.
+    let with_user = ui::min_width_for_io_for_test(true);
+    let without = ui::min_width_for_io_for_test(false);
+    assert_eq!(
+        with_user - without,
+        10,
+        "the threshold did not come down by the width of the column"
+    );
+
+    // And it is the rendered behaviour, not just the arithmetic: at a width
+    // between the two, one user gets the disk columns and two do not.
+    let between = without + 2;
+    assert!(between < with_user, "no width lies between the thresholds");
+
+    let build = |user: &str| {
+        let mut app = App::new(60);
+        for _ in 0..App::CONSTANT_FOR {
+            let mut s = sample(10.0);
+            s.io_collected = true;
+            s.procs = vec![
+                proc_named(101, "postgres", 20.0, 1 << 20),
+                ProcSample {
+                    user: std::sync::Arc::from(user),
+                    ..proc_named(102, "nginx", 19.0, 1 << 20)
+                },
+            ];
+            app.push(s);
+        }
+        app.show_io = true;
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        app
+    };
+
+    let one = build("root");
+    assert!(
+        rows(&one, between, 20).iter().any(|l| l.contains("DISK R")),
+        "one user, and the disk columns are still withheld at {between}"
+    );
+    let two = build("operator");
+    assert!(
+        !rows(&two, between, 20).iter().any(|l| l.contains("DISK R")),
+        "two users, and there is not room for the disk columns at {between}"
     );
 }

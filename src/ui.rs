@@ -115,6 +115,51 @@ pub fn draw(f: &mut Frame, app: &App) {
 ///
 /// The rule takes the most recessive token and the name a readable but still
 /// recessive one, so neither competes with the figures beneath.
+/// Join what fits, dropping whole segments from the least important end.
+///
+/// The same ladder the header figures and the key hints use. A title is not
+/// truncated: a clipped one reads as a message that does not exist, and the
+/// pieces here are each a separate claim rather than one sentence, so losing a
+/// whole claim is honest where losing the end of one is not.
+///
+/// Segments are given in display order and carry the rank at which they are
+/// given up, highest first. An empty segment costs nothing and is skipped.
+fn fit_title(parts: &[(u8, String)], width: usize) -> String {
+    let mut keep: Vec<bool> = parts.iter().map(|(_, s)| !s.is_empty()).collect();
+    let len = |keep: &[bool]| -> usize {
+        parts
+            .iter()
+            .zip(keep)
+            .filter(|(_, k)| **k)
+            .map(|((_, s), _)| s.chars().count())
+            .sum()
+    };
+    while len(&keep) > width {
+        // The least important thing still present.
+        let Some(i) = parts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| keep[*i])
+            .max_by_key(|(_, (rank, _))| *rank)
+            .map(|(i, _)| i)
+        else {
+            break;
+        };
+        // Never drop the subject itself; a title with no name is worse than a
+        // long one.
+        if parts[i].0 == 0 {
+            break;
+        }
+        keep[i] = false;
+    }
+    parts
+        .iter()
+        .zip(&keep)
+        .filter(|(_, k)| **k)
+        .map(|((_, s), _)| s.as_str())
+        .collect()
+}
+
 fn divider(title: &str, width: u16, theme: &Theme) -> Line<'static> {
     let name = format!(" {} ", title.trim());
     let lead = "─".repeat(2.min(width as usize));
@@ -1579,11 +1624,29 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
 const FIXED_COLUMNS: u16 =
     7 + 10 + 6 + (BAR_W as u16 + 1) + 8 + BAR_W as u16 + 2 + 4 + SPARK_W as u16;
 
-const MIN_WIDTH_FOR_IO: u16 = {
-    // The two IO columns, one space between each of the twelve, and enough left
-    // for a command name to be worth reading.
-    FIXED_COLUMNS + 9 + 9 + 11 + 16
-};
+/// The narrowest terminal the IO columns will appear on.
+///
+/// The two IO columns, one space between each of the twelve, and enough left
+/// for a command name to be worth reading.
+///
+/// Takes `show_user` for the same reason [`command_width`] does: when that
+/// column has been folded into the title its ten columns are free, and the IO
+/// columns were refusing to appear until the terminal was eleven columns wider
+/// than they needed to be.
+#[cfg(test)]
+pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
+    command_width(width, show_io, show_user)
+}
+
+#[cfg(test)]
+pub fn min_width_for_io_for_test(show_user: bool) -> u16 {
+    min_width_for_io(show_user)
+}
+
+fn min_width_for_io(show_user: bool) -> u16 {
+    let user = if show_user { USER_W } else { 0 };
+    FIXED_COLUMNS - USER_W + user + 9 + 9 + 11 + 16
+}
 
 /// The command column's own `Constraint::Min`, and so the narrowest it is ever
 /// actually drawn at.
@@ -1592,19 +1655,31 @@ const MIN_COMMAND_W: u16 = 10;
 /// How much of the line is left for the command name.
 ///
 /// The identity column is the one that takes what nothing else claimed, so it
+/// Width of the `USER` column, and the width `COMMAND` gets back when it is
+/// folded into the title. See [`crate::app::App::one_user`].
+const USER_W: u16 = 10;
+
+/// How much of the line is left for the command name.
+///
+/// The identity column is the one that takes what nothing else claimed, so it
 /// is the one that runs out — at 104 columns with the IO columns shown it gets
 /// nineteen, one more than the two disk-rate columns together. Knowing the
 /// figure is what lets the name be elided deliberately rather than clipped by
 /// the terminal.
-fn command_width(width: u16, show_io: bool) -> usize {
+fn command_width(width: u16, show_io: bool, show_user: bool) -> usize {
     let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
+    let (user, columns) = if show_user {
+        (USER_W, columns)
+    } else {
+        (0, columns - 1)
+    };
     // Floored at the column's own `Min`, not at one. Below that width ratatui
     // stops honouring the fixed lengths and squeezes them instead, so the
     // command cell is *wider* than this arithmetic says — and eliding against
     // the arithmetic rendered `Google Chrome Helper (Renderer)` as the single
     // letter `G` on an eighty-column terminal.
     width
-        .saturating_sub(FIXED_COLUMNS + io + (columns - 1))
+        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + (columns - 1))
         .max(MIN_COMMAND_W) as usize
 }
 
@@ -1680,8 +1755,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // here. Collection is untouched: the columns are a rendering decision and
     // the ratchet is a history one, so widening the window brings them back
     // with their history intact.
-    let show_io = app.show_io && area.width >= MIN_WIDTH_FOR_IO;
-    let cmd_w = command_width(area.width, show_io);
+    // A column whose every value is the same is telling you one fact, and a
+    // fact belongs in a sentence. See `App::one_user`.
+    let one_user = app.one_user();
+    let show_user = one_user.is_none();
+    let show_io = app.show_io && area.width >= min_width_for_io(show_user);
+    let cmd_w = command_width(area.width, show_io, show_user);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -1749,9 +1828,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 // parentage, but clearly not itself a hit.
                 style = style.add_modifier(Modifier::DIM);
             }
-            let mut cells = vec![
-                num(p.pid.to_string()),
-                Cell::from(p.user.to_string()),
+            let mut cells = vec![num(p.pid.to_string())];
+            // Dropped, not blanked: an empty cell still occupies its ten
+            // columns, and giving them to `COMMAND` is the whole point.
+            if show_user {
+                cells.push(Cell::from(p.user.to_string()));
+            }
+            cells.extend([
                 num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
                 // A bar beside the number turns a column that must be read
                 // into one that can be scanned. htop does the same, for the
@@ -1775,7 +1858,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                     Some(n) => n.to_string(),
                     None => "—".into(),
                 }),
-            ];
+            ]);
             if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
@@ -1815,17 +1898,27 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // `right` marks the numeric ones; the bars and the text columns stay left.
     let right = |s| num(s).style(app.theme.table_header_style());
     let left = |s| Cell::from(s).style(app.theme.table_header_style());
-    let mut header_cells = vec![
-        right("PID"),
-        left("USER"),
+    let mut header_cells = vec![right("PID")];
+    if show_user {
+        header_cells.push(left("USER"));
+    }
+    header_cells.extend([
         right("CPU%"),
         left(""),
         right("RSS"),
         left(""),
         left("S"),
         right("THR"),
-        left("HISTORY"),
-    ];
+    ]);
+    // In the order the cells are pushed, which is what `Table` pairs them by.
+    // These were the other way round: with the IO columns shown, `HISTORY` sat
+    // over DISK R, `DISK R` over DISK W, and `DISK W` over the sparkline —
+    // every one of the three naming the column beside it.
+    if show_io {
+        header_cells.push(right("DISK R"));
+        header_cells.push(right("DISK W"));
+    }
+    header_cells.push(left("HISTORY"));
     if show_io {
         header_cells.push(right("DISK R"));
         header_cells.push(right("DISK W"));
@@ -1862,42 +1955,80 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {} tasks came and went", c.unseen())
         });
 
-    // The sparkline column's axis, said out loud. One ceiling is shared by
-    // every row so the shapes can be compared, which means the column has a
-    // scale — and an unlabelled scale that moves is the same trap as an
-    // unlabelled y-axis.
-    //
-    // Always, not only above one core. The ceiling steps 10 / 25 / 50 / 100
-    // below that, which is a tenfold swing: a column read at 10% one second and
-    // 100% the next, because one process briefly touched 60%, has changed every
-    // shape in it with nothing said.
-    //
-    // Last in the title on purpose. ratatui truncates a block title from the
-    // right, and `io_status` is the one message this panel goes out of its way
-    // to guarantee — without it the `i` key looks broken. So the axis is what
-    // an eighty-column terminal loses first.
-    let axis = format!(" · history ≤{spark_ceiling:.0}%");
+    // Never silently shorter than the count beside it. Placed early, before
+    // the parts a narrow terminal drops: a table missing two hundred rows with
+    // nothing saying so is worse than a table with no axis label.
+    let hidden = match app.hidden_kernel_threads() {
+        0 => String::new(),
+        n => format!(" · {n} kernel hidden"),
+    };
 
-    let title = format!(
-        " processes ({}) — sort: {}{}{}{}{} ",
-        rows_data.len(),
-        app.sort.label(),
-        if app.tree { " · tree" } else { "" },
-        churn,
-        io_status(show_io, app, collected),
-        axis,
-    );
+    // What the column said, said once.
+    let all_one = one_user
+        .as_deref()
+        .map_or(String::new(), |u| format!(" · all {u}"));
 
-    let mut widths = vec![
-        Constraint::Length(7),
-        Constraint::Length(10),
+    // Ranked, and given up from the least important end, because at eighty
+    // columns not all of it fits and a clipped title reads as a message called
+    // `io: panel too narr`. The ranks are the argument:
+    //
+    //   0  the count            — the panel's subject
+    //  10  `all <user>`         — this one *replaces a column*; without it the
+    //                             table has silently dropped a field
+    //  20  `N kernel hidden`    — rows withheld; its absence is a lie by
+    //                             omission, which is the one thing this panel
+    //                             is careful never to do
+    //  30  the io status        — the message the `i` key looks broken without
+    //  40  the sort column      — not otherwise stated anywhere
+    //  50  `tree`               — visible in the rows themselves
+    //  60  churn                — a nicety
+    //  70  the history axis     — a nicety, and the ladder it was already at
+    //                             the bottom of
+    //
+    // Display order and drop order are separate: the list below reads left to
+    // right as it appears on screen, and the rank beside each says when it
+    // goes. The sort clause reads better before the io status and is given up
+    // first of the two.
+    let parts = [
+        (0u8, format!(" processes ({})", rows_data.len())),
+        (10, all_one),
+        (20, hidden),
+        (40, format!(" — sort: {}", app.sort.label())),
+        (
+            50,
+            if app.tree {
+                " · tree".into()
+            } else {
+                String::new()
+            },
+        ),
+        (60, churn),
+        (30, io_status(show_io, app, collected)),
+        // Always, not only above one core. The ceiling steps 10 / 25 / 50 / 100
+        // below that, which is a tenfold swing: a column read at 10% one second
+        // and 100% the next, because one process briefly touched 60%, has
+        // changed every shape in it with nothing said. One ceiling is shared by
+        // every row so the shapes can be compared, which means the column has a
+        // scale — and an unlabelled scale that moves is the same trap as an
+        // unlabelled y-axis.
+        (70, format!(" · history ≤{spark_ceiling:.0}%")),
+    ];
+    // `divider` spends two columns on its lead and one space either side of the
+    // title, so that is what the ladder has to fit inside.
+    let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
+
+    let mut widths = vec![Constraint::Length(7)];
+    if show_user {
+        widths.push(Constraint::Length(USER_W));
+    }
+    widths.extend([
         Constraint::Length(6),
         Constraint::Length(BAR_W as u16 + 1), // bar, plus room for the over-100 mark
         Constraint::Length(8),
         Constraint::Length(BAR_W as u16),
         Constraint::Length(2),
         Constraint::Length(4),
-    ];
+    ]);
     if show_io {
         widths.push(Constraint::Length(9));
         widths.push(Constraint::Length(9));
@@ -2048,9 +2179,60 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         ])
     } else {
         Line::from(Span::styled(
-            "q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · t tree · i io · / filter",
+            fit_hints(KEY_HINTS, area.width),
             app.theme.dim_style(),
         ))
     };
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// The key hints, in the order they are given up.
+///
+/// Least useful last, because that is the end a narrow terminal loses. `K` is
+/// the newest and the most niche; `/` is the one people reach for constantly,
+/// and it used to be what fell off — adding `K kernel` pushed the footer two
+/// columns past an eighty-… past a hundred-column terminal and `/ filter`
+/// rendered as `/ filt`.
+#[cfg(test)]
+pub fn fit_hints_for_test(width: u16) -> String {
+    fit_hints(KEY_HINTS, width)
+}
+
+pub const KEY_HINTS: &[&str] = &[
+    "q quit",
+    "←/→ scrub",
+    "+/- zoom",
+    "Space live",
+    "↑/↓ select",
+    "s sort",
+    "/ filter",
+    "t tree",
+    "i io",
+    "K kernel",
+];
+
+/// As many hints as fit, joined, never cut mid-hint.
+///
+/// A clipped footer reads as a key called `filt`. Dropping whole hints from the
+/// end is the same degradation ladder the header figures and the timeline rows
+/// use, and it means what is on screen is always true.
+fn fit_hints(hints: &[&str], width: u16) -> String {
+    const SEP: &str = " · ";
+    let width = width as usize;
+    let mut out = String::new();
+    for h in hints {
+        let need = if out.is_empty() {
+            h.chars().count()
+        } else {
+            out.chars().count() + SEP.chars().count() + h.chars().count()
+        };
+        if need > width {
+            break;
+        }
+        if !out.is_empty() {
+            out.push_str(SEP);
+        }
+        out.push_str(h);
+    }
+    out
 }
