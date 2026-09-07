@@ -1,6 +1,6 @@
 # Data fidelity
 
-These are not UI items. They bound what ptop is *able* to answer, and `D1` is
+These are not UI items. They bound what poptop is *able* to answer, and `D1` is
 the largest real gap against atop.
 
 ---
@@ -10,10 +10,10 @@ the largest real gap against atop.
 **What.** Account for processes that begin and end between two samples, so they
 appear in the table for the interval they lived in.
 
-**Why.** ptop samples once a second and reads `/proc` at that instant. A process
-that lives 200ms is invisible — it never existed as far as ptop is concerned.
+**Why.** poptop samples once a second and reads `/proc` at that instant. A process
+that lives 200ms is invisible — it never existed as far as poptop is concerned.
 That is not an edge case for this tool: a burst of short-lived processes is one
-of the most common causes of exactly the spike ptop exists to help you find, and
+of the most common causes of exactly the spike poptop exists to help you find, and
 scrubbing back to the spike currently shows a process table that cannot explain
 it.
 
@@ -66,10 +66,10 @@ aggregation — a gap must not be averaged away.
 **What.** Optionally write samples to disk and reload on start.
 
 **Why.** Closes the remaining atop gap and zenith parity ("performance data
-saved between runs"). It also changes what ptop *is*, from a live tool with a
+saved between runs"). It also changes what poptop *is*, from a live tool with a
 memory to a small recorder — so it needs its own plan covering retention,
 on-disk format, file size, and whether it implies a daemon. The zero-setup
-pitch in `00-positioning.md` depends on ptop **not** requiring one, so this must
+pitch in `00-positioning.md` depends on poptop **not** requiring one, so this must
 stay opt-in.
 
 **Acceptance.** Off by default. Bounded on-disk size. Format versioned. Startup

@@ -13,7 +13,7 @@ area: collect
 
 ## What happens
 
-A process is identified throughout ptop by `(pid, started)`. `series_for` and
+A process is identified throughout poptop by `(pid, started)`. `series_for` and
 `churn` both key on it, and both say why in their doc comments: on pid alone a
 recycled pid splices two unrelated programs into one graph.
 

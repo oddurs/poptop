@@ -24,7 +24,7 @@ struct CpuTimes {
     /// Time the CPU was idle *with at least one I/O request outstanding*.
     ///
     /// Kept rather than folded away. It is already inside `idle` — correctly,
-    /// since the CPU genuinely had nothing to run — but that makes ptop right
+    /// since the CPU genuinely had nothing to run — but that makes poptop right
     /// about the CPU being quiet and silent about the reason, which is the
     /// single most common confusing case there is: high load, idle CPU.
     iowait: u64,
@@ -503,7 +503,7 @@ struct StatCtx<'a> {
 /// A floor, not a cap: the buffer ratchets up to the largest `/proc` file seen
 /// and never shrinks, so on a many-core machine `/proc/stat` alone will push it
 /// past this on the first sample and every later read carries the larger
-/// allocation. That is bounded by the largest file ptop reads — a few
+/// allocation. That is bounded by the largest file poptop reads — a few
 /// kilobytes — and is the price of never reallocating during a sample.
 const READ_BUF: usize = 8192;
 

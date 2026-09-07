@@ -142,7 +142,7 @@ impl Collector for SysinfoCollector {
             procs,
             uptime: Duration::from_secs(System::uptime()),
             // macOS publishes no equivalent of `/proc/stat`'s `processes`
-            // counter, so ptop cannot say how many tasks were created in an
+            // counter, so poptop cannot say how many tasks were created in an
             // interval here. `None`, not zero: "I do not know" and "none
             // happened" are opposite answers, and a fabricated zero would
             // quietly promise the table is complete.

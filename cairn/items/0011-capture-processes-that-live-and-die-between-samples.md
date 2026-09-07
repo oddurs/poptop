@@ -13,11 +13,11 @@ area: collect
 
 ## Problem
 
-ptop samples once a second and reads `/proc` at that instant. A process that
-lives 200ms never existed as far as ptop is concerned.
+poptop samples once a second and reads `/proc` at that instant. A process that
+lives 200ms never existed as far as poptop is concerned.
 
 That is not an edge case for this tool. A burst of short-lived processes is one
-of the most common causes of exactly the spike ptop exists to help you find — so
+of the most common causes of exactly the spike poptop exists to help you find — so
 scrubbing back to the spike shows a process table that cannot explain the graph
 above it.
 
@@ -52,7 +52,7 @@ never a fabricated zero.
 
 ## Progress
 
-**Landed: the honest-degradation half.** ptop now reads `processes` from
+**Landed: the honest-degradation half.** poptop now reads `processes` from
 `/proc/stat` — the kernel's count of task creations since boot — and reports
 what an interval created against what the table can account for:
 

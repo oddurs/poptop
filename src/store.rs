@@ -1,6 +1,6 @@
 //! Optionally keeping history across restarts.
 //!
-//! **Off by default, and that is not a shrug.** ptop's position against atop is
+//! **Off by default, and that is not a shrug.** poptop's position against atop is
 //! that nothing has to have been running beforehand — you can install it during
 //! an incident and immediately scrub back through the last ten minutes, because
 //! the buffer fills from the moment it starts. A tool that needs a recorder
@@ -24,6 +24,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Bumped whenever the layout below changes. An old store is dropped, not
 /// migrated: it is a cache of something the machine will produce again in
 /// minutes, and a migration path for it would cost more than it saves.
+// Unmoved by the rename. A store written when this was called `ptop` sits at
+// `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
+// for a version bump to protect anyone from. The magic changed with the name
+// because it spells the name.
 const VERSION: u32 = 4;
 
 /// When the machine this sample came from was booted.
@@ -31,7 +35,7 @@ const VERSION: u32 = 4;
 /// Derived rather than collected: `at - uptime` is already in every sample, on
 /// both platforms, and needs no new syscall.
 ///
-/// This matters more than it looks. A process is identified throughout ptop by
+/// This matters more than it looks. A process is identified throughout poptop by
 /// `(pid, started)`, and `started` is clock ticks *since boot* — unique within
 /// a boot and nowhere else. `series_for` keys on it precisely so that a
 /// recycled pid cannot splice two programs into one graph, and that invariant
@@ -52,7 +56,7 @@ pub fn same_boot(a: SystemTime, b: SystemTime) -> bool {
     let delta = a.duration_since(b).or_else(|_| b.duration_since(a));
     delta.is_ok_and(|d| d < Duration::from_secs(5))
 }
-const MAGIC: &[u8; 8] = b"ptophist";
+const MAGIC: &[u8; 10] = b"poptophist";
 
 /// A ceiling on the file, independent of the buffer's own bound.
 ///
@@ -84,7 +88,7 @@ pub fn path_from(
                 .filter(|p| p.is_absolute())
                 .map(|h| h.join(".local").join("state"))
         })?;
-    Some(base.join("ptop").join("history"))
+    Some(base.join("poptop").join("history"))
 }
 
 /// A little-endian writer. Hand-rolled for the same reason the `/proc` parser
@@ -222,7 +226,7 @@ pub fn encode(samples: &[&Sample]) -> Vec<u8> {
 fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
     // Written newest-first into the body and reversed at the end, so trimming
     // to fit drops the *oldest* — the opposite would throw away the samples
-    // most likely to explain whatever made you open ptop.
+    // most likely to explain whatever made you open poptop.
     let mut kept: Vec<&Sample> = Vec::new();
     let mut out = Out::default();
     for sample in samples.iter().rev() {
@@ -427,7 +431,7 @@ pub fn save(samples: &[&Sample]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Per-process, not a fixed `history.tmp`. Two terminals running ptop is a
+    // Per-process, not a fixed `history.tmp`. Two terminals running poptop is a
     // normal thing to do, and on a shared temporary both writes interleave
     // before either rename — publishing a mixed file that `decode` rejects,
     // losing the whole history. Which is precisely what writing through a
@@ -599,7 +603,7 @@ mod tests {
         assert!(back.len() < all.len(), "nothing was trimmed");
         assert!(!back.is_empty(), "everything was trimmed");
         // The newest survive: they are the ones most likely to explain
-        // whatever made you open ptop, and dropping them to keep an hour-old
+        // whatever made you open poptop, and dropping them to keep an hour-old
         // sample would be the wrong way round.
         assert_eq!(back.last().unwrap().cpu_total, 39.0);
         assert_eq!(
@@ -631,14 +635,14 @@ mod tests {
         let os = |s: &str| Some(std::ffi::OsString::from(s));
         assert_eq!(
             path_from(None, os("/home/someone")),
-            Some(PathBuf::from("/home/someone/.local/state/ptop/history"))
+            Some(PathBuf::from("/home/someone/.local/state/poptop/history"))
         );
         assert_eq!(
             path_from(os("/state"), os("/home/someone")),
-            Some(PathBuf::from("/state/ptop/history"))
+            Some(PathBuf::from("/state/poptop/history"))
         );
         // Relative is the same hazard as everywhere else: it would put the
-        // store wherever ptop happened to be launched from.
+        // store wherever poptop happened to be launched from.
         assert_eq!(path_from(os("relative"), os("also/relative")), None);
         assert_eq!(path_from(None, None), None);
     }

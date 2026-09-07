@@ -13,17 +13,17 @@ area: collect
 
 ## Problem
 
-Quitting ptop discards everything. atop and zenith both survive a restart.
+Quitting poptop discards everything. atop and zenith both survive a restart.
 
 ## Proposal
 
 Optionally write samples to disk and reload on start.
 
-**This changes what ptop is** — from a live tool with a memory into a small
+**This changes what poptop is** — from a live tool with a memory into a small
 recorder — so it needs its own design pass covering retention, on-disk format,
 file size, and whether it implies a daemon.
 
-The zero-setup argument in the README depends on ptop **not** requiring one.
+The zero-setup argument in the README depends on poptop **not** requiring one.
 "Nothing has to have been running beforehand" is the whole position against
 atop, so this must stay opt-in and must not become the default path.
 

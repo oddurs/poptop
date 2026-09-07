@@ -1,6 +1,6 @@
 ---
 id: 1
-title: Config file at ~/.config/ptop/ptop.conf
+title: Config file at ~/.config/poptop/poptop.conf
 type: feature
 status: done
 milestone: v1.0
@@ -22,13 +22,13 @@ visible. Nobody wants to type them, and a shell alias is not a config system.
 
 Hand-rolled `key = value`, not TOML.
 
-ptop's config surface is genuinely flat, and `serde` + `toml` would be the
+poptop's config surface is genuinely flat, and `serde` + `toml` would be the
 largest dependency in the project by an order of magnitude — in a codebase whose
 `/proc` parser is deliberately hand-rolled with no dependencies at all. htop and
 btop both use key=value and neither has outgrown it. If real nesting ever
 appears, that is the moment to reconsider, not before.
 
-    ~/.config/ptop/ptop.conf        # honours XDG_CONFIG_HOME
+    ~/.config/poptop/poptop.conf        # honours XDG_CONFIG_HOME
 
 Precedence, lowest to highest: built-in default, config file, environment
 (`NO_COLOR`), command-line flag. The flag always wins, so a wrapper script can

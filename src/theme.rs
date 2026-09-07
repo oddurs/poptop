@@ -22,7 +22,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 // # Which token belongs where
 //
-// Every colour in ptop does exactly one of four jobs, and the jobs do not share
+// Every colour in poptop does exactly one of four jobs, and the jobs do not share
 // hues. The rule that costs most to break is the first: a status colour reused
 // as a series colour destroys the meaning of that status colour *everywhere
 // else in the UI*, because the reader can no longer tell whether red means
@@ -61,7 +61,7 @@ pub enum Tier {
     /// terminal theme decides what `Green` looks like, so this tier can promise
     /// nothing about contrast or colour-vision separation.
     Ansi16,
-    /// 256-colour cube. The first tier where ptop actually controls the hues.
+    /// 256-colour cube. The first tier where poptop actually controls the hues.
     Ansi256,
     #[default]
     /// 24-bit.
@@ -142,7 +142,7 @@ pub enum Palette {
     /// Green-and-red is the worst available pair for red-green colour vision
     /// deficiency, which affects roughly 8% of men — and every system monitor
     /// ships it. Measured against a dark surface in OKLab ΔE×100 under Machado
-    /// 2009 simulation, ptop's old green↔yellow separated by **3.7** under
+    /// 2009 simulation, poptop's old green↔yellow separated by **3.7** under
     /// protanopia. Replacing green with cyan takes the worst pair to 16.2.
     #[default]
     Safe,
@@ -169,7 +169,7 @@ impl Palette {
     /// Why this palette knowingly fails the separation target, if it does.
     ///
     /// Stated by the palette rather than discovered by the checker, so
-    /// `--check-theme classic` reads as the choice it is rather than as ptop
+    /// `--check-theme classic` reads as the choice it is rather than as poptop
     /// failing its own check.
     pub fn caveat(self) -> Option<&'static str> {
         match self {
@@ -372,7 +372,7 @@ impl Theme {
         }
     }
 
-    /// The palette ptop shipped before tiers existed.
+    /// The palette poptop shipped before tiers existed.
     const fn ansi16() -> Self {
         Self {
             tier: Tier::Ansi16,
@@ -419,7 +419,7 @@ impl Theme {
         }
     }
 
-    /// Explicit RGB, so the hues are ptop's rather than the terminal theme's.
+    /// Explicit RGB, so the hues are poptop's rather than the terminal theme's.
     ///
     /// These are still the classic green/yellow/red. Fixing the colour-vision
     /// problem with them is C3's job, and it depends on this tier existing to
@@ -905,7 +905,7 @@ mod tests {
              the whole argument is about"
         );
         // …and the caveat has to be the thing `--check-theme` shows a user, or
-        // ptop reads as failing its own check.
+        // poptop reads as failing its own check.
         assert!(Palette::Classic.caveat().is_some());
     }
 
@@ -1167,7 +1167,7 @@ impl Token {
 /// All three, because all three are the right answer at some tier. Hex is what
 /// a designer hands you; an index is what someone matching a 256-colour scheme
 /// has; a name is the only thing that means anything on a 16-colour terminal,
-/// where the actual hue belongs to the user's terminal theme and not to ptop.
+/// where the actual hue belongs to the user's terminal theme and not to poptop.
 pub fn parse_color(s: &str) -> Option<Color> {
     if let Some(hex) = s.strip_prefix('#') {
         if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -1221,7 +1221,7 @@ impl Tier {
     ///
     /// There is no quantisation here on purpose. Squeezing 24-bit hex into
     /// sixteen slots would destroy exactly the separation the palettes were
-    /// measured for — and the sixteen slots do not belong to ptop anyway, they
+    /// measured for — and the sixteen slots do not belong to poptop anyway, they
     /// belong to the user's terminal theme. A colour the tier cannot show is
     /// therefore left alone and reported, not approximated.
     pub fn needed_for(c: Color) -> Tier {

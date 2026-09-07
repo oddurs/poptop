@@ -22,7 +22,7 @@ A small sparkline per row showing that process's CPU over the retained window,
 drawn from history rather than from the current sample.
 
 **This is the item worth building.** Every retained `Sample` carries its
-complete `Vec<ProcSample>`, so ptop can already answer "what has *this process*
+complete `Vec<ProcSample>`, so poptop can already answer "what has *this process*
 been doing for the last ten minutes" with no new collection — and no other
 monitor can:
 

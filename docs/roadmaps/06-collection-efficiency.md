@@ -1,6 +1,6 @@
 # Collection efficiency
 
-ptop is not slow today, and that is the wrong reason to leave the collector
+poptop is not slow today, and that is the wrong reason to leave the collector
 alone. At 1 Hz and 400 processes a sample costs 1.44 ms — 0.14% of one core.
 But the cost is linear in both sample rate and process count, and two items
 already on the roadmap push on both:
@@ -84,7 +84,7 @@ allocations retained, 3.8 MB**, for strings that essentially never change.
 `user` is already interned this way — it was the fix that made the uid lookup
 2.26× faster — and `name` never got the same treatment. htop reads `comm` and
 `cmdline` **once per process lifetime**, gated on `!preExisting`; btop gates the
-same reads on `no_cache`. ptop has no such gate.
+same reads on `no_cache`. poptop has no such gate.
 
 **The wrinkle.** A pid can be reused, and the new process will usually have a
 different name. The cache must be keyed on something that distinguishes them, or

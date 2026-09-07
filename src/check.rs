@@ -1,6 +1,6 @@
 //! Measuring a theme against the guarantee the built-in palettes are held to.
 //!
-//! ptop is the only monitor that measures its own palette: CI fails if any
+//! poptop is the only monitor that measures its own palette: CI fails if any
 //! pair of meaning-bearing hues drops below ΔE 8 under Machado 2009 simulation,
 //! or if a colour falls below 3:1 against a background it is actually drawn
 //! over. That guarantee is the whole point of the colour work.
@@ -32,11 +32,11 @@ pub const MIN_CONTRAST: f64 = 3.0;
 /// that the quiet end stays visible.
 pub const MIN_RECESSIVE: f64 = 1.5;
 
-/// The panel background ptop draws over.
+/// The panel background poptop draws over.
 ///
-/// A constant rather than a reading of the terminal: ptop never sets a
+/// A constant rather than a reading of the terminal: poptop never sets a
 /// background, so the real one belongs to the user's terminal theme and cannot
-/// be known. This is a dark surface typical of the terminals ptop is designed
+/// be known. This is a dark surface typical of the terminals poptop is designed
 /// against, and a figure measured against a stated assumption beats no figure.
 pub const SURFACE: [u8; 3] = [0x1a, 0x1a, 0x19];
 
@@ -88,7 +88,7 @@ pub enum Verdict {
     ///
     /// Its own outcome rather than a quiet pass. ANSI names and the low indices
     /// are *slots*, and what they look like belongs to the user's terminal
-    /// theme — ptop genuinely cannot know. Treating that as "no problems found"
+    /// theme — poptop genuinely cannot know. Treating that as "no problems found"
     /// meant `--check-theme` certified anything on a terminal without 256
     /// colours, which is most CI jobs: exactly where the README says to run it.
     Incomplete,
@@ -150,7 +150,7 @@ pub struct Report {
     pub name: String,
     pub pairs: Vec<Pair>,
     pub legibility: Vec<Legibility>,
-    /// Tokens whose colour ptop cannot know.
+    /// Tokens whose colour poptop cannot know.
     ///
     /// An ANSI name or an index below 16 is a *slot*; what it looks like
     /// belongs to the user's terminal theme. Reported rather than dropped: a
@@ -167,7 +167,7 @@ pub struct Report {
     ///
     /// `classic` fails on purpose — it exists to restore the green/yellow
     /// convention, and green/yellow is the pair that convention gets wrong.
-    /// Reporting that as a bare FAIL would read as ptop failing its own check
+    /// Reporting that as a bare FAIL would read as poptop failing its own check
     /// rather than as the choice it is.
     pub caveat: Option<&'static str>,
 }
@@ -268,7 +268,7 @@ impl Report {
     /// One line for a theme that loads anyway.
     ///
     /// A failing theme still loads. It is the user's terminal and their choice;
-    /// ptop's job is to have the number and say it, not to refuse — the same
+    /// poptop's job is to have the number and say it, not to refuse — the same
     /// principle as rendering `—` rather than a fabricated zero.
     ///
     /// Only a real failure is worth a line at startup. An incomplete check is
@@ -297,7 +297,7 @@ impl Report {
             ));
         }
         Some(format!(
-            "theme `{}`: {} — run `ptop --check-theme {}` for the rest",
+            "theme `{}`: {} — run `poptop --check-theme {}` for the rest",
             self.name,
             why.join(", "),
             self.name
@@ -361,7 +361,7 @@ impl fmt::Display for Report {
             for line in wrap(
                 &format!(
                     "not measured: {}. An ANSI name or an index below 16 is a slot, and \
-                     what it looks like belongs to your terminal theme rather than to ptop — \
+                     what it looks like belongs to your terminal theme rather than to poptop — \
                      there is no hue here to measure. Spell these as `#rrggbb` or a \
                      256-colour index to have them checked.",
                     what.join(", ")
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn a_failing_theme_still_loads_and_says_why_once() {
-        // It is the user's terminal and their choice; ptop's job is to have the
+        // It is the user's terminal and their choice; poptop's job is to have the
         // number and say it, not to refuse — the same principle as rendering
         // `—` rather than a fabricated zero.
         let report = Report::of(
@@ -569,7 +569,7 @@ mod tests {
         // figures under the "selected row" label — a PASS on fabricated data,
         // which is the one thing this module exists not to do. With
         // `selection_bg = white` every meaning colour is far below 3:1 there,
-        // and ptop said PASS.
+        // and poptop said PASS.
         let report = Report::of("slotted", &themed(&[(Token::SelectionBg, Color::White)]));
         assert!(report.selection_unmeasured);
         assert!(

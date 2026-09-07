@@ -202,7 +202,7 @@ mod tests {
         let d = delta_e(green, yellow, Some(Cvd::Protan));
         assert!(
             near(d, 3.7),
-            "ptop's old green<->yellow under protanopia: got {d:.2}, expected 3.7"
+            "poptop's old green<->yellow under protanopia: got {d:.2}, expected 3.7"
         );
 
         let cyan = [0x5c, 0xcf, 0xe6];

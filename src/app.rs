@@ -158,7 +158,7 @@ impl App {
     /// Decide from one real sample whether the IO columns earn their place.
     ///
     /// A probe rather than a guess: whether `/proc/<pid>/io` is readable
-    /// depends on who is running ptop and who owns the processes, which nothing
+    /// depends on who is running poptop and who owns the processes, which nothing
     /// short of trying it can answer.
     ///
     /// If they do not, collection stops as well. The ratchet exists so history

@@ -375,12 +375,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let spans = fit(figures, area.width as usize);
 
     let state = if app.history.is_live() {
-        Span::styled(" ptop — LIVE ", app.theme.live_style())
+        Span::styled(" poptop — LIVE ", app.theme.live_style())
     } else {
         // Loud on purpose: reading a stale process table as the current one is
         // the single worst thing this tool could let you do.
         Span::styled(
-            format!(" ptop — PAUSED  -{} ", fmt_lag(app.history.time_behind())),
+            format!(" poptop — PAUSED  -{} ", fmt_lag(app.history.time_behind())),
             app.theme.paused_style(),
         )
     };

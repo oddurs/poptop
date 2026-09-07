@@ -13,7 +13,7 @@ area: theme
 
 ## Problem
 
-ptop is the only monitor that measures its own palette. `src/cvd.rs` fails CI if
+poptop is the only monitor that measures its own palette. `src/cvd.rs` fails CI if
 any pair of meaning-bearing hues drops below ΔE 8 under Machado 2009 simulation,
 or if contrast falls below 3:1 against the surface or the selected row. That
 guarantee is the entire point of the C series.
@@ -23,7 +23,7 @@ turned outward.
 
 ## Proposal
 
-    ptop --check-theme nord
+    poptop --check-theme nord
 
 prints the ΔE matrix and the contrast ratios, and names the pairs that fail:
 
@@ -34,7 +34,7 @@ prints the ΔE matrix and the contrast ratios, and names the pairs that fail:
       worst pair: 6.1   worst contrast: 2.4:1
 
 A failing theme still **loads**, with one warning line. It is the user's
-terminal and their choice; ptop's job is to have the number and say it, not to
+terminal and their choice; poptop's job is to have the number and say it, not to
 refuse. That is the same principle as rendering `—` rather than a fabricated
 zero.
 

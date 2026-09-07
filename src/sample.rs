@@ -168,7 +168,7 @@ pub struct Sample {
     pub iowait: Option<f32>,
     /// Tasks runnable at the instant of the sample — vmstat's `r`.
     ///
-    /// Load average smoothed; this is the unsmoothed truth, and ptop has a
+    /// Load average smoothed; this is the unsmoothed truth, and poptop has a
     /// timeline for the smoothing.
     pub running: Option<u32>,
     /// Tasks in uninterruptible sleep — vmstat's `b`.
@@ -185,7 +185,7 @@ pub struct Sample {
     /// will not say.
     ///
     /// The counter that makes short-lived processes *visible as an absence*.
-    /// ptop reads `/proc` at an instant, so a process that lived 200ms never
+    /// poptop reads `/proc` at an instant, so a process that lived 200ms never
     /// existed as far as the table is concerned — and a burst of them is one
     /// of the commonest causes of exactly the spike you scrubbed back to find.
     /// The difference between two samples is how many tasks were created in

@@ -36,7 +36,7 @@ the reason.
 
 Refusing is more in keeping with the rest of this project than quietly
 substituting a different interval from the one the user configured: everywhere
-else, a value ptop cannot honour is reported rather than adjusted.
+else, a value poptop cannot honour is reported rather than adjusted.
 
 Whichever way it goes, the number is the argument — the 200ms figure should be
 in the message, not just in sysinfo's documentation.
