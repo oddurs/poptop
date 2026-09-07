@@ -20,6 +20,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, so the commit messages this push introduces can be
+          # scanned rather than just the tip.
+          fetch-depth: 0
+      # The layer that cannot be skipped. The hook is opt-in per clone and
+      # `./check` is opt-in per person; this is neither.
+      - name: no tool attribution
+        run: |
+          git ls-files -z | grep -zv '^\.githooks/' | xargs -0 .githooks/no-attribution
+          base='${{ github.event.pull_request.base.sha }}'
+          [ -n "$base" ] || base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          git log --format='%B%n%an%n%cn' "$base..HEAD" | .githooks/no-attribution --stdin
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

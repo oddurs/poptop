@@ -63,6 +63,23 @@ run() {
     fi
 }
 
+# Nothing published from here carries a note about what wrote it. Checked on
+# every run, because the commit-msg hook only fires for people who wired it up
+# and the tracked files are what a reader actually sees.
+printf '  %-34s' "no tool attribution"
+if git ls-files -z | grep -zv '^\.githooks/' | xargs -0 .githooks/no-attribution >/dev/null 2>&1; then
+    echo ok
+else
+    echo FAILED
+    git ls-files -z | grep -zv '^\.githooks/' | xargs -0 .githooks/no-attribution 2>&1 | sed 's/^/    /'
+    fail=1
+fi
+
+# The hook is opt-in per clone. Say so rather than assume it.
+if [ "$(git config core.hooksPath || true)" != ".githooks" ]; then
+    echo "  hooks are not wired: git config core.hooksPath .githooks" >&2
+fi
+
 echo "host: $(uname -s)"
 need cargo || exit 1
 run "cargo fmt --check" cargo fmt --check

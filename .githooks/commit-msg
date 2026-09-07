@@ -1,0 +1,4 @@
+#!/bin/sh
+# Catch attribution at the moment it would enter history, when the fix is free.
+set -eu
+exec "$(dirname "$0")/no-attribution" "$1"
