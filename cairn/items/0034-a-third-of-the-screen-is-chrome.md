@@ -2,7 +2,7 @@
 id: 34
 title: A third of the screen is chrome
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
