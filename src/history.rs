@@ -166,7 +166,7 @@ pub fn series_for(
             series.push(None);
         }
         for p in &sample.procs {
-            let key = (p.pid, p.started);
+            let Some(key) = p.key() else { continue };
             if wanted.contains(&key)
                 && let Some(series) = out.get_mut(&key)
                 && let Some(last) = series.last_mut()
@@ -262,7 +262,7 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
     let before: std::collections::HashMap<(i32, u64), u32> = prev
         .procs
         .iter()
-        .map(|p| ((p.pid, p.started), p.threads))
+        .filter_map(|p| Some((p.key()?, p.threads)))
         .collect();
     // Keyed on pid *and* start time, like `series_for`: on pid alone a
     // recycled pid looks like a process that was here all along, and its
@@ -270,7 +270,10 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
     let visible = now
         .procs
         .iter()
-        .map(|p| match before.get(&(p.pid, p.started)) {
+        // A process with no key counts as new. It may not be, but the honest
+        // alternatives are to drop it — undercounting real growth — or to match
+        // it on pid alone, which is the splice this key exists to prevent.
+        .map(|p| match p.key().and_then(|k| before.get(&k)) {
             Some(&was) => u64::from(p.threads.saturating_sub(was)),
             None => u64::from(p.threads),
         })

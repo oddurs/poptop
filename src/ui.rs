@@ -1152,7 +1152,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .skip(row_offset)
         .take(visible_rows)
-        .map(|r| (r.proc.pid, r.proc.started))
+        .filter_map(|r| r.proc.key())
         .collect();
     // The whole retained buffer, not a slice of it. A per-row summary that
     // shifted every time the timeline zoomed would be a second, contradictory
@@ -1225,7 +1225,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             // a column of shapes rather than hunting for it past ragged names.
             cells.push(
                 Cell::from(sparkline(
-                    series.get(&(p.pid, p.started)).map(Vec::as_slice),
+                    p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
                     app.glyphs,
                     spark_zoom,
                     spark_ceiling,

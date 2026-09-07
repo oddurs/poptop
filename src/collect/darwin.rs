@@ -4,6 +4,7 @@
 //! project's worth of unsafe. This backend exists so the tool runs on a dev
 //! laptop; the `/proc` backend is the one to read for how any of it works.
 
+use super::kinfo::Kinfo;
 use super::{Collector, Needs};
 use crate::sample::{IoRates, MemStat, ProcSample, Sample};
 use std::collections::HashMap;
@@ -43,7 +44,12 @@ pub struct SysinfoCollector {
     users: Users,
     /// pid -> (start time, name). Same key as the Linux collector, and for the
     /// same reason: a recycled pid must not inherit the dead process's name.
-    names: HashMap<i32, (u64, Arc<str>)>,
+    names: HashMap<i32, (Option<u64>, Arc<str>)>,
+    /// Start times for processes this user does not own, which sysinfo will not
+    /// report. `None` if this kernel's `kinfo_proc` is not the one
+    /// [`Kinfo::probe`] recognises, in which case sysinfo's answer is used and
+    /// the third of the table it cannot see has no identity — as before.
+    kinfo: Option<Kinfo>,
 }
 
 impl SysinfoCollector {
@@ -53,6 +59,7 @@ impl SysinfoCollector {
             sys: System::new_all(),
             users: Users::new_with_refreshed_list(),
             names: HashMap::new(),
+            kinfo: Kinfo::probe(),
         })
     }
 }
@@ -87,6 +94,17 @@ impl Collector for SysinfoCollector {
             cpu_per_core.iter().sum::<f32>() / cpu_per_core.len() as f32
         };
 
+        // Read before the process list is walked, not after: a process forked in
+        // between would be in sysinfo's list with no start time here, and get
+        // none for its first sample. Reading first means the miss is a process
+        // that *exited*, which is about to leave the table anyway.
+        //
+        // One source per session, never a mix. Falling back to sysinfo
+        // per-process would put seconds and microseconds in the same field, so
+        // a process that slipped from one source to the other would look like a
+        // different process — the exact failure this key exists to prevent.
+        let starts = self.kinfo.as_mut().map(|k| k.starts());
+
         let Self {
             sys, users, names, ..
         } = self;
@@ -116,7 +134,16 @@ impl Collector for SysinfoCollector {
             .iter()
             .map(|(pid, p)| {
                 let id = pid.as_u32() as i32;
-                let started = p.start_time();
+                let started = match &starts {
+                    Some(table) => table.get(&id).copied(),
+                    // No usable `kinfo_proc`. sysinfo counts whole seconds, so
+                    // scale to keep the field's unit constant, and treat its
+                    // zero as what it means: it would not say.
+                    None => match p.start_time() {
+                        0 => None,
+                        s => Some(s * 1_000_000),
+                    },
+                };
                 let name = match names.get(&id) {
                     Some((t, n)) if *t == started => n.clone(),
                     _ => {
@@ -126,7 +153,7 @@ impl Collector for SysinfoCollector {
                     }
                 };
                 ProcSample {
-                    pid: pid.as_u32() as i32,
+                    pid: id,
                     // sysinfo reports no parent for processes this user does not
                     // own, so on macOS roughly a third of pids come back with 0 and
                     // the tree view shows them as roots. The /proc backend has real

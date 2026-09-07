@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 
 /// When the machine this sample came from was booted.
 ///
@@ -36,13 +36,19 @@ const VERSION: u32 = 5;
 /// both platforms, and needs no new syscall.
 ///
 /// This matters more than it looks. A process is identified throughout poptop by
-/// `(pid, started)`, and `started` is clock ticks *since boot* — unique within
-/// a boot and nowhere else. `series_for` keys on it precisely so that a
-/// recycled pid cannot splice two programs into one graph, and that invariant
-/// held only because every sample in the buffer came from one boot. Restoring
-/// across a reboot breaks it: early-boot processes land on near-identical
-/// starttimes every time, so a live pid 1 would match a restored pid 1 and
-/// render the *previous boot's* CPU as this process's own history.
+/// [`crate::sample::ProcSample::key`], which is `(pid, started)`, and on Linux
+/// `started` is clock ticks *since boot* — unique within a boot and nowhere
+/// else. `series_for` keys on it precisely so that a recycled pid cannot splice
+/// two programs into one graph, and that invariant held only because every
+/// sample in the buffer came from one boot. Restoring across a reboot breaks
+/// it: early-boot processes land on near-identical starttimes every time, so a
+/// live pid 1 would match a restored pid 1 and render the *previous boot's* CPU
+/// as this process's own history.
+///
+/// macOS counts microseconds since the epoch, which does not collide across
+/// boots. The check applies to both anyway: the field is deliberately opaque,
+/// and a guard that holds only on the platform whose units you happened to
+/// check is a guard waiting for a third backend.
 pub fn boot_time(s: &Sample) -> SystemTime {
     s.at.checked_sub(s.uptime).unwrap_or(UNIX_EPOCH)
 }
@@ -304,7 +310,8 @@ fn write_sample(out: &mut Out, s: &Sample) {
         out.u64(p.rss);
         out.u32(p.threads);
         out.u8(p.state as u8);
-        out.u64(p.started);
+        out.u8(u8::from(p.started.is_some()));
+        out.u64(p.started.unwrap_or(0));
         out.u8(u8::from(p.io.is_some()));
         let io = p.io.unwrap_or_default();
         out.u64(io.read);
@@ -381,6 +388,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         let rss = r.u64()?;
         let threads = r.u32()?;
         let state = r.u8()? as char;
+        let has_started = r.u8()? != 0;
         let started = r.u64()?;
         let has_io = r.u8()? != 0;
         let read = r.u64()?;
@@ -394,7 +402,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
             rss,
             threads,
             state,
-            started,
+            started: has_started.then_some(started),
             io: has_io.then_some(IoRates { read, write }),
         });
     }
@@ -462,7 +470,7 @@ mod tests {
             rss: 4 << 20,
             threads: 3,
             state: 'S',
-            started: 987,
+            started: Some(987),
             io: Some(IoRates {
                 read: 100,
                 write: 200,
@@ -533,6 +541,27 @@ mod tests {
                 y.io.map(|i| (i.read, i.write))
             );
         }
+    }
+
+    #[test]
+    fn a_process_with_no_start_time_does_not_come_back_with_one() {
+        // `None` and `Some(0)` are different answers: the second is a token
+        // that compares equal to another zero, which is how two unrelated
+        // processes on a recycled pid get spliced into one line. A store that
+        // flattened one into the other would reintroduce that on restore.
+        let mut s = sample_of(1.0, 2);
+        s.procs[0].started = None;
+        s.procs[1].started = Some(0);
+        let back = decode(&encode(&[&s])).unwrap();
+        assert_eq!(
+            back[0].procs[0].started, None,
+            "an unknown start time was invented"
+        );
+        assert_eq!(
+            back[0].procs[1].started,
+            Some(0),
+            "a real zero was discarded"
+        );
     }
 
     #[test]
@@ -712,7 +741,7 @@ mod tests_support {
                     rss: 1 << 20,
                     threads: 4,
                     state: 'S',
-                    started: i as u64,
+                    started: Some(i as u64),
                     io: None,
                 })
                 .collect(),

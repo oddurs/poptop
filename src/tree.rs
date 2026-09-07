@@ -176,7 +176,7 @@ mod tests {
             rss: 1024,
             threads: 1,
             state: 'S',
-            started: 0,
+            started: Some(0),
             io: None,
         }
     }

@@ -279,11 +279,14 @@ fn main() -> io::Result<()> {
     // caption already reads real time.
     //
     // Samples from a previous boot are dropped, and that is not tidiness. A
-    // process is identified by `(pid, started)`, and `started` counts ticks
-    // since *boot* — so across a reboot a live pid 1 matches a restored pid 1,
-    // and its history column would render the previous boot's CPU as this
-    // process's own. Said out loud rather than done quietly, because losing
-    // history is exactly what a user should hear about.
+    // process is identified by `(pid, started)`, and on Linux `started` counts
+    // ticks since *boot* — so across a reboot a live pid 1 matches a restored
+    // pid 1, and its history column would render the previous boot's CPU as
+    // this process's own. macOS counts from the epoch and so does not have that
+    // collision, but the check stays for both: a token whose meaning is
+    // platform-specific is not one to make cross-boot promises about. Said out
+    // loud rather than done quietly, because losing history is exactly what a
+    // user should hear about.
     if settings.store {
         let boot = store::boot_time(&first);
         let restored = store::load().unwrap_or_default();

@@ -56,6 +56,8 @@ pub use linux::ProcFs as Platform;
 #[cfg(not(target_os = "linux"))]
 mod darwin;
 #[cfg(not(target_os = "linux"))]
+mod kinfo;
+#[cfg(not(target_os = "linux"))]
 use darwin as backend;
 #[cfg(not(target_os = "linux"))]
 pub use darwin::SysinfoCollector as Platform;
