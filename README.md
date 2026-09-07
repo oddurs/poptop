@@ -12,14 +12,14 @@ nothing that had to be running before you noticed the problem.
 CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5%   SWP  50.0%
   4 cores ▇▄▁█
 ── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
-100 ⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣆⠤⣴⠤⣰⡀⢠⡆⢀⣆⠀⣴⠀⣰⡀⢰⡆⢀⣆⠤⣶⠤⣰⡀⢰⡆⢀⣆⠀⣶⠀⣰⡀⢰⡆⢀⣆⠤⣶
-CPU ⡀⣿⡇⣾⣇⢸⣿⢰⣿⡀⣿⡇⣾⣇⢸⣷⢰⣿⠤⣿⡆⣾⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿
-  0 ⣷⣿⣇⣿⣿⣾⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿
-100 ⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀
-MEM ⠤⣀⣀⣴⣾⣿⣿⣿⣿⣶⣄⣀⡀⠀⠤⠀⢀⣀⣠⣴⣾⣿⣿⣿⣷⣦⣄⣀⠤⠀⠤⠀⢀⣀⣤⣶⣿⣿⣿⣿⣶⣤⣀⣀⠤⠀⠤⠀⣀⣀⣤⣾⣿⣿⣿⣿⣶⣤⣀⡀⠤⠀⠤⠀⣀⣠⣴⣾⣿⣿⣿⣷⣦⣄
-  0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
-                                               CPU 89.2%  MEM 37.5% ▐
-2m27s shown, 1s/slot — ←/→ scrub, +/- zoom
+ 100 ⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣆⠀⣴⠀⣰⡀⢠⡆⢀⣆⠤⣴⠤⣰⡀⢰⡆⢀⣆⠀⣶⠀⣰⡀⢰⡆⢀⣆⠤⣶⠤⣰⡀⢰⡆⢀⣆⠀⣶
+ CPU ⣿⡇⣾⣇⢸⣿⢰⣿⡀⣿⡇⣾⣇⢸⣷⢰⣿⠀⣿⡆⣾⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿
+   0 ⣿⣇⣿⣿⣾⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿
+ 100 ⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤
+WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣤⣀⡀⠀⠤⠀⠤⠀⢀⣀⣤⣤⣶⣦⣤⣄⣀⠀⠤⠀⠤⠀⢀⣀⣤⣤⣶⣦⣤⣄⣀⠀⠤⠀⠤⠀⠤⣀⣠⣤⣴
+   0 ⣿⣿⣿⣿⣿⣿⣷⣤⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⣀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣄⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣤⣾⣿⣿⣿⣿
+                                              CPU 89.2%  WAIT 26.7% ▐
+2m25s shown, 1s/slot — ←/→ scrub, +/- zoom
 ── processes (4) — sort: CPU ─────────────────────────────────────────────────
 PID     USER       CPU%         RSS           S  THR  HISTORY    COMMAND
 824     root       88.4   ███▌  512.0M   ▏    S  1    ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ postgres
@@ -510,6 +510,28 @@ green/yellow is the pair that convention gets wrong under red-green deficiency.
 That is the whole argument for `safe` being the default, and it is pinned by a
 test so that quietly "improving" classic would break the build rather than
 remove the argument.
+
+### What the timeline graphs
+
+`CPU` and `WAIT`, and memory only when there is room for it.
+
+Memory used over ten minutes is a flat line or a slow ramp that repeats what
+the header already says, and it was occupying half the most valuable space on
+screen. Waiting is the row that turns a stalled machine from a mystery into a
+shape, so memory is the one that yields — and comes back as a third row on a
+terminal tall enough to carry it. Where the platform publishes no iowait, the
+row goes back to memory rather than the graph carrying one it cannot fill.
+
+A series is only drawn if the gutter can name it. Identity here rests on the
+label rather than the hue, because there is no sixth hue to give a third
+series: the safe palette already avoids green — green/yellow is the pair
+red-green deficiency destroys — and a search of the whole cube for a colour
+clearing ΔE 8 against the existing five returns 77 candidates, every one of
+them either in the warning-orange band between `warn` and `critical` or sitting
+next to `ok`. Adding one would tax every user theme with another key and take
+`--check-theme` from ten pairs to fifteen, for a row the gutter already names.
+So the hues alternate instead, which guarantees the only thing that matters:
+two graphs touching each other never share a colour.
 
 ### Sample rate and window
 

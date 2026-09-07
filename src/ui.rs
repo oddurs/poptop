@@ -498,8 +498,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Reserve the cursor marker and legend, then divide the rest exactly so no
     // row is left blank. CPU takes the larger share as the spikier signal.
     let graph_rows = inner_h.saturating_sub(2).max(1);
-    let cpu_rows = (graph_rows * 3 / 5).max(1);
-    let mem_rows = graph_rows.saturating_sub(cpu_rows);
 
     // A left gutter carrying the scale. Dropped entirely on a narrow panel:
     // four columns of axis is a poor trade against four columns of history
@@ -508,12 +506,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Reserve the gutter only when some section can actually fill it. A section
     // shorter than `MIN_ROWS_FOR_AXIS` carries no anchors and no label, so the
     // columns would be blank while the graph lost that much history.
-    let graph_rows_probe = inner_h.saturating_sub(2).max(1);
-    let cpu_probe = (graph_rows_probe * 3 / 5).max(1);
-    let mem_probe = graph_rows_probe.saturating_sub(cpu_probe);
-    let gutter = if inner_w >= MIN_WIDTH_FOR_GUTTER
-        && (cpu_probe >= MIN_ROWS_FOR_AXIS || mem_probe >= MIN_ROWS_FOR_AXIS)
-    {
+    let gutter = if inner_w >= MIN_WIDTH_FOR_GUTTER && graph_rows >= MIN_ROWS_FOR_AXIS {
         GUTTER_W
     } else {
         0
@@ -536,10 +529,28 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let window_start = window_start(&app.history, shown);
     let window = &samples[window_start..window_start + shown];
 
-    let cpu: Vec<f32> = window.iter().map(|s| s.cpu_total).collect();
-    let mem: Vec<f32> = window.iter().map(|s| s.mem.used_pct()).collect();
-    let cpu_slots = history::peak_slots(&cpu, zoom, slots);
-    let mem_slots = history::peak_slots(&mem, zoom, slots);
+    // In the order they earn their place. `WAIT` is second because a machine
+    // that is stalled rather than busy is the case a monitor is opened to
+    // diagnose, and memory over ten minutes is a flat line or a slow ramp that
+    // repeats what the header already says.
+    //
+    // `WAIT` is absent where the platform will not say, and then memory takes
+    // the row back rather than the graph carrying an empty one.
+    let mut candidates: Vec<(&str, Vec<f32>)> =
+        vec![("CPU", window.iter().map(|s| s.cpu_total).collect())];
+    if app.history.current().is_some_and(|s| s.iowait.is_some()) {
+        // `unwrap_or` is safe rather than fabricating: whether the platform
+        // publishes iowait is a property of the platform, not of the moment,
+        // so within one buffer it is `Some` throughout or `None` throughout.
+        candidates.push((
+            "WAIT",
+            window.iter().map(|s| s.iowait.unwrap_or(0.0)).collect(),
+        ));
+    }
+    candidates.push(("MEM", window.iter().map(|s| s.mem.used_pct()).collect()));
+
+    let row_split = sections(graph_rows, candidates.len());
+    candidates.truncate(row_split.len());
 
     // Gaps are found over the whole buffer, not the window, so a discontinuity
     // falling on the first drawn sample is still seen — within the window it
@@ -556,13 +567,23 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Whether the gutter can name each series itself. A direct label beats a
     // legend — the reader stops having to hold "top is cpu" in their head — but
     // it needs a row that is not already carrying an axis anchor.
-    let labelled = gutter > 0 && cpu_rows >= MIN_ROWS_FOR_LABEL && mem_rows >= MIN_ROWS_FOR_LABEL;
+    let labelled = gutter > 0 && row_split.iter().all(|&r| r >= MIN_ROWS_FOR_LABEL);
 
     let mut lines: Vec<Line> = Vec::with_capacity(inner_h);
-    for (values, rows, name, series) in [
-        (&cpu_slots, cpu_rows, "CPU", app.theme.series_cpu),
-        (&mem_slots, mem_rows, "MEM", app.theme.series_mem),
-    ] {
+    for (i, (name, raw)) in candidates.iter().enumerate() {
+        let rows = row_split[i];
+        let slots_for = history::peak_slots(raw, zoom, slots);
+        let values = &slots_for;
+        // Alternating rather than one hue each, because there is no sixth hue
+        // to give the third series: the palette avoids green for colour vision
+        // reasons and the remaining space is warning-orange or beside `ok`.
+        // Alternating guarantees the only thing that matters — that two graphs
+        // touching each other never share a colour.
+        let series = if i % 2 == 0 {
+            app.theme.series_cpu
+        } else {
+            app.theme.series_mem
+        };
         // Each graph scales to its own peak: memory at 78% and CPU at 16% are
         // different questions and deserve different axes.
         let peak = values.iter().flatten().copied().fold(0.0_f32, f32::max);
@@ -605,9 +626,19 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // The value of each drawn series at the cursor, in the order they appear.
+    let at_cursor: Vec<(&str, f32)> = candidates
+        .iter()
+        .map(|(name, values)| {
+            let idx = app.history.cursor_index().saturating_sub(window_start);
+            (*name, values.get(idx).copied().unwrap_or(0.0))
+        })
+        .collect();
+
     lines.push(cursor_row(
         app,
         Window {
+            series: &at_cursor,
             len: window.len(),
             start: window_start,
             zoom,
@@ -634,7 +665,21 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // Only the identification half is dropped when the gutter names the
         // series. The span, the slot size and the keys are not a legend and
         // are not duplicated anywhere else.
-        let ident = if labelled { "" } else { "cpu · mem — " };
+        // Names whatever is actually on screen, in order, when the gutter is
+        // too short to label the rows itself. A fixed "cpu · mem" was wrong the
+        // moment the series became a decision rather than a constant.
+        let ident = if labelled {
+            String::new()
+        } else {
+            format!(
+                "{} — ",
+                candidates
+                    .iter()
+                    .map(|(n, _)| n.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            )
+        };
         // Named only when one is on screen. A seam is self-evidently not data,
         // but "time is missing here" is not something a reader can deduce from
         // a dotted line, and a permanent legend entry for something you may
@@ -767,8 +812,31 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
+/// How many series a graph of this height carries, and how many rows each gets.
+///
+/// The length of the result is how many of the candidates fit; the values are
+/// their row counts. One function rather than a count and a split, because the
+/// two have to agree — and the tests need the same answer the renderer used.
+///
+/// A series is only worth a row if it can be named. Identity in the timeline
+/// rests on the gutter label, since the palette has five meaning-bearing hues
+/// and no room for a sixth, so an unlabelled extra series would be two
+/// indistinguishable graphs stacked on each other.
+///
+/// The remainder goes to the first, which is CPU: it is the spikiest signal and
+/// the one where a dot of extra vertical resolution buys the most.
+pub fn sections(graph_rows: usize, candidates: usize) -> Vec<usize> {
+    let series = (graph_rows / MIN_ROWS_FOR_LABEL).clamp(1, candidates.max(1));
+    let base = graph_rows / series;
+    let extra = graph_rows % series;
+    (0..series).map(|i| base + usize::from(i < extra)).collect()
+}
+
 /// Width of the scale gutter, and the panel width below which it is dropped.
-const GUTTER_W: usize = 4;
+/// Five, not four: the widest series name is `WAIT`, and a gutter that cannot
+/// hold its own labels either truncates them to nonsense or lets them push the
+/// graph out of alignment with its neighbours.
+pub const GUTTER_W: usize = 5;
 const MIN_WIDTH_FOR_GUTTER: usize = 30;
 /// A section shorter than this cannot carry both ends of the scale, so it
 /// carries none: see [`axis_label`].
@@ -779,6 +847,24 @@ const MIN_ROWS_FOR_LABEL: usize = 3;
 // The gutter must fit inside the panel it is dropped from, or `graph_w`
 // underflows. The two constants are unrelated by construction, so tie them.
 const _: () = assert!(MIN_WIDTH_FOR_GUTTER > GUTTER_W);
+
+/// Exposed for tests: the gutter's width guarantee is a claim about a string,
+/// and the only way to check it is to read one. Same pattern as
+/// `draw_timeline_for_test`.
+#[cfg(test)]
+pub fn axis_label_for_test(row: usize, rows: usize, name: Option<&str>) -> String {
+    axis_label(
+        row,
+        rows,
+        GUTTER_W,
+        &Theme::new(crate::theme::Palette::Safe, Theme::default().tier),
+        name,
+        100.0,
+    )
+    .iter()
+    .map(|s| s.content.as_ref())
+    .collect()
+}
 
 /// The scale marks for one graph row: `100` on the top row, `0` on the bottom.
 ///
@@ -825,11 +911,14 @@ fn axis_label(
     };
     // Right-aligned in `gutter - 1`, leaving one column of separation, so the
     // label stays exactly `gutter` wide whatever the constant becomes.
+    //
+    // Truncated, not just padded: a format width is a *minimum*, so a label one
+    // character too long silently widened its own row and shifted that graph
+    // sideways relative to the ones above it. Two graphs whose columns are not
+    // the same instant are worse than one graph.
     let w = gutter.saturating_sub(1);
-    vec![Span::styled(
-        format!("{text:>w$} ", text = text, w = w),
-        theme.dim_style(),
-    )]
+    let text: String = text.chars().take(w).collect();
+    vec![Span::styled(format!("{text:>w$} "), theme.dim_style())]
 }
 
 /// Index of the first sample drawn.
@@ -867,7 +956,11 @@ fn window_start(history: &history::History, shown: usize) -> usize {
 
 /// Where the timeline's window sits and how it maps to columns. Bundled for
 /// the same reason `GraphRow` is: the parameter list had outgrown readability.
-struct Window {
+struct Window<'a> {
+    /// The series actually drawn, so the scrub readout reports the rows on
+    /// screen rather than a fixed pair. It named `MEM` while the graph showed
+    /// `WAIT`, which is the crosshair disagreeing with the thing it points at.
+    series: &'a [(&'a str, f32)],
     /// Samples drawn.
     len: usize,
     /// Index of the first sample drawn.
@@ -885,7 +978,7 @@ struct Window {
 ///
 /// When a cell holds two samples the marker picks the correct half, so packing
 /// never costs cursor precision.
-fn cursor_row(app: &App, w: Window) -> Line<'static> {
+fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     let (n_values, window_start, zoom, slots, spc, graph_w, gutter) =
         (w.len, w.start, w.zoom, w.slots, w.spc, w.graph_w, w.gutter);
     let pad = " ".repeat(gutter);
@@ -933,13 +1026,16 @@ fn cursor_row(app: &App, w: Window) -> Line<'static> {
     // The values at the cursor, beside the cursor. A terminal has no hover, so
     // the scrub marker *is* the crosshair — and its readout has been living in
     // the header, far from where the eye is actually fixed.
-    let readout = app
-        .history
-        .current()
-        // One decimal, matching the header: both are on screen while
-        // scrubbing, so rounding them differently makes a sample at 89.6% read
-        // `89.6` in one place and `90` in the other.
-        .map(|s| format!("CPU {:.1}%  MEM {:.1}%", s.cpu_total, s.mem.used_pct()));
+    // One decimal, matching the header: both are on screen while scrubbing, so
+    // rounding them differently makes a sample at 89.6% read `89.6` in one
+    // place and `90` in the other.
+    let readout = (!w.series.is_empty()).then(|| {
+        w.series
+            .iter()
+            .map(|(name, v)| format!("{name} {v:.1}%"))
+            .collect::<Vec<_>>()
+            .join("  ")
+    });
 
     // Prefer to the right of the marker; fall back to the left when the cursor
     // is near the right edge, so the text can never overflow the panel.
