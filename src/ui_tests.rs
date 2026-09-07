@@ -3881,6 +3881,122 @@ fn a_platform_that_cannot_see_a_signal_omits_it_rather_than_showing_zero() {
 }
 
 #[test]
+fn a_group_separator_is_measured_in_columns_not_bytes() {
+    // `│` is one column and three bytes. Charging its byte length overstated
+    // every group boundary by two, so the header dropped figures that fitted
+    // and left a fistful of columns unused.
+    let mut app = App::new(60);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // The units, directly. `│` is one column and three bytes, so a separator
+    // that looks five characters long is seven bytes long — and the byte length
+    // is what the fitting arithmetic used, while `full_width` had the correct
+    // five written out by hand. The two disagreed, and the header dropped
+    // figures that fitted while leaving columns unused.
+    let (near_cols, near_bytes, far_cols, far_bytes) = ui::separator_widths_for_test();
+    assert_eq!(near_cols, 2);
+    assert_eq!(far_cols, 5, "the group separator is not five columns wide");
+    assert_ne!(
+        far_cols, far_bytes,
+        "this proves nothing unless columns and bytes differ"
+    );
+    assert_eq!(near_cols, near_bytes, "the narrow separator is plain ASCII");
+
+    // And every figure is still there when there is room for it.
+    let line = figures_line(&app, 300, 24);
+    for label in [
+        "CPU", "WAIT", "RUN", "BLOCKED", "LOAD", "MEM", "SWP", "UP ", "PROCS",
+    ] {
+        assert!(
+            line.contains(label),
+            "{label} missing at 300 columns: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn a_deep_tree_never_leaves_a_row_without_a_name() {
+    // A tree prefix grows three columns a level against a command column that
+    // is nineteen wide, so a deep enough chain elided the name to nothing and
+    // the row rendered as a bare `└`. Before eliding, the terminal clipped —
+    // which at least kept the head — so this was a regression against doing
+    // nothing.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = (0..9)
+        .map(|i| {
+            let mut p = proc_named(i + 1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20);
+            p.cpu = 10.0 - i as f32;
+            p.ppid = if i == 0 { 0 } else { i };
+            p
+        })
+        .collect();
+    app.push(s);
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let rows: Vec<String> = rows(&app, 104, 24)
+        .into_iter()
+        .filter(|l| l.contains("Chrome") || l.contains('…'))
+        .collect();
+    assert_eq!(rows.len(), 9, "expected nine rows: {rows:?}");
+    for r in &rows {
+        let row = r.trim_end();
+        // The last whitespace-separated token is the name. A bare connector or
+        // a single letter is the failure this test exists for.
+        let name = row.rsplit(' ').next().unwrap_or("");
+        assert!(
+            row.ends_with(')'),
+            "a row lost the end of its name to the indent: {row:?}"
+        );
+        let (head, tail) = name
+            .split_once('…')
+            .unwrap_or_else(|| panic!("name {name:?} was not elided at all: {row:?}"));
+        assert!(
+            !head.is_empty() && !tail.is_empty(),
+            "the indent left only {name:?}: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn a_narrow_table_does_not_elide_the_name_to_a_letter() {
+    // Below its floor ratatui squeezes the fixed columns instead of honouring
+    // them, so the command cell is wider than the arithmetic says. Eliding
+    // against the arithmetic rendered a thirty-character name as `G`.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cpu: 9.0,
+        ..proc_named(1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
+    }];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // Below `FIXED_COLUMNS + spacing + MIN_COMMAND_W` — about 75 — ratatui
+    // stops honouring the fixed lengths, which is exactly where the arithmetic
+    // and the drawing part company.
+    for w in [64u16, 70, 74, 80, 100] {
+        let row = rows(&app, w, 20)
+            .into_iter()
+            .find(|l| l.contains("Google") || l.contains('…'))
+            .unwrap_or_else(|| panic!("no process row at w={w}"));
+        let name: String = row
+            .trim_end()
+            .chars()
+            .rev()
+            .take_while(|c| *c != ' ')
+            .collect();
+        assert!(
+            name.chars().count() >= 8,
+            "the name was cut to {:?} at w={w}",
+            name.chars().rev().collect::<String>()
+        );
+    }
+}
+
+#[test]
 fn a_tree_prefix_is_charged_against_the_name_it_indents() {
     // The prefix and the name share one column. Eliding the name against the
     // column's full width lets `│  └─ ` push its tail off the end — the tail

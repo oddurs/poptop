@@ -426,11 +426,21 @@ mod tests {
         // reason. A rate over a window this short is several times the count,
         // so the band is wide enough for a loaded machine and far too tight for
         // the bug.
-        let expected = BYTES as f64 / secs;
+        // Compared against the *count*, not against a computed rate. The bug
+        // reports the count itself; a rate over a window this short is several
+        // times larger, and the multiple only has to beat one to distinguish
+        // them. Comparing against `bytes / elapsed` looked tighter and was
+        // brittle instead — the collector's window and this one are measured by
+        // different clocks, and under a loaded test suite they diverged enough
+        // to fail on a correct reading.
         assert!(
-            busiest.rx as f64 > expected * 0.5,
-            "{} reported {} over {secs:.3}s for {BYTES} bytes — expected about \
-             {expected:.0}/s, where a raw count would read about {BYTES}",
+            secs < 0.5,
+            "the window was {secs:.3}s, too long for a rate to be distinguishable"
+        );
+        assert!(
+            busiest.rx as f64 > BYTES as f64 * 1.5,
+            "{} reported {} for {BYTES} bytes over {secs:.3}s — a rate would be \
+             several times the count, and a raw count would read about {BYTES}",
             busiest.name,
             busiest.rx
         );

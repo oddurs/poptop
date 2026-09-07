@@ -179,6 +179,29 @@ fn fmt_uptime(d: Duration) -> String {
 ///
 /// What "wide enough for everything" means, and so what the heat legend has to
 /// fit alongside.
+/// Between two figures about the same resource.
+const NEAR: &str = "  ";
+/// Between two groups. Wider, and marked, because a group boundary that looks
+/// like the gap inside a group is not a boundary — and the mark carries on a
+/// terminal with no colour to spend.
+const FAR: &str = "  │  ";
+
+/// Exposed for tests: the units the fitting arithmetic is done in.
+#[cfg(test)]
+pub fn separator_widths_for_test() -> (usize, usize, usize, usize) {
+    (sep_w(NEAR), NEAR.len(), sep_w(FAR), FAR.len())
+}
+
+/// The columns a separator occupies.
+///
+/// Not `len()`. `│` is one column and three bytes, so the byte length charged
+/// seven for a five-column separator — and `full_width` had the correct five
+/// written out by hand, so the two disagreed and the header dropped figures
+/// that fitted while leaving nineteen columns of slack.
+fn sep_w(sep: &str) -> usize {
+    sep.chars().count()
+}
+
 fn full_width(figures: &[Figure<'_>]) -> usize {
     let mut order: Vec<&Figure<'_>> = figures.iter().collect();
     order.sort_by_key(|f| f.group);
@@ -187,8 +210,8 @@ fn full_width(figures: &[Figure<'_>]) -> usize {
     for f in order {
         w += match last {
             None => 0,
-            Some(g) if g == f.group => 2,
-            Some(_) => 5,
+            Some(g) if g == f.group => sep_w(NEAR),
+            Some(_) => sep_w(FAR),
         } + f
             .spans
             .iter()
@@ -200,13 +223,6 @@ fn full_width(figures: &[Figure<'_>]) -> usize {
 }
 
 fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a>> {
-    /// Between two figures about the same resource.
-    const NEAR: &str = "  ";
-    /// Between two groups. Wider, and marked, because a group boundary that
-    /// looks like the gap inside a group is not a boundary — and the mark
-    /// carries on a terminal with no colour to spend.
-    const FAR: &str = "  │  ";
-
     let widths: Vec<usize> = figures
         .iter()
         .map(|f| f.spans.iter().map(|s| s.content.chars().count()).sum())
@@ -228,8 +244,8 @@ fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a
         for &i in &shown {
             w += match last {
                 None => 0,
-                Some(g) if g == groups[i] => NEAR.len(),
-                Some(_) => FAR.len(),
+                Some(g) if g == groups[i] => sep_w(NEAR),
+                Some(_) => sep_w(FAR),
             } + widths[i];
             last = Some(groups[i]);
         }
@@ -667,7 +683,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let mut line = vec![state];
     let spans = fit(
         figures,
-        width.saturating_sub(state_w + reserved + 1),
+        width.saturating_sub(state_w + reserved),
         &app.theme,
     );
 
@@ -1077,9 +1093,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     //
     // Always one row, never one-or-two: a panel that changed height when a key
     // was pressed would move the process table under the reader's hands.
-    if std::env::var_os("POPTOP_DBG").is_some() {
-        eprintln!("legend={legend:?} graph_w={graph_w} gutter={gutter} inner_w={inner_w}");
-    }
     lines.push(if app.history.is_live() {
         axis_with_caption(&legend, inner_w, &app.theme)
     } else {
@@ -1562,6 +1575,10 @@ const MIN_WIDTH_FOR_IO: u16 = {
     FIXED_COLUMNS + 9 + 9 + 11 + 16
 };
 
+/// The command column's own `Constraint::Min`, and so the narrowest it is ever
+/// actually drawn at.
+const MIN_COMMAND_W: u16 = 10;
+
 /// How much of the line is left for the command name.
 ///
 /// The identity column is the one that takes what nothing else claimed, so it
@@ -1571,15 +1588,41 @@ const MIN_WIDTH_FOR_IO: u16 = {
 /// the terminal.
 fn command_width(width: u16, show_io: bool) -> usize {
     let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
+    // Floored at the column's own `Min`, not at one. Below that width ratatui
+    // stops honouring the fixed lengths and squeezes them instead, so the
+    // command cell is *wider* than this arithmetic says — and eliding against
+    // the arithmetic rendered `Google Chrome Helper (Renderer)` as the single
+    // letter `G` on an eighty-column terminal.
     width
         .saturating_sub(FIXED_COLUMNS + io + (columns - 1))
-        .max(1) as usize
+        .max(MIN_COMMAND_W) as usize
 }
 
 /// Exposed for tests: eliding is a claim about a string.
 #[cfg(test)]
 pub fn elide_middle_for_test(name: &str, w: usize) -> String {
     elide_middle(name, w)
+}
+
+/// A tree prefix trimmed so the name it indents still has room to be read.
+///
+/// Returns the prefix to draw and the columns left for the name. Deep enough
+/// nesting starves the identifier — three columns a level against a column that
+/// is nineteen wide — and a row that says only `└` says nothing at all. The
+/// indent is trimmed from the left, which is where its repeated spacing lives,
+/// so the connector that shows *this* row's relationship survives.
+fn fit_prefix(prefix: &str, cmd_w: usize) -> (String, usize) {
+    /// Enough for a head, an elision mark and a tail.
+    const FLOOR: usize = 5;
+    let n = prefix.chars().count();
+    if n + FLOOR <= cmd_w {
+        return (prefix.to_string(), cmd_w - n);
+    }
+    let keep = cmd_w.saturating_sub(FLOOR);
+    (
+        prefix.chars().skip(n - keep).collect(),
+        cmd_w.saturating_sub(keep),
+    )
 }
 
 /// A name shortened to `w` columns, keeping both ends.
@@ -1731,9 +1774,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             );
             // Elided here rather than clipped by the terminal, so the part
             // that identifies the process survives — see `elide_middle`.
-            let room = cmd_w.saturating_sub(r.prefix.chars().count());
+            //
+            // The indent gives way before the name does. A tree prefix grows
+            // three columns per level, so at nineteen columns a chain nine deep
+            // left the name nothing at all and the row said only `└`. Losing a
+            // level of visible nesting is a smaller loss than losing which
+            // process the row is about.
+            let (prefix, room) = fit_prefix(&r.prefix, cmd_w);
             cells.push(Cell::from(Line::from(vec![
-                Span::styled(r.prefix.clone(), app.theme.chrome_style()),
+                Span::styled(prefix, app.theme.chrome_style()),
                 Span::raw(elide_middle(&p.name, room)),
             ])));
             Row::new(cells).style(style)
@@ -1817,7 +1866,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         widths.push(Constraint::Length(9));
     }
     widths.push(Constraint::Length(SPARK_W as u16));
-    widths.push(Constraint::Min(10));
+    widths.push(Constraint::Min(MIN_COMMAND_W));
 
     f.render_widget(
         Paragraph::new(divider(&title, area.width, &app.theme)),
