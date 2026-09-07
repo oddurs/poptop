@@ -200,6 +200,10 @@ impl Collector for SysinfoCollector {
             iowait: None,
             running: None,
             blocked: None,
+            // sysinfo reports disk usage for every process it can see, so
+            // "does this platform keep the accounting" does not arise here —
+            // only "can this user read it", which `io_denied` answers.
+            io_supported: true,
             io_collected: needs.io,
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.

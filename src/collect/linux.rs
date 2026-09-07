@@ -113,6 +113,11 @@ pub struct ProcFs {
     page_size: u64,
     /// What this backend had to assume rather than read.
     notes: Vec<String>,
+    /// Whether this kernel has `/proc/<pid>/io` at all. Asked once, of our own
+    /// process, which is always readable if the file exists — so a `NotFound`
+    /// here is the kernel saying it does not keep the accounting, not a
+    /// permission problem and not a process that exited.
+    io_supported: bool,
 }
 
 /// Everything one `/proc/stat` read yields.
@@ -136,7 +141,9 @@ struct StatRead {
 impl ProcFs {
     pub fn new() -> io::Result<Self> {
         let (page_size, notes) = read_page_size();
+        let io_supported = std::fs::File::open("/proc/self/io").is_ok();
         Ok(Self {
+            io_supported,
             prev_total: None,
             prev_cores: Vec::new(),
             prev_proc_jiffies: HashMap::new(),
@@ -236,38 +243,7 @@ impl ProcFs {
     }
 
     fn read_mem(&mut self) -> io::Result<MemStat> {
-        let text = read_into("/proc/meminfo", &mut self.buf)?;
-        let get = |key: &str| -> u64 {
-            text.lines()
-                .find_map(|l| {
-                    l.strip_prefix(key)?
-                        .split_whitespace()
-                        .next()?
-                        .parse::<u64>()
-                        .ok()
-                })
-                .unwrap_or(0)
-                * 1024 // meminfo is in kB
-        };
-        let total = get("MemTotal:");
-        let available = get("MemAvailable:");
-        let free = get("MemFree:");
-        let swap_total = get("SwapTotal:");
-        let swap_free = get("SwapFree:");
-        Ok(MemStat {
-            total,
-            // MemAvailable already accounts for reclaimable cache, so this is
-            // the "really in use" figure rather than the alarming one.
-            used: total.saturating_sub(available),
-            available,
-            // Clamped: `MemFree` and `MemAvailable` are read from the same
-            // snapshot but computed differently, and on a box with almost no
-            // cache the estimate can land just under free — which would make
-            // the cache segment of the bar negative and wrap.
-            free: Some(free.min(available)),
-            swap_total,
-            swap_used: swap_total.saturating_sub(swap_free),
-        })
+        Ok(parse_meminfo(read_into("/proc/meminfo", &mut self.buf)?))
     }
 
     fn read_load(&mut self) -> io::Result<[f64; 3]> {
@@ -310,6 +286,7 @@ impl ProcFs {
             ticks_per_sec,
             page_size,
             prev_cores,
+            io_supported,
             ..
         } = self;
         let ctx = StatCtx {
@@ -360,10 +337,12 @@ impl ProcFs {
             // and on a many-core box they outnumber the real processes — so
             // counting them would fire the IO probe on exactly the laptop it
             // exists to protect. Skipping also saves an open and a read each.
-            if needs.io && !p.is_kernel_thread() {
+            if needs.io && *io_supported && !p.is_kernel_thread() {
                 match read_proc_io(pid, elapsed_secs, &mut seen_io, prev_proc_io, path, buf) {
                     Ok(rates) => p.io = rates,
-                    Err(()) => *denied += 1,
+                    // Either way the row shows an em dash. Only one of them is
+                    // something root would fix, and only that one is counted.
+                    Err(why) => *denied += usize::from(why.counts()),
                 }
             }
             out.push(p);
@@ -388,6 +367,38 @@ impl ProcFs {
     }
 }
 
+/// Why a process's disk IO could not be read.
+///
+/// The two mean opposite things and the kernel already distinguishes them:
+/// `/proc/999999/io` is `NotFound`, `/proc/1/io` as a normal user is
+/// `PermissionDenied`. Collapsing them made a process that exited between the
+/// directory listing and the read into one more process that "needs root" — in
+/// a figure poptop prints, and which item 0022 turned into a decision about
+/// whether to show the columns at all.
+enum Unreadable {
+    /// Needs `CAP_SYS_PTRACE`. Root would fix it, and the count says so.
+    Denied,
+    /// The process exited, or its file was malformed. Nothing would fix it and
+    /// nothing is wrong: it is normal on any box with process churn, which is
+    /// exactly the kind poptop gets pointed at.
+    Moot,
+}
+
+impl Unreadable {
+    /// Classify a read failure. Only a permission problem is something root
+    /// would fix, and only that is worth counting.
+    fn from_kind(kind: io::ErrorKind) -> Self {
+        match kind {
+            io::ErrorKind::PermissionDenied => Self::Denied,
+            _ => Self::Moot,
+        }
+    }
+
+    fn counts(&self) -> bool {
+        matches!(self, Self::Denied)
+    }
+}
+
 /// Per-process disk throughput from `/proc/<pid>/io`.
 ///
 /// That file is mode 0400 and owned by the process owner, so reading another
@@ -395,10 +406,10 @@ impl ProcFs {
 /// — showing every process you do not own as idle would be a confident lie,
 /// where a blank is merely an absence.
 ///
-/// `Err(())` means the file could not be read — running as root would fix it.
-/// `Ok(None)` means the process is too new to have a previous counter to diff
-/// against, which fixes itself on the next sample. Both render as a dash, but
-/// only one is worth advising the user about.
+/// `Err` means the file could not be read, and [`Unreadable`] says whether
+/// anyone could do anything about that. `Ok(None)` means the process is too new
+/// to have a previous counter to diff against, which fixes itself on the next
+/// sample. All of them render as a dash; only one is worth advising about.
 fn read_proc_io(
     pid: i32,
     elapsed_secs: f64,
@@ -406,11 +417,11 @@ fn read_proc_io(
     prev: &HashMap<i32, (u64, u64)>,
     path: &mut String,
     buf: &mut Vec<u8>,
-) -> Result<Option<IoRates>, ()> {
+) -> Result<Option<IoRates>, Unreadable> {
     path.clear();
     let _ = write!(path, "/proc/{pid}/io");
-    let text = read_into(path, buf).map_err(|_| ())?;
-    let (read, write) = parse_proc_io(text).ok_or(())?;
+    let text = read_into(path, buf).map_err(|e| Unreadable::from_kind(e.kind()))?;
+    let (read, write) = parse_proc_io(text).ok_or(Unreadable::Moot)?;
     seen.insert(pid, (read, write));
 
     let Some((prev_r, prev_w)) = prev.get(&pid).copied() else {
@@ -516,6 +527,47 @@ struct StatCtx<'a> {
 /// allocation. That is bounded by the largest file poptop reads — a few
 /// kilobytes — and is the price of never reallocating during a sample.
 const READ_BUF: usize = 8192;
+
+/// `/proc/meminfo` into a `MemStat`.
+///
+/// Split from the read so a test can assert on a fixed input. Comparing a
+/// collector's figures against a second read of the same file does not work:
+/// memory moves between them, and the test fails a couple of runs in six. That
+/// is the same trap that ruled out deriving the page size from `statm` against
+/// `status`, met again in a test.
+fn parse_meminfo(text: &str) -> MemStat {
+    let get = |key: &str| -> u64 {
+        text.lines()
+            .find_map(|l| {
+                l.strip_prefix(key)?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap_or(0)
+            * 1024 // meminfo is in kB
+    };
+    let total = get("MemTotal:");
+    let available = get("MemAvailable:");
+    let free = get("MemFree:");
+    let swap_total = get("SwapTotal:");
+    let swap_free = get("SwapFree:");
+    MemStat {
+        total,
+        // MemAvailable already accounts for reclaimable cache, so this is the
+        // "really in use" figure rather than the alarming one.
+        used: total.saturating_sub(available),
+        available,
+        // Clamped: `MemFree` and `MemAvailable` are read from the same snapshot
+        // but computed differently, and on a box with almost no cache the
+        // estimate can land just under free — which would make the cache
+        // segment of the memory bar negative and wrap.
+        free: Some(free.min(available)),
+        swap_total,
+        swap_used: swap_total.saturating_sub(swap_free),
+    }
+}
 
 /// The size of a page on this kernel, and what to say if we had to guess.
 ///
@@ -688,7 +740,8 @@ impl Collector for ProcFs {
             procs,
             uptime: self.read_uptime()?,
             forks: stat.forks,
-            io_collected: needs.io,
+            io_supported: self.io_supported,
+            io_collected: needs.io && self.io_supported,
             io_denied,
         })
     }
@@ -945,6 +998,52 @@ mod tests {
     }
 
     #[test]
+    fn a_process_that_exited_is_not_counted_as_needing_root() {
+        // The two failures mean opposite things and the kernel distinguishes
+        // them. Collapsing them made a process that vanished between the
+        // directory listing and the read into one more process that "needs
+        // root" — in a figure poptop prints, and which item 0022 turned into a
+        // decision about whether to show the columns at all.
+        let mut seen = HashMap::new();
+        let prev = HashMap::new();
+        let mut path = String::new();
+        let mut buf = Vec::new();
+
+        // A pid that cannot exist: the kernel says NotFound.
+        let gone = read_proc_io(i32::MAX, 1.0, &mut seen, &prev, &mut path, &mut buf);
+        assert!(
+            matches!(gone, Err(Unreadable::Moot)),
+            "an exited process was counted as needing privileges"
+        );
+
+        // Our own is readable, whoever we are.
+        let ours = std::process::id() as i32;
+        assert!(
+            read_proc_io(ours, 1.0, &mut seen, &prev, &mut path, &mut buf).is_ok(),
+            "could not read our own io"
+        );
+    }
+
+    #[test]
+    fn only_a_permission_failure_is_counted() {
+        // Asked of the classifier rather than restated in the test: an earlier
+        // version of this reimplemented the match and asserted its own copy,
+        // which would have passed with the real one saying anything at all.
+        assert!(Unreadable::from_kind(io::ErrorKind::PermissionDenied).counts());
+        for moot in [
+            io::ErrorKind::NotFound,
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::Other,
+            io::ErrorKind::Interrupted,
+        ] {
+            assert!(
+                !Unreadable::from_kind(moot).counts(),
+                "{moot:?} was counted as needing root"
+            );
+        }
+    }
+
+    #[test]
     fn turning_io_off_forgets_its_counters() {
         // Rates are a cumulative counter diffed against the previous read and
         // divided by one interval. Counters kept while collection is off would
@@ -973,46 +1072,93 @@ mod tests {
     }
 
     #[test]
-    fn memory_reads_a_composition_that_holds_together() {
-        // Against the live `/proc/meminfo`, because the parse is the thing that
-        // can silently return zero — and a zero `free` makes every byte of
-        // headroom look like cache the kernel is about to have to drop.
+    fn memory_is_parsed_into_a_composition_that_accounts_for_the_machine() {
+        // Against a fixed input, not against a second read of the live file.
+        // The earlier version compared the collector's figures with its own
+        // re-read of /proc/meminfo and failed two runs in six, because memory
+        // moves between them — the same trap that ruled out deriving the page
+        // size from `statm` against `status`.
+        let m = parse_meminfo(
+            "MemTotal:       16384000 kB\n\
+             MemFree:         1024000 kB\n\
+             MemAvailable:    8192000 kB\n\
+             Buffers:          100000 kB\n\
+             SwapTotal:       4096000 kB\n\
+             SwapFree:        3096000 kB\n",
+        );
+        assert_eq!(m.total, 16_384_000 * 1024);
+        assert_eq!(m.available, 8_192_000 * 1024);
+        assert_eq!(m.free, Some(1_024_000 * 1024), "MemFree was not read");
+        assert_eq!(m.used, (16_384_000 - 8_192_000) * 1024);
+        assert_eq!(m.cache(), Some((8_192_000 - 1_024_000) * 1024));
+        assert_eq!(m.swap_used, (4_096_000 - 3_096_000) * 1024);
+
+        let (parts, has_cache) = m.composition();
+        assert!(has_cache);
+        assert_eq!(
+            parts.iter().sum::<u64>(),
+            m.total,
+            "the segments lose memory"
+        );
+    }
+
+    #[test]
+    fn free_is_clamped_to_available_so_the_cache_segment_cannot_wrap() {
+        // The two are computed differently from one snapshot, and on a box with
+        // almost no cache the estimate can land just under free.
+        let m = parse_meminfo("MemTotal:  1000 kB\nMemFree:  900 kB\nMemAvailable:  800 kB\n");
+        assert_eq!(m.free, Some(800 * 1024));
+        assert_eq!(m.cache(), Some(0), "the cache segment went negative");
+        assert_eq!(m.composition().0.iter().sum::<u64>(), m.total);
+    }
+
+    #[test]
+    fn a_meminfo_that_is_missing_a_field_does_not_invent_one() {
+        let m = parse_meminfo("MemTotal:  1000 kB\n");
+        assert_eq!(m.total, 1000 * 1024);
+        assert_eq!(m.available, 0);
+        assert_eq!(m.swap_total, 0, "swap was invented");
+        // Everything is used when nothing is available, which is what the file
+        // said rather than a guess about what it meant.
+        assert_eq!(m.used, m.total);
+    }
+
+    #[test]
+    fn the_live_meminfo_parses_into_something_coherent() {
+        // The live read still gets a look, because a parse that is right about
+        // a fixture and wrong about the real file would pass everything above.
         let mut pf = ProcFs::new().unwrap();
         let m = pf.read_mem().unwrap();
         assert!(m.total > 0, "no total memory");
         assert!(m.available <= m.total, "available exceeds total");
-
-        // Compared against the file rather than against a threshold. Asserting
-        // `free > 0` conflates "the parse failed" with "this box has no free
-        // pages", and the second is a legitimate state for a container to be
-        // in — the test would fail for the right reason on the wrong machine.
-        let raw = std::fs::read_to_string("/proc/meminfo").unwrap();
-        let field = |key: &str| -> u64 {
-            raw.lines()
-                .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse().ok())
-                .map(|v: u64| v * 1024)
-                .unwrap_or(0)
-        };
         assert!(
-            field("MemFree:") > 0,
-            "the fixture file has no MemFree line"
+            m.free.is_some_and(|f| f <= m.available),
+            "free exceeds available"
         );
-        assert_eq!(
-            m.free,
-            Some(field("MemFree:").min(field("MemAvailable:"))),
-            "MemFree was not read"
-        );
-
-        // The partition the bar draws has to account for the whole machine.
-        // Asserted on the real expression rather than on `a + (t - a) == t`,
-        // which is true of any `a` and can only fail by panicking.
-        let (parts, has_cache) = m.composition();
-        assert!(has_cache, "Linux can separate cache from free");
-        assert_eq!(
-            parts.iter().sum::<u64>(),
-            m.total,
-            "the three segments do not account for the whole machine"
-        );
+        assert_eq!(m.composition().0.iter().sum::<u64>(), m.total);
+        // Presence, not equality. Every relationship above still holds when
+        // `MemFree` fails to parse and free is zero — which is exactly the
+        // misreading the memory bar exists to prevent, so the live file has to
+        // be asked as well. Compared as "both non-zero" rather than as figures,
+        // because the two reads are microseconds apart and memory moves in
+        // between: that is what made an earlier version of this flaky.
+        let raw = std::fs::read_to_string("/proc/meminfo").unwrap();
+        let file_free: u64 = raw
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("MemFree:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or(0);
+        if file_free > 0 {
+            assert!(
+                m.free.is_some_and(|f| f > 0),
+                "the file reports free memory and the parse did not"
+            );
+        }
     }
 
     #[test]

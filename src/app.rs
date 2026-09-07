@@ -167,6 +167,16 @@ impl App {
     /// half a millisecond a sample for a column nobody can read would be the
     /// worse trade.
     pub fn probe_io(&mut self, s: &Sample) {
+        // A kernel with no per-process IO accounting at all. Every read fails
+        // with `NotFound`, which is correctly not a permission problem, and so
+        // counts towards nothing — leaving the columns on screen permanently
+        // empty with the collector still paying for them.
+        if !s.io_supported {
+            self.show_io = false;
+            self.io_ratchet = false;
+            return;
+        }
+
         // Against the processes IO was actually attempted for. Kernel threads
         // are excluded on both sides — they are root-owned and unreadable to
         // an ordinary user, and on a many-core box they outnumber everything

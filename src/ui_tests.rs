@@ -56,6 +56,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         ],
         uptime: std::time::Duration::from_secs(90_000),
         forks: None,
+        io_supported: true,
         io_collected: false,
         io_denied: 0,
     }
@@ -3766,5 +3767,44 @@ fn the_first_sample_reports_no_cpu_rather_than_a_wrong_one() {
     assert!(
         first.mem.total > 0,
         "the first sample carries nothing at all"
+    );
+}
+
+#[test]
+fn a_kernel_with_no_io_accounting_withdraws_the_columns() {
+    // CONFIG_TASK_IO_ACCOUNTING is optional and some hardened runtimes hide the
+    // file. Every read then fails with NotFound — correctly not a permission
+    // problem, and so counted towards nothing, so the ratio probe never fires.
+    // The columns would sit on screen permanently empty while the collector
+    // kept paying for them.
+    let mut app = App::new(60);
+    let mut s = with_denied(100, 0);
+    s.io_supported = false;
+    app.probe_io(&s);
+    assert!(
+        !app.show_io,
+        "empty columns were kept on an unsupporting kernel"
+    );
+    assert!(
+        !app.needs().io,
+        "collection continued for a file that does not exist"
+    );
+}
+
+#[test]
+fn an_unsupporting_kernel_is_described_differently_from_a_locked_down_one() {
+    // Nothing the user does will make this appear, so "needs root" would send
+    // them somewhere pointless.
+    let mut app = App::new(60);
+    let mut s = with_denied(10, 0);
+    s.io_supported = false;
+    app.push(s);
+    // Shown explicitly, since the probe would otherwise have hidden it.
+    app.show_io = true;
+    let out = render(&app, 130, 30);
+    assert!(out.contains("keeps no per-process accounting"), "{out}");
+    assert!(
+        !out.contains("need root"),
+        "sent the user after privileges: {out}"
     );
 }

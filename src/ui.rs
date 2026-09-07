@@ -1408,6 +1408,11 @@ fn io_status(show_io: bool, app: &App, collected: bool) -> String {
     if !show_io {
         return " · io: panel too narrow".into();
     }
+    // A kernel question rather than a permission one, and they want different
+    // words: nothing the user does will make this appear.
+    if app.history.current().is_some_and(|s| !s.io_supported) {
+        return " · io: this kernel keeps no per-process accounting".into();
+    }
     if !collected {
         return " · io: not collected here".into();
     }

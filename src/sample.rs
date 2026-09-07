@@ -198,6 +198,18 @@ pub struct Sample {
     /// Whether extended per-process IO was being collected when this sample was
     /// taken. History predating the column being switched on has this false,
     /// and says so rather than pretending the machine was idle.
+    /// Whether this kernel keeps per-process IO accounting at all.
+    ///
+    /// `CONFIG_TASK_IO_ACCOUNTING` is optional, and some hardened container
+    /// runtimes hide the file. Then every read fails with `NotFound` — which is
+    /// correctly *not* a permission problem, and so counts towards nothing, and
+    /// so the probe that withdraws the columns never fires. The result was
+    /// columns that stay on screen permanently empty while the collector keeps
+    /// paying for them.
+    ///
+    /// A different question from `io_denied`, which is about this user rather
+    /// than this kernel, and the two want different words on screen.
+    pub io_supported: bool,
     pub io_collected: bool,
     /// Processes whose IO file could not be read at all, as opposed to those
     /// merely awaiting a second reading. Only the former is fixed by running as
@@ -222,6 +234,7 @@ impl Sample {
             procs: Vec::new(),
             uptime: std::time::Duration::ZERO,
             forks: None,
+            io_supported: true,
             io_collected: false,
             io_denied: 0,
         }

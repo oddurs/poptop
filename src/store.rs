@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 
 /// When the machine this sample came from was booted.
 ///
@@ -291,6 +291,7 @@ fn write_sample(out: &mut Out, s: &Sample) {
     out.opt_u32(s.blocked);
     out.u64(s.uptime.as_secs());
     out.opt_u64(s.forks);
+    out.u8(u8::from(s.io_supported));
     out.u8(u8::from(s.io_collected));
     out.u64(s.io_denied as u64);
     out.u32(s.procs.len() as u32);
@@ -366,6 +367,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
     let blocked = r.opt_u32()?;
     let uptime = Duration::from_secs(r.u64()?);
     let forks = r.opt_u64()?;
+    let io_supported = r.u8()? != 0;
     let io_collected = r.u8()? != 0;
     let io_denied = r.u64()? as usize;
     let n_procs = r.u32()? as usize;
@@ -408,6 +410,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         procs,
         uptime,
         forks,
+        io_supported,
         io_collected,
         io_denied,
     })
@@ -490,6 +493,7 @@ mod tests {
             procs: (0..procs).map(|i| proc_of(i as i32, "postgres")).collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(4242),
+            io_supported: true,
             io_collected: true,
             io_denied: 7,
         }
@@ -510,6 +514,7 @@ mod tests {
         assert_eq!(a.blocked, b.blocked);
         assert_eq!(a.uptime, b.uptime);
         assert_eq!(a.forks, b.forks);
+        assert_eq!(a.io_supported, b.io_supported);
         assert_eq!(a.io_collected, b.io_collected);
         assert_eq!(a.io_denied, b.io_denied);
         assert_eq!(a.procs.len(), b.procs.len());
@@ -713,6 +718,7 @@ mod tests_support {
                 .collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(1),
+            io_supported: true,
             io_collected: false,
             io_denied: 0,
         }
