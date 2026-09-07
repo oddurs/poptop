@@ -80,19 +80,6 @@ impl SysinfoCollector {
 }
 
 impl Collector for SysinfoCollector {
-    fn notes(&self) -> Vec<String> {
-        // Said once at startup, because an absence nobody is told about is the
-        // same shape as a machine with no disks. Every other unknowable here
-        // announces itself; this one was silent, and the header simply had no
-        // storage figure with nothing to explain it.
-        vec![
-            "no per-device disk figures on this platform: reading them costs 12ms a sample \
-             against a budget of about four, so poptop does not read them at all rather than \
-             pay it or show a stale number"
-                .to_string(),
-        ]
-    }
-
     fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
         // `System::new_all` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
@@ -477,20 +464,36 @@ mod tests {
     }
 
     #[test]
-    fn the_absence_of_disk_figures_is_announced_once() {
-        // An absence nobody is told about is the same shape as a machine with
-        // no disks. Every other unknowable here says so; this one was silent,
-        // and the header simply had no storage figure to explain.
+    fn a_platform_limitation_is_documented_rather_than_announced() {
+        // It used to be a startup note, on every run of every mode — two
+        // hundred characters explaining an implementation cost, printed above
+        // three lines of `--once` output and above `--help` itself.
+        //
+        // `notes` is for what a backend could not *determine*: the Linux
+        // collector uses it to say it had to assume a page size, which would
+        // make every RSS figure wrong by a factor of four if the guess were
+        // wrong. That is a warning. "This platform does not read disks" is an
+        // absence — nothing on screen is wrong — and it never changes on a
+        // given machine, so repeating it forever is noise.
         let c = SysinfoCollector::new().unwrap();
-        let notes = c.notes();
         assert!(
-            !notes.is_empty(),
-            "nothing was said about the missing disks"
+            c.notes().is_empty(),
+            "an absence is being announced as an assumption: {:?}",
+            c.notes()
         );
+
+        // It is still said, where someone wondering why the figure is missing
+        // would look.
         assert!(
-            notes.iter().any(|n| n.contains("disk")),
-            "the note does not mention disks: {notes:?}"
+            crate::USAGE.contains("\nON MACOS:\n"),
+            "the platform's limits are not documented anywhere findable"
         );
+        for missing in ["per-device disk", "stall pressure", "network drops"] {
+            assert!(
+                crate::USAGE.contains(missing),
+                "{missing} is absent on this platform and unexplained"
+            );
+        }
     }
 
     #[test]

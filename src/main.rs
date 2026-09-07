@@ -113,6 +113,18 @@ KEYS:
                     running its services as root they would be a wall of
                     dashes, and poptop withdraws them after one sample.
     /               filter by name or pid
+
+ON MACOS:
+    Some figures are Linux-only and simply do not appear:
+
+    per-device disk    reading them costs 12ms a sample against a whole sample
+                       of about four, so poptop does not read them rather than
+                       pay it or show a stale number
+    stall pressure     /proc/pressure has no equivalent here
+    network drops      sysinfo counts errors without separating drops, and
+                       exposes no TCP retransmit counters
+
+    Everything else is read the same way on both.
 ";
 
 /// Print a line, stopping the program quietly if the reader has gone away.
