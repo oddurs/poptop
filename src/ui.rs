@@ -159,50 +159,196 @@ fn fmt_uptime(d: Duration) -> String {
     }
 }
 
+/// Fit as many header figures as the width allows, keeping the most useful.
+///
+/// Chosen by rank, then emitted in reading order. Letting ratatui clip instead
+/// drops whatever is rightmost, and rightmost is not least useful — it dropped
+/// `PROCS` and kept a memory figure that repeats the bar beside it.
+///
+/// The kept set is a prefix of the rank order rather than the widest subset
+/// that fits: a rule you can predict from the ranking beats one that fits two
+/// more characters, since the whole point is that the reader knows what
+/// survives.
+fn fit(figures: Vec<Figure<'_>>, width: usize) -> Vec<Span<'_>> {
+    const SEP: &str = "   ";
+    let widths: Vec<usize> = figures
+        .iter()
+        .map(|f| f.spans.iter().map(|s| s.content.chars().count()).sum())
+        .collect();
+    let mut order: Vec<usize> = (0..figures.len()).collect();
+    order.sort_by_key(|&i| figures[i].rank);
+
+    let mut keep = vec![false; figures.len()];
+    let mut used = 0;
+    for &i in &order {
+        let extra = widths[i] + if used == 0 { 0 } else { SEP.len() };
+        if used + extra > width {
+            break;
+        }
+        used += extra;
+        keep[i] = true;
+    }
+
+    let mut out = Vec::new();
+    for (i, figure) in figures.into_iter().enumerate() {
+        if !keep[i] {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(Span::raw(SEP));
+        }
+        out.extend(figure.spans);
+    }
+    out
+}
+
+/// One header figure, and how readily it is given up.
+///
+/// The header is a fixed line and the figures do not fit on every terminal, so
+/// something has to go first. Ranking them is the only way to make that a
+/// decision rather than whatever ratatui's clipping happens to reach.
+struct Figure<'a> {
+    spans: Vec<Span<'a>>,
+    /// Lower is kept longer.
+    rank: u8,
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let mem_pct = s.mem.used_pct();
-    let mut spans = vec![
-        Span::styled("CPU ", app.theme.dim_style()),
-        Span::styled(
-            format!("{:>5.1}%", s.cpu_total),
-            app.theme.figure_style(s.cpu_total),
-        ),
-        Span::raw("   "),
-        Span::styled("MEM ", app.theme.dim_style()),
-        Span::styled(
-            format!("{:>5.1}%", mem_pct),
-            app.theme.figure_style(mem_pct),
-        ),
-        Span::styled(
+    let dim = app.theme.dim_style();
+    let cores = s.cpu_per_core.len().max(1);
+
+    // Ordered by how much each answers "why is this machine slow", which is
+    // the question a monitor is opened to answer. Utilization first because it
+    // is what people look for; saturation immediately after because it is what
+    // actually tells them something is wrong.
+    let mut figures = vec![Figure {
+        rank: 0,
+        spans: vec![
+            Span::styled("CPU ", dim),
+            Span::styled(
+                format!("{:>5.1}%", s.cpu_total),
+                app.theme.figure_style(s.cpu_total),
+            ),
+        ],
+    }];
+
+    // The figure that separates "nothing to do" from "cannot get on with
+    // anything". Absent on a platform that will not say, rather than zero.
+    if let Some(iowait) = s.iowait {
+        figures.push(Figure {
+            rank: 1,
+            spans: vec![
+                Span::styled("WAIT ", dim),
+                Span::styled(format!("{iowait:>5.1}%"), app.theme.figure_style(iowait)),
+            ],
+        });
+    }
+
+    // Runnable against cores, because a bare count means nothing without its
+    // denominator: four is catastrophic on one core and idle on ninety-six.
+    if let Some(running) = s.running {
+        let pressure = (running as f32 / cores as f32) * 100.0;
+        figures.push(Figure {
+            rank: 2,
+            spans: vec![
+                Span::styled("RUN ", dim),
+                Span::styled(
+                    format!("{running}/{cores}"),
+                    app.theme.figure_style(pressure),
+                ),
+            ],
+        });
+    }
+
+    // Uninterruptible sleep. Thirty processes on one hung mount give a load
+    // average of thirty on a completely idle box, and this is the only figure
+    // that says so — so it is heated on any value at all, not on a threshold.
+    if let Some(blocked) = s.blocked {
+        figures.push(Figure {
+            rank: 3,
+            spans: vec![
+                Span::styled("BLOCKED ", dim),
+                Span::styled(
+                    blocked.to_string(),
+                    // Any blocked task at all is worth the critical
+                    // treatment: there is no healthy amount of "stuck in the
+                    // kernel". Styled through the theme's own threshold so it
+                    // stays critical whatever the user configured.
+                    if blocked > 0 {
+                        app.theme.figure_style(app.theme.critical_pct)
+                    } else {
+                        dim
+                    },
+                ),
+            ],
+        });
+    }
+
+    figures.push(Figure {
+        rank: 4,
+        spans: vec![
+            Span::styled("MEM ", dim),
+            Span::styled(format!("{mem_pct:>5.1}%"), app.theme.figure_style(mem_pct)),
+        ],
+    });
+    // Ranked below uptime and the process count despite being about memory,
+    // which is more diagnostic than either. It is twenty-nine columns wide, and
+    // under a prefix rule one wide figure blocks every shorter one behind it:
+    // at a hundred columns it fit nothing and cost two figures that would have.
+    figures.push(Figure {
+        rank: 8,
+        spans: vec![Span::styled(
             format!(
-                " ({} / {}, {} avail)",
+                "({} / {}, {} avail)",
                 fmt_bytes(s.mem.used),
                 fmt_bytes(s.mem.total),
                 fmt_bytes(s.mem.available)
             ),
-            app.theme.dim_style(),
-        ),
-    ];
+            dim,
+        )],
+    });
 
     if s.mem.swap_total > 0 {
-        spans.push(Span::styled("   SWP ", app.theme.dim_style()));
-        spans.push(Span::styled(
-            format!("{:>5.1}%", s.mem.swap_pct()),
-            app.theme.heat_style(s.mem.swap_pct()),
-        ));
+        figures.push(Figure {
+            rank: 5,
+            spans: vec![
+                Span::styled("SWP ", dim),
+                Span::styled(
+                    format!("{:>5.1}%", s.mem.swap_pct()),
+                    app.theme.heat_style(s.mem.swap_pct()),
+                ),
+            ],
+        });
     }
 
-    spans.extend([
-        Span::styled("   LOAD ", app.theme.dim_style()),
-        Span::raw(format!(
-            "{:.2} {:.2} {:.2}",
-            s.load[0], s.load[1], s.load[2]
-        )),
-        Span::styled("   UP ", app.theme.dim_style()),
-        Span::raw(fmt_uptime(s.uptime)),
-        Span::styled("   PROCS ", app.theme.dim_style()),
-        Span::raw(s.procs.len().to_string()),
-    ]);
+    figures.push(Figure {
+        rank: 6,
+        spans: vec![Span::styled("UP ", dim), Span::raw(fmt_uptime(s.uptime))],
+    });
+    figures.push(Figure {
+        rank: 7,
+        spans: vec![
+            Span::styled("PROCS ", dim),
+            Span::raw(s.procs.len().to_string()),
+        ],
+    });
+    // Last to survive. Load conflates runnable and blocked into one number,
+    // which is exactly the confusion `RUN` and `BLOCKED` exist to undo — and
+    // the smoothing it adds is what the timeline is for. Kept for the people
+    // who look for it, first to go when the line is tight.
+    figures.push(Figure {
+        rank: 9,
+        spans: vec![
+            Span::styled("LOAD ", dim),
+            Span::raw(format!(
+                "{:.2} {:.2} {:.2}",
+                s.load[0], s.load[1], s.load[2]
+            )),
+        ],
+    });
+
+    let spans = fit(figures, area.width as usize);
 
     let state = if app.history.is_live() {
         Span::styled(" ptop — LIVE ", app.theme.live_style())

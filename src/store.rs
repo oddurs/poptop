@@ -24,7 +24,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Bumped whenever the layout below changes. An old store is dropped, not
 /// migrated: it is a cache of something the machine will produce again in
 /// minutes, and a migration path for it would cost more than it saves.
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 /// When the machine this sample came from was booted.
 ///
@@ -128,6 +128,14 @@ impl Out {
     fn f64(&mut self, v: f64) {
         self.bytes.extend_from_slice(&v.to_le_bytes());
     }
+    fn opt_f32(&mut self, v: Option<f32>) {
+        self.u8(u8::from(v.is_some()));
+        self.f32(v.unwrap_or(0.0));
+    }
+    fn opt_u32(&mut self, v: Option<u32>) {
+        self.u8(u8::from(v.is_some()));
+        self.u32(v.unwrap_or(0));
+    }
     fn opt_u64(&mut self, v: Option<u64>) {
         // A tagged optional, because `None` and `0` are different answers
         // everywhere else in this codebase and the file must not collapse them.
@@ -182,6 +190,16 @@ impl<'a> In<'a> {
     }
     fn f64(&mut self) -> Option<f64> {
         Some(f64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+    fn opt_f32(&mut self) -> Option<Option<f32>> {
+        let present = self.u8()? != 0;
+        let v = self.f32()?;
+        Some(present.then_some(v))
+    }
+    fn opt_u32(&mut self) -> Option<Option<u32>> {
+        let present = self.u8()? != 0;
+        let v = self.u32()?;
+        Some(present.then_some(v))
     }
     fn opt_u64(&mut self) -> Option<Option<u64>> {
         let present = self.u8()? != 0;
@@ -261,6 +279,11 @@ fn write_sample(out: &mut Out, s: &Sample) {
     for v in s.load {
         out.f64(v);
     }
+    // Tagged, like every other optional here: a platform that cannot see a
+    // figure and a platform that sees zero are different answers on disk too.
+    out.opt_f32(s.iowait);
+    out.opt_u32(s.running);
+    out.opt_u32(s.blocked);
     out.u64(s.uptime.as_secs());
     out.opt_u64(s.forks);
     out.u8(u8::from(s.io_collected));
@@ -332,6 +355,9 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         swap_used: r.u64()?,
     };
     let load = [r.f64()?, r.f64()?, r.f64()?];
+    let iowait = r.opt_f32()?;
+    let running = r.opt_u32()?;
+    let blocked = r.opt_u32()?;
     let uptime = Duration::from_secs(r.u64()?);
     let forks = r.opt_u64()?;
     let io_collected = r.u8()? != 0;
@@ -368,6 +394,9 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         at,
         cpu_total,
         cpu_per_core,
+        iowait,
+        running,
+        blocked,
         mem,
         load,
         procs,
@@ -437,6 +466,12 @@ mod tests {
             at: UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789),
             cpu_total: cpu,
             cpu_per_core: vec![1.0, 2.5, 99.0],
+            // Distinct on purpose. Equal values would let a read that swapped
+            // `running` and `blocked` round-trip cleanly, and the field a user
+            // scrubs back to is the one that says whether the box was stuck.
+            iowait: Some(61.25),
+            running: Some(3),
+            blocked: Some(17),
             mem: MemStat {
                 total: 16 << 30,
                 used: 8 << 30,
@@ -461,6 +496,9 @@ mod tests {
         assert_eq!(a.mem.total, b.mem.total);
         assert_eq!(a.mem.swap_used, b.mem.swap_used);
         assert_eq!(a.load, b.load);
+        assert_eq!(a.iowait, b.iowait);
+        assert_eq!(a.running, b.running);
+        assert_eq!(a.blocked, b.blocked);
         assert_eq!(a.uptime, b.uptime);
         assert_eq!(a.forks, b.forks);
         assert_eq!(a.io_collected, b.io_collected);
@@ -503,9 +541,15 @@ mod tests {
         // restored macOS sample into a claim that nothing was created.
         let mut s = sample_of(1.0, 1);
         s.forks = None;
+        s.iowait = None;
+        s.running = None;
+        s.blocked = None;
         s.procs[0].io = None;
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(back[0].forks, None);
+        assert_eq!(back[0].iowait, None);
+        assert_eq!(back[0].running, None);
+        assert_eq!(back[0].blocked, None);
         assert!(back[0].procs[0].io.is_none());
     }
 
@@ -639,6 +683,9 @@ mod tests_support {
             at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             cpu_total: cpu,
             cpu_per_core: vec![1.0; 16],
+            iowait: None,
+            running: None,
+            blocked: None,
             mem: MemStat::default(),
             load: [1.0, 2.0, 3.0],
             procs: (0..procs)
