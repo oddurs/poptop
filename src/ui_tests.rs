@@ -1909,7 +1909,13 @@ fn growing_the_timeline_never_shrinks_it() {
     // five rows where nine were fixed before — a quarter of the CPU resolution,
     // on the commonest terminal size, from a change justified by *more*
     // resolution. Wherever the old fixed height fits, it is the floor.
-    for total in 16..=200u16 {
+    //
+    // "Wherever it fits" now means *after* the table's own floor is met. Those
+    // two floors compete below seventeen rows, and the table wins: a nine-row
+    // graph on a fourteen-row terminal was bought with a table showing no
+    // processes at all, which is not a trade between resolutions.
+    let smallest_that_fits = ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
+    for total in smallest_that_fits..=200u16 {
         assert!(
             ui::timeline_height(total) >= ui::TIMELINE_MIN_H,
             "total={total}: {} rows, below the {} it had when fixed",
@@ -1926,6 +1932,162 @@ fn the_timeline_grows_above_the_floor_and_stops() {
     assert!(h(40) > h(24), "did not grow when there was room");
     for total in [80u16, 200, 500] {
         assert_eq!(h(total), ui::TIMELINE_MAX_H, "total={total}: unbounded");
+    }
+}
+
+#[test]
+fn a_column_of_figures_shares_a_right_edge() {
+    // Scanning a column for the largest value is the commonest thing anyone
+    // does here, and right alignment is what makes magnitude visual instead of
+    // something to parse. Left-aligned, `103.4`, `21.3` and `6.1` share no
+    // decimal point and `6.1G`, `59.9M` and `5.1M` share no unit position.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            cpu: 103.4,
+            rss: 6_500_000_000,
+            threads: Some(33),
+            ..proc_named(81977, "aaa", 0.0, 0)
+        },
+        ProcSample {
+            cpu: 21.3,
+            rss: 62_800_000,
+            threads: Some(4),
+            ..proc_named(5531, "bbb", 0.0, 0)
+        },
+        ProcSample {
+            cpu: 6.1,
+            rss: 5_400_000,
+            threads: Some(139),
+            ..proc_named(1, "ccc", 0.0, 0)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let drawn = rows(&app, 100, 20);
+    let head = drawn
+        .iter()
+        .find(|l| l.contains("CPU%"))
+        .expect("no header row")
+        .clone();
+    let body: Vec<String> = drawn
+        .into_iter()
+        .filter(|l| l.contains("aaa") || l.contains("bbb") || l.contains("ccc"))
+        .collect();
+    assert_eq!(body.len(), 3, "expected three rows: {body:?}");
+
+    // Positions counted in chars, not bytes: the bars beside these figures are
+    // three bytes to the column, so a byte offset says the wide row is further
+    // right than it is.
+    let at = |l: &str, p: &dyn Fn(char) -> bool, last: bool| -> usize {
+        let hits = l.chars().enumerate().filter(|(_, c)| p(*c));
+        if last {
+            hits.last()
+        } else {
+            hits.into_iter().next()
+        }
+        .unwrap_or_else(|| panic!("no such column in {l:?}"))
+        .0
+    };
+    let shared = |name: &str, cols: Vec<usize>| {
+        assert!(
+            cols.windows(2).all(|w| w[0] == w[1]),
+            "the {name} do not share a right edge: {cols:?} in {body:?}"
+        );
+    };
+
+    // One decimal place throughout, so a shared decimal point is a shared right
+    // edge. Every magnitude here differs in digit count, which is the case that
+    // exposes it.
+    shared(
+        "cpu figures",
+        body.iter().map(|l| at(l, &|c| c == '.', false)).collect(),
+    );
+    // Bytes carry their unit as the last character, so a shared right edge puts
+    // the `G` under the `M`.
+    shared(
+        "byte figures",
+        body.iter()
+            .map(|l| at(l, &|c| c == 'G' || c == 'M', true))
+            .collect(),
+    );
+    // And the pids, which have no punctuation to give it away: the last digit
+    // before the first space that follows them.
+    shared(
+        "pids",
+        body.iter()
+            .map(|l| {
+                at(l, &|c: char| c.is_ascii_digit(), false) + l.trim_start().find(' ').unwrap() - 1
+            })
+            .collect(),
+    );
+
+    // A header aligned the other way from its column is worse than none: it
+    // reads as the edge the eye then scans against. `CPU%` ends at its `%`,
+    // and the figures below it end one char past the decimal point.
+    let head_pct = at(&head, &|c| c == '%', false);
+    let last_digit = at(&body[0], &|c| c == '.', false) + 1;
+    assert_eq!(
+        head_pct, last_digit,
+        "the CPU% header does not share its column's right edge: {head:?} over {:?}",
+        body[0]
+    );
+}
+
+#[test]
+fn a_short_terminal_draws_processes_not_just_a_header() {
+    // The frame, not the arithmetic. `PROCS_FLOOR_H` was two panel rows and a
+    // table spends two on chrome, so the floor was honoured and no process was
+    // ever drawn.
+    let mut app = App::new(600);
+    for i in (0..20).rev() {
+        let mut s = sample_at(50.0, i);
+        s.procs = (0..30)
+            .map(|n| ProcSample {
+                cpu: 30.0 - n as f32,
+                ..proc_named(n + 1, &format!("worker{n}"), 0.0, 1 << 20)
+            })
+            .collect();
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for filter in ["", "worker1"] {
+        app.filter = filter.into();
+        for h in 12..=24u16 {
+            let drawn = rows(&app, 120, h)
+                .iter()
+                .filter(|l| l.contains("worker"))
+                .count();
+            // Both claims: the floor is honoured, *and* the floor is not zero.
+            // A table that draws no process is not a process table however
+            // faithfully it obeys its own constant.
+            assert!(
+                drawn >= ui::PROCS_FLOOR_ROWS as usize && drawn > 0,
+                "at {h} rows with filter {filter:?} the table drew {drawn} processes"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_short_terminal_shows_processes_rather_than_a_taller_graph() {
+    // At 120x14 a filter matching eleven processes drew none of them: the
+    // table's floor was two *panel* rows, and a table spends two on chrome
+    // before any data.
+    for total in 12..=17u16 {
+        let table = total - ui::HEADER_H - 1 - ui::timeline_height(total);
+        assert!(
+            table >= ui::PROCS_FLOOR_H,
+            "total={total}: the table got {table} rows, below its floor of {}",
+            ui::PROCS_FLOOR_H
+        );
+        assert!(
+            table - ui::PROCS_CHROME_H >= ui::PROCS_FLOOR_ROWS,
+            "total={total}: {} process rows",
+            table - ui::PROCS_CHROME_H
+        );
     }
 }
 

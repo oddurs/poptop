@@ -44,8 +44,18 @@ pub const TIMELINE_MAX_H: u16 = 16;
 /// A reservation, not a layout constraint: the table is laid out with whatever
 /// remains, so this number and the layout cannot drift apart.
 pub const PROCS_RESERVE_H: u16 = 6;
-/// The table always keeps at least this much, however cramped the terminal.
-const PROCS_FLOOR_H: u16 = 2;
+/// Process rows the table keeps however cramped the terminal.
+///
+/// Measured in processes, which is the unit the panel exists to show. It was
+/// two *panel* rows, and a table spends two on chrome before any data — so a
+/// floor of two rows was a floor of zero processes. At 120x14 a filter matching
+/// eleven processes drew none of them; in tree mode at sixteen rows it drew two
+/// idle daemons, because tree order is structural rather than by CPU.
+pub const PROCS_FLOOR_ROWS: u16 = 3;
+/// The divider and the column header, spent before a single process is drawn.
+pub const PROCS_CHROME_H: u16 = 2;
+/// What the panel therefore needs to honour that floor.
+pub const PROCS_FLOOR_H: u16 = PROCS_FLOOR_ROWS + PROCS_CHROME_H;
 
 /// Timeline height for a terminal of `total` rows.
 ///
@@ -1653,6 +1663,24 @@ fn elide_middle(name: &str, w: usize) -> String {
     out
 }
 
+/// A numeric cell, right-aligned.
+///
+/// Scanning a column for the largest value is the commonest thing anyone does
+/// with this table, and right alignment is what makes magnitude a *visual*
+/// property: digits line up, longer numbers stick out to the left, and the
+/// outlier is found without reading. Left-aligned, `103.4`, `21.3` and `6.1`
+/// share no decimal point and `6.5G`, `62.8M` and `5.4M` share no unit
+/// position, so comparing two rows means parsing both.
+///
+/// Byte figures get it for free: the unit is the last character, so aligning
+/// the right edge aligns `G` under `M`.
+///
+/// The header has always done this — `format!("{:>5.1}%", …)` — so this is the
+/// two panels agreeing rather than a new convention.
+fn num<'a>(s: impl Into<std::borrow::Cow<'a, str>>) -> Cell<'a> {
+    Cell::from(Line::from(Span::raw(s)).alignment(Alignment::Right))
+}
+
 fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
@@ -1728,9 +1756,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 style = style.add_modifier(Modifier::DIM);
             }
             let mut cells = vec![
-                Cell::from(p.pid.to_string()),
+                num(p.pid.to_string()),
                 Cell::from(p.user.to_string()),
-                Cell::from(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
+                num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
                 // A bar beside the number turns a column that must be read
                 // into one that can be scanned. htop does the same, for the
                 // same reason.
@@ -1742,14 +1770,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 // that is an identity token, and a share of memory is not an
                 // identity. The C6 test caught it.
                 Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style()),
-                Cell::from(fmt_bytes(p.rss)),
+                num(fmt_bytes(p.rss)),
                 Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
                     .style(app.theme.dim_style()),
                 Cell::from(p.state.to_string()),
                 // An em dash, never a number we do not have. See
                 // `ProcSample::threads`: a fabricated `1` sits next to a CPU
                 // percentage that can openly contradict it.
-                Cell::from(match p.threads {
+                num(match p.threads {
                     Some(n) => n.to_string(),
                     None => "—".into(),
                 }),
@@ -1789,11 +1817,26 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let mut header_cells = vec!["PID", "USER", "CPU%", "", "RSS", "", "S", "THR", "HISTORY"];
+    // A header aligned against its column is a header for a different column.
+    // `right` marks the numeric ones; the bars and the text columns stay left.
+    let right = |s| num(s).style(app.theme.table_header_style());
+    let left = |s| Cell::from(s).style(app.theme.table_header_style());
+    let mut header_cells = vec![
+        right("PID"),
+        left("USER"),
+        right("CPU%"),
+        left(""),
+        right("RSS"),
+        left(""),
+        left("S"),
+        right("THR"),
+        left("HISTORY"),
+    ];
     if show_io {
-        header_cells.extend(["DISK R", "DISK W"]);
+        header_cells.push(right("DISK R"));
+        header_cells.push(right("DISK W"));
     }
-    header_cells.push("COMMAND");
+    header_cells.push(left("COMMAND"));
     let header = Row::new(header_cells).style(app.theme.table_header_style());
 
     // What the table cannot show, said out loud. A process that lived 200ms is
@@ -1946,15 +1989,18 @@ fn mem_frac(rss: u64, total: u64) -> f32 {
 /// rate otherwise.
 fn io_cell(collected: bool, io: Option<IoRates>, write: bool, theme: &Theme) -> Cell<'static> {
     let dim = theme.dim_style();
+    // Right-aligned with the other figures, including the two placeholders: a
+    // column of rates with `·` hanging off the left edge reads as a different
+    // column.
     match (collected, io) {
-        (false, _) => Cell::from("·").style(dim),
-        (true, None) => Cell::from("—").style(dim),
+        (false, _) => num("·").style(dim),
+        (true, None) => num("—").style(dim),
         (true, Some(io)) => {
             let bytes = if write { io.write } else { io.read };
             if bytes == 0 {
-                Cell::from("0").style(dim)
+                num("0").style(dim)
             } else {
-                Cell::from(format!("{}/s", fmt_bytes(bytes)))
+                num(format!("{}/s", fmt_bytes(bytes)))
             }
         }
     }
