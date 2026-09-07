@@ -4979,3 +4979,41 @@ fn an_unsupporting_kernel_is_described_differently_from_a_locked_down_one() {
         "sent the user after privileges: {out}"
     );
 }
+
+#[test]
+#[ignore]
+fn ia_survey() {
+    use crate::collect::{Collector, Needs, Platform};
+    let mut c = Platform::new().unwrap();
+    let mut samples = Vec::new();
+    for _ in 0..10 {
+        samples.push(c.sample(Needs { io: true }).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let build = || {
+        let mut a = App::new(600);
+        for s in &samples {
+            a.push(s.clone());
+        }
+        a.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        a
+    };
+    let show = |label: &str, app: &App, w: u16, h: u16| {
+        println!("\n##### {label} ({w}x{h})");
+        for (i, r) in rows(app, w, h).iter().enumerate() {
+            println!("{i:>2}|{}", r.trim_end());
+        }
+    };
+
+    show("default", &build(), 120, 26);
+    let mut t = build();
+    t.tree = true;
+    show("tree", &t, 120, 16);
+    let mut f = build();
+    f.filter = "claude".into();
+    show("filter", &f, 120, 14);
+    let mut p = build();
+    p.history.scrub(-6);
+    show("paused", &p, 120, 14);
+    show("narrow", &build(), 80, 24);
+}
