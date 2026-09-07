@@ -1550,25 +1550,55 @@ mod tests {
         // way, and what this pins is that the *read* does not go through the
         // strict UTF-8 check. With `read_into` in there the file comes back as
         // `InvalidData` and the process shows as a blank.
+        //
+        // `arg0`, not a shell. The first version ran `sh -c 'sleep 5' <bad>`,
+        // and a shell whose script is a single command execs it directly —
+        // replacing the argv this test had just planted. Whether the read
+        // landed before or after that exec was a race: it passed locally every
+        // time and failed in CI. `sleep` execs nothing, so its argv is the one
+        // it was given, and `spawn` returning `Ok` already means the exec
+        // happened.
         use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::process::CommandExt as _;
         let bad = std::ffi::OsStr::from_bytes(b"\xff\xfe-bad");
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("sleep 5")
-            .arg(bad) // becomes $0, so it lands in argv
+        let mut child = std::process::Command::new("sleep")
+            .arg0(bad)
+            .arg("30")
             .spawn()
             .expect("could not spawn");
 
+        // Polled rather than read once. Between the fork and the exec, the
+        // child's `cmdline` still shows the *parent's* argv — the copied image
+        // has not been replaced yet — so a single read a moment after `spawn`
+        // returns can come back as the test harness's own command line. It did:
+        // one full-suite run in six, reporting `poptop-de69… --quiet`.
+        //
+        // The loop does not weaken what this pins. With the strict UTF-8 read
+        // in place every attempt returns `None`, so it times out and the
+        // expectation below still fails.
         let mut cache = HashMap::new();
         let (mut path, mut buf) = (String::new(), Vec::new());
-        let got = cmdline(child.id() as i32, 1, 0, &mut cache, &mut path, &mut buf);
+        let pid = child.id() as i32;
+        let mut got = None;
+        for _ in 0..200 {
+            cache.clear();
+            got = cmdline(pid, 1, 0, &mut cache, &mut path, &mut buf);
+            if got.as_deref().is_some_and(|c| c.ends_with(" 30")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let _ = child.kill();
         let _ = child.wait();
 
         let got = got.expect("a command line with one bad byte was refused entirely");
         assert!(
-            got.contains("sleep 5"),
+            got.ends_with(" 30"),
             "the readable arguments were lost: {got:?}"
+        );
+        assert!(
+            got.contains('\u{fffd}'),
+            "the bad byte was not the one under test: {got:?}"
         );
     }
 
