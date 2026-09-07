@@ -382,11 +382,33 @@ mod tests {
         // tight enough to be worth having: an earlier version compared one
         // reading with a tolerance of 8 and failed one run in three, at 68
         // against 79.
-        let before = threads(me);
-        let ps = std::process::Command::new("ps")
-            .args(["-M", "-p", &me.to_string()])
-            .output();
-        let after = threads(me);
+        // Up to three attempts, and this is a retry of the *measurement*, not
+        // of the verdict. Reading a live system against another live reader is
+        // sampling, and a sample can be spoiled by something outside the test —
+        // I saw one failure in roughly seventy runs that I could not reproduce
+        // in seventy more, on a machine that had a second `cargo test` on it at
+        // the time. A wrong offset is not sampling error: it is out by forty or
+        // more, deterministically, and fails all three attempts. So the loop
+        // buys robustness against load without buying tolerance of a bug.
+        let mut attempts = Vec::new();
+        for _ in 0..3 {
+            let before = threads(me);
+            let ps = std::process::Command::new("ps")
+                .args(["-M", "-p", &me.to_string()])
+                .output();
+            let after = threads(me);
+            attempts.push((before, ps, after));
+            if let Some((Some(b), Ok(p), Some(a))) = attempts.last() {
+                let n = String::from_utf8_lossy(&p.stdout)
+                    .lines()
+                    .count()
+                    .saturating_sub(1) as u32;
+                if (b.min(a).saturating_sub(8)..=b.max(a) + 8).contains(&n) {
+                    break;
+                }
+            }
+        }
+        let (before, ps, after) = attempts.pop().expect("no attempt was made");
 
         // Released before anything can panic. A failed assertion above this
         // line would leave 64 threads parked on the barrier for the rest of the

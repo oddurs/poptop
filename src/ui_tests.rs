@@ -2397,6 +2397,141 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
 }
 
 #[test]
+fn a_process_using_several_cores_still_has_a_readable_sparkline() {
+    // A virtual machine on three cores is 300%, and the axis ladder used to
+    // stop at 100 — so everything a busy process did above one core was drawn
+    // at the same height. Not a clipped graph: no graph.
+    //
+    // A ramp rather than a sawtooth. A repeating waveform can alias against the
+    // two-samples-per-cell packing and come out as one glyph repeated whatever
+    // the axis does, which is a property of the test data, not the code — an
+    // earlier version of this failed for exactly that reason.
+    let spark = |peak: f32| {
+        let mut app = App::new(60);
+        for i in (0..40).rev() {
+            let mut s = sample_at(10.0, i as u64);
+            s.procs = vec![ProcSample {
+                cpu: peak * (40 - i) as f32 / 40.0,
+                ..proc_named(1, "vm", 0.0, 1 << 20)
+            }];
+            app.push(s);
+        }
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        spark_for(&app, "vm")
+    };
+
+    // A ramp against an axis that fits it tops out only at the very end. Under
+    // the old ceiling of 100 a ramp to 800% is above the axis for seven eighths
+    // of its length and draws solid for all of it.
+    for peak in [285.0f32, 800.0, 1400.0] {
+        let s = spark(peak);
+        let full = s.chars().filter(|&c| c == '⣿').count();
+        assert!(
+            full <= 3,
+            "a ramp to {peak}% saturated {full} of {} cells: {s:?}",
+            s.chars().count()
+        );
+        assert!(
+            s.chars().collect::<std::collections::HashSet<_>>().len() > 2,
+            "a ramp to {peak}% drew almost no variation: {s:?}"
+        );
+    }
+}
+
+#[test]
+fn scrolling_the_list_does_not_rescale_everybody_else_history() {
+    // The axis is shared by every row, so it must not be taken from the rows
+    // that happen to be on screen. Drawn from the visible slice, scrolling a
+    // multi-core process into view collapses every other row's history to the
+    // floor and springs it back when that process scrolls off — the sparkline
+    // answering a different question depending on where the list is sitting.
+    let mut app = App::new(60);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i as u64);
+        // One heavy process, then a long tail of quiet ones. The heavy one
+        // sorts to the top, so scrolling down takes it off screen.
+        s.procs = vec![ProcSample {
+            cpu: 900.0,
+            ..proc_named(1, "vm", 0.0, 1 << 20)
+        }];
+        s.procs.extend((2..40).map(|pid| ProcSample {
+            cpu: 6.0,
+            ..proc_named(pid, &format!("quiet{pid}"), 0.0, 1 << 20)
+        }));
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // Tall enough that rows are actually drawn, short enough that the heavy one
+    // can be scrolled past. Too short and the table gets no rows at all, which
+    // makes both readings agree for the wrong reason.
+    let axis_of = |app: &App| {
+        render(app, 200, 30)
+            .lines()
+            .find(|l| l.contains("processes ("))
+            .and_then(|l| {
+                let i = l.find("history ≤")? + "history ≤".len();
+                Some(l[i..].split('%').next()?.to_string())
+            })
+            .expect("no axis label")
+    };
+
+    let at_top = axis_of(&app);
+    // Far enough down that the 900% row is well off screen.
+    app.selected = 38;
+    let scrolled = axis_of(&app);
+    assert_eq!(
+        at_top, scrolled,
+        "the history axis moved from {at_top}% to {scrolled}% just from scrolling"
+    );
+}
+
+#[test]
+fn the_table_states_its_sparkline_axis_and_gives_it_up_first() {
+    // One ceiling is shared by every row so the shapes can be compared, which
+    // means the column has a scale — and a scale that moves without saying so
+    // is an unlabelled y-axis. It moves below one core too: the steps there are
+    // 10 / 25 / 50 / 100, a tenfold swing that one process touching 60% is
+    // enough to cause.
+    let title = |cpu: f32, w: u16| {
+        let mut app = App::new(60);
+        let mut s = sample(10.0);
+        s.procs = vec![ProcSample {
+            cpu,
+            ..proc_named(1, "vm", 0.0, 1 << 20)
+        }];
+        app.push(s);
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        render(&app, w, 20)
+            .lines()
+            .find(|l| l.contains("processes ("))
+            .expect("no section title")
+            .to_string()
+    };
+
+    assert!(title(500.0, 200).contains("history ≤800%"));
+    assert!(title(40.0, 200).contains("history ≤50%"));
+
+    // And it is the first thing a title too long for its panel loses. ratatui
+    // truncates from the right, and `io_status` is the one message this panel
+    // goes out of its way to guarantee — without it the `i` key looks broken
+    // with nothing on screen saying why. So the ordering is the guarantee:
+    // whatever else is in the title, the axis sits after the IO status and is
+    // cut first.
+    let wide = title(500.0, 200);
+    let io_at = wide.find("io:").expect("no IO status");
+    let axis_at = wide.find("history ≤").expect("no axis label");
+    assert!(
+        io_at < axis_at,
+        "the axis label is ahead of the IO status and would truncate it: {wide:?}"
+    );
+    assert!(
+        title(500.0, 80).contains("io:"),
+        "the IO status was crowded out"
+    );
+}
+
+#[test]
 fn an_unknown_thread_count_is_a_dash_not_a_one() {
     // macOS reported a flat `1` for every process, which beside the CPU column
     // was not merely missing but contradictory: this process is using three

@@ -217,6 +217,26 @@ can read.
 `i` still overrides whichever way the probe went. Someone with partial access
 may well want the column for the processes they can see.
 
+The `HISTORY` sparkline is drawn against **one axis shared by every row**, and
+the section title names it whenever it leaves one core — `history ≤800%`.
+Scaling each row to its own peak instead would make a process oscillating
+between 11% and 13% look exactly like one spiking to 90%, which defeats the only
+reason to put the shapes in a column together.
+
+The axis follows the busiest process in the whole buffer, so one using several
+cores raises it for everyone: a virtual machine peaking at 500% takes the axis
+to 800%, and rows under 20% then draw at the lowest lit level — visible, but
+with their shape squashed out of them. That is the cost of a shared axis and it
+is worth naming. The alternative was worse: the ladder used to stop at 100%, so
+the virtual machine drew as a solid block and its history could not be read at
+all — the one row you scrubbed back to look at. Absolute magnitude is still in
+the `CPU%` column beside it; the sparkline is for shape.
+
+The axis is taken from every process in the buffer rather than the rows on
+screen, so scrolling does not rescale it. Drawn from the visible slice, bringing
+a busy process into view would collapse every other row's history to the floor
+and springing it back when that process scrolled off.
+
 They also drop on a panel too narrow to carry them, like everything else here.
 Every column in the table is a fixed width, so without that rule ratatui
 squeezes them all rather than dropping any — an eighty-column terminal rendered
