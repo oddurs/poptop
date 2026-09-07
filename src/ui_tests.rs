@@ -37,6 +37,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         at: std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
         cpu_total: cpu,
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
+        disks: None,
         iowait: None,
         running: None,
         blocked: None,
@@ -71,6 +72,25 @@ fn render(app: &App, w: u16, h: u16) -> String {
         .iter()
         .map(|c| c.symbol())
         .collect::<String>()
+}
+
+/// The frame split into terminal rows.
+///
+/// `render` concatenates every cell with no line breaks, so `.lines()` on its
+/// output yields one enormous line — which quietly turns "is this in the
+/// timeline block" into "is this anywhere on screen". Anything asking where
+/// something is has to chunk by width first.
+fn rows(app: &App, w: u16, h: u16) -> Vec<String> {
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw(f, app)).unwrap();
+    let cells: Vec<String> = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_string())
+        .collect();
+    cells.chunks(w as usize).map(|row| row.concat()).collect()
 }
 
 #[test]
@@ -2529,6 +2549,149 @@ fn the_table_states_its_sparkline_axis_and_gives_it_up_first() {
         title(500.0, 80).contains("io:"),
         "the IO status was crowded out"
     );
+}
+
+/// A sample carrying one device at a given utilisation and service time.
+fn with_disk(util: f32, await_ms: Option<f32>) -> Sample {
+    let mut s = sample(10.0);
+    s.disks = Some(vec![crate::sample::DiskStat {
+        name: std::sync::Arc::from("nvme0n1"),
+        read: 1 << 20,
+        write: 2 << 20,
+        reads: 40,
+        writes: 90,
+        util,
+        await_ms,
+        queue: 4.5,
+    }]);
+    s
+}
+
+#[test]
+fn the_header_names_the_device_the_wait_figure_is_about() {
+    // `WAIT 26.7%` says the CPU is idle waiting on storage and then strands
+    // you. The next question is which device and how badly.
+    let mut app = App::new(60);
+    app.push(with_disk(88.0, Some(12.5)));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let frame = render(&app, 200, 30);
+    assert!(frame.contains("nvme0n1"), "the device was not named");
+    assert!(frame.contains("88.0%"), "utilisation was not shown");
+    assert!(frame.contains("12.5ms"), "service time was not shown");
+}
+
+#[test]
+fn a_device_that_completed_nothing_shows_no_service_time() {
+    // A mean of no operations is not zero, and zero here would read as an
+    // infinitely fast disk — the most flattering possible lie about the figure
+    // most worth trusting.
+    let mut app = App::new(60);
+    app.push(with_disk(0.0, None));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let frame = render(&app, 200, 30);
+    assert!(frame.contains("nvme0n1"));
+    assert!(
+        !frame.contains("0.0ms"),
+        "an idle device claimed a service time"
+    );
+}
+
+#[test]
+fn a_platform_that_reads_no_disks_draws_no_disk_row() {
+    // macOS. The graph gives the row back to memory rather than carrying an
+    // empty one, which is the rule `WAIT` already follows.
+    let mut absent = App::new(60);
+    let mut present = App::new(60);
+    for _ in 0..20 {
+        absent.push(sample(10.0));
+        present.push(with_disk(50.0, Some(3.0)));
+    }
+    absent.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    present.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // Scoped to the timeline block: `DISK R` and `DISK W` are also process
+    // table column headers, so a bare substring search over the frame passes
+    // either way.
+    let gutter = |app: &App| {
+        rows(app, 200, 40)
+            .iter()
+            .skip_while(|l| !l.contains("── timeline"))
+            .take_while(|l| !l.contains("shown,"))
+            .any(|l| l.contains("DISK"))
+    };
+    assert!(!gutter(&absent), "a disk graph was drawn with no disks");
+    assert!(
+        gutter(&present),
+        "no disk graph was drawn when disks are known"
+    );
+
+    // And it never takes memory's row. The graph drops rows from the end, so a
+    // series added before memory would have made every three-row layout worse
+    // in order to add this one.
+    let labelled = |app: &App, h: u16, what: &str| {
+        rows(app, 200, h)
+            .iter()
+            .skip_while(|l| !l.contains("── timeline"))
+            .take_while(|l| !l.contains("shown,"))
+            .any(|l| l.contains(what))
+    };
+    for h in 14..44 {
+        assert!(
+            labelled(&present, h, "MEM") || !labelled(&present, h, "DISK"),
+            "at height {h} the disk graph displaced memory"
+        );
+    }
+}
+
+#[test]
+fn an_idle_machine_names_the_device_the_collector_meant() {
+    // Every device at zero is the common case, and `max_by` returns the *last*
+    // of equal maxima — so the header would name whichever device happened to
+    // sort last, `loop3 0.0%` where the collector meant `nvme0n1`. A figure
+    // that names a device reads as "this is the disk poptop is watching", so
+    // which one it picks matters even when the number does not.
+    use crate::sample::DiskStat;
+    let idle = |name: &str| DiskStat {
+        name: std::sync::Arc::from(name),
+        read: 0,
+        write: 0,
+        reads: 0,
+        writes: 0,
+        util: 0.0,
+        await_ms: None,
+        queue: 0.0,
+    };
+    let mut s = sample(10.0);
+    s.disks = Some(vec![idle("nvme0n1"), idle("loop3"), idle("sdb")]);
+    assert_eq!(&*s.busiest_disk().unwrap().name, "nvme0n1");
+}
+
+#[test]
+fn the_busiest_device_is_the_one_reported() {
+    // One figure, so it has to be the worst device rather than the first: a
+    // machine with a quiet system disk and a saturated data disk must not
+    // report itself calm.
+    use crate::sample::DiskStat;
+    let d = |name: &str, util: f32| DiskStat {
+        name: std::sync::Arc::from(name),
+        read: 0,
+        write: 0,
+        reads: 1,
+        writes: 1,
+        util,
+        await_ms: Some(1.0),
+        queue: 0.0,
+    };
+    let mut s = sample(10.0);
+    s.disks = Some(vec![d("sda", 2.0), d("nvme0n1", 97.0), d("sdb", 40.0)]);
+    assert_eq!(&*s.busiest_disk().unwrap().name, "nvme0n1");
+
+    let mut app = App::new(60);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let frame = render(&app, 200, 30);
+    assert!(frame.contains("nvme0n1"), "the quiet disk was reported");
+    assert!(frame.contains("97.0%"));
 }
 
 #[test]

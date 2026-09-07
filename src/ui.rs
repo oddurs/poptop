@@ -245,12 +245,32 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         });
     }
 
+    // The device the WAIT figure is about. `WAIT 26.7%` says the CPU is idle
+    // waiting on storage and then strands you; this names the device and says
+    // how close it is to having no idle time left.
+    //
+    // Ranked immediately after `WAIT` for that reason — it is the answer to the
+    // question the figure beside it raises, so the two should survive or go
+    // together on a narrowing panel.
+    if let Some(d) = s.busiest_disk() {
+        let mut spans = vec![
+            Span::styled(format!("{} ", d.name), dim),
+            Span::styled(format!("{:>5.1}%", d.util), app.theme.figure_style(d.util)),
+        ];
+        // Service time only when something completed. A mean of no operations
+        // is not zero, and zero would read as an infinitely fast disk.
+        if let Some(a) = d.await_ms {
+            spans.push(Span::styled(format!(" {a:.1}ms"), dim));
+        }
+        figures.push(Figure { rank: 2, spans });
+    }
+
     // Runnable against cores, because a bare count means nothing without its
     // denominator: four is catastrophic on one core and idle on ninety-six.
     if let Some(running) = s.running {
         let pressure = (running as f32 / cores as f32) * 100.0;
         figures.push(Figure {
-            rank: 2,
+            rank: 3,
             spans: vec![
                 Span::styled("RUN ", dim),
                 Span::styled(
@@ -266,7 +286,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // that says so — so it is heated on any value at all, not on a threshold.
     if let Some(blocked) = s.blocked {
         figures.push(Figure {
-            rank: 3,
+            rank: 4,
             spans: vec![
                 Span::styled("BLOCKED ", dim),
                 Span::styled(
@@ -316,7 +336,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // platform that cannot separate cache from free simply has none.
     debug_assert!(has_cache || widths[1] == 0);
     figures.push(Figure {
-        rank: 4,
+        rank: 5,
         spans: mem_spans,
     });
     // Ranked below uptime and the process count despite being about memory,
@@ -324,7 +344,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // under a prefix rule one wide figure blocks every shorter one behind it:
     // at a hundred columns it fit nothing and cost two figures that would have.
     figures.push(Figure {
-        rank: 8,
+        rank: 9,
         // Shorter than it was: the bar shows what is available, so saying it
         // again in words was the third statement of one fact on one line.
         spans: vec![Span::styled(
@@ -335,7 +355,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
 
     if s.mem.swap_total > 0 {
         figures.push(Figure {
-            rank: 5,
+            rank: 6,
             spans: vec![
                 Span::styled("SWP ", dim),
                 Span::styled(
@@ -347,11 +367,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     }
 
     figures.push(Figure {
-        rank: 6,
+        rank: 7,
         spans: vec![Span::styled("UP ", dim), Span::raw(fmt_uptime(s.uptime))],
     });
     figures.push(Figure {
-        rank: 7,
+        rank: 8,
         spans: vec![
             Span::styled("PROCS ", dim),
             Span::raw(s.procs.len().to_string()),
@@ -362,7 +382,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // the smoothing it adds is what the timeline is for. Kept for the people
     // who look for it, first to go when the line is tight.
     figures.push(Figure {
-        rank: 9,
+        rank: 10,
         spans: vec![
             Span::styled("LOAD ", dim),
             Span::raw(format!(
@@ -572,6 +592,28 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
     candidates.push(("MEM", window.iter().map(|s| s.mem.used_pct()).collect()));
+
+    // Disk utilisation, from whichever device was worst in each sample. Not a
+    // series per device: the graph block has room for three or four rows and a
+    // machine can have a dozen disks, so the one closest to saturated is the
+    // honest summary — the same choice the header figure makes.
+    //
+    // After memory, not before it. The rows are dropped from the end, and a
+    // three-row graph that showed CPU, WAIT and DISK while dropping memory
+    // would have made every existing layout worse to add this one. It appears
+    // when there is a fourth row to give it.
+    //
+    // Present only where the platform reads disks at all, so macOS keeps the
+    // layout it already had rather than carrying an empty row.
+    if app.history.current().is_some_and(|s| s.disks.is_some()) {
+        candidates.push((
+            "DISK",
+            window
+                .iter()
+                .map(|s| s.busiest_disk().map_or(0.0, |d| d.util))
+                .collect(),
+        ));
+    }
 
     let row_split = sections(graph_rows, candidates.len(), gutter);
     candidates.truncate(row_split.len());

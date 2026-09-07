@@ -417,6 +417,57 @@ Two poptop windows with `store = on` are fine — each writes through its own
 temporary file — but the second to exit replaces the first's history rather
 than merging it. Merging two buffers is a different feature.
 
+### Storage
+
+The header can already say `WAIT 26.7%` and `BLOCKED 30`, and until recently it
+stopped there. The next question is always *which device, and how badly*, so it
+now names one:
+
+```text
+CPU  30.8%   WAIT   5.0%   vda  40.6% 8.6ms   RUN 4/14   BLOCKED 0   MEM  26.9%
+```
+
+`vda 40.6% 8.6ms` is utilisation and mean service time — the share of the
+interval the device had at least one request in flight, and how long an
+operation took. **Saturation, not throughput.** Throughput answers "how much
+work went through"; a disk can sit at 100% utilisation moving 2 MB/s of random
+reads, which is exactly the case a throughput figure reports as quiet.
+
+One device, the busiest, because the header has room for a figure and not a
+panel — a machine with a calm system disk and a saturated data disk must not
+report itself calm. A fourth timeline row draws the same figure over time when
+the terminal is tall enough for it, after memory rather than instead of it.
+
+Everything comes from `/proc/diskstats` and the arithmetic is `iostat`'s:
+utilisation from field 13, service time from the read and write millisecond
+counters over completed operations, queue depth from the weighted counter.
+Measured against a container writing at 2 GB/s:
+
+```text
+DEV     R/s     W/s     READ B/s    WRITE B/s   %util     await  queue
+vda      20    2245      2623413   2113476532   48.9%    8.41ms  19.57
+vdb       0       0            0            0    0.0%         —   0.00
+```
+
+A queue depth of 19.6 at 8.4ms is the diagnostic picture that 48.9% utilisation
+understates on its own, and `vdb` shows the rule this codebase keeps everywhere:
+**a device that completed nothing has no service time**, and an em dash says so.
+Zero would read as an infinitely fast disk, which is the most flattering
+possible lie about the figure most worth trusting.
+
+Two filters keep the table honest. Partitions are excluded, because their IO is
+already inside their disk's counters and showing `vda` beside `vda1` invites you
+to add them up. And a device is listed only once it has completed an operation —
+a measurement rather than a rule about names, because this container publishes
+forty-odd whole devices, `ram0..15`, `loop0..7` and `nbd0..15`, of which two have
+ever done anything. Filtering by name would also hide a loop device that is
+actually backing something, which on a machine running containers is a device
+worth watching.
+
+macOS reports `—`. `sysinfo::Disks::refresh` costs **12.5ms** steady state,
+measured, against a whole sample budget of about 4ms; an em dash is the honest
+answer until there is a cheaper route to the same counters.
+
 ### What the table cannot show
 
 poptop reads `/proc` at an instant, so **a process that lived 200ms never existed

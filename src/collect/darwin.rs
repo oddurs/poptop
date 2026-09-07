@@ -65,6 +65,19 @@ impl SysinfoCollector {
 }
 
 impl Collector for SysinfoCollector {
+    fn notes(&self) -> Vec<String> {
+        // Said once at startup, because an absence nobody is told about is the
+        // same shape as a machine with no disks. Every other unknowable here
+        // announces itself; this one was silent, and the header simply had no
+        // storage figure with nothing to explain it.
+        vec![
+            "no per-device disk figures on this platform: reading them costs 12ms a sample \
+             against a budget of about four, so poptop does not read them at all rather than \
+             pay it or show a stale number"
+                .to_string(),
+        ]
+    }
+
     fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
         // `System::new_all` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
@@ -231,6 +244,10 @@ impl Collector for SysinfoCollector {
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.
             io_denied,
+            // `sysinfo::Disks::refresh` costs 12.5ms steady state, measured,
+            // against a whole sample of about 4ms. An em dash until there is a
+            // cheaper route to the same counters — see `notes`.
+            disks: None,
         })
     }
 }
@@ -280,6 +297,23 @@ fn cached_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_absence_of_disk_figures_is_announced_once() {
+        // An absence nobody is told about is the same shape as a machine with
+        // no disks. Every other unknowable here says so; this one was silent,
+        // and the header simply had no storage figure to explain.
+        let c = SysinfoCollector::new().unwrap();
+        let notes = c.notes();
+        assert!(
+            !notes.is_empty(),
+            "nothing was said about the missing disks"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("disk")),
+            "the note does not mention disks: {notes:?}"
+        );
+    }
 
     #[test]
     fn a_process_seen_again_keeps_the_name_it_already_had() {

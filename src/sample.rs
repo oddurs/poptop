@@ -74,6 +74,75 @@ impl ProcSample {
 /// `kthreadd`, the parent of every kernel thread, is always pid 2 on Linux.
 const KTHREADD: i32 = 2;
 
+/// One block device's activity over the interval that produced this sample.
+///
+/// Rates, not counters: `/proc/diskstats` publishes cumulative totals and every
+/// figure here is a delta, which is why the collector holds the previous read.
+///
+/// The reason this exists at all is that the header can already say `WAIT 26.7%`
+/// and `BLOCKED 30` and then strand you — the next question is always *which
+/// device, and how badly*, and the per-process columns answer a different one.
+/// A device at 100% utilisation with 40ms service times is slow for everyone on
+/// it, including processes issuing almost no IO of their own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiskStat {
+    /// Kernel name — `nvme0n1`, `vda`, `dm-0`. Whole devices only; partitions
+    /// are excluded because their IO is already counted in their disk's.
+    pub name: Arc<str>,
+    /// Bytes per second. Sectors in `/proc/diskstats` are 512 bytes by
+    /// convention, whatever the device's physical block size.
+    pub read: u64,
+    pub write: u64,
+    /// Completed operations per second, which is what "IOPS" means.
+    pub reads: u64,
+    pub writes: u64,
+    /// Percent of the interval the device had at least one request in flight.
+    ///
+    /// The saturation figure, and the one worth reading first. Throughput says
+    /// how much work went through; this says how close the device is to having
+    /// no idle time left. A disk can sit at 100% here moving 2 MB/s of random
+    /// reads, which is exactly the case throughput alone reports as quiet.
+    ///
+    /// Not a hard ceiling on modern hardware: an SSD that serves requests in
+    /// parallel can be at 100% and still have capacity, which is why `queue`
+    /// and `await` sit beside it rather than behind it.
+    pub util: f32,
+    /// Mean milliseconds a completed operation spent in the device, or `None`
+    /// when none completed.
+    ///
+    /// `None` rather than zero, because a mean of no samples is not zero — and
+    /// zero here would read as an infinitely fast disk, the most flattering
+    /// possible lie about the figure most worth trusting.
+    pub await_ms: Option<f32>,
+    /// Mean requests in flight across the interval.
+    pub queue: f32,
+}
+
+impl Sample {
+    /// The device closest to having no idle time left, if any is known.
+    ///
+    /// One device rather than a table, because the header has room for a figure
+    /// and not for a panel — and because the question the header answers is
+    /// "is storage the problem", which the worst device settles. The others are
+    /// a device table's job, if one is ever built.
+    /// Ties go to the earlier device, which `max_by` would not do — it returns
+    /// the last of equal maxima. On an idle machine every device is at 0.0, and
+    /// the header would name whichever one happened to sort last: `loop3 0.0%`
+    /// where the collector meant `nvme0n1`. A figure that names a device is
+    /// read as "this is the disk poptop is watching", so which one it picks
+    /// matters even when the number does not.
+    pub fn busiest_disk(&self) -> Option<&DiskStat> {
+        let mut it = self.disks.as_ref()?.iter();
+        let mut best = it.next()?;
+        for d in it {
+            if d.util > best.util {
+                best = d;
+            }
+        }
+        Some(best)
+    }
+}
+
 impl Sample {
     /// The most CPU any one process on this machine can have used, in percent
     /// of one core.
@@ -273,6 +342,15 @@ pub struct Sample {
     /// merely awaiting a second reading. Only the former is fixed by running as
     /// root, so conflating them produces advice that does not help.
     pub io_denied: usize,
+    /// Per-device disk activity, or `None` where the platform will not say.
+    ///
+    /// `None` on macOS: `sysinfo::Disks::refresh` costs 12.5ms steady state,
+    /// measured, against a whole sample budget of about 4ms. An em dash is the
+    /// honest answer until there is a cheaper route to the same counters.
+    ///
+    /// An empty list is a different statement from `None` — it means the
+    /// platform looked and found no device that has ever done any IO.
+    pub disks: Option<Vec<DiskStat>>,
 }
 
 impl Sample {
@@ -295,6 +373,7 @@ impl Sample {
             io_supported: true,
             io_collected: false,
             io_denied: 0,
+            disks: None,
         }
     }
 }
