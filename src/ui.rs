@@ -1878,9 +1878,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // an eighty-column terminal loses first.
     let axis = format!(" · history ≤{spark_ceiling:.0}%");
 
+    // Never silently shorter than the count beside it. Placed early, before
+    // the parts a narrow terminal drops: a table missing two hundred rows with
+    // nothing saying so is worse than a table with no axis label.
+    let hidden = match app.hidden_kernel_threads() {
+        0 => String::new(),
+        n => format!(" · {n} kernel hidden"),
+    };
+
     let title = format!(
-        " processes ({}) — sort: {}{}{}{}{} ",
+        " processes ({}){} — sort: {}{}{}{}{} ",
         rows_data.len(),
+        hidden,
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
         churn,
@@ -2048,7 +2057,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         ])
     } else {
         Line::from(Span::styled(
-            "q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · t tree · i io · / filter",
+            "q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · t tree · K kernel · i io · / filter",
             app.theme.dim_style(),
         ))
     };

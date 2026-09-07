@@ -107,6 +107,11 @@ KEYS:
     Up/Down         select a process
     s               cycle sort column
     t               toggle the process tree
+    K               show kernel threads. Hidden by default on Linux: kworker,
+                    ksoftirqd, irq and the rest outnumber the real processes
+                    several times over on a many-core box, and none of them is
+                    what anyone opened a monitor to find. The number hidden is
+                    in the panel title. Does nothing on macOS, which has none.
     i               show or hide the per-process disk IO columns. Shown by
                     default where they can be read: `/proc/<pid>/io` needs
                     CAP_SYS_PTRACE for other users' processes, so on a box
@@ -632,6 +637,10 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             app.selected = 0;
         }
         KeyCode::Char('i') => app.toggle_io(),
+        KeyCode::Char('K') => {
+            app.show_kernel = !app.show_kernel;
+            app.clamp_selection();
+        }
         KeyCode::Char('t') => {
             app.tree = !app.tree;
             app.selected = 0;

@@ -28,12 +28,18 @@ pub struct TreeRow<'a> {
 /// `matched` is `None` when no filter is active. When it is `Some`, the tree
 /// keeps every match plus its ancestors — a filtered tree flattened to bare
 /// matches loses the parentage that makes it a tree at all.
+///
+/// Takes references rather than the sample's slice so the caller can withhold
+/// processes entirely. A process absent from `procs` is absent from `by_pid`
+/// too, so it cannot reappear as somebody's ancestor and its children become
+/// roots — which is what hiding kernel threads has to mean, `kthreadd` being
+/// the ancestor of every one of them.
 pub fn build<'a>(
-    procs: &'a [ProcSample],
+    procs: &[&'a ProcSample],
     sort: Sort,
     matched: Option<&HashSet<i32>>,
 ) -> Vec<TreeRow<'a>> {
-    let by_pid: HashMap<i32, &ProcSample> = procs.iter().map(|p| (p.pid, p)).collect();
+    let by_pid: HashMap<i32, &'a ProcSample> = procs.iter().map(|p| (p.pid, *p)).collect();
 
     let visible = matched.map(|m| with_ancestors(m, &by_pid));
     let keep = |pid: i32| visible.as_ref().is_none_or(|v| v.contains(&pid));
@@ -41,7 +47,7 @@ pub fn build<'a>(
     let mut children: HashMap<i32, Vec<&ProcSample>> = HashMap::new();
     let mut roots: Vec<&ProcSample> = Vec::new();
 
-    for p in procs.iter().filter(|p| keep(p.pid)) {
+    for p in procs.iter().copied().filter(|p| keep(p.pid)) {
         // A process is a root when its parent is gone from this sample, or when
         // it claims itself as its own parent. Orphans become roots rather than
         // disappearing with the parent that exited.
@@ -74,8 +80,9 @@ pub fn build<'a>(
     // Anything still unvisited is caught in a ppid cycle: every member has a
     // parent that is present, so none of them qualified as a root. Emit them at
     // the top level so a cycle costs correct nesting, never a missing process.
-    let stranded: Vec<&ProcSample> = procs
+    let stranded: Vec<&'a ProcSample> = procs
         .iter()
+        .copied()
         .filter(|p| keep(p.pid) && !visited.contains(&p.pid))
         .collect();
     for p in stranded {
@@ -112,6 +119,11 @@ fn with_ancestors(matched: &HashSet<i32>, by_pid: &HashMap<i32, &ProcSample>) ->
         }
     }
     keep
+}
+
+#[cfg(test)]
+fn refs(procs: &[ProcSample]) -> Vec<&ProcSample> {
+    procs.iter().collect()
 }
 
 fn walk<'a>(
@@ -195,7 +207,7 @@ mod tests {
             p(2, 1, "sshd", 1.0),
             p(3, 2, "bash", 2.0),
         ];
-        let rows = build(&procs, Sort::Pid, None);
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(names(&rows), vec!["init", "└─ sshd", "   └─ bash"]);
     }
 
@@ -207,7 +219,7 @@ mod tests {
             p(3, 1, "high", 90.0),
         ];
         // Sorted by CPU descending, so "high" comes first and "low" is last.
-        let rows = build(&procs, Sort::Cpu, None);
+        let rows = build(&refs(&procs), Sort::Cpu, None);
         assert_eq!(names(&rows), vec!["init", "├─ high", "└─ low"]);
     }
 
@@ -215,7 +227,7 @@ mod tests {
     fn an_orphan_becomes_a_root() {
         // Parent 999 exited between samples; the child must not vanish with it.
         let procs = vec![p(1, 0, "init", 0.0), p(5, 999, "orphan", 0.0)];
-        let rows = build(&procs, Sort::Pid, None);
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(rows.len(), 2);
         assert!(names(&rows).contains(&"orphan".to_string()));
     }
@@ -224,14 +236,14 @@ mod tests {
     fn a_ppid_cycle_neither_hangs_nor_drops_a_process() {
         // 2 and 3 claim each other as parent: neither is a root.
         let procs = vec![p(1, 0, "init", 0.0), p(2, 3, "a", 0.0), p(3, 2, "b", 0.0)];
-        let rows = build(&procs, Sort::Pid, None);
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(rows.len(), 3, "every process must appear exactly once");
     }
 
     #[test]
     fn a_self_parented_process_is_a_root() {
         let procs = vec![p(1, 1, "weird", 0.0)];
-        let rows = build(&procs, Sort::Pid, None);
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(names(&rows), vec!["weird"]);
     }
 
@@ -247,7 +259,7 @@ mod tests {
                 )
             })
             .collect();
-        let rows = build(&procs, Sort::Cpu, None);
+        let rows = build(&refs(&procs), Sort::Cpu, None);
         assert_eq!(rows.len(), 50);
         let seen: HashSet<i32> = rows.iter().map(|r| r.proc.pid).collect();
         assert_eq!(seen.len(), 50);
@@ -262,7 +274,7 @@ mod tests {
             p(4, 1, "unrelated", 0.0),
         ];
         let matched = HashSet::from([3]);
-        let rows = build(&procs, Sort::Pid, Some(&matched));
+        let rows = build(&refs(&procs), Sort::Pid, Some(&matched));
 
         assert_eq!(names(&rows), vec!["init", "└─ sshd", "   └─ target"]);
         // Ancestors are context, the match is not.
@@ -275,7 +287,7 @@ mod tests {
     fn filtering_with_a_cycle_above_the_match_terminates() {
         let procs = vec![p(1, 2, "a", 0.0), p(2, 1, "b", 0.0), p(3, 1, "target", 0.0)];
         let matched = HashSet::from([3]);
-        let rows = build(&procs, Sort::Pid, Some(&matched));
+        let rows = build(&refs(&procs), Sort::Pid, Some(&matched));
         assert!(rows.iter().any(|r| r.proc.name.as_ref() == "target"));
     }
 
@@ -284,7 +296,7 @@ mod tests {
         let procs: Vec<ProcSample> = (1..=4)
             .map(|i| p(i, i - 1, &format!("d{i}"), 0.0))
             .collect();
-        let rows = build(&procs, Sort::Pid, None);
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(names(&rows), vec!["d1", "└─ d2", "   └─ d3", "      └─ d4"]);
     }
 }

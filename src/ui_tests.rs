@@ -11,6 +11,12 @@ use crate::ui;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
+/// A process for a fixture.
+///
+/// Keep pids and ppids away from 2: on Linux that is `kthreadd`, so a fixture
+/// using it builds a kernel thread by accident and the table hides it by
+/// default. Three tests here did exactly that with incidental low pids, and
+/// passed on macOS while failing in the container.
 fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
     ProcSample {
         pid,
@@ -2429,8 +2435,8 @@ fn the_cpu_bar_marks_a_process_using_more_than_one_core() {
     let mut app = App::new(60);
     let mut s = sample(50.0);
     s.procs = vec![
-        proc_named(1, "single", 100.0, 1 << 20),
-        proc_named(2, "threaded", 400.0, 1 << 20),
+        proc_named(101, "single", 100.0, 1 << 20),
+        proc_named(102, "threaded", 400.0, 1 << 20),
     ];
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -4089,9 +4095,9 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     let mut s = sample(10.0);
     s.procs = (0..9)
         .map(|i| {
-            let mut p = proc_named(i + 1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20);
+            let mut p = proc_named(i + 101, "Google Chrome Helper (Renderer)", 0.0, 1 << 20);
             p.cpu = 10.0 - i as f32;
-            p.ppid = if i == 0 { 0 } else { i };
+            p.ppid = if i == 0 { 0 } else { i + 100 };
             p
         })
         .collect();
@@ -4225,15 +4231,15 @@ fn processes_that_differ_only_by_a_suffix_are_told_apart() {
     s.procs = vec![
         ProcSample {
             cpu: 9.0,
-            ..proc_named(1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
+            ..proc_named(101, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
         },
         ProcSample {
             cpu: 8.0,
-            ..proc_named(2, "Google Chrome Helper (GPU)", 0.0, 1 << 20)
+            ..proc_named(102, "Google Chrome Helper (GPU)", 0.0, 1 << 20)
         },
         ProcSample {
             cpu: 7.0,
-            ..proc_named(3, "Google Chrome Helper (Network Service)", 0.0, 1 << 20)
+            ..proc_named(103, "Google Chrome Helper (Network Service)", 0.0, 1 << 20)
         },
     ];
     app.push(s);
@@ -4949,6 +4955,13 @@ fn the_io_columns_drop_rather_than_squeezing_the_table() {
 }
 
 #[test]
+// Linux only, because a kernel thread is a Linux notion and
+// `is_kernel_thread` now says so — pid 2 is `kthreadd` there and either absent
+// or an ordinary process here, and answering `true` for it on macOS would drop
+// a real row from the table and a real process from this ratio. So the
+// scenario below cannot arise on a Mac, and building it out of pids that mean
+// nothing on this platform would assert about nothing.
+#[cfg(target_os = "linux")]
 fn kernel_threads_do_not_trigger_the_io_probe() {
     // They are root-owned and unreadable to an ordinary user, and on a
     // many-core box they outnumber the real processes — so counting them would
@@ -5245,4 +5258,205 @@ fn sorting_by_name_orders_by_what_the_column_shows() {
             "node /srv/web/bundler.js",
         ]
     );
+}
+
+/// Kernel threads for a fixture: `kthreadd` itself and a crowd of workers under
+/// it, matching what [`ProcSample::is_kernel_thread`] recognises.
+#[cfg(target_os = "linux")]
+fn with_kernel_threads(s: &mut Sample, n: i32) {
+    let mut kthreadd = proc_named(2, "kthreadd", 0.0, 0);
+    kthreadd.ppid = 0;
+    s.procs.push(kthreadd);
+    for i in 0..n {
+        let mut k = proc_named(1000 + i, &format!("kworker/{i}:1"), 0.0, 0);
+        k.ppid = 2;
+        s.procs.push(k);
+    }
+}
+
+// Linux only: a kernel thread is a Linux notion, `is_kernel_thread` says so,
+// and on macOS these fixtures are ordinary processes that are never hidden.
+#[cfg(target_os = "linux")]
+#[test]
+fn kernel_threads_are_hidden_and_a_key_shows_them() {
+    // On a many-core box they outnumber the real processes several times over,
+    // and none of them is what anyone opened a monitor to find.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(101, "nginx", 9.0, 1 << 20),
+        proc_named(102, "postgres", 8.0, 1 << 20),
+    ];
+    with_kernel_threads(&mut s, 60);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let named = |app: &App| -> Vec<String> {
+        rows(app, 120, 40)
+            .into_iter()
+            .filter(|l| l.contains("kworker") || l.contains("kthreadd") || l.contains("nginx"))
+            .collect()
+    };
+
+    let hidden = named(&app);
+    assert!(
+        hidden.iter().any(|l| l.contains("nginx")),
+        "the real process went missing: {hidden:?}"
+    );
+    assert!(
+        !hidden
+            .iter()
+            .any(|l| l.contains("kworker") || l.contains("kthreadd")),
+        "a kernel thread was drawn: {hidden:?}"
+    );
+
+    app.show_kernel = true;
+    let shown = named(&app);
+    assert!(
+        shown.iter().any(|l| l.contains("kworker")),
+        "the key showed nothing: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|l| l.contains("kthreadd")),
+        "kthreadd itself stayed hidden: {shown:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_number_of_hidden_kernel_threads_is_stated() {
+    // Every other omission in poptop states itself — an idle interface, a
+    // device that has done no IO. A table quietly sixty rows shorter than the
+    // process count beside it would be the one that did not.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 60);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // Sixty workers plus kthreadd.
+    assert_eq!(app.hidden_kernel_threads(), 61);
+    let frame = rows(&app, 120, 40).join("\n");
+    assert!(
+        frame.contains("61 kernel hidden"),
+        "the omission is silent: {:?}",
+        frame.lines().next()
+    );
+
+    app.show_kernel = true;
+    assert_eq!(app.hidden_kernel_threads(), 0);
+    assert!(
+        !rows(&app, 120, 40).join("\n").contains("kernel hidden"),
+        "nothing is hidden and it still says so"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hiding_kernel_threads_does_not_orphan_their_children_in_the_tree() {
+    // `kthreadd` is the ancestor of every kernel thread, so a tree that hides
+    // it must not keep it alive as somebody's visible ancestor — nor drop a
+    // real process that happens to descend from a hidden one.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 3);
+    app.push(s);
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let frame = rows(&app, 120, 40).join("\n");
+    assert!(frame.contains("nginx"), "the real process went missing");
+    assert!(!frame.contains("kthreadd"), "the hidden ancestor was drawn");
+    assert!(!frame.contains("kworker"), "a hidden child was drawn");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_filter_does_not_bring_hidden_kernel_threads_back() {
+    // Filtering narrows what is shown; it does not overrule what is withheld.
+    // Searching for `kworker` with them hidden should find nothing, not
+    // everything.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 6);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for tree in [false, true] {
+        app.tree = tree;
+        app.filter = "kworker".into();
+        assert_eq!(
+            app.visible_rows().len(),
+            0,
+            "a filter resurrected hidden kernel threads (tree: {tree})"
+        );
+        app.show_kernel = true;
+        assert_eq!(
+            app.visible_rows()
+                .iter()
+                .filter(|r| !r.context_only)
+                .count(),
+            6,
+            "the same filter with them shown found the wrong number (tree: {tree})"
+        );
+        app.show_kernel = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_selection_stays_in_range_when_kernel_threads_are_hidden() {
+    // Toggling them off shrinks the list under the cursor, exactly as a filter
+    // does — and a selection past the end draws no highlight at all.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
+    with_kernel_threads(&mut s, 40);
+    app.push(s);
+    app.show_kernel = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    app.selected = app.visible_rows().len() - 1;
+    app.show_kernel = false;
+    app.clamp_selection();
+    assert!(
+        app.selected < app.visible_rows().len(),
+        "the selection was left past the end of the list"
+    );
+}
+
+// macOS only: this asserts the *absence* of the Linux rule, which on Linux is
+// the rule.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn pid_two_is_an_ordinary_process_off_linux() {
+    // `kthreadd` is pid 2 on Linux and nowhere else. Applying that rule here
+    // would hide a real row from the table by default, and drop a real process
+    // from the IO ratio — on the strength of a number that means nothing on
+    // this platform.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    let mut two = proc_named(2, "a-real-process", 9.0, 1 << 20);
+    two.ppid = 1;
+    let mut child = proc_named(3, "its-child", 8.0, 1 << 20);
+    child.ppid = 2;
+    s.procs = vec![two, child];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    assert_eq!(
+        app.hidden_kernel_threads(),
+        0,
+        "a real process was counted as a kernel thread"
+    );
+    let frame = rows(&app, 120, 30).join("\n");
+    for name in ["a-real-process", "its-child"] {
+        assert!(
+            frame.contains(name),
+            "{name} was hidden on a platform with no kthreadd"
+        );
+    }
 }

@@ -94,6 +94,17 @@ pub struct App {
     pub tree: bool,
     /// Whether the IO columns are shown.
     pub show_io: bool,
+    /// Show kernel threads — `kworker/*`, `ksoftirqd/*`, `irq/*` — in the
+    /// table.
+    ///
+    /// Off. On a many-core Linux box they outnumber the real processes several
+    /// times over, and none of them is what anyone opened a monitor to find.
+    /// poptop already excludes them from the IO ratio on the grounds that
+    /// including them distorts a figure; the same argument applies to the panel
+    /// they were crowding out.
+    ///
+    /// A no-op on macOS, where [`ProcSample::is_kernel_thread`] is never true.
+    pub show_kernel: bool,
     /// Whether IO is being collected. Deliberately a ratchet: hiding the
     /// columns does not stop collection, because resuming later would punch a
     /// hole in the middle of history. One clean boundary between "not collected
@@ -125,6 +136,7 @@ impl App {
             // real sample where most of it turns out to be unreadable; see
             // `probe_io`.
             show_io: true,
+            show_kernel: false,
             io_ratchet: true,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
@@ -225,6 +237,7 @@ impl App {
             return Vec::new();
         };
         let needle = self.filter.to_lowercase();
+        let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
 
         if self.tree {
             // A filtered tree keeps matches plus their ancestors; `tree::build`
@@ -233,16 +246,22 @@ impl App {
                 sample
                     .procs
                     .iter()
+                    .filter(shown)
                     .filter(|p| matches(p, &needle))
                     .map(|p| p.pid)
                     .collect()
             });
-            return tree::build(&sample.procs, self.sort, matched.as_ref());
+            // Withheld from the tree rather than filtered out of its rows: a
+            // hidden kernel thread must not survive as somebody's visible
+            // ancestor, and `kthreadd` is the ancestor of every one of them.
+            let procs: Vec<&ProcSample> = sample.procs.iter().filter(shown).collect();
+            return tree::build(&procs, self.sort, matched.as_ref());
         }
 
         let mut v: Vec<&ProcSample> = sample
             .procs
             .iter()
+            .filter(shown)
             .filter(|p| matches(p, &needle))
             .collect();
         v.sort_by(|a, b| self.sort.compare(a, b));
@@ -253,6 +272,21 @@ impl App {
                 context_only: false,
             })
             .collect()
+    }
+
+    /// Kernel threads withheld from the table right now.
+    ///
+    /// Said out loud in the panel title. Every other omission in poptop states
+    /// itself — an idle interface, a device that has done no IO, a filesystem
+    /// with no blocks — and a table quietly two hundred rows shorter than the
+    /// process count above it would be the one that did not.
+    pub fn hidden_kernel_threads(&self) -> usize {
+        if self.show_kernel {
+            return 0;
+        }
+        self.history.current().map_or(0, |s| {
+            s.procs.iter().filter(|p| p.is_kernel_thread()).count()
+        })
     }
 
     pub fn select_delta(&mut self, delta: isize) {
