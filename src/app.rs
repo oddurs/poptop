@@ -167,10 +167,16 @@ impl App {
     /// half a millisecond a sample for a column nobody can read would be the
     /// worse trade.
     pub fn probe_io(&mut self, s: &Sample) {
-        if s.procs.is_empty() {
+        // Against the processes IO was actually attempted for. Kernel threads
+        // are excluded on both sides — they are root-owned and unreadable to
+        // an ordinary user, and on a many-core box they outnumber everything
+        // else, so including them would fire this on the very laptop it exists
+        // to protect.
+        let eligible = s.procs.iter().filter(|p| !p.is_kernel_thread()).count();
+        if eligible == 0 {
             return;
         }
-        let denied = s.io_denied as f32 / s.procs.len() as f32;
+        let denied = s.io_denied as f32 / eligible as f32;
         if denied > Self::IO_MOSTLY_DENIED {
             self.show_io = false;
             self.io_ratchet = false;

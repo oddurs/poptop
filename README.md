@@ -200,7 +200,10 @@ culprit is named. A default that hid them would make the default view unable to
 answer the question the default view raised.
 
 `/proc/<pid>/io` is mode 0400 and owned by the process owner, so reading other
-users' processes needs `CAP_SYS_PTRACE`. On a laptop almost every process is
+users' processes needs `CAP_SYS_PTRACE`. Kernel threads are excluded from that
+accounting entirely — `kworker/*` and friends are root-owned and unreadable,
+and on a many-core box they outnumber the real processes, so counting them
+would withdraw the columns on exactly the laptop this protects. On a laptop almost every process is
 yours; on a box running its services as root while you are not, the columns
 would be a wall of em dashes. So ptop **probes** — it collects one real sample,
 and if more than half of it came back unreadable it withdraws the columns and

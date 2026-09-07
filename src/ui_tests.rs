@@ -3617,3 +3617,83 @@ fn the_io_columns_drop_rather_than_squeezing_the_table() {
         );
     }
 }
+
+#[test]
+fn kernel_threads_do_not_trigger_the_io_probe() {
+    // They are root-owned and unreadable to an ordinary user, and on a
+    // many-core box they outnumber the real processes — so counting them would
+    // withdraw the columns on exactly the laptop the probe exists to protect.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.io_collected = true;
+    // Two readable programs, and a crowd of kworkers under kthreadd.
+    s.procs = vec![
+        proc_named(100, "nginx", 1.0, 0),
+        proc_named(101, "psql", 1.0, 0),
+    ];
+    for pid in 200..260 {
+        let mut k = proc_named(pid, "kworker/0:1", 0.0, 0);
+        k.ppid = 2;
+        s.procs.push(k);
+    }
+    s.io_denied = 0; // the collector skips them, so none are counted
+
+    app.probe_io(&s);
+    assert!(
+        app.show_io,
+        "sixty kernel threads withdrew the columns on a readable box"
+    );
+
+    // …and they must not hide real denial either. Two programs, both
+    // unreadable, is a box where the column is useless — whatever crowd of
+    // kernel threads happens to be standing next to them.
+    let mut app = App::new(60);
+    s.io_denied = 2;
+    app.probe_io(&s);
+    assert!(
+        !app.show_io,
+        "sixty kernel threads diluted a fully unreadable box into a passing one"
+    );
+}
+
+#[test]
+fn the_denied_ratio_is_not_measured_against_the_filtered_rows() {
+    // `90/2 need root` is not a ratio of anything. The two numbers came from
+    // different populations the moment a filter was active.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.io_collected = true;
+    // From 100, because pid 2 is kthreadd and would rightly be excluded from
+    // the denominator — which is a different fact from the one under test.
+    s.procs = (100..110)
+        .map(|i| proc_named(i, if i == 100 { "nginx" } else { "other" }, 1.0, 0))
+        .collect();
+    s.io_denied = 6;
+    app.push(s);
+    app.filter = "nginx".into();
+
+    let out = render(&app, 130, 30);
+    assert!(out.contains("6/10 need root"), "{out}");
+}
+
+#[test]
+fn the_key_says_why_it_did_nothing_on_a_narrow_panel() {
+    // Otherwise `i` is a silent no-op: the columns do not appear, nothing says
+    // why, and the obvious conclusion is that the feature is broken.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.io_collected = true;
+    app.push(s);
+    assert!(app.show_io);
+
+    let narrow = render(&app, 78, 30);
+    assert!(!narrow.contains("DISK"), "the columns fit after all");
+    assert!(
+        narrow.contains("too narrow"),
+        "the panel does not say why: {narrow}"
+    );
+
+    // …and says nothing when the columns were not asked for.
+    app.toggle_io();
+    assert!(!render(&app, 78, 30).contains("too narrow"));
+}

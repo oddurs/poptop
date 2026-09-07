@@ -1282,7 +1282,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
         churn,
-        io_status(show_io, app, collected, &rows_data)
+        io_status(show_io, app, collected)
     );
 
     let mut widths = vec![
@@ -1398,9 +1398,15 @@ fn io_cell(collected: bool, io: Option<IoRates>, write: bool, theme: &Theme) -> 
 ///
 /// If most processes are unreadable the table would otherwise look broken; this
 /// says why, and implies the fix.
-fn io_status(show_io: bool, app: &App, collected: bool, rows: &[crate::tree::TreeRow]) -> String {
-    if !show_io {
+fn io_status(show_io: bool, app: &App, collected: bool) -> String {
+    if !app.show_io {
         return String::new();
+    }
+    // Asked for but not drawn. Without this the key is a silent no-op on a
+    // narrow panel: the columns do not appear, nothing says why, and the
+    // obvious conclusion is that the feature is broken.
+    if !show_io {
+        return " · io: panel too narrow".into();
     }
     if !collected {
         return " · io: not collected here".into();
@@ -1408,12 +1414,17 @@ fn io_status(show_io: bool, app: &App, collected: bool, rows: &[crate::tree::Tre
     // Only unreadable processes are worth mentioning: a process awaiting its
     // second reading also shows a dash, but resolves on its own and needs no
     // action from anyone.
-    let denied = app.history.current().map_or(0, |s| s.io_denied);
-    if denied == 0 {
-        " · io".into()
-    } else {
-        format!(" · io: {denied}/{} need root", rows.len())
+    let Some(s) = app.history.current() else {
+        return " · io".into();
+    };
+    if s.io_denied == 0 {
+        return " · io".into();
     }
+    // Against the processes IO was attempted for, not the rows on screen. The
+    // two are different numbers the moment a filter is active, and `90/2 need
+    // root` is not a ratio of anything.
+    let eligible = s.procs.iter().filter(|p| !p.is_kernel_thread()).count();
+    format!(" · io: {}/{eligible} need root", s.io_denied)
 }
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {

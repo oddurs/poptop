@@ -39,6 +39,30 @@ pub struct MemStat {
     pub swap_used: u64,
 }
 
+impl ProcSample {
+    /// Whether this is a kernel thread rather than a program.
+    ///
+    /// Everything under `kthreadd` — `kworker/*`, `ksoftirqd`, `irq/*` — plus
+    /// `kthreadd` itself. On a many-core box these outnumber the real
+    /// processes, they are all owned by root, and none of them has a
+    /// `/proc/<pid>/io` an ordinary user can read.
+    ///
+    /// That matters because counting them as "denied" would fire the IO probe
+    /// on exactly the laptop it exists to protect: a machine where every
+    /// process the user cares about is readable, and every process they do not
+    /// is a kernel thread.
+    ///
+    /// A Linux notion. On macOS pid 2 is an ordinary process, so one process in
+    /// several hundred is wrongly excluded from the IO ratio there — which
+    /// changes no decision this figure is used for.
+    pub fn is_kernel_thread(&self) -> bool {
+        self.pid == KTHREADD || self.ppid == KTHREADD
+    }
+}
+
+/// `kthreadd`, the parent of every kernel thread, is always pid 2 on Linux.
+const KTHREADD: i32 = 2;
+
 impl MemStat {
     /// Reclaimable cache: counted as available, but not free. `None` wherever
     /// [`MemStat::free`] is.
