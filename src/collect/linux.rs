@@ -113,6 +113,11 @@ pub struct ProcFs {
     page_size: u64,
     /// What this backend had to assume rather than read.
     notes: Vec<String>,
+    /// Whether this kernel has `/proc/<pid>/io` at all. Asked once, of our own
+    /// process, which is always readable if the file exists — so a `NotFound`
+    /// here is the kernel saying it does not keep the accounting, not a
+    /// permission problem and not a process that exited.
+    io_supported: bool,
 }
 
 /// Everything one `/proc/stat` read yields.
@@ -136,7 +141,9 @@ struct StatRead {
 impl ProcFs {
     pub fn new() -> io::Result<Self> {
         let (page_size, notes) = read_page_size();
+        let io_supported = std::fs::File::open("/proc/self/io").is_ok();
         Ok(Self {
+            io_supported,
             prev_total: None,
             prev_cores: Vec::new(),
             prev_proc_jiffies: HashMap::new(),
@@ -279,6 +286,7 @@ impl ProcFs {
             ticks_per_sec,
             page_size,
             prev_cores,
+            io_supported,
             ..
         } = self;
         let ctx = StatCtx {
@@ -329,7 +337,7 @@ impl ProcFs {
             // and on a many-core box they outnumber the real processes — so
             // counting them would fire the IO probe on exactly the laptop it
             // exists to protect. Skipping also saves an open and a read each.
-            if needs.io && !p.is_kernel_thread() {
+            if needs.io && *io_supported && !p.is_kernel_thread() {
                 match read_proc_io(pid, elapsed_secs, &mut seen_io, prev_proc_io, path, buf) {
                     Ok(rates) => p.io = rates,
                     // Either way the row shows an em dash. Only one of them is
@@ -359,17 +367,6 @@ impl ProcFs {
     }
 }
 
-/// Per-process disk throughput from `/proc/<pid>/io`.
-///
-/// That file is mode 0400 and owned by the process owner, so reading another
-/// user's process needs CAP_SYS_PTRACE. Unreadable means no figure, never zero
-/// — showing every process you do not own as idle would be a confident lie,
-/// where a blank is merely an absence.
-///
-/// `Err(())` means the file could not be read — running as root would fix it.
-/// `Ok(None)` means the process is too new to have a previous counter to diff
-/// against, which fixes itself on the next sample. Both render as a dash, but
-/// only one is worth advising the user about.
 /// Why a process's disk IO could not be read.
 ///
 /// The two mean opposite things and the kernel already distinguishes them:
@@ -402,6 +399,17 @@ impl Unreadable {
     }
 }
 
+/// Per-process disk throughput from `/proc/<pid>/io`.
+///
+/// That file is mode 0400 and owned by the process owner, so reading another
+/// user's process needs CAP_SYS_PTRACE. Unreadable means no figure, never zero
+/// — showing every process you do not own as idle would be a confident lie,
+/// where a blank is merely an absence.
+///
+/// `Err` means the file could not be read, and [`Unreadable`] says whether
+/// anyone could do anything about that. `Ok(None)` means the process is too new
+/// to have a previous counter to diff against, which fixes itself on the next
+/// sample. All of them render as a dash; only one is worth advising about.
 fn read_proc_io(
     pid: i32,
     elapsed_secs: f64,
@@ -732,7 +740,8 @@ impl Collector for ProcFs {
             procs,
             uptime: self.read_uptime()?,
             forks: stat.forks,
-            io_collected: needs.io,
+            io_supported: self.io_supported,
+            io_collected: needs.io && self.io_supported,
             io_denied,
         })
     }
@@ -1127,6 +1136,29 @@ mod tests {
             "free exceeds available"
         );
         assert_eq!(m.composition().0.iter().sum::<u64>(), m.total);
+        // Presence, not equality. Every relationship above still holds when
+        // `MemFree` fails to parse and free is zero — which is exactly the
+        // misreading the memory bar exists to prevent, so the live file has to
+        // be asked as well. Compared as "both non-zero" rather than as figures,
+        // because the two reads are microseconds apart and memory moves in
+        // between: that is what made an earlier version of this flaky.
+        let raw = std::fs::read_to_string("/proc/meminfo").unwrap();
+        let file_free: u64 = raw
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("MemFree:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or(0);
+        if file_free > 0 {
+            assert!(
+                m.free.is_some_and(|f| f > 0),
+                "the file reports free memory and the parse did not"
+            );
+        }
     }
 
     #[test]
