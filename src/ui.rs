@@ -248,6 +248,22 @@ fn stall_heat(pct: f32, theme: &Theme) -> f32 {
     }
 }
 
+/// A mount point short enough to sit in a header figure.
+///
+/// Kept from the right, because that is the end that identifies it: the last
+/// component of `/var/snap/lxd/common/lxd/storage-pools/default` says more than
+/// the first. An elision mark says the middle is missing rather than letting it
+/// read as a path that exists.
+fn short_mount(mount: &str) -> String {
+    const MAX: usize = 16;
+    let n = mount.chars().count();
+    if n <= MAX {
+        return mount.to_string();
+    }
+    let tail: String = mount.chars().skip(n - (MAX - 1)).collect();
+    format!("…{tail}")
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let mem_pct = s.mem.used_pct();
     let dim = app.theme.dim_style();
@@ -335,6 +351,29 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                     format!("{running}/{cores}"),
                     app.theme.figure_style(pressure),
                 ),
+            ],
+        });
+    }
+
+    // A filesystem close to full, and only then. The one figure here that
+    // describes a hard failure rather than a slowdown — a machine out of disk
+    // space does not get slower, it stops — so it is kept nearly to the end
+    // once it appears, and says nothing at all until it does.
+    //
+    // Against the user's own warn threshold, because "close to full" is exactly
+    // the judgement that setting encodes, and unlike a stall percentage a
+    // used-space percentage is the same kind of quantity they set it for.
+    if let Some(f) = s.fullest().filter(|f| f.used_pct() >= app.theme.warn_pct) {
+        let pct = f.used_pct();
+        figures.push(Figure {
+            rank: 15,
+            spans: vec![
+                // Capped, because a mount point has no length limit and the
+                // header budgets a fixed width for every other figure. A
+                // container host can mount something at
+                // `/var/lib/.../storage-pools/default`.
+                Span::styled(format!("{} ", short_mount(&f.mount)), dim),
+                Span::styled(format!("{pct:>4.1}% full"), app.theme.figure_style(pct)),
             ],
         });
     }

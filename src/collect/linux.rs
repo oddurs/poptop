@@ -6,7 +6,7 @@
 
 use super::{Collector, Needs};
 use crate::sample::{
-    DiskStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
+    DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -469,6 +469,45 @@ impl ProcFs {
         }
     }
 
+    /// How full each mounted filesystem is.
+    ///
+    /// `None` when `/proc/mounts` cannot be read, or when the root filesystem
+    /// does not come back with a size — which is the check that the `statfs`
+    /// offsets mean what this file believes, since every machine has one and it
+    /// is never empty.
+    fn read_filesystems(&self) -> Option<Vec<FsStat>> {
+        let text = fs::read_to_string("/proc/mounts").ok()?;
+        let mut out: Vec<(String, bool, FsStat)> = Vec::new();
+        for (dev, mount, writable, _kind) in mount_points(&text) {
+            let Some((total, avail)) = statfs_at(&mount) else {
+                continue;
+            };
+            // Pseudo-filesystems report no blocks at all, so they need no rule
+            // about names: `proc`, `sysfs`, `cgroup2` and the rest fall out
+            // here as a measurement.
+            if total == 0 {
+                continue;
+            }
+            out.push((
+                dev,
+                writable,
+                FsStat {
+                    mount: Arc::from(mount.as_str()),
+                    total,
+                    avail,
+                },
+            ));
+        }
+        // Bind mounts and shared containers collapse here — this container has
+        // `/dev/vda1` at three paths.
+        let out = super::merge_filesystems(out);
+        // The root specifically, not merely "something came back". Every
+        // machine has a sized filesystem there, so if `/` was rejected while
+        // some other mount happened to yield a plausible block size, the
+        // offsets are wrong and the figures that did come back are garbage.
+        super::with_a_root(out)
+    }
+
     fn read_mem(&mut self) -> io::Result<MemStat> {
         Ok(parse_meminfo(read_into("/proc/meminfo", &mut self.buf)?))
     }
@@ -909,6 +948,107 @@ fn parse_pressure(text: &str) -> Stall {
     }
 }
 
+// `statfs`, whose interesting fields sit at fixed offsets in a structure the
+// *kernel* owns rather than libc — so unlike `statvfs` the layout does not
+// shift between C libraries.
+//
+// `f_type` 0, `f_bsize` 8, `f_blocks` 16, `f_bfree` 24, `f_bavail` 32 on every
+// 64-bit Linux. Checked against the root filesystem rather than trusted: see
+// `ProcFs::read_filesystems`.
+unsafe extern "C" {
+    fn statfs(path: *const std::ffi::c_char, buf: *mut std::ffi::c_void) -> i32;
+}
+
+/// Big enough for `struct statfs` on any 64-bit Linux, which is 120 bytes.
+///
+/// Sixty-four bit only, and enforced rather than asserted in a comment: on a
+/// 32-bit kernel these fields are four bytes each and every offset below reads
+/// across two of them.
+const STATFS_BUF: usize = 256;
+const FS_BSIZE: usize = 8;
+const FS_BLOCKS: usize = 16;
+const FS_BAVAIL: usize = 32;
+
+/// Total and available bytes for one mount point, or `None` if it cannot be
+/// asked.
+#[cfg(target_pointer_width = "64")]
+fn statfs_at(mount: &str) -> Option<(u64, u64)> {
+    let path = std::ffi::CString::new(mount).ok()?;
+    let mut buf = [0u8; STATFS_BUF];
+    let rc = unsafe { statfs(path.as_ptr(), buf.as_mut_ptr().cast()) };
+    if rc != 0 {
+        return None;
+    }
+    parse_statfs_buf(&buf)
+}
+
+/// Total and available bytes out of a filled `struct statfs`, or `None` if it
+/// does not look like one.
+///
+/// Split from the call so the layout check can be shown to reject something.
+fn parse_statfs_buf(buf: &[u8]) -> Option<(u64, u64)> {
+    let at =
+        |o: usize| -> Option<u64> { Some(u64::from_ne_bytes(buf.get(o..o + 8)?.try_into().ok()?)) };
+    let (bsize, blocks, avail) = (at(FS_BSIZE)?, at(FS_BLOCKS)?, at(FS_BAVAIL)?);
+    // A block size outside this range means the offsets are not pointing at a
+    // block size, whatever else the numbers look like.
+    (bsize.is_power_of_two() && (512..=1 << 20).contains(&bsize))
+        .then(|| (blocks.saturating_mul(bsize), avail.saturating_mul(bsize)))
+}
+
+/// The device, mount point and type of each filesystem worth measuring.
+///
+/// Everything excluded here is excluded *before* the `statfs`, because for the
+/// network and automount types the reason to exclude them is that the call
+/// itself can block until a server answers.
+///
+/// Read-only filesystems go too, and that one is a measurement rather than a
+/// list of names: a filesystem you cannot write to cannot fill up, so its
+/// fullness is not a thing that can go wrong. Without it an Ubuntu machine
+/// reports whichever of its twenty-odd squashfs snap mounts came first as
+/// `100.0% full`, permanently, and the real root filesystem can never be shown
+/// — every one of them has no available space by construction.
+fn mount_points(text: &str) -> Vec<(String, String, bool, &str)> {
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (dev, mount, kind, opts) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            let writable = opts.split(',').all(|o| o != "ro");
+            // Read-only filesystems are kept and marked, not dropped:
+            // `merge_filesystems` needs them for their names. See there.
+            (!super::is_network_fs(kind) && !super::is_ram_backed(kind))
+                .then(|| (unescape(dev), unescape(mount), writable, kind))
+        })
+        .collect()
+}
+
+/// Undo the octal escaping the kernel applies to `/proc/mounts`.
+///
+/// Space is written `\040`, tab `\011`, backslash `\134`. Passed through
+/// verbatim, a mount point containing a space becomes a path that does not
+/// exist, `statfs` returns `ENOENT`, and the filesystem quietly disappears from
+/// the capacity figures.
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        let octal = rest.get(i + 1..i + 4).unwrap_or("");
+        match u8::from_str_radix(octal, 8) {
+            Ok(b) if octal.len() == 3 => {
+                out.push(b as char);
+                rest = &rest[i + 4..];
+            }
+            _ => {
+                out.push('\\');
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Cumulative per-interface counters from one `/proc/net/dev` line.
 #[derive(Clone, Copy, Default)]
 struct LinkTimes {
@@ -1188,6 +1328,7 @@ impl Collector for ProcFs {
             io_denied,
             disks,
             pressure: self.read_pressure(),
+            filesystems: self.read_filesystems(),
             net,
         })
     }
@@ -1713,6 +1854,151 @@ mod tests {
             .map(|s| Arc::from(*s))
             .collect();
         pf
+    }
+
+    #[test]
+    fn a_read_only_mount_is_kept_and_marked_rather_than_dropped() {
+        // Dropped here it could not lend its name to a writable sibling, which
+        // is how macOS reports its sealed root. Marked, `merge_filesystems`
+        // decides — see `collect::fs_tests`.
+        let mounts = "/dev/loop3 /snap/core22/1234 squashfs ro,nodev 0 0\n";
+        let got = mount_points(mounts);
+        assert_eq!(got.len(), 1, "a read-only mount was dropped outright");
+        assert!(!got[0].2, "a read-only mount was marked writable");
+    }
+
+    #[test]
+    fn a_mount_point_with_a_space_in_it_survives() {
+        // The kernel writes `\\040` for space, `\\011` for tab and `\\134` for
+        // backslash. Passed through verbatim the path does not exist, `statfs`
+        // returns ENOENT, and the filesystem quietly vanishes from the figures.
+        assert_eq!(unescape("/mnt/my\\040disk"), "/mnt/my disk");
+        assert_eq!(unescape("/mnt/a\\011b"), "/mnt/a\tb");
+        assert_eq!(unescape("/mnt/back\\134slash"), "/mnt/back\\slash");
+        assert_eq!(unescape("/plain/path"), "/plain/path");
+        // Not an escape: left alone rather than eaten.
+        assert_eq!(unescape("/mnt/\\9zz"), "/mnt/\\9zz");
+        assert_eq!(unescape("/mnt/trailing\\"), "/mnt/trailing\\");
+
+        let mounts = "/dev/vda1 /mnt/my\\040disk ext4 rw 0 0\n";
+        assert_eq!(mount_points(mounts)[0].1, "/mnt/my disk");
+    }
+
+    #[test]
+    fn a_statfs_that_is_not_one_is_refused() {
+        // The check that licenses reading three numbers at fixed offsets from a
+        // structure this file never declares.
+        let mut buf = [0u8; STATFS_BUF];
+        buf[FS_BSIZE..FS_BSIZE + 8].copy_from_slice(&4096u64.to_ne_bytes());
+        buf[FS_BLOCKS..FS_BLOCKS + 8].copy_from_slice(&1000u64.to_ne_bytes());
+        buf[FS_BAVAIL..FS_BAVAIL + 8].copy_from_slice(&400u64.to_ne_bytes());
+        assert_eq!(parse_statfs_buf(&buf), Some((4096 * 1000, 4096 * 400)));
+
+        // A block size that is not one. Anything at that offset would be *a*
+        // number; only a plausible block size means the offsets are right.
+        for bad in [0u64, 3, 100, 1 << 30] {
+            buf[FS_BSIZE..FS_BSIZE + 8].copy_from_slice(&bad.to_ne_bytes());
+            assert_eq!(
+                parse_statfs_buf(&buf),
+                None,
+                "a block size of {bad} was accepted"
+            );
+        }
+        assert_eq!(parse_statfs_buf(&[]), None);
+    }
+
+    #[test]
+    fn mount_points_drop_what_cannot_or_should_not_be_measured() {
+        let mounts = "\
+/dev/vda1 / ext4 rw,relatime 0 0\n\
+proc /proc proc rw,nosuid 0 0\n\
+tmpfs /dev/shm tmpfs rw 0 0\n\
+server:/export /mnt/nfs nfs4 rw 0 0\n\
+//host/share /mnt/smb cifs rw 0 0\n\
+/dev/loop3 /snap/core22/1234 squashfs ro,nodev 0 0\n\
+auto /net autofs rw,fd=7 0 0\n\
+/dev/vda2 /home ext4 rw 0 0\n";
+        let got: Vec<String> = mount_points(mounts)
+            .into_iter()
+            .filter(|(_, _, writable, _)| *writable)
+            .map(|(_, m, _, _)| m)
+            .collect();
+        // `proc` survives this filter and falls out later on its own, because
+        // it reports no blocks — a measurement rather than a rule about names.
+        //
+        // The squashfs snap does not, and that one matters: it is read-only, so
+        // it has no available space by construction and reads as 100% full
+        // forever. An Ubuntu machine carries twenty-odd of them, and the real
+        // root filesystem could never be reported past any of them.
+        assert_eq!(got, vec!["/", "/proc", "/home"]);
+    }
+
+    #[test]
+    fn a_hung_fileserver_cannot_be_reached_from_here() {
+        // The reason network filesystems are named rather than measured:
+        // `statfs` on an unresponsive mount blocks until it answers, and a
+        // monitor that freezes when the fileserver does is worse than one that
+        // does not mention the fileserver.
+        for kind in ["nfs", "nfs4", "cifs", "smbfs", "ceph", "fuse.sshfs"] {
+            let line = format!("srv:/x /mnt {kind} rw 0 0\n");
+            assert!(
+                mount_points(&line).is_empty(),
+                "{kind} would have been given to statfs"
+            );
+        }
+    }
+
+    #[test]
+    fn the_live_filesystems_agree_with_the_mount_table() {
+        let pf = ProcFs::new().unwrap();
+        let fs = pf.read_filesystems().expect("no filesystems at all");
+        let mounts = fs::read_to_string("/proc/mounts").unwrap();
+        for f in &fs {
+            assert!(f.total > 0, "{} reported no size", f.mount);
+            assert!(f.avail <= f.total, "{} has more free than it has", f.mount);
+            assert!(
+                mounts
+                    .lines()
+                    .any(|l| l.split_whitespace().nth(1) == Some(&f.mount)),
+                "{} is not in the mount table",
+                f.mount
+            );
+        }
+        // Bind mounts collapse. This container has `/dev/vda1` at three paths
+        // and every pseudo-filesystem reports nothing, so the list is far
+        // shorter than the table.
+        assert!(
+            fs.len() < mounts.lines().count(),
+            "every mount was reported: {} of {}",
+            fs.len(),
+            mounts.lines().count()
+        );
+        // Distinct mount points. Not distinct *sizes* — two devices reporting
+        // identical numbers are two filesystems, and this container has exactly
+        // that in the `overlay` at `/` and the `ext4` behind it. Merging on
+        // size would have deleted one of them; that rule is tested directly in
+        // `collect::fs_tests`.
+        let mut seen: Vec<&str> = fs.iter().map(|f| &*f.mount).collect();
+        seen.sort_unstable();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(before, seen.len(), "a mount point was listed twice");
+
+        // And nothing read-only, which has no available space by construction
+        // and would read as full forever.
+        let mounts_text = fs::read_to_string("/proc/mounts").unwrap();
+        for f in &fs {
+            let opts = mounts_text
+                .lines()
+                .find(|l| l.split_whitespace().nth(1) == Some(&f.mount))
+                .and_then(|l| l.split_whitespace().nth(3))
+                .unwrap_or("");
+            assert!(
+                opts.split(',').all(|o| o != "ro"),
+                "{} is read-only and cannot fill up",
+                f.mount
+            );
+        }
     }
 
     #[test]

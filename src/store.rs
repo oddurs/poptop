@@ -16,7 +16,7 @@
 //! written by a different version is discarded rather than guessed at.
 
 use crate::sample::{
-    DiskStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
+    DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
 };
 use std::io;
 use std::path::PathBuf;
@@ -30,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 10;
+const VERSION: u32 = 11;
 
 /// When the machine this sample came from was booted.
 ///
@@ -361,6 +361,15 @@ fn write_sample(out: &mut Out, s: &Sample) {
     out.opt_u64(net.drops);
     out.opt_u64(net.retrans);
     out.opt_u64(net.listen_drops);
+
+    out.u8(u8::from(s.filesystems.is_some()));
+    let fs = s.filesystems.as_deref().unwrap_or_default();
+    out.u32(fs.len() as u32);
+    for f in fs {
+        out.str(&f.mount);
+        out.u64(f.total);
+        out.u64(f.avail);
+    }
 }
 
 /// Parse a store, or `None` if it is not one this version understands.
@@ -489,6 +498,16 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         retrans: r.opt_u64()?,
         listen_drops: r.opt_u64()?,
     };
+    let has_fs = r.u8()? != 0;
+    let n_fs = r.u32()? as usize;
+    let mut filesystems = Vec::with_capacity(n_fs.min(1 << 10));
+    for _ in 0..n_fs {
+        filesystems.push(FsStat {
+            mount: r.str()?,
+            total: r.u64()?,
+            avail: r.u64()?,
+        });
+    }
     Some(Sample {
         at,
         cpu_total,
@@ -506,6 +525,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         io_denied,
         disks: has_disks.then_some(disks),
         net: has_net.then_some(net),
+        filesystems: has_fs.then_some(filesystems),
         pressure: has_pressure.then(|| Pressure {
             cpu: stalls[0],
             io: stalls[1],
@@ -576,6 +596,11 @@ mod tests {
             // Distinct on purpose. Equal values would let a read that swapped
             // `running` and `blocked` round-trip cleanly, and the field a user
             // scrubs back to is the one that says whether the box was stuck.
+            filesystems: Some(vec![FsStat {
+                mount: Arc::from("/"),
+                total: 500 << 30,
+                avail: 42 << 30,
+            }]),
             net: Some(NetStat {
                 links: vec![Link {
                     name: Arc::from("en0"),
@@ -674,6 +699,7 @@ mod tests {
         assert_eq!(a.disks, b.disks);
         assert_eq!(a.pressure, b.pressure);
         assert_eq!(a.net, b.net);
+        assert_eq!(a.filesystems, b.filesystems);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
             assert_eq!(x.pid, y.pid);
@@ -912,6 +938,7 @@ mod tests_support {
             disks: None,
             pressure: None,
             net: None,
+            filesystems: None,
             iowait: None,
             running: None,
             blocked: None,

@@ -415,6 +415,19 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     if let Some((what, n)) = s.net.as_ref().and_then(sample::NetStat::trouble) {
         outln!("net     {n}  {what} in the last interval");
     }
+    // The only line here that describes a hard failure rather than a slowdown,
+    // and the one a script most wants: a machine out of disk does not get
+    // slower, it stops. Printed whatever the fullness, because a script has no
+    // header to compare it against and no threshold of its own.
+    if let Some(f) = s.fullest() {
+        outln!(
+            "fs      {:.1}%  {} full, {} of {} available",
+            f.used_pct(),
+            f.mount,
+            human(f.avail),
+            human(f.total)
+        );
+    }
     outln!(
         "mem     {:.1}%  {} / {} used, {} available",
         s.mem.used_pct(),

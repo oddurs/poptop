@@ -40,6 +40,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         disks: None,
         pressure: None,
         net: None,
+        filesystems: None,
         iowait: None,
         running: None,
         blocked: None,
@@ -2751,6 +2752,101 @@ fn with_net(rx: u64, tx: u64, retrans: Option<u64>, drops: Option<u64>) -> Sampl
         listen_drops: Some(0),
     });
     s
+}
+
+/// A sample with one filesystem at the given fullness.
+fn with_fs(used_pct: f32) -> Sample {
+    use crate::sample::FsStat;
+    let total = 1_000_000_000u64;
+    let mut s = sample(10.0);
+    s.filesystems = Some(vec![
+        // Deliberately roomy, so the test controls fullness through one
+        // filesystem and the other cannot trip the threshold on its own.
+        FsStat {
+            mount: std::sync::Arc::from("/boot"),
+            total,
+            avail: total - total / 10,
+        },
+        FsStat {
+            mount: std::sync::Arc::from("/"),
+            total,
+            avail: (total as f32 * (1.0 - used_pct / 100.0)) as u64,
+        },
+    ]);
+    s
+}
+
+#[test]
+fn a_filesystem_with_room_spends_no_header_space_saying_so() {
+    // The only figure here that describes a hard failure rather than a
+    // slowdown, and the one that matters least on a machine with 400GB free.
+    let mut app = App::new(60);
+    app.push(with_fs(20.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(
+        !render(&app, 200, 30).contains("% full"),
+        "an empty disk announced itself"
+    );
+}
+
+#[test]
+fn a_long_mount_point_does_not_push_the_header_apart() {
+    // Every other figure budgets a fixed width. A container host can mount
+    // something at `/var/snap/lxd/common/lxd/storage-pools/default`, and an
+    // unbounded path would shove the figures ranked below it off the line.
+    use crate::sample::FsStat;
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.filesystems = Some(vec![FsStat {
+        mount: std::sync::Arc::from("/var/snap/lxd/common/lxd/storage-pools/default"),
+        total: 1000,
+        avail: 50,
+    }]);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(f.contains("95.0% full"), "the figure went missing");
+    assert!(
+        !f.contains("/var/snap/lxd/common"),
+        "the whole path was rendered"
+    );
+    // Kept from the right, because that end identifies it.
+    assert!(f.contains("default"), "the identifying end was cut: {f:?}");
+}
+
+#[test]
+fn a_filesystem_close_to_full_is_named() {
+    let mut app = App::new(60);
+    app.push(with_fs(91.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(f.contains("91.0% full"), "the figure was not shown: {f:?}");
+    assert!(f.contains("/ "), "the mount point was not named");
+}
+
+#[test]
+fn the_fullest_filesystem_is_the_one_reported() {
+    // One figure, so it has to be the worst: a machine with a roomy root and a
+    // full `/var` must not report itself roomy.
+    let s = with_fs(97.0);
+    assert_eq!(&*s.fullest().unwrap().mount, "/");
+    assert!((s.fullest().unwrap().used_pct() - 97.0).abs() < 0.1);
+}
+
+#[test]
+fn fullness_follows_the_threshold_the_user_set() {
+    // "Close to full" is exactly the judgement the warn setting encodes, and
+    // unlike a stall percentage a used-space percentage is the same kind of
+    // quantity they set it for.
+    let mut app = App::new(60);
+    app.push(with_fs(60.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_thresholds(90.0, 95.0);
+    assert!(
+        !render(&app, 200, 30).contains("% full"),
+        "a raised threshold did not move where fullness starts mattering"
+    );
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_thresholds(50.0, 80.0);
+    assert!(render(&app, 200, 30).contains("60.0% full"));
 }
 
 #[test]
