@@ -21,6 +21,13 @@ use std::time::{Duration, SystemTime};
 struct CpuTimes {
     idle: u64,
     total: u64,
+    /// Time the CPU was idle *with at least one I/O request outstanding*.
+    ///
+    /// Kept rather than folded away. It is already inside `idle` — correctly,
+    /// since the CPU genuinely had nothing to run — but that makes ptop right
+    /// about the CPU being quiet and silent about the reason, which is the
+    /// single most common confusing case there is: high load, idle CPU.
+    iowait: u64,
 }
 
 impl CpuTimes {
@@ -39,10 +46,27 @@ impl CpuTimes {
         // guest and guest_nice are already counted inside user and nice, so
         // summing every field as-is would double-count them.
         let total: u64 = v.iter().take(8).sum();
+        let iowait = v.get(4).copied().unwrap_or(0);
         Some(Self {
-            idle: v[3] + v.get(4).copied().unwrap_or(0),
+            idle: v[3] + iowait,
             total,
+            iowait,
         })
+    }
+
+    /// Share of the interval the CPU spent waiting on I/O.
+    ///
+    /// A percentage of wall clock across all cores, the same denominator
+    /// `busy_pct_since` uses, so the two can be read against each other: 12%
+    /// busy and 61% waiting is a machine doing nothing while being unable to
+    /// get on with anything.
+    fn iowait_pct_since(&self, prev: &Self) -> f32 {
+        let dt = self.total.saturating_sub(prev.total);
+        if dt == 0 {
+            return 0.0;
+        }
+        let dw = self.iowait.saturating_sub(prev.iowait);
+        ((dw as f64 / dt as f64) * 100.0) as f32
     }
 
     /// Busy percentage between two reads.
@@ -79,6 +103,24 @@ pub struct ProcFs {
     page_size: u64,
 }
 
+/// Everything one `/proc/stat` read yields.
+///
+/// A struct rather than a widening tuple: the file carries six unrelated facts
+/// and a six-tuple at the call site says nothing about which is which.
+struct StatRead {
+    busy: f32,
+    per_core: Vec<f32>,
+    /// Share of the interval spent idle with I/O outstanding.
+    iowait: f32,
+    /// Tasks created since boot.
+    forks: Option<u64>,
+    /// Tasks runnable right now — vmstat's `r`.
+    running: Option<u32>,
+    /// Tasks in uninterruptible sleep — vmstat's `b`, and the D-state count
+    /// that answers "why is load high when nothing is running".
+    blocked: Option<u32>,
+}
+
 impl ProcFs {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
@@ -99,7 +141,7 @@ impl ProcFs {
         })
     }
 
-    fn read_cpu(&mut self) -> io::Result<(f32, Vec<f32>, Option<u64>)> {
+    fn read_stat_file(&mut self) -> io::Result<StatRead> {
         let Self {
             buf,
             prev_total,
@@ -116,9 +158,19 @@ impl ProcFs {
         // being read, so the cost is a rounding error against the per-process
         // work that dominates a sample.
         let mut forks = None;
+        let mut running = None;
+        let mut blocked = None;
         for line in stat.lines() {
             if let Some(n) = line.strip_prefix("processes ") {
                 forks = n.trim().parse().ok();
+                continue;
+            }
+            if let Some(n) = line.strip_prefix("procs_running ") {
+                running = n.trim().parse().ok();
+                continue;
+            }
+            if let Some(n) = line.strip_prefix("procs_blocked ") {
+                blocked = n.trim().parse().ok();
                 continue;
             }
             let Some(rest) = line.strip_prefix("cpu") else {
@@ -141,9 +193,12 @@ impl ProcFs {
             }
         }
 
-        let total_pct = match *prev_total {
-            Some(prev) => total_now.busy_pct_since(&prev),
-            None => 0.0,
+        let (total_pct, iowait_pct) = match *prev_total {
+            Some(prev) => (
+                total_now.busy_pct_since(&prev),
+                total_now.iowait_pct_since(&prev),
+            ),
+            None => (0.0, 0.0),
         };
         let core_pcts = cores_now
             .iter()
@@ -156,7 +211,14 @@ impl ProcFs {
 
         *prev_total = Some(total_now);
         *prev_cores = cores_now;
-        Ok((total_pct, core_pcts, forks))
+        Ok(StatRead {
+            busy: total_pct,
+            per_core: core_pcts,
+            iowait: iowait_pct,
+            forks,
+            running,
+            blocked,
+        })
     }
 
     fn read_mem(&mut self) -> io::Result<MemStat> {
@@ -512,16 +574,19 @@ impl Collector for ProcFs {
         // Free: the file was being read here either way, and the CPU delta is
         // taken between consecutive reads, so moving both by a millisecond
         // changes nothing about it.
-        let (cpu_total, cpu_per_core, forks) = self.read_cpu()?;
+        let stat = self.read_stat_file()?;
         Ok(Sample {
             at: now,
-            cpu_total,
-            cpu_per_core,
+            cpu_total: stat.busy,
+            cpu_per_core: stat.per_core,
+            iowait: Some(stat.iowait),
+            running: stat.running,
+            blocked: stat.blocked,
             mem: self.read_mem()?,
             load: self.read_load()?,
             procs,
             uptime: self.read_uptime()?,
-            forks,
+            forks: stat.forks,
             io_collected: needs.io,
             io_denied,
         })
@@ -549,6 +614,9 @@ mod tests {
         let t = CpuTimes::parse(" 100 10 50 800 20 5 5 10 999 999").unwrap();
         assert_eq!(t.total, 100 + 10 + 50 + 800 + 20 + 5 + 5 + 10);
         assert_eq!(t.idle, 820);
+        // iowait is inside idle *and* kept separately: the CPU had nothing to
+        // run, and the reason is the thing worth reporting.
+        assert_eq!(t.iowait, 20);
     }
 
     #[test]
@@ -556,13 +624,56 @@ mod tests {
         let a = CpuTimes {
             idle: 900,
             total: 1000,
+            iowait: 0,
         };
         let b = CpuTimes {
             idle: 950,
             total: 1100,
+            iowait: 0,
         };
         // 100 jiffies passed, 50 idle -> 50% busy
         assert!((b.busy_pct_since(&a) - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn iowait_is_reported_against_the_same_denominator_as_busy() {
+        // So the two can be read against each other: 20% busy and 30% waiting
+        // is a machine doing nothing while unable to get on with anything.
+        let a = CpuTimes {
+            idle: 900,
+            total: 1000,
+            iowait: 100,
+        };
+        let b = CpuTimes {
+            idle: 980,
+            total: 1100,
+            iowait: 130,
+        };
+        // 100 jiffies passed: 80 idle (30 of it waiting), 20 busy.
+        assert!((b.busy_pct_since(&a) - 20.0).abs() < 0.01);
+        assert!((b.iowait_pct_since(&a) - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn iowait_never_counts_as_busy() {
+        // Folding it in would overstate CPU on exactly the machine that most
+        // needs reading carefully — one that is stalled rather than working.
+        let a = CpuTimes {
+            idle: 0,
+            total: 0,
+            iowait: 0,
+        };
+        let b = CpuTimes {
+            idle: 100,
+            total: 100,
+            iowait: 100,
+        };
+        assert_eq!(
+            b.busy_pct_since(&a),
+            0.0,
+            "a wholly stalled CPU read as busy"
+        );
+        assert!((b.iowait_pct_since(&a) - 100.0).abs() < 0.01);
     }
 
     #[test]
@@ -570,6 +681,7 @@ mod tests {
         let a = CpuTimes {
             idle: 900,
             total: 1000,
+            iowait: 0,
         };
         assert_eq!(a.busy_pct_since(&a), 0.0);
     }

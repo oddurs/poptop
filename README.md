@@ -9,10 +9,9 @@ nothing that had to be running before you noticed the problem.
 
 ```
  ptop — PAUSED  -18s · warn 50 · crit 80
-CPU  89.2%   MEM  37.5% (6.0G / 16.0G, 8.0G avail)   SWP  50.0%   LOAD 1.00 2.
-── cores (4) ─────────────────────────────────────────────────────────────────
-▇ ▄ ▁ █
-── timeline — 5m00s of 10m00s buffered ───────────────────────────────────────
+CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5%   SWP  50.0%
+  4 cores ▇▄▁█
+── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
 100 ⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣆⠤⣴⠤⣰⡀⢠⡆⢀⣆⠀⣴⠀⣰⡀⢰⡆⢀⣆⠤⣶⠤⣰⡀⢰⡆⢀⣆⠀⣶⠀⣰⡀⢰⡆⢀⣆⠤⣶
 CPU ⡀⣿⡇⣾⣇⢸⣿⢰⣿⡀⣿⡇⣾⣇⢸⣷⢰⣿⠤⣿⡆⣾⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿
   0 ⣷⣿⣇⣿⣿⣾⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿
@@ -20,14 +19,18 @@ CPU ⡀⣿⡇⣾⣇⢸⣿⢰⣿⡀⣿⡇⣾⣇⢸⣷⢰⣿⠤⣿⡆⣾⡇⣸⣷�
 MEM ⠤⣀⣀⣴⣾⣿⣿⣿⣿⣶⣄⣀⡀⠀⠤⠀⢀⣀⣠⣴⣾⣿⣿⣿⣷⣦⣄⣀⠤⠀⠤⠀⢀⣀⣤⣶⣿⣿⣿⣿⣶⣤⣀⣀⠤⠀⠤⠀⣀⣀⣤⣾⣿⣿⣿⣿⣶⣤⣀⡀⠤⠀⠤⠀⣀⣠⣴⣾⣿⣿⣿⣷⣦⣄
   0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
                                                CPU 89.2%  MEM 37.5% ▐
-2m28s shown, 1s/slot — ←/→ scrub, +/- zoom
+2m27s shown, 1s/slot — ←/→ scrub, +/- zoom
 ── processes (4) — sort: CPU ─────────────────────────────────────────────────
-PID     USER       CPU%   RSS      S  THR  COMMAND
-824     root       88.4   512.0M   S  1    postgres
-1190    root       12.5   32.0M    S  1    nginx
-2077    root       4.2    148.0M   S  1    node
-1       root       0.1    12.0M    S  1    systemd
+PID     USER       CPU%         RSS           S  THR  HISTORY    COMMAND
+824     root       88.4   ███▌  512.0M   ▏    S  1    ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ postgres
+1190    root       12.5   ▌     32.0M         S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ nginx
+2077    root       4.2    ▏     148.0M        S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ node
+1       root       0.1          12.0M         S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ systemd
+
 q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · t tree · i
+test ui_tests::readme_frame ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 247 filtered out; finished in 0.01s
 ```
 
 The gutter names each graph and anchors its scale; the dashed lines are the
@@ -191,6 +194,40 @@ on every cell. If the host genuinely cannot sustain the interval, the samples
 really are more than one tick apart and the seams are telling you so. Gaps aggregate by **or** for
 the same reason values aggregate by peak — zooming out must not be able to
 erase an event, least of all at the zoom where the whole buffer is on screen.
+
+## Reading the header
+
+```text
+CPU  12.4%   WAIT  61.2%   RUN 1/14   BLOCKED 23   MEM  37.5%
+```
+
+That is a machine doing almost nothing while being unable to get on with
+anything, and it is the case every troubleshooting guide names as the confusing
+one: **high load, idle CPU.** Thirty processes blocked on one hung mount give a
+load average of thirty on a box whose CPUs are completely idle.
+
+- **WAIT** is the share of the interval the CPU spent idle *with I/O
+  outstanding*. It is deliberately not counted in `CPU`, because the CPU
+  genuinely had nothing to run — but leaving it at that would make ptop right
+  about the CPU being quiet and silent about the reason.
+- **RUN** is runnable tasks against cores. A bare count is not a fact anyone can
+  act on: four is catastrophic on one core and idle on ninety-six.
+- **BLOCKED** is tasks in uninterruptible sleep — the D-state count. There is no
+  healthy amount of "stuck in the kernel", so any value at all is coloured.
+
+`RUN` and `BLOCKED` are what a load average conflates into one number, reported
+exactly rather than smoothed — and the smoothing a load average adds is what
+the timeline is for. `LOAD` is still there, and is the first figure dropped
+when the line is tight.
+
+All three come from the `/proc/stat` read ptop already performs every sample,
+so they cost nothing: 1.05 ms per sample at 402 processes, unchanged. macOS
+publishes no equivalent and shows none of them, rather than a zero that would
+claim the box is never stuck.
+
+The header drops its least diagnostic figures first rather than letting the
+terminal clip whatever is rightmost — rightmost is not least useful. At sixty
+columns you still get all four of the figures above.
 
 ## Configuration
 

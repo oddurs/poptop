@@ -37,6 +37,9 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         at: std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
         cpu_total: cpu,
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
+        iowait: None,
+        running: None,
+        blocked: None,
         mem: MemStat {
             total: 16 << 30,
             used: 8 << 30,
@@ -1146,6 +1149,11 @@ fn readme_frame() {
         let x = i as f32;
         let mut s = sample_at((x * 0.7).sin().abs() * 95.0, 300 - i);
         s.mem.used = ((8.0 + (x * 0.2).sin() * 3.0) as u64) << 30;
+        // A box that is stalled as well as busy, because a screenshot of a
+        // monitor should show the thing the monitor is for.
+        s.iowait = Some((x * 0.11).sin().abs() * 55.0);
+        s.running = Some(if i % 7 == 0 { 3 } else { 1 });
+        s.blocked = Some(if i % 5 == 0 { 4 } else { 0 });
         s.procs = vec![
             proc_named(1, "systemd", 0.1, 12 << 20),
             proc_named(824, "postgres", 88.4, 512 << 20),
@@ -2939,5 +2947,136 @@ fn sample_with_at(forks: Option<u64>, age_secs: u64, procs: Vec<ProcSample>) -> 
         forks,
         procs,
         ..sample_at(0.0, age_secs)
+    }
+}
+
+#[test]
+#[ignore]
+fn show_header_widths() {
+    // The header is a fixed line that does not fit every terminal. Reading it
+    // at each width is the only way to see what actually survives.
+    let mut app = App::new(60);
+    let mut s = sample(12.4);
+    s.iowait = Some(61.2);
+    s.running = Some(1);
+    s.blocked = Some(23);
+    s.cpu_per_core = vec![5.0; 14];
+    app.push(s);
+    for w in [140u16, 120, 100, 80, 60, 40] {
+        let lines = render_lines(&app, w, 24);
+        println!("{w:>4} |{}|", lines[1].trim_end());
+    }
+}
+
+/// A sample of a machine that is stalled rather than busy: almost no CPU, most
+/// of the wall clock waiting on disk, nothing runnable, plenty stuck in D.
+fn stalled() -> Sample {
+    let mut s = sample(2.0);
+    s.iowait = Some(61.2);
+    s.running = Some(1);
+    s.blocked = Some(23);
+    s.cpu_per_core = vec![2.0; 14];
+    s
+}
+
+#[test]
+fn a_stalled_machine_does_not_look_like_an_idle_one() {
+    // The case every troubleshooting guide names as the confusing one: high
+    // load, idle CPU. Before this, ptop rendered it as a calm 2% and said
+    // nothing about why the box was on its knees.
+    let mut busy = App::new(60);
+    busy.push(sample(2.0));
+    let mut stuck = App::new(60);
+    stuck.push(stalled());
+
+    let idle_header = render_lines(&busy, 120, 24)[1].clone();
+    let stalled_header = render_lines(&stuck, 120, 24)[1].clone();
+    assert_ne!(
+        idle_header, stalled_header,
+        "a machine with 23 tasks stuck in D reads identically to an idle one"
+    );
+    assert!(stalled_header.contains("61.2"), "{stalled_header}");
+    assert!(stalled_header.contains("BLOCKED 23"), "{stalled_header}");
+}
+
+#[test]
+fn runnable_is_reported_against_the_cores_it_competes_for() {
+    // Four runnable is catastrophic on one core and idle on ninety-six, so the
+    // bare count is not a fact anyone can act on.
+    let mut app = App::new(60);
+    let mut s = stalled();
+    s.running = Some(4);
+    s.cpu_per_core = vec![1.0; 96];
+    app.push(s);
+    assert!(
+        render_lines(&app, 120, 24)[1].contains("RUN 4/96"),
+        "the runnable count is missing its denominator"
+    );
+}
+
+#[test]
+fn a_platform_that_cannot_see_a_signal_omits_it_rather_than_showing_zero() {
+    // macOS publishes none of these. "I cannot see this" and "there is none of
+    // it" are opposite answers, and a zero would claim the box is never stuck.
+    let mut app = App::new(60);
+    app.push(sample(2.0)); // iowait/running/blocked all None
+    let header = render_lines(&app, 120, 24)[1].clone();
+    for absent in ["WAIT", "RUN ", "BLOCKED"] {
+        assert!(
+            !header.contains(absent),
+            "{absent} was reported on a platform that cannot see it: {header}"
+        );
+    }
+    assert!(
+        header.contains("CPU"),
+        "the rest of the header went with it"
+    );
+}
+
+#[test]
+fn the_header_gives_up_its_least_diagnostic_figures_first() {
+    // Letting ratatui clip drops whatever is rightmost, and rightmost is not
+    // least useful. The four figures that answer "why is this slow" have to
+    // outlive uptime and a load average that conflates the two of them.
+    let mut app = App::new(60);
+    app.push(stalled());
+    let at = |w: u16| render_lines(&app, w, 24)[1].clone();
+
+    let wide = at(140);
+    assert!(wide.contains("LOAD") && wide.contains("UP "), "{wide}");
+
+    // The discriminating pair: swap outranks the memory byte detail, but is
+    // built after it. At a width that fits exactly one, rank has to decide —
+    // without the ranking, insertion order keeps the wrong one.
+    let middle = at(100);
+    assert!(
+        middle.contains("SWP") && !middle.contains("avail"),
+        "figures were kept in build order rather than by rank: {middle}"
+    );
+
+    let narrow = at(60);
+    for kept in ["CPU", "WAIT", "RUN", "BLOCKED"] {
+        assert!(narrow.contains(kept), "{kept} was dropped at 60: {narrow}");
+    }
+    assert!(
+        !narrow.contains("LOAD"),
+        "load outlived the signals: {narrow}"
+    );
+
+    // …and nothing is ever cut mid-figure, at any width.
+    for w in 20..=140u16 {
+        let line = at(w);
+        assert!(
+            line.chars().count() <= w as usize,
+            "the header overflowed at w={w}"
+        );
+        for figure in ["WAIT", "BLOCKED", "LOAD"] {
+            if let Some(rest) = line.split(figure).nth(1) {
+                assert!(
+                    rest.starts_with(' ') || rest.is_empty(),
+                    "{figure} was cut in half at w={w}: {line}"
+                );
+            }
+        }
     }
 }

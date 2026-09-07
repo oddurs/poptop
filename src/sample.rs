@@ -88,6 +88,25 @@ pub struct Sample {
     pub cpu_total: f32,
     /// Per-core busy percentage, 0..100 each.
     pub cpu_per_core: Vec<f32>,
+    /// Share of the interval the CPU spent idle *with I/O outstanding*.
+    ///
+    /// Separate from `cpu_total` on purpose. iowait is idle time — the CPU had
+    /// nothing to run — so folding it into busy would overstate CPU on exactly
+    /// the machine that needs reading most carefully. Reporting it alongside
+    /// is what distinguishes "this box has nothing to do" from "this box
+    /// cannot get on with anything".
+    pub iowait: Option<f32>,
+    /// Tasks runnable at the instant of the sample — vmstat's `r`.
+    ///
+    /// Load average smoothed; this is the unsmoothed truth, and ptop has a
+    /// timeline for the smoothing.
+    pub running: Option<u32>,
+    /// Tasks in uninterruptible sleep — vmstat's `b`.
+    ///
+    /// The D-state count. Thirty processes blocked on one hung mount give a
+    /// load average of thirty on a completely idle box, and this is the only
+    /// figure that says so.
+    pub blocked: Option<u32>,
     pub mem: MemStat,
     pub load: [f64; 3],
     pub procs: Vec<ProcSample>,
@@ -125,6 +144,9 @@ impl Sample {
             at: SystemTime::now(),
             cpu_total: 0.0,
             cpu_per_core: Vec::new(),
+            iowait: None,
+            running: None,
+            blocked: None,
             mem: MemStat::default(),
             load: [0.0; 3],
             procs: Vec::new(),
