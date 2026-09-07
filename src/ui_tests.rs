@@ -5668,3 +5668,221 @@ fn the_footer_gives_up_the_least_useful_key_first() {
         "a wide terminal lost a hint it had room for"
     );
 }
+
+#[test]
+fn the_column_headers_name_the_columns_under_them() {
+    // `Table` pairs header and body cells by index, and the two lists had
+    // diverged: with the IO columns shown, `HISTORY` sat over DISK R, `DISK R`
+    // over DISK W, and `DISK W` over the sparkline. Every one of the three
+    // named the column beside it.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        s.procs = vec![ProcSample {
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 1 << 21,
+            }),
+            ..proc_named(101, "postgres", 20.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    app.show_io = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let frame = rows(&app, 140, 16);
+    let head = frame.iter().find(|l| l.contains("PID")).unwrap();
+    let body = frame.iter().find(|l| l.contains("postgres")).unwrap();
+
+    // The read rate renders as `1.0M/s` and the write as `2.0M/s`, so each
+    // label must sit over the value it names. Compared by the column each ends
+    // at, counted in chars — the sparkline glyphs are multi-byte.
+    let col = |l: &str, pat: &str| {
+        l.find(pat)
+            .map(|b| l[..b].chars().count())
+            .unwrap_or_else(|| panic!("{pat:?} not in {l:?}"))
+    };
+    let r_head = col(head, "DISK R") + "DISK R".len();
+    let w_head = col(head, "DISK W") + "DISK W".len();
+    let r_body = col(body, "1.0M/s") + "1.0M/s".len();
+    let w_body = col(body, "2.0M/s") + "2.0M/s".len();
+    assert_eq!(
+        r_head, r_body,
+        "DISK R does not sit over the read rate\n{head}\n{body}"
+    );
+    assert_eq!(
+        w_head, w_body,
+        "DISK W does not sit over the write rate\n{head}\n{body}"
+    );
+    // And HISTORY is past both of them, over the sparkline.
+    assert!(
+        col(head, "HISTORY") > w_head,
+        "HISTORY is still to the left of the disk columns\n{head}"
+    );
+}
+
+#[test]
+fn a_window_on_an_empty_history_is_empty_rather_than_a_panic() {
+    // `cursor_index` saturates to zero on an empty buffer, so the range was
+    // `0..1` against a deque of length zero. Every other accessor here is
+    // empty-safe; this one was safe only because `main` happens to push a
+    // sample before the first draw.
+    let app = App::new(10);
+    assert_eq!(app.history.window(5).count(), 0);
+    assert_eq!(app.one_user(), None, "an empty history claimed a user");
+    assert_eq!(app.hidden_kernel_threads(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn showing_kernel_threads_stops_the_title_claiming_one_user() {
+    // With `K` pressed the table draws root-owned kworkers. A title reading
+    // `· all alice` above them is a claim that is false about the rows
+    // directly underneath it.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.procs = vec![ProcSample {
+            user: std::sync::Arc::from("alice"),
+            ..proc_named(101, "postgres", 20.0, 1 << 20)
+        }];
+        with_kernel_threads(&mut s, 8);
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert_eq!(
+        app.one_user().as_deref(),
+        Some("alice"),
+        "hidden kernel threads should not count against the user"
+    );
+
+    app.show_kernel = true;
+    assert_eq!(
+        app.one_user(),
+        None,
+        "the kworkers are on screen and root, and the title still says one user"
+    );
+    let frame = rows(&app, 120, 30).join("\n");
+    assert!(
+        !frame.contains("· all "),
+        "the title claims one user: {frame:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_hidden_count_is_filtered_like_the_count_beside_it() {
+    // `processes (1) · 250 kernel hidden` under a filter for `nginx` implies
+    // two hundred and fifty rows were withheld from a list that had one
+    // candidate.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(101, "nginx", 20.0, 1 << 20)];
+    with_kernel_threads(&mut s, 20);
+    app.push(s);
+
+    assert_eq!(app.hidden_kernel_threads(), 21);
+    app.filter = "nginx".into();
+    assert_eq!(
+        app.hidden_kernel_threads(),
+        0,
+        "kernel threads that the filter would have excluded anyway were counted as hidden"
+    );
+    app.filter = "kworker/3".into();
+    assert_eq!(
+        app.hidden_kernel_threads(),
+        1,
+        "the one match was not counted"
+    );
+}
+
+#[test]
+fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
+    // A clipped title reads as a message called `io: panel too narr`. The io
+    // status is the one thing this panel guarantees — without it the `i` key
+    // looks broken — so it outranks the sort label, the tree marker and the
+    // axis.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        s.io_denied = 3;
+        s.procs = (0..4)
+            .map(|i| proc_named(101 + i, "postgres", 20.0 - i as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for w in 40..=160u16 {
+        let frame = rows(&app, w, 20);
+        let title = frame.iter().find(|l| l.contains("processes")).unwrap();
+        let text = title.trim_end_matches(['─', ' ']);
+        // Nothing is ever cut mid-clause.
+        for tail in ["too narr", "need roo", "histor ", "sort: C "] {
+            assert!(!text.ends_with(tail), "clipped mid-clause at {w}: {text:?}");
+        }
+        assert!(
+            text.contains("processes ("),
+            "the panel lost its own name at {w}: {text:?}"
+        );
+        // Wide enough for the io message, and it is there.
+        if w >= 100 {
+            assert!(
+                text.contains(" · io"),
+                "the io message went missing at {w}: {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn folding_the_user_column_lets_the_io_columns_appear_sooner() {
+    // `command_width` learned that the folded column's ten columns are free;
+    // this sibling threshold did not, so the disk columns went on refusing to
+    // appear until the terminal was ten columns wider than they needed.
+    let with_user = ui::min_width_for_io_for_test(true);
+    let without = ui::min_width_for_io_for_test(false);
+    assert_eq!(
+        with_user - without,
+        10,
+        "the threshold did not come down by the width of the column"
+    );
+
+    // And it is the rendered behaviour, not just the arithmetic: at a width
+    // between the two, one user gets the disk columns and two do not.
+    let between = without + 2;
+    assert!(between < with_user, "no width lies between the thresholds");
+
+    let build = |user: &str| {
+        let mut app = App::new(60);
+        for _ in 0..App::CONSTANT_FOR {
+            let mut s = sample(10.0);
+            s.io_collected = true;
+            s.procs = vec![
+                proc_named(101, "postgres", 20.0, 1 << 20),
+                ProcSample {
+                    user: std::sync::Arc::from(user),
+                    ..proc_named(102, "nginx", 19.0, 1 << 20)
+                },
+            ];
+            app.push(s);
+        }
+        app.show_io = true;
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        app
+    };
+
+    let one = build("root");
+    assert!(
+        rows(&one, between, 20).iter().any(|l| l.contains("DISK R")),
+        "one user, and the disk columns are still withheld at {between}"
+    );
+    let two = build("operator");
+    assert!(
+        !rows(&two, between, 20).iter().any(|l| l.contains("DISK R")),
+        "two users, and there is not room for the disk columns at {between}"
+    );
+}

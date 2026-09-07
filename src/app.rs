@@ -284,8 +284,16 @@ impl App {
         if self.show_kernel {
             return 0;
         }
+        // Filtered, like the count it sits beside. Counting every kernel
+        // thread in the sample made `processes (1) · 250 kernel hidden` while a
+        // filter for `nginx` was active, implying two hundred and fifty rows
+        // were withheld from a list that had one candidate.
+        let needle = self.filter.to_lowercase();
         self.history.current().map_or(0, |s| {
-            s.procs.iter().filter(|p| p.is_kernel_thread()).count()
+            s.procs
+                .iter()
+                .filter(|p| p.is_kernel_thread() && matches(p, &needle))
+                .count()
         })
     }
 
@@ -313,8 +321,13 @@ impl App {
     pub fn one_user(&self) -> Option<std::sync::Arc<str>> {
         let mut only: Option<&std::sync::Arc<str>> = None;
         let mut any = false;
+        // The same rows the table draws. Scanning only user processes while `K`
+        // is showing two hundred root-owned kworkers put `· all alice` above
+        // rows that were not alice's — the panel making a claim that is false
+        // about the lines directly under it.
+        let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
         for s in self.history.window(Self::CONSTANT_FOR) {
-            for p in s.procs.iter().filter(|p| !p.is_kernel_thread()) {
+            for p in s.procs.iter().filter(shown) {
                 any = true;
                 match only {
                     None => only = Some(&p.user),

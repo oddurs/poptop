@@ -107,7 +107,12 @@ impl History {
     /// window is the same decision whether the view is tailing or scrubbed back
     /// — which is the point of having it.
     pub fn window(&self, n: usize) -> impl Iterator<Item = &Sample> {
-        let end = self.cursor_index() + 1;
+        // Clamped to what is there. `cursor_index` saturates to zero on an
+        // empty buffer, so the range was `0..1` against a deque of length zero
+        // and `VecDeque::range` panicked. Every other accessor here is
+        // empty-safe; this one was safe only because `main` happens to push a
+        // sample before the first draw.
+        let end = (self.cursor_index() + 1).min(self.samples.len());
         let start = end.saturating_sub(n);
         self.samples.range(start..end).rev()
     }
