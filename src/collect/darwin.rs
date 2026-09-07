@@ -12,6 +12,22 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use sysinfo::{ProcessesToUpdate, System, Users};
 
+/// The fastest sysinfo can be sampled and still report the truth.
+///
+/// A correctness argument rather than a cost one. sysinfo documents a minimum
+/// interval between CPU refreshes, and below it the figures are not noisy —
+/// they are wrong, with nothing on screen to say so. Measured on an idle-ish
+/// machine, the busiest process reported:
+///
+/// ```text
+///   50ms -> 3.5%      100ms -> 262.9%      1000ms -> 323.8%
+/// ```
+///
+/// Two and a half cores of work, reported as three and a half percent.
+pub const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+pub const MIN_INTERVAL_WHY: &str = "sysinfo needs 200ms between CPU refreshes on this platform, and below it \
+     the per-process figures are wrong rather than merely noisy";
+
 pub struct SysinfoCollector {
     sys: System,
     users: Users,

@@ -2,7 +2,7 @@
 id: 24
 title: Per-process CPU is wrong on macOS below a 200ms sample interval
 type: bug
-status: backlog
+status: done
 milestone: v0.2
 created: 2026-09-06
 updated: 2026-09-06

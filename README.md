@@ -616,9 +616,27 @@ poptop: `window` 86400s at `interval` 500ms is 172801 samples, above the limit
       6663 MB on a 400-process box
 ```
 
-The interval is also bounded below at 50ms: a collection pass costs about 1 ms
+**The interval floor belongs to the backend**, because the two have different
+reasons for having one.
+
+On Linux it is **50 ms**, and the reason is cost: a `/proc` pass is about 1 ms
 at 400 processes, so 50 ms already spends 2% of a core and 10 ms would spend
 10%. A monitor that is itself the load is not measuring the machine.
+
+On macOS it is **200 ms**, and the reason is correctness: sysinfo needs that
+long between CPU refreshes, and below it the per-process figures are not noisy,
+they are wrong. Measured on an idle-ish machine, the busiest process reported
+`3.5%` at 50 ms and `262.9%` at 100 ms — two and a half cores of work, reported
+as three and a half percent, with nothing on screen to say so.
+
+poptop refuses the setting rather than quietly substituting a different one, and
+the message carries the reason:
+
+```
+poptop: `interval` is 50ms; the fastest this build can sample is 200ms, because
+        sysinfo needs 200ms between CPU refreshes on this platform, and below it
+        the per-process figures are wrong rather than merely noisy
+```
 
 ## How it works
 
