@@ -17,11 +17,24 @@ pub struct MemStat {
     /// when they ask "how much RAM is this box using".
     pub used: u64,
     pub available: u64,
+    /// Genuinely unused. `available` minus this is reclaimable cache — memory
+    /// the kernel is holding but will hand back under pressure.
+    ///
+    /// The distinction is the whole reason to draw memory as a composition
+    /// rather than a percentage: "37% used" reads the same on a box with eight
+    /// gigabytes free and on one whose only headroom is page cache it is about
+    /// to have to drop.
+    pub free: u64,
     pub swap_total: u64,
     pub swap_used: u64,
 }
 
 impl MemStat {
+    /// Reclaimable cache: counted as available, but not free.
+    pub fn cache(&self) -> u64 {
+        self.available.saturating_sub(self.free)
+    }
+
     pub fn used_pct(&self) -> f32 {
         if self.total == 0 {
             return 0.0;

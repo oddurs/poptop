@@ -102,6 +102,7 @@ impl Collector for SysinfoCollector {
                 total: self.sys.total_memory(),
                 used: self.sys.used_memory(),
                 available: self.sys.available_memory(),
+                free: self.sys.free_memory().min(self.sys.available_memory()),
                 swap_total: self.sys.total_swap(),
                 swap_used: self.sys.used_swap(),
             },

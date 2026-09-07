@@ -44,6 +44,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
             total: 16 << 30,
             used: 8 << 30,
             available: 8 << 30,
+            free: 5 << 30,
             swap_total: 2 << 30,
             swap_used: 1 << 30,
         },
@@ -3067,13 +3068,25 @@ fn the_header_gives_up_its_least_diagnostic_figures_first() {
         middle.contains("SWP") && !middle.contains("avail"),
         "figures were kept in build order rather than by rank: {middle}"
     );
-    // …and the wide memory detail does not block the shorter figures behind
-    // it. Under a prefix rule one fat figure costs everything after it, which
-    // cost a hundred-column terminal two figures that fit twice over.
-    assert!(
-        middle.contains("UP ") && middle.contains("PROCS"),
-        "a 29-column figure blocked two that fit: {middle}"
-    );
+    // …and the ranking holds as a rule rather than at one lucky width: under a
+    // prefix rule a lower-ranked figure can never appear without every figure
+    // above it. A fat figure ranked high blocks everything behind it, which
+    // once cost a hundred-column terminal two figures that fit twice over.
+    for w in 20..=200u16 {
+        let line = at(w);
+        let has = |s: &str| line.contains(s);
+        for (lower, higher) in [
+            ("8.0G / 16.0G", "PROCS"),
+            ("PROCS", "UP "),
+            ("UP ", "SWP"),
+            ("LOAD", "PROCS"),
+        ] {
+            assert!(
+                !has(lower) || has(higher),
+                "at w={w} `{lower}` appeared without `{higher}`: {line}"
+            );
+        }
+    }
 
     let narrow = at(60);
     for kept in ["CPU", "WAIT", "RUN", "BLOCKED"] {
@@ -3350,5 +3363,103 @@ fn the_legend_stops_at_a_phrase_boundary_at_every_width() {
             ends_well,
             "the legend was cut mid-phrase at w={w}: {trimmed:?}"
         );
+    }
+}
+
+#[test]
+fn memory_is_shown_as_a_composition_not_just_a_level() {
+    // "37% used" reads identically on a box with eight gigabytes free and on
+    // one whose only headroom is page cache it is about to have to drop. The
+    // level is the same and the situation is not.
+    let mut roomy = App::new(60);
+    let mut s = sample(5.0);
+    s.mem = MemStat {
+        total: 16 << 30,
+        used: 6 << 30,
+        available: 10 << 30,
+        free: 10 << 30, // all headroom is genuinely free
+        swap_total: 0,
+        swap_used: 0,
+    };
+    roomy.push(s.clone());
+
+    let mut cached = App::new(60);
+    s.mem.free = 1 << 30; // …the same level, but the headroom is cache
+    cached.push(s);
+
+    let bar = |app: &App| {
+        render_lines(app, 120, 24)[1]
+            .chars()
+            .filter(|c| "█▒░".contains(*c))
+            .collect::<String>()
+    };
+    assert_eq!(
+        bar(&roomy).chars().count(),
+        8,
+        "the bar is not eight columns"
+    );
+    assert_ne!(
+        bar(&roomy),
+        bar(&cached),
+        "two very different machines drew the same memory bar"
+    );
+    assert!(bar(&cached).contains('▒'), "the cache segment is missing");
+}
+
+#[test]
+fn the_memory_bar_separates_by_glyph_so_it_survives_monochrome() {
+    // Every other meaning-bearing element here is legible without colour, and
+    // a bar whose segments are only told apart by hue would be the exception.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.mem = MemStat {
+        total: 16 << 30,
+        used: 6 << 30,
+        available: 10 << 30,
+        free: 4 << 30,
+        swap_total: 0,
+        swap_used: 0,
+    };
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::Mono);
+
+    let line = render_lines(&app, 120, 24)[1].clone();
+    for glyph in ['█', '▒', '░'] {
+        assert!(
+            line.contains(glyph),
+            "the {glyph} segment vanished at the mono tier: {line}"
+        );
+    }
+}
+
+#[test]
+fn the_memory_bar_is_always_exactly_its_width() {
+    // A bar one column short of its box reads as a rendering fault, and one
+    // column long pushes every figure after it sideways.
+    let shapes = [
+        (16u64 << 30, 0u64, 16u64 << 30),
+        (16 << 30, 16 << 30, 0),
+        (16 << 30, 1, 16 << 30),
+        (16 << 30, 15 << 30, 1 << 30),
+        (0, 0, 0),
+    ];
+    for (total, used, available) in shapes {
+        let mut app = App::new(60);
+        let mut s = sample(5.0);
+        s.mem = MemStat {
+            total,
+            used,
+            available,
+            free: available / 2,
+            swap_total: 0,
+            swap_used: 0,
+        };
+        app.push(s);
+        let n = render_lines(&app, 120, 24)[1]
+            .chars()
+            .filter(|c| "█▒░".contains(*c))
+            .count();
+        let want = usize::from(total > 0) * 8;
+        assert_eq!(n, want, "total={total} used={used} avail={available}");
     }
 }

@@ -24,7 +24,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Bumped whenever the layout below changes. An old store is dropped, not
 /// migrated: it is a cache of something the machine will produce again in
 /// minutes, and a migration path for it would cost more than it saves.
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 /// When the machine this sample came from was booted.
 ///
@@ -271,6 +271,7 @@ fn write_sample(out: &mut Out, s: &Sample) {
         s.mem.total,
         s.mem.used,
         s.mem.available,
+        s.mem.free,
         s.mem.swap_total,
         s.mem.swap_used,
     ] {
@@ -351,6 +352,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         total: r.u64()?,
         used: r.u64()?,
         available: r.u64()?,
+        free: r.u64()?,
         swap_total: r.u64()?,
         swap_used: r.u64()?,
     };
@@ -476,6 +478,7 @@ mod tests {
                 total: 16 << 30,
                 used: 8 << 30,
                 available: 8 << 30,
+                free: 5 << 30,
                 swap_total: 2 << 30,
                 swap_used: 1 << 30,
             },
@@ -494,6 +497,8 @@ mod tests {
         assert_eq!(a.cpu_total, b.cpu_total);
         assert_eq!(a.cpu_per_core, b.cpu_per_core);
         assert_eq!(a.mem.total, b.mem.total);
+        assert_eq!(a.mem.available, b.mem.available);
+        assert_eq!(a.mem.free, b.mem.free);
         assert_eq!(a.mem.swap_used, b.mem.swap_used);
         assert_eq!(a.load, b.load);
         assert_eq!(a.iowait, b.iowait);

@@ -207,6 +207,63 @@ pub fn micro_bar(frac: f32, width: usize) -> String {
 ///
 /// A small fixed set rather than the observed peak, so the scale is stable
 /// while scrubbing instead of breathing with every sample.
+/// Three shades that read as an order without any colour at all.
+///
+/// The composition bar has to work at the mono tier like everything else here,
+/// so the segments separate by glyph density first and hue second: solid, half,
+/// empty. Nobody needs to be told which end is which.
+pub const SEG_USED: char = '\u{2588}';
+pub const SEG_CACHE: char = '\u{2592}';
+pub const SEG_FREE: char = '\u{2591}';
+
+/// Split `width` columns between three parts in proportion.
+///
+/// Largest-remainder rather than plain rounding, so the three always sum to
+/// exactly `width` — a bar one column short of its box looks like a rendering
+/// fault, and one column long pushes everything after it sideways.
+///
+/// Any part that is present at all gets at least one column. A hundred bytes
+/// of cache is not worth a column of its own, but *no* column says the cache
+/// does not exist, and the whole reason to draw this is the difference between
+/// "no headroom" and "headroom the kernel is holding".
+pub fn composition(parts: [u64; 3], width: usize) -> [usize; 3] {
+    let total: u64 = parts.iter().sum();
+    if total == 0 || width == 0 {
+        return [0, 0, 0];
+    }
+    let exact: Vec<f64> = parts
+        .iter()
+        .map(|&p| p as f64 / total as f64 * width as f64)
+        .collect();
+    let mut out = [0usize; 3];
+    for i in 0..3 {
+        out[i] = exact[i] as usize;
+        if parts[i] > 0 && out[i] == 0 {
+            out[i] = 1;
+        }
+    }
+    // Hand the leftover columns to the largest remainders, and take columns
+    // back from the largest segments if the minimums overspent.
+    let mut assigned: usize = out.iter().sum();
+    while assigned < width {
+        let i = (0..3)
+            .filter(|&i| parts[i] > 0)
+            .max_by(|&a, &b| (exact[a] - out[a] as f64).total_cmp(&(exact[b] - out[b] as f64)))
+            .unwrap_or(0);
+        out[i] += 1;
+        assigned += 1;
+    }
+    while assigned > width {
+        let i = (0..3).max_by_key(|&i| out[i]).unwrap_or(0);
+        if out[i] == 0 {
+            break;
+        }
+        out[i] -= 1;
+        assigned -= 1;
+    }
+    out
+}
+
 const CEILINGS: [f32; 4] = [10.0, 25.0, 50.0, 100.0];
 
 /// The axis ceiling for a given peak.
@@ -426,5 +483,60 @@ mod tests {
         assert_eq!(GlyphSet::parse("block"), Some(GlyphSet::Block));
         assert_eq!(GlyphSet::parse("ascii"), Some(GlyphSet::Ascii));
         assert_eq!(GlyphSet::parse("nonsense"), None);
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+
+    #[test]
+    fn the_segments_always_fill_the_bar_exactly() {
+        // A bar one column short of its box reads as a rendering fault, and one
+        // column long pushes everything after it sideways.
+        for width in 1..=24usize {
+            for parts in [
+                [1u64, 1, 1],
+                [100, 0, 0],
+                [0, 0, 100],
+                [999, 1, 1],
+                [1, 999, 1],
+                [7, 3, 90],
+                [u64::MAX / 3, u64::MAX / 3, u64::MAX / 3],
+            ] {
+                let seg = composition(parts, width);
+                assert_eq!(
+                    seg.iter().sum::<usize>(),
+                    width,
+                    "{parts:?} at {width} gave {seg:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_part_that_exists_is_never_invisible() {
+        // The whole reason to draw a composition is the difference between "no
+        // headroom" and "headroom the kernel is holding", so a sliver of cache
+        // must not round away to nothing.
+        let seg = composition([999_999, 1, 1], 10);
+        assert!(seg[1] >= 1 && seg[2] >= 1, "{seg:?}");
+        // …and a part that is genuinely absent gets nothing.
+        let seg = composition([10, 0, 5], 8);
+        assert_eq!(seg[1], 0, "{seg:?}");
+    }
+
+    #[test]
+    fn nothing_at_all_draws_nothing() {
+        assert_eq!(composition([0, 0, 0], 8), [0, 0, 0]);
+        assert_eq!(composition([1, 2, 3], 0), [0, 0, 0]);
+    }
+
+    #[test]
+    fn the_shades_read_as_an_order_without_colour() {
+        // They have to separate at the mono tier like everything else here.
+        assert_ne!(SEG_USED, SEG_CACHE);
+        assert_ne!(SEG_CACHE, SEG_FREE);
+        assert_ne!(SEG_USED, SEG_FREE);
     }
 }
