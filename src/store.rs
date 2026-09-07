@@ -30,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 11;
+const VERSION: u32 = 12;
 
 /// When the machine this sample came from was booted.
 ///
@@ -148,6 +148,16 @@ impl Out {
         self.u8(u8::from(v.is_some()));
         self.u32(v.unwrap_or(0));
     }
+    fn opt_str(&mut self, v: Option<&Arc<str>>) {
+        self.u8(u8::from(v.is_some()));
+        match v {
+            Some(s) => self.str(s),
+            // A placeholder index, never read back. Writing nothing would make
+            // the record's length depend on its content, which every other
+            // optional here avoids.
+            None => self.u32(0),
+        }
+    }
     fn opt_u64(&mut self, v: Option<u64>) {
         // A tagged optional, because `None` and `0` are different answers
         // everywhere else in this codebase and the file must not collapse them.
@@ -212,6 +222,11 @@ impl<'a> In<'a> {
         let present = self.u8()? != 0;
         let v = self.u32()?;
         Some(present.then_some(v))
+    }
+    fn opt_str(&mut self) -> Option<Option<Arc<str>>> {
+        let some = self.u8()? != 0;
+        let s = self.str()?;
+        Some(some.then_some(s))
     }
     fn opt_u64(&mut self) -> Option<Option<u64>> {
         let present = self.u8()? != 0;
@@ -313,6 +328,10 @@ fn write_sample(out: &mut Out, s: &Sample) {
         out.opt_u32(p.threads);
         out.u8(p.state as u8);
         out.opt_u64(p.started);
+        // Through the string table like every other string, so the hundreds of
+        // samples that retain the same process cost four bytes each rather than
+        // a copy of its command line.
+        out.opt_str(p.cmd.as_ref());
         out.u8(u8::from(p.io.is_some()));
         let io = p.io.unwrap_or_default();
         out.u64(io.read);
@@ -442,6 +461,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         let threads = r.opt_u32()?;
         let state = r.u8()? as char;
         let started = r.opt_u64()?;
+        let cmd = r.opt_str()?;
         let has_io = r.u8()? != 0;
         let read = r.u64()?;
         let write = r.u64()?;
@@ -455,6 +475,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
             threads,
             state,
             started,
+            cmd,
             io: has_io.then_some(IoRates { read, write }),
         });
     }
@@ -581,6 +602,7 @@ mod tests {
             threads: Some(3),
             state: 'S',
             started: Some(987),
+            cmd: None,
             io: Some(IoRates {
                 read: 100,
                 write: 200,
@@ -857,6 +879,52 @@ mod tests {
     }
 
     #[test]
+    fn a_command_line_survives_a_round_trip_and_a_missing_one_stays_missing() {
+        // The two are different answers and the file has to keep them apart: a
+        // kernel thread has no command line, and restoring it as an empty
+        // string would put a blank where `[kworker/3:1]` belongs.
+        let mut s = sample_of(1.0, 1);
+        s.procs = vec![
+            ProcSample {
+                cmd: Some(Arc::from("node /srv/api/server.js --port 3000")),
+                ..proc_of(10, "node")
+            },
+            ProcSample {
+                cmd: None,
+                ..proc_of(2, "[kworker/3:1]")
+            },
+        ];
+        let back = decode(&encode(&[&s])).expect("did not decode");
+        let got: Vec<Option<&str>> = back[0].procs.iter().map(|p| p.cmd.as_deref()).collect();
+        assert_eq!(
+            got,
+            vec![Some("node /srv/api/server.js --port 3000"), None],
+            "the command lines did not survive"
+        );
+    }
+
+    #[test]
+    fn a_repeated_command_line_is_written_once() {
+        // Through the string table like every other string. Without it, a
+        // Chrome renderer's arguments are copied into all six hundred retained
+        // samples.
+        let mut s = sample_of(1.0, 1);
+        let long = "node /srv/api/server.js --port 3000 --cluster --inspect";
+        s.procs = (0..5)
+            .map(|i| ProcSample {
+                cmd: Some(Arc::from(long)),
+                ..proc_of(i, "node")
+            })
+            .collect();
+        let bytes = encode(&[&s]);
+        let count = bytes
+            .windows(long.len())
+            .filter(|w| *w == long.as_bytes())
+            .count();
+        assert_eq!(count, 1, "the command line was written {count} times");
+    }
+
+    #[test]
     fn the_string_table_holds_each_name_once() {
         // Names and users repeat across every process in every sample — the
         // same reason they are `Arc<str>` in memory. Without the table, five
@@ -955,6 +1023,7 @@ mod tests_support {
                     threads: Some(4),
                     state: 'S',
                     started: Some(i as u64),
+                    cmd: None,
                     io: None,
                 })
                 .collect(),

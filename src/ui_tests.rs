@@ -22,6 +22,7 @@ fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
         threads: Some(1),
         state: 'S',
         started: Some(0),
+        cmd: None,
         io: None,
     }
 }
@@ -4197,10 +4198,10 @@ fn a_tree_prefix_is_charged_against_the_name_it_indents() {
 fn a_long_name_keeps_both_ends() {
     // Cutting the tail is what the terminal does on its own, and for a process
     // name it removes exactly the part that tells two of them apart.
-    assert_eq!(ui::elide_middle_for_test("short", 20), "short");
-    assert_eq!(ui::elide_middle_for_test("exactlyten", 10), "exactlyten");
+    assert_eq!(ui::elide_middle("short", 20), "short");
+    assert_eq!(ui::elide_middle("exactlyten", 10), "exactlyten");
 
-    let cut = ui::elide_middle_for_test("Google Chrome Helper (Renderer)", 20);
+    let cut = ui::elide_middle("Google Chrome Helper (Renderer)", 20);
     assert_eq!(cut.chars().count(), 20);
     assert!(cut.starts_with("Google"), "the head was lost: {cut:?}");
     assert!(
@@ -4211,12 +4212,7 @@ fn a_long_name_keeps_both_ends() {
 
     // Absurd widths do not panic or produce something wider than asked for.
     for w in 0..8 {
-        assert!(
-            ui::elide_middle_for_test("Google Chrome Helper", w)
-                .chars()
-                .count()
-                <= w
-        );
+        assert!(ui::elide_middle("Google Chrome Helper", w).chars().count() <= w);
     }
 }
 
@@ -5140,4 +5136,84 @@ fn an_unsupporting_kernel_is_described_differently_from_a_locked_down_one() {
         !out.contains("need root"),
         "sent the user after privileges: {out}"
     );
+}
+
+#[test]
+fn the_table_names_a_process_by_its_command_line() {
+    // The item: four rows reading `node` say nothing about any of them. With
+    // wide-enough columns the arguments are what the row is about.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    let cmds = [
+        "node /srv/api/server.js --port 3000",
+        "node /srv/web/bundler.js --watch",
+        "node /srv/api/worker.js",
+    ];
+    s.procs = cmds
+        .iter()
+        .enumerate()
+        .map(|(i, c)| ProcSample {
+            cpu: 30.0 - i as f32,
+            cmd: Some(std::sync::Arc::from(*c)),
+            ..proc_named(i as i32 + 10, "node", 0.0, 1 << 20)
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let body: Vec<String> = rows(&app, 200, 20)
+        .into_iter()
+        .filter(|l| l.contains("node"))
+        .collect();
+    assert_eq!(body.len(), 3, "expected three rows: {body:?}");
+    for (row, cmd) in body.iter().zip(cmds) {
+        assert!(row.contains(cmd), "{row:?} does not name {cmd:?}");
+    }
+}
+
+#[test]
+fn a_process_with_no_command_line_is_named_by_its_comm() {
+    // A kernel thread has none, and `[kworker/3:1]` is a real name — where a
+    // blank would be a row that says nothing at all.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cmd: None,
+        ..proc_named(9, "[kworker/3:1]", 5.0, 1 << 20)
+    }];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(
+        rows(&app, 200, 20)
+            .iter()
+            .any(|l| l.contains("[kworker/3:1]")),
+        "the row lost its name"
+    );
+}
+
+#[test]
+fn the_filter_searches_the_command_line() {
+    // The question people arrive with is "which of these is the API server",
+    // and the answer is in the arguments.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = ["node /srv/api/server.js", "node /srv/web/bundler.js"]
+        .iter()
+        .enumerate()
+        .map(|(i, c)| ProcSample {
+            cpu: 30.0 - i as f32,
+            cmd: Some(std::sync::Arc::from(*c)),
+            ..proc_named(i as i32 + 10, "node", 0.0, 1 << 20)
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    app.filter = "bundler".into();
+    let body: Vec<String> = rows(&app, 200, 20)
+        .into_iter()
+        .filter(|l| l.contains("node"))
+        .collect();
+    assert_eq!(body.len(), 1, "expected one match: {body:?}");
+    assert!(body[0].contains("bundler.js"), "{:?}", body[0]);
 }

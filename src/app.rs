@@ -273,9 +273,18 @@ impl App {
     }
 }
 
-/// A process matches the filter by name or by pid. An empty filter matches all.
+/// A process matches the filter by name, command line, or pid. An empty filter
+/// matches all.
+///
+/// The command line is searched whether or not it is the thing on screen. The
+/// question people arrive with is "which of these is the API server", and the
+/// answer is in the arguments — so `/server.js` has to find it even when the
+/// column is showing `node`.
 fn matches(p: &ProcSample, needle: &str) -> bool {
     needle.is_empty()
         || p.name.to_lowercase().contains(needle)
+        || p.cmd
+            .as_ref()
+            .is_some_and(|c| c.to_lowercase().contains(needle))
         || p.pid.to_string().contains(needle)
 }

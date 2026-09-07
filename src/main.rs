@@ -112,7 +112,7 @@ KEYS:
                     CAP_SYS_PTRACE for other users' processes, so on a box
                     running its services as root they would be a wall of
                     dashes, and poptop withdraws them after one sample.
-    /               filter by name or pid
+    /               filter by name, command line, or pid
 
 ON MACOS:
     Some figures are Linux-only and simply do not appear:
@@ -487,7 +487,10 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
             p.pid,
             p.cpu,
             human(p.rss),
-            p.name
+            // Cut to a width, unlike the TUI which elides to its column. A
+            // Chrome renderer's arguments run past any terminal, and wrapping
+            // one row over four lines makes the other nine unreadable.
+            ui::elide_middle(p.command(), 56)
         );
     }
     Ok(())

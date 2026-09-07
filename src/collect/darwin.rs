@@ -62,6 +62,9 @@ pub struct SysinfoCollector {
     /// [`Kinfo::probe`] recognises, in which case sysinfo's answer is used and
     /// the third of the table it cannot see has no identity — as before.
     kinfo: Option<Kinfo>,
+    /// pid -> (start time, command line). Keyed like `names`, and for the same
+    /// reason.
+    cmds: HashMap<i32, (Option<u64>, Option<Arc<str>>)>,
 }
 
 impl SysinfoCollector {
@@ -75,6 +78,7 @@ impl SysinfoCollector {
             net_at: None,
             link_names: HashMap::new(),
             kinfo: Kinfo::probe(),
+            cmds: HashMap::new(),
         })
     }
 }
@@ -174,7 +178,11 @@ impl Collector for SysinfoCollector {
         };
 
         let Self {
-            sys, users, names, ..
+            sys,
+            users,
+            names,
+            cmds,
+            ..
         } = self;
 
         // Whose processes we can actually see the IO of.
@@ -212,7 +220,7 @@ impl Collector for SysinfoCollector {
                         s => Some(s * 1_000_000),
                     },
                 };
-                let name = cached_name(names, id, started, || {
+                let name = cached(names, id, started, || {
                     Arc::from(p.name().to_string_lossy().as_ref())
                 });
                 ProcSample {
@@ -236,6 +244,16 @@ impl Collector for SysinfoCollector {
                     threads: procinfo::threads(id),
                     state: status_char(p.status()),
                     started,
+                    // Free here: `refresh_processes` already reads `argv`, so
+                    // unlike the `/proc` backend there is no extra syscall to
+                    // pay for and nothing to cache against. Interned all the
+                    // same, so the ring buffer holds one string per process
+                    // rather than one per row per second.
+                    cmd: cached(cmds, id, started, || {
+                        let argv: Vec<_> = p.cmd().iter().map(|a| a.to_string_lossy()).collect();
+                        crate::sample::command_from_argv(argv.iter().map(|a| a.as_ref()))
+                            .map(|c| Arc::from(c.as_str()))
+                    }),
                     // sysinfo already reports these as bytes since the last
                     // refresh, so unlike the /proc backend there is no counter to
                     // diff here.
@@ -338,17 +356,17 @@ fn status_char(s: sysinfo::ProcessStatus) -> char {
 /// splice [`crate::sample::ProcSample::key`] refuses, one field over. That path
 /// is live whenever [`Kinfo::probe`] found no usable `kinfo_proc` and sysinfo
 /// is answering instead.
-fn cached_name(
-    names: &mut HashMap<i32, (Option<u64>, Arc<str>)>,
+fn cached<T: Clone>(
+    cache: &mut HashMap<i32, (Option<u64>, T)>,
     pid: i32,
     started: Option<u64>,
-    fresh: impl FnOnce() -> Arc<str>,
-) -> Arc<str> {
-    match names.get(&pid) {
+    fresh: impl FnOnce() -> T,
+) -> T {
+    match cache.get(&pid) {
         Some((Some(t), n)) if Some(*t) == started => n.clone(),
         _ => {
             let n = fresh();
-            names.insert(pid, (started, n.clone()));
+            cache.insert(pid, (started, n.clone()));
             n
         }
     }
@@ -500,17 +518,17 @@ mod tests {
     fn a_process_seen_again_keeps_the_name_it_already_had() {
         // The whole reason the cache exists — one allocation per process, not
         // one per row per sample.
-        let mut names = HashMap::new();
-        let first = cached_name(&mut names, 7, Some(100), || Arc::from("shell"));
-        let again = cached_name(&mut names, 7, Some(100), || Arc::from("shell"));
+        let mut names: HashMap<i32, (Option<u64>, Arc<str>)> = HashMap::new();
+        let first = cached(&mut names, 7, Some(100), || Arc::from("shell"));
+        let again = cached(&mut names, 7, Some(100), || Arc::from("shell"));
         assert!(Arc::ptr_eq(&first, &again), "the name was reallocated");
     }
 
     #[test]
     fn a_recycled_pid_does_not_inherit_the_dead_process_name() {
-        let mut names = HashMap::new();
-        cached_name(&mut names, 7, Some(100), || Arc::from("shell"));
-        let after = cached_name(&mut names, 7, Some(200), || Arc::from("compiler"));
+        let mut names: HashMap<i32, (Option<u64>, Arc<str>)> = HashMap::new();
+        cached(&mut names, 7, Some(100), || Arc::from("shell"));
+        let after = cached(&mut names, 7, Some(200), || Arc::from("compiler"));
         assert_eq!(&*after, "compiler");
     }
 
@@ -521,9 +539,9 @@ mod tests {
         // This is the path taken whenever `Kinfo::probe` finds no usable
         // `kinfo_proc` and sysinfo, which cannot time other users' processes,
         // is answering instead.
-        let mut names = HashMap::new();
-        cached_name(&mut names, 7, None, || Arc::from("shell"));
-        let after = cached_name(&mut names, 7, None, || Arc::from("compiler"));
+        let mut names: HashMap<i32, (Option<u64>, Arc<str>)> = HashMap::new();
+        cached(&mut names, 7, None, || Arc::from("shell"));
+        let after = cached(&mut names, 7, None, || Arc::from("compiler"));
         assert_eq!(
             &*after, "compiler",
             "an unknown start time was taken as proof of sameness"
