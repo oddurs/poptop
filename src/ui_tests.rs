@@ -2397,6 +2397,82 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
 }
 
 #[test]
+fn a_process_using_several_cores_still_has_a_readable_sparkline() {
+    // A virtual machine on three cores is 300%, and the axis ladder used to
+    // stop at 100 — so everything a busy process did above one core was drawn
+    // at the same height. Not a clipped graph: no graph.
+    //
+    // A ramp rather than a sawtooth. A repeating waveform can alias against the
+    // two-samples-per-cell packing and come out as one glyph repeated whatever
+    // the axis does, which is a property of the test data, not the code — an
+    // earlier version of this failed for exactly that reason.
+    let spark = |peak: f32| {
+        let mut app = App::new(60);
+        for i in (0..40).rev() {
+            let mut s = sample_at(10.0, i as u64);
+            s.procs = vec![ProcSample {
+                cpu: peak * (40 - i) as f32 / 40.0,
+                ..proc_named(1, "vm", 0.0, 1 << 20)
+            }];
+            app.push(s);
+        }
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        spark_for(&app, "vm")
+    };
+
+    // A ramp against an axis that fits it tops out only at the very end. Under
+    // the old ceiling of 100 a ramp to 800% is above the axis for seven eighths
+    // of its length and draws solid for all of it.
+    for peak in [285.0f32, 800.0, 1400.0] {
+        let s = spark(peak);
+        let full = s.chars().filter(|&c| c == '⣿').count();
+        assert!(
+            full <= 3,
+            "a ramp to {peak}% saturated {full} of {} cells: {s:?}",
+            s.chars().count()
+        );
+        assert!(
+            s.chars().collect::<std::collections::HashSet<_>>().len() > 2,
+            "a ramp to {peak}% drew almost no variation: {s:?}"
+        );
+    }
+}
+
+#[test]
+fn the_table_says_what_its_sparkline_axis_is_when_it_leaves_one_core() {
+    // One ceiling is shared by every row so the shapes can be compared, which
+    // means the column has a scale — and a scale that moves without saying so
+    // is an unlabelled y-axis. Only stated above one core: below it the reading
+    // is the obvious one.
+    let title = |cpu: f32| {
+        let mut app = App::new(60);
+        let mut s = sample(10.0);
+        s.procs = vec![ProcSample {
+            cpu,
+            ..proc_named(1, "vm", 0.0, 1 << 20)
+        }];
+        app.push(s);
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        render(&app, 200, 20)
+            .lines()
+            .find(|l| l.contains("processes ("))
+            .expect("no section title")
+            .to_string()
+    };
+
+    assert!(
+        title(285.0).contains("history ≤400%"),
+        "the axis moved past one core without saying so: {:?}",
+        title(285.0)
+    );
+    assert!(
+        !title(40.0).contains("history"),
+        "an unremarkable axis was announced anyway: {:?}",
+        title(40.0)
+    );
+}
+
+#[test]
 fn an_unknown_thread_count_is_a_dash_not_a_one() {
     // macOS reported a flat `1` for every process, which beside the CPU column
     // was not merely missing but contradictory: this process is using three

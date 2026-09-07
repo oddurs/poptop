@@ -1282,12 +1282,25 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {} tasks came and went", c.unseen())
         });
 
+    // The sparkline column's axis, said out loud. One ceiling is shared by
+    // every row so the shapes can be compared, which means the column has a
+    // scale — and an unlabelled scale that moves is the same trap as an
+    // unlabelled y-axis. Stated only above one core: below it the reading is
+    // the obvious one, and a machine whose busiest process is at 8% does not
+    // need telling that its history column tops out at 10%.
+    let axis = if spark_ceiling > 100.0 {
+        format!(" · history ≤{spark_ceiling:.0}%")
+    } else {
+        String::new()
+    };
+
     let title = format!(
-        " processes ({}) — sort: {}{}{}{} ",
+        " processes ({}) — sort: {}{}{}{}{} ",
         rows_data.len(),
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
         churn,
+        axis,
         io_status(show_io, app, collected)
     );
 

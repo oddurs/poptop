@@ -254,6 +254,12 @@ pub fn composition(parts: [u64; 3], width: usize) -> [usize; 3] {
 ///
 /// A small fixed set rather than the observed peak, so the scale is stable
 /// while scrubbing instead of breathing with every sample.
+/// Axis steps below one core, in percent.
+///
+/// Hand-chosen, because the interesting resolution on a quiet machine is at the
+/// bottom. Above 100 the steps just double — see [`ceiling_for`] — so there is
+/// nothing to write down: every entry that used to sit up there produced
+/// exactly what doubling produces, which is how they came to be deleted.
 const CEILINGS: [f32; 4] = [10.0, 25.0, 50.0, 100.0];
 
 /// The axis ceiling for a given peak.
@@ -267,7 +273,25 @@ pub fn ceiling_for(peak: f32) -> f32 {
         .iter()
         .copied()
         .find(|&c| peak <= c)
-        .unwrap_or(100.0)
+        .unwrap_or_else(|| {
+            // Past one core, keep doubling.
+            //
+            // A per-process figure is not a share of the machine: a virtual
+            // machine on three cores is 300%, and htop reports the same. The
+            // ladder used to stop at 100 and clamp every such process to the
+            // top of its graph — a ramp to 800% drawn solid for seven eighths
+            // of its length, which is not a clipped graph but no graph at all.
+            //
+            // Unbounded rather than a longer table, because a 96-core machine
+            // can put one process at 9600%: an axis stopping at the largest
+            // number somebody once wrote down is the same clipping, one step
+            // further out.
+            let mut c = CEILINGS[CEILINGS.len() - 1];
+            while c < peak {
+                c *= 2.0;
+            }
+            c
+        })
 }
 
 /// Split a percentage into the level `0..=4` it occupies in row `row` of a
@@ -294,6 +318,48 @@ pub fn level_in_row_scaled(pct: f32, row: usize, rows: usize, ceiling: f32) -> u
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_process_above_one_core_gets_an_axis_that_fits_it() {
+        // A per-process figure is not a share of the machine: a virtual machine
+        // on three cores is 300%. The ladder used to stop at 100, so every such
+        // process was pinned to the top of its own graph.
+        assert_eq!(ceiling_for(285.0), 400.0);
+        assert_eq!(ceiling_for(1400.0), 1600.0);
+    }
+
+    #[test]
+    fn an_axis_beyond_the_table_keeps_doubling() {
+        // A 96-core machine can put one process at 9600%. Stopping at the
+        // largest number somebody once wrote down is the same clipping, one
+        // step up.
+        assert_eq!(ceiling_for(9600.0), 12800.0);
+        assert!(ceiling_for(100_000.0) >= 100_000.0);
+    }
+
+    #[test]
+    fn the_axis_still_hugs_a_quiet_machine() {
+        // The reason the ladder exists at all: a fixed axis leaves an idle
+        // machine drawing one lit row and eight blank ones.
+        assert_eq!(ceiling_for(0.0), 10.0);
+        assert_eq!(ceiling_for(8.0), 10.0);
+        assert_eq!(ceiling_for(60.0), 100.0);
+    }
+
+    #[test]
+    fn a_waveform_above_one_core_is_still_a_waveform() {
+        // The defect in one assertion. Against a ceiling of 100 a sawtooth
+        // between 200% and 800% renders as a solid block, top and bottom alike:
+        // not a clipped graph but no graph at all.
+        let ceiling = ceiling_for(800.0);
+        let peak = level_in_row_scaled(800.0, 0, 3, ceiling);
+        let trough = level_in_row_scaled(200.0, 0, 3, ceiling);
+        assert_ne!(
+            peak, trough,
+            "the top row cannot tell 200% from 800% at a ceiling of {ceiling}"
+        );
+    }
+
     use super::*;
 
     #[test]
