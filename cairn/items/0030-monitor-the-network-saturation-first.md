@@ -2,7 +2,7 @@
 id: 30
 title: Monitor the network, saturation first
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
