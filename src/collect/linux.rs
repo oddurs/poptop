@@ -507,46 +507,39 @@ struct StatCtx<'a> {
 /// kilobytes — and is the price of never reallocating during a sample.
 const READ_BUF: usize = 8192;
 
-/// Read a file into `buf` and return it as text.
-///
-/// `File::open` + `read` rather than `fs::read_to_string`, which calls
-/// `metadata()` to size its buffer. `/proc` reports every file as zero bytes,
-/// so that `statx` is pure waste — and because the size comes back as zero the
-/// buffer then grows a page at a time, which is where 8.5 reads per process
-/// came from. htop does the same thing with `openat` on a cached directory fd
-/// and one `read` into a fixed buffer.
 /// The size of a page on this kernel, and what to say if we had to guess.
 ///
 /// Read rather than assumed, because `/proc/<pid>/stat` reports RSS as a count
-/// of pages and the multiplication is the whole figure. A 16 KiB-page kernel
-/// — Asahi, several ARM distributions — would otherwise report every process's
+/// of pages and the multiplication is the whole figure. A 16 KiB-page kernel —
+/// Asahi, several ARM distributions — would otherwise report every process's
 /// memory at a quarter of its real size, and a 64 KiB one, which has been the
 /// RHEL aarch64 default, at a sixteenth. Nothing about the output would look
 /// wrong.
 ///
-/// `/proc/self/smaps` states it exactly on its first mapping. Deriving it
-/// instead from `statm` pages against `status` `VmRSS` does not work: the two
-/// files are read microseconds apart and RSS moves in between, which measured
-/// 4084 against a real 4096.
+/// From `/proc/self/auxv` rather than `/proc/self/smaps`, which was the first
+/// attempt. auxv is what the kernel handed this process at exec, so it is there
+/// whatever the kernel was built with; it is one 336-byte read rather than a
+/// walk over every mapping; and it cannot be misled by a process whose first
+/// mapping is a huge page, where smaps says `2048 kB` and the only thing
+/// between that and a sixteen-fold error is a sanity clamp.
 ///
-/// Read once, into its own buffer rather than the collector's — smaps is the
-/// largest file this backend touches and there is no reason to carry that
-/// capacity for the rest of the run.
+/// Deriving it from `statm` pages against `status` `VmRSS` does not work at
+/// all: the two files are read microseconds apart and RSS moves in between,
+/// which measured 4084 against a real 4096.
 fn read_page_size() -> (u64, Vec<String>) {
-    let mut buf = Vec::new();
-    page_size_from(read_into("/proc/self/smaps", &mut buf).ok())
+    page_size_from(std::fs::read("/proc/self/auxv").ok().as_deref())
 }
 
-/// The file split out, so the fallback can be tested on a machine that can
-/// read it. Same shape as `Tier::detect_from` and `config::path_from`.
-fn page_size_from(smaps: Option<&str>) -> (u64, Vec<String>) {
+/// The file split out, so the fallback can be tested on a machine that can read
+/// it. The same shape as `Tier::detect_from` and `config::path_from`.
+fn page_size_from(auxv: Option<&[u8]>) -> (u64, Vec<String>) {
     const ASSUMED: u64 = 4096;
-    match smaps.and_then(parse_page_size) {
+    match auxv.and_then(parse_page_size) {
         Some(n) => (n, Vec::new()),
         None => (
             ASSUMED,
             vec![format!(
-                "could not read the page size from /proc/self/smaps; assuming \
+                "could not read the page size from /proc/self/auxv; assuming \
                  {ASSUMED} bytes. Every process memory figure is a page count \
                  times this, so they are all wrong by a whole factor if this \
                  kernel disagrees."
@@ -555,21 +548,39 @@ fn page_size_from(smaps: Option<&str>) -> (u64, Vec<String>) {
     }
 }
 
-/// The first `KernelPageSize:` in a smaps dump, in bytes.
-fn parse_page_size(text: &str) -> Option<u64> {
-    let kb: u64 = text
-        .lines()
-        .find_map(|l| l.strip_prefix("KernelPageSize:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    // Sanity rather than trust: a page is a power of two between 4 KiB and
-    // 64 KiB on every architecture Linux runs on, and a figure outside that is
-    // a parse that went wrong rather than an exotic machine.
-    (kb.is_power_of_two() && (4..=64).contains(&kb)).then(|| kb * 1024)
+/// `AT_PAGESZ` out of an auxiliary vector.
+///
+/// A flat list of `usize` key/value pairs in native order, terminated by a zero
+/// key. Sized from `usize` rather than assuming eight bytes: the layout follows
+/// the pointer width, and this is the one place that matters.
+fn parse_page_size(auxv: &[u8]) -> Option<u64> {
+    const AT_PAGESZ: usize = 6;
+    let w = size_of::<usize>();
+    for pair in auxv.chunks_exact(w * 2) {
+        let key = usize::from_ne_bytes(pair[..w].try_into().ok()?);
+        if key == 0 {
+            break;
+        }
+        if key == AT_PAGESZ {
+            let v = usize::from_ne_bytes(pair[w..].try_into().ok()?) as u64;
+            // Sanity rather than trust: a page is a power of two between 4 KiB
+            // and 64 KiB on every architecture Linux runs on, and a figure
+            // outside that is a read that went wrong rather than an exotic
+            // machine — which would otherwise be indistinguishable.
+            return (v.is_power_of_two() && (4096..=65536).contains(&v)).then_some(v);
+        }
+    }
+    None
 }
 
+/// Read a file into `buf` and return it as text.
+///
+/// `File::open` + `read` rather than `fs::read_to_string`, which calls
+/// `metadata()` to size its buffer. `/proc` reports every file as zero bytes,
+/// so that `statx` is pure waste — and because the size comes back as zero the
+/// buffer then grows a page at a time, which is where 8.5 reads per process
+/// came from. htop does the same thing with `openat` on a cached directory fd
+/// and one `read` into a fixed buffer.
 fn read_into<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b str> {
     let mut f = File::open(path)?;
     if buf.len() < READ_BUF {
@@ -1044,55 +1055,64 @@ mod tests {
 mod page_size_tests {
     use super::*;
 
-    #[test]
-    fn the_page_size_is_read_from_the_kernel_not_assumed() {
-        // RSS is a count of pages multiplied by this, so on a 16 KiB-page
-        // kernel a wrong constant reports every process at a quarter of its
-        // real memory — and nothing about the output looks wrong.
-        let (size, notes) = read_page_size();
-        assert!(notes.is_empty(), "could not read it here: {notes:?}");
-
-        // Against the file itself rather than against 4096: a test that
-        // hardcodes the answer cannot fail on the machines this exists for.
-        let raw = std::fs::read_to_string("/proc/self/smaps").unwrap();
-        let want: u64 = raw
-            .lines()
-            .find_map(|l| l.strip_prefix("KernelPageSize:"))
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap()
-            * 1024;
-        assert_eq!(size, want);
+    /// One auxv entry, in the native layout.
+    fn entry(key: usize, value: usize) -> Vec<u8> {
+        let mut v = key.to_ne_bytes().to_vec();
+        v.extend_from_slice(&value.to_ne_bytes());
+        v
     }
 
     #[test]
-    fn a_smaps_that_says_nothing_useful_is_not_believed() {
-        // A parse that went wrong looks exactly like an exotic machine, so the
+    fn the_page_size_is_read_from_the_kernel_not_assumed() {
+        // RSS is a count of pages multiplied by this, so a wrong constant
+        // reports every process at a quarter of its real memory on a 16 KiB
+        // kernel — and nothing about the output looks wrong.
+        //
+        // Where auxv is absent the fallback is the documented behaviour, so
+        // that is what gets asserted: a test that panics on the machines a
+        // fallback exists for is testing the wrong thing.
+        let Ok(raw) = std::fs::read("/proc/self/auxv") else {
+            let (size, notes) = read_page_size();
+            assert_eq!(size, 4096);
+            assert_eq!(notes.len(), 1, "assumed silently where auxv is absent");
+            return;
+        };
+
+        let (size, notes) = read_page_size();
+        assert!(notes.is_empty(), "could not read it here: {notes:?}");
+        // Against the file rather than against 4096: a test that hardcodes the
+        // answer cannot fail on the machines this exists for.
+        assert_eq!(size, parse_page_size(&raw).expect("auxv carries AT_PAGESZ"));
+        assert!(size.is_power_of_two() && size >= 4096);
+    }
+
+    #[test]
+    fn an_auxv_that_says_nothing_useful_is_not_believed() {
+        // A read that went wrong looks exactly like an exotic machine, so the
         // figure is bounded by what a page can actually be.
-        assert_eq!(parse_page_size("KernelPageSize:        4 kB\n"), Some(4096));
-        assert_eq!(
-            parse_page_size("KernelPageSize:       64 kB\n"),
-            Some(65536)
-        );
+        assert_eq!(parse_page_size(&entry(6, 16384)), Some(16384));
+        assert_eq!(parse_page_size(&entry(6, 65536)), Some(65536));
+
+        let mut later = entry(3, 0x40_0000);
+        later.extend(entry(6, 4096));
+        assert_eq!(parse_page_size(&later), Some(4096), "later keys are missed");
+
         for bad in [
-            "",
-            "Size: 4 kB\n",
-            "KernelPageSize:\n",
-            "KernelPageSize:        0 kB\n",
-            "KernelPageSize:        3 kB\n", // not a power of two
-            "KernelPageSize:      128 kB\n", // larger than any architecture
-            "KernelPageSize:  nonsense kB\n",
+            entry(6, 0),
+            entry(6, 3000),    // not a power of two
+            entry(6, 1024),    // smaller than any architecture
+            entry(6, 2 << 20), // a huge page, which is not the page size
+            entry(3, 4096),    // the right value under the wrong key
+            Vec::new(),
+            vec![0u8; 3], // truncated past a whole pair
         ] {
-            assert_eq!(parse_page_size(bad), None, "believed {bad:?}");
+            assert_eq!(parse_page_size(&bad), None, "believed {bad:?}");
         }
-        // The first mapping wins; later ones can be huge pages.
-        assert_eq!(
-            parse_page_size("KernelPageSize:       16 kB\nKernelPageSize:     2048 kB\n"),
-            Some(16384)
-        );
+
+        // A zero key terminates the vector, so nothing after it is read.
+        let mut after_end = entry(0, 0);
+        after_end.extend(entry(6, 16384));
+        assert_eq!(parse_page_size(&after_end), None);
     }
 
     #[test]
@@ -1100,10 +1120,10 @@ mod page_size_tests {
         // The fallback is almost always right, which is exactly why it has to
         // be announced: an assumption nobody hears about is indistinguishable
         // from a wrong number.
-        for absent in [None, Some(""), Some("Size: 4 kB\n")] {
+        for absent in [None, Some(&[][..]), Some(&entry(3, 4096)[..])] {
             let (size, notes) = page_size_from(absent);
             assert_eq!(size, 4096, "the fallback is not the common case");
-            assert_eq!(notes.len(), 1, "assumed silently for {absent:?}");
+            assert_eq!(notes.len(), 1, "assumed silently");
             assert!(notes[0].contains("4096"), "{}", notes[0]);
             assert!(
                 notes[0].contains("wrong by a whole factor"),
@@ -1112,10 +1132,6 @@ mod page_size_tests {
             );
         }
         // …and a kernel that does say gets no note at all.
-        assert!(
-            page_size_from(Some("KernelPageSize:       16 kB\n"))
-                .1
-                .is_empty()
-        );
+        assert!(page_size_from(Some(&entry(6, 16384))).1.is_empty());
     }
 }
