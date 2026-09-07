@@ -549,7 +549,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     }
     candidates.push(("MEM", window.iter().map(|s| s.mem.used_pct()).collect()));
 
-    let row_split = sections(graph_rows, candidates.len());
+    let row_split = sections(graph_rows, candidates.len(), gutter);
     candidates.truncate(row_split.len());
 
     // Gaps are found over the whole buffer, not the window, so a discontinuity
@@ -694,13 +694,26 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // correction to it; the keys are a reminder, and a reminder is the
         // right thing to lose first. Without this the gap note cost about
         // sixteen columns and silently truncated `+/- zoom` on a narrow panel.
-        let facts = format!("{ident}{span} shown, {per_slot}/slot{gap_note}");
+        // A ladder rather than a pair, and identification sits at the top of
+        // it. `ident` is non-empty only when the gutter could not label the
+        // rows, which is exactly when it is the only thing naming them — so it
+        // is the last part to go, not the first.
+        //
+        // Below it: the span, then the slot size, then the key hints, which
+        // are already in the footer. Nothing is ever cut mid-phrase; the
+        // identification growing from a fixed `cpu · mem` to as much as
+        // `cpu · wait · mem` is what pushed the old two-tier version past a
+        // narrow panel and let the terminal cut `1s/slot` in half.
         let keys = " — ←/→ scrub, +/- zoom";
-        let legend = if facts.chars().count() + keys.chars().count() <= inner_w {
-            facts + keys
-        } else {
-            facts
-        };
+        let legend = [
+            format!("{ident}{span} shown, {per_slot}/slot{gap_note}{keys}"),
+            format!("{ident}{span} shown, {per_slot}/slot{gap_note}"),
+            format!("{ident}{span} shown"),
+            ident.trim_end_matches([' ', '—']).trim_end().to_string(),
+        ]
+        .into_iter()
+        .find(|l| l.chars().count() <= inner_w)
+        .unwrap_or_default();
         lines.push(Line::from(Span::styled(legend, app.theme.dim_style())));
     }
 
@@ -825,8 +838,15 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
 ///
 /// The remainder goes to the first, which is CPU: it is the spikiest signal and
 /// the one where a dot of extra vertical resolution buys the most.
-pub fn sections(graph_rows: usize, candidates: usize) -> Vec<usize> {
-    let series = (graph_rows / MIN_ROWS_FOR_LABEL).clamp(1, candidates.max(1));
+pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usize> {
+    // Without a gutter there are no per-row labels, so the legend is doing the
+    // naming — and it names them in one flat list that the reader has to map
+    // onto the stack by position. That is workable for two rows and guesswork
+    // for three, especially since the hues alternate and a third graph shares
+    // the first one's colour. So a gutterless panel carries the two that answer
+    // the question and stops.
+    let ceiling = if gutter == 0 { 2 } else { candidates.max(1) };
+    let series = (graph_rows / MIN_ROWS_FOR_LABEL).clamp(1, candidates.max(1).min(ceiling));
     let base = graph_rows / series;
     let extra = graph_rows % series;
     (0..series).map(|i| base + usize::from(i < extra)).collect()

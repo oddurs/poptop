@@ -1038,7 +1038,7 @@ fn a_section_too_short_for_both_ends_carries_no_axis_at_all() {
         // Asked of the renderer rather than recomputed. A second copy of the
         // split is a second thing to keep in step, and it was already wrong
         // once the series stopped being a fixed pair.
-        let split = ui::sections(graph_rows, 2);
+        let split = ui::sections(graph_rows, 2, ui::GUTTER_W);
         let cpu_rows = split[0];
         let mem_rows = split.get(1).copied().unwrap_or(0);
 
@@ -3126,10 +3126,12 @@ fn show_timeline_heights() {
         app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    for h in [24u16, 34, 50] {
-        println!("=== terminal height {h} ===");
+    // The narrow-tall case is in here too: without a gutter the series count
+    // is clamped, so it is a different ladder rather than the same one.
+    for (w, h) in [(64u16, 24u16), (64, 34), (64, 50), (28, 50)] {
+        println!("=== {w}x{h} ===");
         let rows = ui::timeline_rows_range(h);
-        for line in &render_lines(&app, 64, h)[rows.start as usize..rows.end as usize] {
+        for line in &render_lines(&app, w, h)[rows.start as usize..rows.end as usize] {
             println!("{}", line.trim_end());
         }
     }
@@ -3291,4 +3293,62 @@ fn the_scrub_readout_names_the_rows_that_are_on_screen() {
 
     // …and picks memory up again when the graph does.
     assert!(readout(&app, 50).contains("MEM"));
+}
+
+#[test]
+fn a_panel_with_no_gutter_does_not_stack_three_unnamed_graphs() {
+    // Without a gutter the legend does the naming, in one flat list the reader
+    // has to map onto the stack by position. Workable for two rows, guesswork
+    // for three — and since the hues alternate, a third graph shares the first
+    // one's colour, so position is the *only* thing telling them apart.
+    let tall = 20;
+    assert_eq!(
+        ui::sections(tall, 3, ui::GUTTER_W).len(),
+        3,
+        "the height is not the constraint being tested"
+    );
+    assert_eq!(
+        ui::sections(tall, 3, 0).len(),
+        2,
+        "three graphs were stacked with only a flat legend to name them"
+    );
+
+    // And it is the clamp, not a floor: two candidates still give two.
+    assert_eq!(ui::sections(tall, 2, 0).len(), 2);
+}
+
+#[test]
+fn the_legend_stops_at_a_phrase_boundary_at_every_width() {
+    // The identification grew from a fixed `cpu · mem` to as much as
+    // `cpu · wait · mem`, which pushed the old two-tier legend past a narrow
+    // panel and let the terminal cut `1s/slot` in half — precisely what
+    // dropping the key hints was supposed to prevent.
+    //
+    // Asserted as "ends where a tier ends" rather than by naming the tiers,
+    // so the property survives the wording changing.
+    let mut app = App::new(600);
+    stalled_history(&mut app, 200);
+    for w in 20..=90u16 {
+        let rows = ui::timeline_rows_range(30);
+        let legend = render_lines(&app, w, 30)[rows.start as usize..rows.end as usize]
+            .iter()
+            .find(|l| l.contains("shown") || l.contains(" · "))
+            .cloned()
+            .unwrap_or_default();
+        let trimmed = legend.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        assert!(
+            trimmed.chars().count() <= w as usize,
+            "the legend overflowed at w={w}: {trimmed:?}"
+        );
+        let ends_well = ["zoom", "/slot", "shown", "cpu", "wait", "mem", "missing"]
+            .iter()
+            .any(|s| trimmed.ends_with(s));
+        assert!(
+            ends_well,
+            "the legend was cut mid-phrase at w={w}: {trimmed:?}"
+        );
+    }
 }

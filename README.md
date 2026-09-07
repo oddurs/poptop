@@ -522,16 +522,21 @@ shape, so memory is the one that yields — and comes back as a third row on a
 terminal tall enough to carry it. Where the platform publishes no iowait, the
 row goes back to memory rather than the graph carrying one it cannot fill.
 
-A series is only drawn if the gutter can name it. Identity here rests on the
-label rather than the hue, because there is no sixth hue to give a third
-series: the safe palette already avoids green — green/yellow is the pair
-red-green deficiency destroys — and a search of the whole cube for a colour
-clearing ΔE 8 against the existing five returns 77 candidates, every one of
-them either in the warning-orange band between `warn` and `critical` or sitting
-next to `ok`. Adding one would tax every user theme with another key and take
-`--check-theme` from ten pairs to fifteen, for a row the gutter already names.
-So the hues alternate instead, which guarantees the only thing that matters:
-two graphs touching each other never share a colour.
+A series is only drawn if the gutter can name it, because identity here rests
+on the label rather than the hue — the third series reuses a colour.
+
+That is a cost decision, not a limit. Searching the whole cube for a sixth hue
+clearing ΔE 8 against the existing five returns 77 candidates, the best at ΔE
+10.5 against a palette whose current worst pair is 10.3. But every one of them
+is adjacent to a hue already in use — orange between `warn` and `critical`,
+pale cyan beside `ok`, periwinkle beside `series_cpu` — because the safe
+palette already avoids green, the pair red-green deficiency destroys. So a
+sixth token would mean another key in every user theme and `--check-theme`
+going from ten pairs to fifteen, in exchange for a colour that reads as a
+near-miss of an existing one, for a row the gutter names outright.
+
+The hues alternate instead, which guarantees the only thing that matters: two
+graphs touching each other never share a colour.
 
 ### Sample rate and window
 

@@ -1313,16 +1313,23 @@ fn find_a_sixth_hue() {
         }
     }
     best.sort_by(|a, b| b.0.total_cmp(&a.0));
-    // The answer this returned: 77 candidates clear the target, and every one
-    // of them sits either in the warning-orange band between `warn` and
-    // `critical`, or immediately beside `ok`. The safe palette already avoids
-    // green — green/yellow is the pair red-green deficiency destroys — so the
-    // hue circle genuinely has no sixth room in it.
+    // The answer this returned: 77 candidates clear the target. The best is
+    // `#eeaa00` at dE 10.5, against a palette whose existing worst pair is
+    // 10.3 — so a sixth hue is *available*, and an earlier version of this
+    // comment claimed otherwise. It said every candidate sat in the
+    // warning-orange band or beside `ok`, which the output does not support:
+    // `#9999ff` at dE 9.5 sits beside `series_cpu`.
     //
-    // Kept as the record of why the timeline's third series reuses a hue
-    // instead of gaining a token. A sixth meaning-bearing colour would tax
-    // every user theme with another key and take `--check-theme` from ten
-    // pairs to fifteen, for a row the gutter already names.
+    // What the list does show is that every candidate is adjacent to a hue
+    // already in use — orange between `warn` and `critical`, pale cyan beside
+    // `ok`, periwinkle beside `series_cpu`. None opens a new region, because
+    // the safe palette already avoids green, the pair red-green deficiency
+    // destroys.
+    //
+    // So the reason the timeline reuses a hue is cost against benefit, not
+    // impossibility: another key in every user theme, `--check-theme` going
+    // from ten pairs to fifteen, and a new colour that reads as a near-miss of
+    // an existing one — for a row the gutter already names outright.
     println!("{} candidates clear dE {CVD_TARGET}", best.len());
     for (d, c) in best.iter().take(12) {
         println!(
