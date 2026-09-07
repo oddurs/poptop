@@ -5217,3 +5217,32 @@ fn the_filter_searches_the_command_line() {
     assert_eq!(body.len(), 1, "expected one match: {body:?}");
     assert!(body[0].contains("bundler.js"), "{:?}", body[0]);
 }
+
+#[test]
+fn sorting_by_name_orders_by_what_the_column_shows() {
+    // The column renders `command()`; sorting on `name` produced four identical
+    // `node`s and a column that looked unsorted — for exactly the processes the
+    // command line was added to tell apart.
+    let mut procs: Vec<ProcSample> = [
+        "node /srv/web/bundler.js",
+        "node /srv/api/server.js",
+        "node /srv/api/worker.js",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, c)| ProcSample {
+        cmd: Some(std::sync::Arc::from(*c)),
+        ..proc_named(i as i32 + 10, "node", 1.0, 0)
+    })
+    .collect();
+    procs.sort_by(|a, b| crate::app::Sort::Name.compare(a, b));
+    let got: Vec<&str> = procs.iter().map(|p| p.command()).collect();
+    assert_eq!(
+        got,
+        vec![
+            "node /srv/api/server.js",
+            "node /srv/api/worker.js",
+            "node /srv/web/bundler.js",
+        ]
+    );
+}

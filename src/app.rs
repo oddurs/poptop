@@ -65,7 +65,11 @@ impl Sort {
             Sort::Cpu => b.cpu.total_cmp(&a.cpu),
             Sort::Mem => b.rss.cmp(&a.rss),
             Sort::Pid => a.pid.cmp(&b.pid),
-            Sort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            // By what the column actually shows. Sorting on `name` while the
+            // row renders `command()` produced a NAME column that looked
+            // unsorted for exactly the processes this table is now good at
+            // telling apart: four node services sort as four identical `node`s.
+            Sort::Name => a.command().to_lowercase().cmp(&b.command().to_lowercase()),
         }
     }
 

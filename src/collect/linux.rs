@@ -747,6 +747,13 @@ fn read_proc_io(
 /// minute stale.
 const CMD_REFRESH: u64 = 30;
 
+/// How much of `cmdline` is read at all.
+///
+/// Four kilobytes against a stored two hundred characters. The slack is for the
+/// reduction that happens after: the cap is on raw bytes, and `argv[0]`'s
+/// directory — dropped a moment later — can be most of a long path on its own.
+const CMD_READ_MAX: usize = 4096;
+
 /// The command line for a process, read at most once per `CMD_REFRESH` samples.
 ///
 /// `None` means the file was empty or unreadable. Empty is the common case and
@@ -771,7 +778,10 @@ fn cmdline(
     }
     path.clear();
     let _ = write!(path, "/proc/{pid}/cmdline");
-    let cmd = read_bytes(path, buf)
+    // Capped, not read whole: see `read_capped`. Generous against `CMD_MAX`,
+    // because the cap is on bytes before `argv[0]`'s directory is dropped and a
+    // long path can eat most of it on its own.
+    let cmd = read_capped(path, buf, CMD_READ_MAX)
         .ok()
         .and_then(parse_cmdline)
         .map(Arc::from);
@@ -1331,17 +1341,33 @@ fn read_into<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b str> {
 /// lose the identity of a process running perfectly well. Everything else in
 /// `/proc` goes through [`read_into`], which does check.
 fn read_bytes<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b [u8]> {
+    read_capped(path, buf, usize::MAX)
+}
+
+/// The same read, stopping after `cap` bytes.
+///
+/// For `cmdline`, which is the one `/proc` file with no useful bound on its
+/// size: a `java` invocation carries its whole classpath, and a glob-expanded
+/// command carries every filename it matched. Reading those whole would
+/// allocate megabytes to keep two hundred characters, and — because `buf` is
+/// the collector's shared buffer and it ratchets up and never shrinks — would
+/// leave every later read in the sample carrying that allocation.
+fn read_capped<'b>(path: &str, buf: &'b mut Vec<u8>, cap: usize) -> io::Result<&'b [u8]> {
     let mut f = File::open(path)?;
     if buf.len() < READ_BUF {
         buf.resize(READ_BUF, 0);
     }
     let mut n = 0;
     loop {
+        if n >= cap {
+            break;
+        }
         if n == buf.len() {
             // Only for a file larger than anything /proc is expected to serve.
             buf.resize(buf.len() * 2, 0);
         }
-        match f.read(&mut buf[n..]) {
+        let room = buf.len().min(cap);
+        match f.read(&mut buf[n..room]) {
             Ok(0) => break,
             Ok(k) => n += k,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -1470,6 +1496,44 @@ mod tests {
             parse_cmdline(raw).unwrap(),
             "node /srv/api/server.js --port 3000"
         );
+    }
+
+    #[test]
+    fn an_enormous_cmdline_does_not_inflate_the_shared_buffer() {
+        // A java invocation carries its whole classpath and a glob-expanded
+        // command carries every filename it matched. Read whole, that allocates
+        // megabytes to keep two hundred characters — and `buf` is the
+        // collector's shared buffer, which ratchets up and never shrinks, so
+        // every later read in the sample would carry the allocation too.
+        let dir = std::env::temp_dir().join(format!("poptop-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("huge");
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"/usr/bin/java\0");
+        for i in 0..40_000 {
+            raw.extend_from_slice(format!("/opt/lib/jar-{i}.jar").as_bytes());
+            raw.push(0);
+        }
+        assert!(raw.len() > 700_000, "the fixture is not large enough");
+        std::fs::write(&file, &raw).unwrap();
+
+        let mut buf = vec![0u8; READ_BUF];
+        let (read, named) = {
+            let got = read_capped(file.to_str().unwrap(), &mut buf, CMD_READ_MAX).unwrap();
+            (got.len(), parse_cmdline(got))
+        };
+        assert!(read <= CMD_READ_MAX, "read {read} bytes");
+        assert_eq!(
+            buf.len(),
+            READ_BUF,
+            "the shared buffer was inflated to {}",
+            buf.len()
+        );
+        // And the process is still named.
+        let named = named.expect("no command line");
+        assert!(named.starts_with("java "), "{named:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

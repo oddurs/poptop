@@ -66,6 +66,10 @@ impl ProcSample {
     /// A Linux notion. On macOS pid 2 is an ordinary process, so one process in
     /// several hundred is wrongly excluded from the IO ratio there — which
     /// changes no decision this figure is used for.
+    pub fn is_kernel_thread(&self) -> bool {
+        self.pid == KTHREADD || self.ppid == KTHREADD
+    }
+
     /// What to write in the identity column: the command line if there is one,
     /// and `comm` if there is not.
     ///
@@ -73,10 +77,6 @@ impl ProcSample {
     /// so the fallback is a name rather than a blank.
     pub fn command(&self) -> &str {
         self.cmd.as_deref().unwrap_or(&self.name)
-    }
-
-    pub fn is_kernel_thread(&self) -> bool {
-        self.pid == KTHREADD || self.ppid == KTHREADD
     }
 }
 
@@ -121,10 +121,21 @@ pub fn command_from_argv<'a>(argv: impl IntoIterator<Item = &'a str>) -> Option<
     let argv0 = argv.next()?;
     // `rsplit('/').next()` is never `None`, and on a path with no separator it
     // is the whole string — so this is a no-op rather than a special case.
-    let mut out = argv0.rsplit('/').next().unwrap_or(argv0).to_string();
+    let mut out = String::new();
+    // Control characters are replaced, not passed through. An argument
+    // containing a newline is routine — an `awk` program, a `sed` script, a
+    // multi-line `grep -e` pattern — and one of them turns one row of `--once`
+    // into several, breaking the line-oriented output that mode exists to give.
+    // An ESC sequence in `argv` would otherwise reach the terminal directly.
+    // The TUI is safe either way because ratatui drops control characters when
+    // it writes a cell, but that is ratatui's guarantee and not this one's.
+    let push = |s: &str, out: &mut String| {
+        out.extend(s.chars().map(|c| if c.is_control() { ' ' } else { c }))
+    };
+    push(argv0.rsplit('/').next().unwrap_or(argv0), &mut out);
     for arg in argv {
         out.push(' ');
-        out.push_str(arg);
+        push(arg, &mut out);
     }
     if out.is_empty() {
         return None;
@@ -761,6 +772,27 @@ mod command_tests {
             got.starts_with("chrome "),
             "the cut took the identifying end"
         );
+    }
+
+    #[test]
+    fn a_newline_in_an_argument_stays_on_one_line() {
+        // `awk` programs, `sed` scripts and multi-line `grep -e` patterns all
+        // carry newlines routinely, and one of them turns one row of `--once`
+        // into several — breaking the line-oriented output that mode exists to
+        // give.
+        let got = label(&["awk", "BEGIN {\n  print 1\n}", "file"]).unwrap();
+        assert!(!got.contains('\n'), "the argument broke the row: {got:?}");
+        assert!(got.starts_with("awk BEGIN"), "{got:?}");
+    }
+
+    #[test]
+    fn an_escape_sequence_in_an_argument_does_not_reach_the_terminal() {
+        // `argv` is attacker-controlled by anyone who can start a process, and
+        // `--once` writes straight to stdout. The TUI is safe either way
+        // because ratatui drops control characters as it writes a cell, but
+        // that is ratatui's guarantee rather than this one's.
+        let got = label(&["sh", "-c", "\x1b[2J\x1b[1;31mred"]).unwrap();
+        assert!(!got.contains('\x1b'), "an escape survived: {got:?}");
     }
 
     #[test]

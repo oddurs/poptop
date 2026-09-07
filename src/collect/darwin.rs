@@ -64,7 +64,17 @@ pub struct SysinfoCollector {
     kinfo: Option<Kinfo>,
     /// pid -> (start time, command line). Keyed like `names`, and for the same
     /// reason.
+    ///
+    /// Held only to avoid rebuilding the string: sysinfo has already read
+    /// `argv` by the time this is consulted, so unlike the `/proc` backend
+    /// there is no syscall to save. What is saved is one allocation per process
+    /// per sample across a buffer of six hundred.
     cmds: HashMap<i32, (Option<u64>, Option<Arc<str>>)>,
+    /// Which sample this is, so command lines can be rebuilt on a slot
+    /// staggered by pid. Same reason as the `/proc` backend's: `setproctitle`
+    /// rewrites `argv` in place — `postgres: writer process` — and a cache
+    /// keyed only on the start time would freeze the one title worth watching.
+    tick: u64,
 }
 
 impl SysinfoCollector {
@@ -79,6 +89,7 @@ impl SysinfoCollector {
             link_names: HashMap::new(),
             kinfo: Kinfo::probe(),
             cmds: HashMap::new(),
+            tick: 0,
         })
     }
 }
@@ -177,6 +188,8 @@ impl Collector for SysinfoCollector {
             listen_drops: None,
         };
 
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
         let Self {
             sys,
             users,
@@ -205,7 +218,7 @@ impl Collector for SysinfoCollector {
         };
 
         let mut io_denied = 0usize;
-        let procs = sys
+        let procs: Vec<ProcSample> = sys
             .processes()
             .iter()
             .map(|(pid, p)| {
@@ -249,7 +262,7 @@ impl Collector for SysinfoCollector {
                     // pay for and nothing to cache against. Interned all the
                     // same, so the ring buffer holds one string per process
                     // rather than one per row per second.
-                    cmd: cached(cmds, id, started, || {
+                    cmd: cached_until(cmds, id, started, tick, || {
                         let argv: Vec<_> = p.cmd().iter().map(|a| a.to_string_lossy()).collect();
                         crate::sample::command_from_argv(argv.iter().map(|a| a.as_ref()))
                             .map(|c| Arc::from(c.as_str()))
@@ -274,6 +287,15 @@ impl Collector for SysinfoCollector {
                 }
             })
             .collect();
+
+        // Pruned against the pids just walked, or every process that has ever
+        // run leaves an entry behind — a real leak on a build box or a CI
+        // runner, which is the kind of machine poptop gets left running on.
+        // The `/proc` backend prunes its equivalent against `seen`.
+        let live: std::collections::HashSet<i32> =
+            procs.iter().map(|p: &ProcSample| p.pid).collect();
+        self.cmds.retain(|pid, _| live.contains(pid));
+        self.names.retain(|pid, _| live.contains(pid));
 
         let load = System::load_average();
 
@@ -356,6 +378,36 @@ fn status_char(s: sysinfo::ProcessStatus) -> char {
 /// splice [`crate::sample::ProcSample::key`] refuses, one field over. That path
 /// is live whenever [`Kinfo::probe`] found no usable `kinfo_proc` and sysinfo
 /// is answering instead.
+/// [`cached`], but the entry also expires on a refresh slot staggered by pid.
+///
+/// See the `cmds` field: a command line is not quite immutable, and a cache
+/// keyed only on the start time never notices a title rewritten in place.
+fn cached_until<T: Clone>(
+    cache: &mut HashMap<i32, (Option<u64>, T)>,
+    pid: i32,
+    started: Option<u64>,
+    tick: u64,
+    fresh: impl FnOnce() -> T,
+) -> T {
+    let due = tick % CMD_REFRESH == pid.unsigned_abs() as u64 % CMD_REFRESH;
+    if !due
+        && let Some((Some(t), v)) = cache.get(&pid)
+        && Some(*t) == started
+    {
+        return v.clone();
+    }
+    let v = fresh();
+    cache.insert(pid, (started, v.clone()));
+    v
+}
+
+/// How many samples a command line is trusted for before it is rebuilt.
+///
+/// The `/proc` backend has the same constant for the same reason; it is
+/// repeated rather than shared because the two backends are never compiled
+/// together and a `cfg`-gated `use` for one number is worse than the number.
+const CMD_REFRESH: u64 = 30;
+
 fn cached<T: Clone>(
     cache: &mut HashMap<i32, (Option<u64>, T)>,
     pid: i32,
@@ -512,6 +564,52 @@ mod tests {
                 "{missing} is absent on this platform and unexplained"
             );
         }
+    }
+
+    #[test]
+    fn the_per_process_caches_do_not_grow_without_bound() {
+        // Every pid that ever ran would otherwise leave an entry behind holding
+        // an `Arc<str>` — a real leak on a build box or a CI runner, which is
+        // the kind of machine poptop gets left running on. The `/proc` backend
+        // prunes its equivalents against the pids it just walked.
+        let mut c = SysinfoCollector::new().unwrap();
+        c.collect(Needs::default()).unwrap();
+        c.cmds.insert(-12345, (Some(1), Some(Arc::from("a ghost"))));
+        c.names.insert(-12345, (Some(1), Arc::from("a ghost")));
+        c.collect(Needs::default()).unwrap();
+        assert!(
+            !c.cmds.contains_key(&-12345),
+            "the command line cache kept an exited process"
+        );
+        assert!(
+            !c.names.contains_key(&-12345),
+            "the name cache kept an exited process"
+        );
+    }
+
+    #[test]
+    fn a_title_rewritten_in_place_is_picked_up() {
+        // `setproctitle` rewrites argv without the process restarting, which is
+        // how postgres shows `postgres: writer process`. Keyed only on the
+        // start time, the cache would freeze the one title worth watching —
+        // and here there is not even a syscall saved by holding it, because
+        // sysinfo has already read argv by the time this runs.
+        let mut cache = HashMap::new();
+        let pid: i32 = 7;
+        cache.insert(pid, (Some(100), Some(Arc::<str>::from("stale"))));
+        let due = pid.unsigned_abs() as u64 % CMD_REFRESH;
+        let got = cached_until(&mut cache, pid, Some(100), due, || {
+            Some(Arc::<str>::from("postgres: writer process"))
+        });
+        assert_eq!(got.as_deref(), Some("postgres: writer process"));
+
+        // And on a tick that is not its slot, the cache is still a cache.
+        cache.insert(pid, (Some(100), Some(Arc::<str>::from("held"))));
+        let quiet = (0..CMD_REFRESH).find(|t| t % CMD_REFRESH != due).unwrap();
+        let got = cached_until(&mut cache, pid, Some(100), quiet, || {
+            panic!("the cache was not consulted")
+        });
+        assert_eq!(got.as_deref(), Some("held"));
     }
 
     #[test]
