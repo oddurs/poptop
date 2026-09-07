@@ -250,16 +250,17 @@ pub fn composition(parts: [u64; 3], width: usize) -> [usize; 3] {
     out
 }
 
-/// Ceilings the y-axis is allowed to take.
-///
-/// A small fixed set rather than the observed peak, so the scale is stable
-/// while scrubbing instead of breathing with every sample.
 /// Axis steps below one core, in percent.
 ///
 /// Hand-chosen, because the interesting resolution on a quiet machine is at the
 /// bottom. Above 100 the steps just double — see [`ceiling_for`] — so there is
 /// nothing to write down: every entry that used to sit up there produced
 /// exactly what doubling produces, which is how they came to be deleted.
+///
+/// Steps rather than the peak itself, so the axis is stable while scrubbing
+/// instead of breathing with every sample. Stable, not fixed: a scrub that
+/// brings a 900% burst into the buffer does move it from 800 to 1600, which is
+/// why the panel prints the figure rather than leaving it to be inferred.
 const CEILINGS: [f32; 4] = [10.0, 25.0, 50.0, 100.0];
 
 /// The axis ceiling for a given peak.

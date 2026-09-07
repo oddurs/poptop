@@ -1165,11 +1165,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // One ceiling across every row. Scaling each sparkline to its own peak
     // makes a flat 12% process look exactly like one spiking to 90%, which
     // defeats the only reason to put them in a column together.
+    //
+    // Taken from the whole buffer and every process in it, not from `series`,
+    // which holds only the rows on screen. Drawn from the visible slice the
+    // ceiling would move as you scrolled: bring a 400% process into view and
+    // every other row's history collapses to the floor, then springs back when
+    // it scrolls off. That is the same objection as the comment above — the
+    // answer to "what has this process been doing" must not depend on where the
+    // list happens to be sitting.
     let spark_ceiling = glyphs::ceiling_for(
-        series
-            .values()
-            .flat_map(|v| v.iter().flatten())
-            .copied()
+        app.history
+            .iter()
+            .flat_map(|s| s.procs.iter())
+            .map(|p| p.cpu)
             .fold(0.0_f32, f32::max),
     );
     let collected = app.history.current().is_some_and(|s| s.io_collected);
@@ -1285,14 +1293,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // The sparkline column's axis, said out loud. One ceiling is shared by
     // every row so the shapes can be compared, which means the column has a
     // scale — and an unlabelled scale that moves is the same trap as an
-    // unlabelled y-axis. Stated only above one core: below it the reading is
-    // the obvious one, and a machine whose busiest process is at 8% does not
-    // need telling that its history column tops out at 10%.
-    let axis = if spark_ceiling > 100.0 {
-        format!(" · history ≤{spark_ceiling:.0}%")
-    } else {
-        String::new()
-    };
+    // unlabelled y-axis.
+    //
+    // Always, not only above one core. The ceiling steps 10 / 25 / 50 / 100
+    // below that, which is a tenfold swing: a column read at 10% one second and
+    // 100% the next, because one process briefly touched 60%, has changed every
+    // shape in it with nothing said.
+    //
+    // Last in the title on purpose. ratatui truncates a block title from the
+    // right, and `io_status` is the one message this panel goes out of its way
+    // to guarantee — without it the `i` key looks broken. So the axis is what
+    // an eighty-column terminal loses first.
+    let axis = format!(" · history ≤{spark_ceiling:.0}%");
 
     let title = format!(
         " processes ({}) — sort: {}{}{}{}{} ",
@@ -1300,8 +1312,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
         churn,
+        io_status(show_io, app, collected),
         axis,
-        io_status(show_io, app, collected)
     );
 
     let mut widths = vec![
