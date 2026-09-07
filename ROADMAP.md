@@ -47,13 +47,12 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`######····` 60% · 6 of 10 done · due 2027-01-01
+`#######···` 70% · 7 of 10 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
 
 ### backlog
 
-- [ ] `0028` System-wide disk saturation: %util, await and queue depth <sup>bug · p1</sup>
 - [ ] `0029` Read Pressure Stall Information where the kernel publishes it <sup>feature · p1</sup>
 - [ ] `0030` Monitor the network, saturation first <sup>feature · p2</sup>
 - [ ] `0031` Filesystem capacity, as a threshold rather than a graph <sup>feature · p3</sup>
@@ -66,6 +65,7 @@ Config file, user themes, documented and safe to depend on.
 - [x] `0004` Configurable warn and critical thresholds <sup>feature · p3</sup>
 - [x] `0026` macOS reports no start time for a third of processes, weakening process identity <sup>bug · p2</sup>
 - [x] `0027` Per-process CPU is clamped on Linux and not on macOS <sup>bug · p3</sup>
+- [x] `0028` System-wide disk saturation: %util, await and queue depth <sup>bug · p1</sup>
 
 ## later — Someday
 

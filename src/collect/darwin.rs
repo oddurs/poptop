@@ -248,6 +248,9 @@ impl Collector for SysinfoCollector {
             // against a whole sample of about 4ms. An em dash until there is a
             // cheaper route to the same counters — see `notes`.
             disks: None,
+            // No equivalent on this platform. Not zero: a machine that never
+            // stalls and a machine that cannot say are opposite answers.
+            pressure: None,
         })
     }
 }

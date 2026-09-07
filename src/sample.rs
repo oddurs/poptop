@@ -74,6 +74,55 @@ impl ProcSample {
 /// `kthreadd`, the parent of every kernel thread, is always pid 2 on Linux.
 const KTHREADD: i32 = 2;
 
+/// Time lost waiting for a resource, as a percentage of the last ten seconds.
+///
+/// The two halves answer different questions and the difference is the whole
+/// point. `some` is "at least one task was stalled", which a busy machine does
+/// constantly and healthily. `full` is "every runnable task was stalled" —
+/// nothing was getting done, by anyone, and there is no benign reading of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stall {
+    pub some: f32,
+    pub full: f32,
+}
+
+/// Pressure Stall Information, where the kernel publishes it.
+///
+/// The most direct answer to "why is this slow" that Linux offers, and it says
+/// something no other figure here can. `iowait` is a *CPU-side* view — the CPU
+/// was idle with IO outstanding — so a box with plenty of other work to do
+/// shows a calm `iowait` while every task that matters is stuck behind the
+/// disk. `io.full` catches exactly that case.
+///
+/// Utilisation figures answer "how much is happening". This answers "how much
+/// stopped happening", which is the question the tool is opened to settle.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pressure {
+    pub cpu: Stall,
+    pub io: Stall,
+    pub memory: Stall,
+}
+
+impl Pressure {
+    /// The resource that stopped the machine most, and by how much.
+    ///
+    /// Over IO and memory only. The kernel documents `full` as undefined for
+    /// CPU — a task waiting for CPU is by definition not stalled on anything
+    /// the CPU could be doing instead — and it reports zero there, which would
+    /// win every tie and name the wrong thing.
+    ///
+    /// IO wins an exact tie because it is the commoner cause by a wide margin,
+    /// and because a tie at anything above zero is two resources jammed at once,
+    /// where naming either is equally true.
+    pub fn worst(&self) -> (&'static str, f32) {
+        if self.memory.full > self.io.full {
+            ("mem", self.memory.full)
+        } else {
+            ("io", self.io.full)
+        }
+    }
+}
+
 /// One block device's activity over the interval that produced this sample.
 ///
 /// Rates, not counters: `/proc/diskstats` publishes cumulative totals and every
@@ -351,6 +400,14 @@ pub struct Sample {
     /// An empty list is a different statement from `None` — it means the
     /// platform looked and found no device that has ever done any IO.
     pub disks: Option<Vec<DiskStat>>,
+    /// Stall pressure, or `None` where the kernel does not publish it.
+    ///
+    /// `/proc/pressure` needs `CONFIG_PSI=y`, and some distributions ship it
+    /// behind `psi=1` on the kernel command line. Present on every kernel
+    /// checked here, absent on plenty that are still in service — so nothing in
+    /// the default view is allowed to depend on it, and it renders as an em
+    /// dash rather than a zero when it is missing.
+    pub pressure: Option<Pressure>,
 }
 
 impl Sample {
@@ -374,6 +431,7 @@ impl Sample {
             io_collected: false,
             io_denied: 0,
             disks: None,
+            pressure: None,
         }
     }
 }

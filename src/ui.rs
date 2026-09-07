@@ -210,6 +210,12 @@ fn fit(figures: Vec<Figure<'_>>, width: usize) -> Vec<Span<'_>> {
 struct Figure<'a> {
     spans: Vec<Span<'a>>,
     /// Lower is kept longer.
+    ///
+    /// Spaced by tens rather than numbered consecutively, so a figure can be
+    /// slotted between two existing ones without renumbering the ladder below
+    /// it. Three insertions in a row each rewrote every rank underneath, and
+    /// each rewrite was a chance to introduce a duplicate that nothing would
+    /// have caught but a careful reading.
     rank: u8,
 }
 
@@ -237,7 +243,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // anything". Absent on a platform that will not say, rather than zero.
     if let Some(iowait) = s.iowait {
         figures.push(Figure {
-            rank: 1,
+            rank: 10,
             spans: vec![
                 Span::styled("WAIT ", dim),
                 Span::styled(format!("{iowait:>5.1}%"), app.theme.figure_style(iowait)),
@@ -262,7 +268,27 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         if let Some(a) = d.await_ms {
             spans.push(Span::styled(format!(" {a:.1}ms"), dim));
         }
-        figures.push(Figure { rank: 2, spans });
+        figures.push(Figure { rank: 20, spans });
+    }
+
+    // What stopped, rather than what was busy. Ranked beside the storage
+    // figures because it usually explains them, and above `RUN` because a
+    // machine where every task is stalled is in a worse state than one with a
+    // deep run queue and work getting done.
+    //
+    // `full`, not `some`: some task being stalled is what a busy machine does
+    // all day. Every runnable task being stalled has no benign reading, which
+    // is why it is heated from zero rather than against a threshold.
+    if let Some(p) = s.pressure {
+        let (what, pct) = p.worst();
+        figures.push(Figure {
+            rank: 25,
+            spans: vec![
+                Span::styled("STALL ", dim),
+                Span::styled(format!("{what} "), dim),
+                Span::styled(format!("{pct:>4.1}%"), app.theme.figure_style(pct * 4.0)),
+            ],
+        });
     }
 
     // Runnable against cores, because a bare count means nothing without its
@@ -270,7 +296,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     if let Some(running) = s.running {
         let pressure = (running as f32 / cores as f32) * 100.0;
         figures.push(Figure {
-            rank: 3,
+            rank: 30,
             spans: vec![
                 Span::styled("RUN ", dim),
                 Span::styled(
@@ -286,7 +312,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // that says so — so it is heated on any value at all, not on a threshold.
     if let Some(blocked) = s.blocked {
         figures.push(Figure {
-            rank: 4,
+            rank: 40,
             spans: vec![
                 Span::styled("BLOCKED ", dim),
                 Span::styled(
@@ -336,7 +362,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // platform that cannot separate cache from free simply has none.
     debug_assert!(has_cache || widths[1] == 0);
     figures.push(Figure {
-        rank: 5,
+        rank: 50,
         spans: mem_spans,
     });
     // Ranked below uptime and the process count despite being about memory,
@@ -344,7 +370,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // under a prefix rule one wide figure blocks every shorter one behind it:
     // at a hundred columns it fit nothing and cost two figures that would have.
     figures.push(Figure {
-        rank: 9,
+        rank: 90,
         // Shorter than it was: the bar shows what is available, so saying it
         // again in words was the third statement of one fact on one line.
         spans: vec![Span::styled(
@@ -355,7 +381,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
 
     if s.mem.swap_total > 0 {
         figures.push(Figure {
-            rank: 6,
+            rank: 60,
             spans: vec![
                 Span::styled("SWP ", dim),
                 Span::styled(
@@ -367,11 +393,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     }
 
     figures.push(Figure {
-        rank: 7,
+        rank: 70,
         spans: vec![Span::styled("UP ", dim), Span::raw(fmt_uptime(s.uptime))],
     });
     figures.push(Figure {
-        rank: 8,
+        rank: 80,
         spans: vec![
             Span::styled("PROCS ", dim),
             Span::raw(s.procs.len().to_string()),
@@ -382,7 +408,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // the smoothing it adds is what the timeline is for. Kept for the people
     // who look for it, first to go when the line is tight.
     figures.push(Figure {
-        rank: 10,
+        rank: 100,
         spans: vec![
             Span::styled("LOAD ", dim),
             Span::raw(format!(
@@ -611,6 +637,22 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             window
                 .iter()
                 .map(|s| s.busiest_disk().map_or(0.0, |d| d.util))
+                .collect(),
+        ));
+    }
+
+    // And what the machine lost to waiting, which is not the same question as
+    // `WAIT` one row up. `iowait` is the CPU's view — idle with IO outstanding
+    // — so a box with plenty of other work to do reports a calm `iowait` while
+    // every task that matters is stuck behind the disk. This is the row that
+    // catches that, so it is worth a row of its own despite the family
+    // resemblance.
+    if app.history.current().is_some_and(|s| s.pressure.is_some()) {
+        candidates.push((
+            "STALL",
+            window
+                .iter()
+                .map(|s| s.pressure.map_or(0.0, |p| p.worst().1))
                 .collect(),
         ));
     }
