@@ -320,6 +320,7 @@ impl Collector for SysinfoCollector {
             // stalls and a machine that cannot say are opposite answers.
             pressure: None,
             net: Some(net),
+            filesystems: procinfo::filesystems(),
         })
     }
 }

@@ -468,6 +468,63 @@ macOS reports `—`. `sysinfo::Disks::refresh` costs **12.5ms** steady state,
 measured, against a whole sample budget of about 4ms; an em dash is the honest
 answer until there is a cheaper route to the same counters.
 
+### Filesystem capacity
+
+```text
+fs      86.1%  / full, 63.9G of 460.4G available
+```
+
+The only figure here that describes a hard failure rather than a slowdown: a
+machine out of disk space does not get slower, it stops. It is also the only one
+that is a *threshold* rather than a rate — nobody scrubs back forty seconds to
+see the disk was a fifth of a percent emptier — so it earns a header figure and
+**no graph row**, and says nothing at all until a filesystem passes the warn
+threshold you set. That setting is exactly the judgement "close to full"
+encodes, and unlike a stall percentage a used-space percentage is the same kind
+of quantity it was set for.
+
+Available space, not free space. Most filesystems reserve some for root, so the
+free figure says there is room after unprivileged writes have started failing.
+
+Two kinds of duplicate collapse into one, keyed on the **device**. A bind mount
+puts one filesystem at several paths — this container has `/dev/vda1` at three —
+and APFS puts every volume in one container, so `/dev/disk3s1s1`, `/dev/disk3s5`
+and five others are one piece of storage. The survivor takes the **shortest mount
+point** and the **least available space**: the name a reader recognises and the
+number that decides whether anything is wrong. Before that, this laptop reported
+`/System/Volumes/VM 86.1% full`, which was accurate and no use to anybody.
+
+The key is the device rather than the size, because two identically-sized logical
+volumes are a normal way to provision a machine — and merging those would not
+rename one, it would delete it and report the survivor's figure under the wrong
+mount point.
+
+A filesystem you cannot write to cannot fill up, so read-only ones are excluded —
+and that is a measurement, not a list of names. It matters more than it sounds:
+a squashfs snap mount has no available space by construction, so it reads as
+`100.0% full` forever, and an Ubuntu machine carries twenty-odd of them. Without
+this the header would pin on `/snap/core22/1234` and the real root filesystem
+could never be reported at all.
+
+They are excluded *after* the merge, not before. Since Catalina the volume macOS
+mounts at `/` is the sealed, read-only system one and the writable half is
+`/System/Volumes/Data` — filtering first removed the root of every Mac. Merging
+first keeps the name a reader knows and takes the space from the volume that can
+actually run out.
+
+Pseudo-filesystems need no rule about names — `proc`, `sysfs`, `cgroup2` and the
+rest report zero blocks and fall out as a measurement. RAM-backed ones are named,
+because they report perfectly real sizes and a full `tmpfs` is a memory problem
+the header already reports.
+
+**Network filesystems are skipped, and that is a real gap.** `statfs` on an
+unresponsive NFS or SMB mount blocks until it answers, and a monitor that freezes
+when the fileserver does is worse than one that does not mention the fileserver.
+macOS avoids the question — `getfsstat` takes a flag asking it not to wait, and
+answers for all twelve filesystems in **7µs**, against the 12.5ms `sysinfo`
+charges for the same numbers. Linux has no such flag, so there the exclusion is a
+list of type names.
+
 ### The network
 
 Two figures, and the ordering between them is the point:

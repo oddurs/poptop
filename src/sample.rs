@@ -123,6 +123,35 @@ impl Pressure {
     }
 }
 
+/// How full one filesystem is.
+///
+/// The only figure in this tool that describes a hard failure rather than a
+/// slowdown: a machine out of disk space does not get slower, it stops. It is
+/// also the only one that is a *threshold* rather than a rate — nobody scrubs
+/// back forty seconds to see the disk was a fifth of a percent emptier — which
+/// is why it earns a header figure and no graph row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FsStat {
+    /// Where it is mounted, which is what a reader recognises it by.
+    pub mount: Arc<str>,
+    pub total: u64,
+    /// Bytes available to an unprivileged writer, which is the number that runs
+    /// out. On most filesystems this is below the true free figure, because
+    /// some is reserved for root — reporting the larger one would say there is
+    /// room when writes have already started failing.
+    pub avail: u64,
+}
+
+impl FsStat {
+    pub fn used_pct(&self) -> f32 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        let used = self.total.saturating_sub(self.avail);
+        used as f32 / self.total as f32 * 100.0
+    }
+}
+
 /// One network interface's traffic over the interval.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Link {
@@ -257,6 +286,24 @@ pub struct DiskStat {
     pub await_ms: Option<f32>,
     /// Mean requests in flight across the interval.
     pub queue: f32,
+}
+
+impl Sample {
+    /// The filesystem closest to full, if any is known.
+    ///
+    /// One figure, because the header has room for one and the question it
+    /// answers — "is this machine about to stop" — is settled by the worst.
+    /// Ties go to the earlier one, as everywhere else here.
+    pub fn fullest(&self) -> Option<&FsStat> {
+        let mut it = self.filesystems.as_ref()?.iter();
+        let mut worst = it.next()?;
+        for f in it {
+            if f.used_pct() > worst.used_pct() {
+                worst = f;
+            }
+        }
+        Some(worst)
+    }
 }
 
 impl Sample {
@@ -502,6 +549,14 @@ pub struct Sample {
     pub pressure: Option<Pressure>,
     /// Network traffic and health, or `None` where the platform will not say.
     pub net: Option<NetStat>,
+    /// Mounted filesystems worth watching, or `None` where the platform will
+    /// not say.
+    ///
+    /// Pseudo-filesystems are excluded by measurement — `proc`, `sysfs`,
+    /// `cgroup2` and friends all report zero blocks — and RAM-backed ones by
+    /// name, because a full `tmpfs` is a memory problem the header already
+    /// reports and counting it here would say the same bytes twice.
+    pub filesystems: Option<Vec<FsStat>>,
 }
 
 impl Sample {
@@ -527,6 +582,7 @@ impl Sample {
             disks: None,
             pressure: None,
             net: None,
+            filesystems: None,
         }
     }
 }

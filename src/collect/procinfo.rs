@@ -60,8 +60,10 @@
 //! why this is not gated behind a visible column the way per-process IO is.
 //! `threads` is a core field and stays one.
 
+use crate::sample::FsStat;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::Arc;
 
 // libSystem, already linked by std. Declared here rather than taking a
 // dependency on `libc` for one function.
@@ -71,6 +73,7 @@ use std::ffi::c_void;
 #[cfg(target_vendor = "apple")]
 unsafe extern "C" {
     fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, buffersize: i32) -> i32;
+    fn getfsstat(buf: *mut c_void, bufsize: i32, flags: i32) -> i32;
 }
 
 unsafe extern "C" {
@@ -274,6 +277,122 @@ pub fn threads(pid: i32) -> Option<u32> {
     (v > 0).then_some(v as u32)
 }
 
+/// Ask for what is already known rather than going to the filesystem to find
+/// out. The whole reason `getfsstat` is usable here: a mount that has stopped
+/// answering cannot hang the collector, because nothing waits on it.
+#[cfg(target_vendor = "apple")]
+const MNT_NOWAIT: i32 = 2;
+
+/// `sizeof(struct statfs)` with 64-bit inodes, which every macOS this could run
+/// on uses. Checked at runtime rather than trusted — see [`filesystems`].
+#[cfg(target_vendor = "apple")]
+const STATFS_SIZE: usize = 2168;
+/// `f_bsize` 0, `f_iosize` 4, `f_blocks` 8, `f_bfree` 16, `f_bavail` 24,
+/// `f_files` 32, `f_ffree` 40, `f_fsid` 48, `f_owner` 56, `f_type` 60,
+/// `f_flags` 64, `f_fssubtype` 68, then the three name arrays.
+#[cfg(target_vendor = "apple")]
+const OFF: FsOffsets = FsOffsets {
+    bsize: 0,
+    blocks: 8,
+    bavail: 24,
+    flags: 64,
+    fstype: 72,
+    mount: 88,
+    from: 1112,
+};
+
+/// `MNT_RDONLY`.
+#[cfg(target_vendor = "apple")]
+const MNT_RDONLY: u32 = 0x1;
+
+#[cfg(target_vendor = "apple")]
+struct FsOffsets {
+    bsize: usize,
+    blocks: usize,
+    bavail: usize,
+    flags: usize,
+    fstype: usize,
+    mount: usize,
+    from: usize,
+}
+
+/// A NUL-terminated name out of a fixed-size array.
+#[cfg(target_vendor = "apple")]
+fn cstr(b: &[u8]) -> &str {
+    let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    std::str::from_utf8(&b[..n]).unwrap_or("")
+}
+
+/// Mounted filesystems, or `None` if this kernel's `struct statfs` is not the
+/// one these offsets were written against.
+///
+/// One call for every mount — 7us for twelve of them, measured, against the
+/// 12.5ms `sysinfo::Disks` costs for the same figures. Validated the way the
+/// process table is: a machine always has a filesystem mounted at `/` with a
+/// non-zero size, so if that is not what comes back, the layout is not what
+/// this believes and nothing here is reported.
+#[cfg(target_vendor = "apple")]
+pub fn filesystems() -> Option<Vec<FsStat>> {
+    let n = unsafe { getfsstat(std::ptr::null_mut(), 0, MNT_NOWAIT) };
+    if n <= 0 {
+        return None;
+    }
+    // Slack, because a volume can be mounted between the two calls.
+    let mut buf = vec![0u8; STATFS_SIZE * (n as usize + 8)];
+    let got = unsafe { getfsstat(buf.as_mut_ptr().cast(), buf.len() as i32, MNT_NOWAIT) };
+    if got <= 0 {
+        return None;
+    }
+    let out = parse_statfs(&buf, got as usize);
+    // The layout check. Every machine has a sized filesystem at the root.
+    crate::collect::with_a_root(out)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+pub fn filesystems() -> Option<Vec<FsStat>> {
+    None
+}
+
+/// Split out so the offsets, the filters and the de-duplication can be tested
+/// against a record this module built rather than one the kernel happened to
+/// return.
+#[cfg(target_vendor = "apple")]
+fn parse_statfs(buf: &[u8], count: usize) -> Vec<FsStat> {
+    let mut out: Vec<(String, bool, FsStat)> = Vec::new();
+    for i in 0..count {
+        let Some(r) = buf.get(i * STATFS_SIZE..(i + 1) * STATFS_SIZE) else {
+            break;
+        };
+        let u32_at = |o: usize| u32::from_ne_bytes(r[o..o + 4].try_into().unwrap()) as u64;
+        let u64_at = |o: usize| u64::from_ne_bytes(r[o..o + 8].try_into().unwrap());
+        let bsize = u32_at(OFF.bsize);
+        let total = u64_at(OFF.blocks).saturating_mul(bsize);
+        let avail = u64_at(OFF.bavail).saturating_mul(bsize);
+        let flags = u32_at(OFF.flags) as u32;
+        let kind = cstr(&r[OFF.fstype..OFF.fstype + 16]);
+        let mount = cstr(&r[OFF.mount..OFF.mount + 1024]);
+        let from = cstr(&r[OFF.from..OFF.from + 1024]).to_string();
+        if total == 0 || crate::collect::is_ram_backed(kind) {
+            continue;
+        }
+        // Kept, and marked. A filesystem nothing can be written to cannot fill
+        // up — but since Catalina the volume macOS mounts at `/` is the sealed,
+        // read-only system one, so dropping it here would take the only name a
+        // reader recognises with it. `merge_filesystems` folds it in for its
+        // name and takes the space from its writable sibling.
+        out.push((
+            from,
+            flags & MNT_RDONLY == 0,
+            FsStat {
+                mount: Arc::from(mount),
+                total,
+                avail,
+            },
+        ));
+    }
+    crate::collect::merge_filesystems(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +458,140 @@ mod tests {
         let mut r = vec![0u8; len.max(OFF_PID + 4)];
         r[OFF_PID..OFF_PID + 4].copy_from_slice(&pid.to_ne_bytes());
         r
+    }
+
+    /// One `struct statfs` record with the given fields.
+    #[cfg(target_vendor = "apple")]
+    fn statfs_record(bsize: u32, blocks: u64, bavail: u64, kind: &str, mount: &str) -> Vec<u8> {
+        fs_record(bsize, blocks, bavail, kind, mount, mount, 0)
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn fs_record(
+        bsize: u32,
+        blocks: u64,
+        bavail: u64,
+        kind: &str,
+        mount: &str,
+        from: &str,
+        flags: u32,
+    ) -> Vec<u8> {
+        let mut r = vec![0u8; STATFS_SIZE];
+        r[OFF.flags..OFF.flags + 4].copy_from_slice(&flags.to_ne_bytes());
+        r[OFF.from..OFF.from + from.len()].copy_from_slice(from.as_bytes());
+        r[OFF.bsize..OFF.bsize + 4].copy_from_slice(&bsize.to_ne_bytes());
+        r[OFF.blocks..OFF.blocks + 8].copy_from_slice(&blocks.to_ne_bytes());
+        r[OFF.bavail..OFF.bavail + 8].copy_from_slice(&bavail.to_ne_bytes());
+        r[OFF.fstype..OFF.fstype + kind.len()].copy_from_slice(kind.as_bytes());
+        r[OFF.mount..OFF.mount + mount.len()].copy_from_slice(mount.as_bytes());
+        r
+    }
+
+    #[test]
+    fn the_same_filesystem_seen_twice_is_reported_once() {
+        // APFS puts every volume in one container, so seven of them report the
+        // same size and differ only in what is left. The shorter mount point is
+        // the one a reader recognises.
+        let mut buf = Vec::new();
+        // One container, three volumes: `/dev/disk3s1s1`, `/dev/disk3s5` and
+        // `/dev/disk3s4` all reduce to `/dev/disk3`.
+        for (mount, dev) in [
+            ("/System/Volumes/Data", "/dev/disk3s5"),
+            ("/", "/dev/disk3s1s1"),
+            ("/System/Volumes/Update/mnt1", "/dev/disk3s4"),
+        ] {
+            buf.extend(fs_record(4096, 1000, 400, "apfs", mount, dev, 0));
+        }
+        let fs = parse_statfs(&buf, 3);
+        assert_eq!(fs.len(), 1, "one filesystem was reported three times");
+        assert_eq!(&*fs[0].mount, "/", "the longest mount point was kept");
+    }
+
+    #[test]
+    fn a_read_only_volume_lends_its_name_and_not_its_space() {
+        // Since Catalina the volume macOS mounts at `/` is the sealed,
+        // read-only system one and the writable half is
+        // `/System/Volumes/Data`. It has to survive far enough to give up its
+        // name, and its free space must not be the figure reported.
+        let mut buf = Vec::new();
+        buf.extend(fs_record(
+            4096,
+            1000,
+            900,
+            "apfs",
+            "/",
+            "/dev/disk3s1s1",
+            MNT_RDONLY,
+        ));
+        buf.extend(fs_record(
+            4096,
+            1000,
+            120,
+            "apfs",
+            "/System/Volumes/Data",
+            "/dev/disk3s5",
+            0,
+        ));
+        let fs = parse_statfs(&buf, 2);
+        assert_eq!(fs.len(), 1);
+        assert_eq!(&*fs[0].mount, "/");
+        assert_eq!(
+            fs[0].avail,
+            4096 * 120,
+            "the sealed volume's space was used"
+        );
+    }
+
+    #[test]
+    fn a_wholly_read_only_container_is_not_reported() {
+        // A mounted disk image. Nothing can be written to it, so it cannot fill
+        // up — and it reports no available space, which would read as 100% full
+        // forever.
+        let mut buf = Vec::new();
+        buf.extend(fs_record(
+            4096,
+            1000,
+            0,
+            "apfs",
+            "/Volumes/Installer",
+            "/dev/disk9s1",
+            MNT_RDONLY,
+        ));
+        buf.extend(fs_record(4096, 2000, 500, "apfs", "/", "/dev/disk3s5", 0));
+        let fs = parse_statfs(&buf, 2);
+        assert_eq!(fs.len(), 1);
+        assert_eq!(&*fs[0].mount, "/");
+    }
+
+    #[test]
+    fn pseudo_and_ram_filesystems_are_left_out() {
+        let mut buf = Vec::new();
+        // `devfs` reports a real size and is memory; `autofs` reports none.
+        buf.extend(statfs_record(
+            4096,
+            0,
+            0,
+            "autofs",
+            "/System/Volumes/Data/home",
+        ));
+        buf.extend(statfs_record(4096, 52, 0, "devfs", "/dev"));
+        buf.extend(statfs_record(4096, 1000, 400, "apfs", "/"));
+        let fs = parse_statfs(&buf, 3);
+        assert_eq!(fs.len(), 1);
+        assert_eq!(&*fs[0].mount, "/");
+        assert_eq!(fs[0].total, 4096 * 1000);
+        assert_eq!(fs[0].avail, 4096 * 400);
+    }
+
+    #[test]
+    fn the_live_filesystems_include_a_sized_root() {
+        // The layout check that licenses every offset above: a machine always
+        // has a filesystem mounted at `/` and it is never empty.
+        let fs = filesystems().expect("no filesystems, so the statfs layout is wrong");
+        let root = fs.iter().find(|f| &*f.mount == "/").expect("no root");
+        assert!(root.total > 0);
+        assert!(root.avail <= root.total);
+        assert!(fs.iter().all(|f| f.total > 0));
     }
 
     #[test]

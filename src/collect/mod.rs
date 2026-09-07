@@ -29,6 +29,160 @@ pub struct Needs {
 /// about.
 pub use backend::{MIN_INTERVAL, MIN_INTERVAL_WHY};
 
+/// Whether a filesystem lives in RAM rather than on a device.
+///
+/// Excluded from the capacity figures by name rather than by measurement,
+/// because they report perfectly real sizes — a full `tmpfs` is a memory
+/// problem, which the header already reports, and counting it here would spend
+/// a second figure saying the same bytes are gone.
+pub fn is_ram_backed(kind: &str) -> bool {
+    matches!(kind, "tmpfs" | "ramfs" | "devtmpfs" | "devfs")
+}
+
+/// Whether a filesystem lives at the other end of a network.
+///
+/// Excluded because `statfs` on an unresponsive mount blocks until it answers,
+/// and a monitor that freezes when the fileserver does is worse than one that
+/// does not mention the fileserver. macOS avoids the question entirely by
+/// asking `getfsstat` not to wait; Linux has no such flag, so this is a rule
+/// about names and it is worth knowing it is there.
+///
+/// Linux only, for that reason: there is nothing for the other backend to use
+/// it for.
+#[cfg(target_os = "linux")]
+pub fn is_network_fs(kind: &str) -> bool {
+    matches!(
+        kind,
+        "nfs"
+            | "nfs4"
+            | "cifs"
+            | "smbfs"
+            | "smb3"
+            | "afs"
+            | "ceph"
+            | "glusterfs"
+            | "9p"
+            | "ocfs2"
+            | "gfs2"
+            | "lustre"
+            | "beegfs"
+            | "davfs"
+            // An automount point that has not mounted yet appears as `autofs`,
+            // not as the type behind it — and resolving its path is what
+            // triggers the mount. Asking it how full it is *is* the thing that
+            // blocks.
+            | "autofs"
+    ) || kind.starts_with("fuse")
+}
+
+/// Collapse filesystems that are the same physical space seen more than once.
+///
+/// Two shapes of duplicate, and one rule for both. A bind mount puts one
+/// filesystem at several paths, reporting identical numbers each time. APFS
+/// puts every volume in one container, so `/`, `/System/Volumes/Data`,
+/// `/System/Volumes/VM` and four others all report the same size and differ
+/// only slightly in what is left, because each volume reserves a little.
+///
+/// Read-only volumes are folded in for their *name* and dropped for their
+/// *space*. A filesystem nothing can be written to cannot fill up — a squashfs
+/// snap has no available space by construction and would read as 100% full
+/// forever — but since Catalina the volume macOS mounts at `/` is the sealed,
+/// read-only system one, and the writable half is `/System/Volumes/Data`.
+/// Filtering before merging removed the root of every Mac; filtering after it
+/// keeps the name a reader knows and the number that can actually run out.
+///
+/// So the key is the total, and the survivor takes the **shortest mount point**
+/// and the **least available space**: the name a reader recognises, and the
+/// number that decides whether anything is wrong. Reporting
+/// `/System/Volumes/VM 86.1% full` was accurate and no use to anybody.
+///
+/// Keyed on the device rather than on the size. Two identically-sized logical
+/// volumes are a normal way to provision a machine, and merging them on size
+/// would not rename one — it would delete it, and then report the survivor's
+/// figure under the wrong mount point.
+pub fn merge_filesystems(
+    all: Vec<(String, bool, crate::sample::FsStat)>,
+) -> Vec<crate::sample::FsStat> {
+    struct Group {
+        key: String,
+        writable: bool,
+        fs: crate::sample::FsStat,
+    }
+    let mut out: Vec<Group> = Vec::new();
+    for (dev, writable, f) in all {
+        let key = container_of(&dev).to_string();
+        match out.iter_mut().find(|g| g.key == key) {
+            Some(g) => {
+                // The shortest name across every volume, writable or not. On
+                // macOS the sealed system volume is the one mounted at `/` and
+                // the writable half is `/System/Volumes/Data`, so taking the
+                // name only from writable members would report the machine's
+                // disk under a path nobody recognises.
+                if f.mount.len() < g.fs.mount.len() {
+                    g.fs.mount = f.mount;
+                }
+                // The space, from the writable members only — that is the space
+                // that can run out.
+                if writable {
+                    if g.writable {
+                        g.fs.avail = g.fs.avail.min(f.avail);
+                    } else {
+                        g.fs.avail = f.avail;
+                        g.fs.total = f.total;
+                    }
+                    g.writable = true;
+                }
+            }
+            None => out.push(Group {
+                key,
+                writable,
+                fs: f,
+            }),
+        }
+    }
+    // A container nothing can be written to cannot fill up. Dropped after the
+    // merge rather than before it, because a container with one read-only
+    // volume and one writable one is a machine's disk, not a read-only mount.
+    out.into_iter()
+        .filter(|g| g.writable)
+        .map(|g| g.fs)
+        .collect()
+}
+
+/// Accept a filesystem list only if it contains a sized root.
+///
+/// The check that licenses reading capacity out of a structure neither backend
+/// declares. Every machine has a filesystem mounted at `/` and it is never
+/// empty — so if that one was rejected while some other mount happened to yield
+/// a plausible-looking block size, the offsets are wrong and every figure that
+/// did come back is garbage.
+///
+/// Asserting merely that *something* came back is not the same check, and was
+/// what this did first: entries with no size are already dropped, so it reduced
+/// to "the list is not empty".
+pub fn with_a_root(out: Vec<crate::sample::FsStat>) -> Option<Vec<crate::sample::FsStat>> {
+    out.iter()
+        .any(|f| &*f.mount == "/" && f.total > 0)
+        .then_some(out)
+}
+
+/// The storage a device name lives on, for deciding whether two filesystems are
+/// the same space.
+///
+/// `/dev/disk3s1s1` and `/dev/disk3s5` are two APFS volumes in one container and
+/// share what is left; `/dev/vda1` and `/dev/vda2` are two partitions that do
+/// not. So the slice suffix is stripped only from Darwin's `diskN` names, where
+/// it denotes a volume inside a container, and left alone everywhere else.
+fn container_of(dev: &str) -> &str {
+    let Some(rest) = dev.strip_prefix("/dev/disk") else {
+        return dev;
+    };
+    let n = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    &dev[.."/dev/disk".len() + n]
+}
+
 pub trait Collector {
     /// Take one snapshot. Backends hold whatever raw counters they need to
     /// turn cumulative kernel numbers into per-interval rates.
@@ -143,5 +297,153 @@ mod tests {
     fn the_ceiling_is_one_core_worth_per_core() {
         assert_eq!(sample_of(1, &[]).cpu_ceiling(), Some(100.0));
         assert_eq!(sample_of(14, &[]).cpu_ceiling(), Some(1400.0));
+    }
+}
+
+#[cfg(test)]
+mod fs_tests {
+    use super::*;
+    use crate::sample::FsStat;
+    use std::sync::Arc;
+
+    fn fs(dev: &str, mount: &str, total: u64, avail: u64) -> (String, bool, FsStat) {
+        rofs(dev, mount, total, avail, true)
+    }
+
+    fn rofs(
+        dev: &str,
+        mount: &str,
+        total: u64,
+        avail: u64,
+        writable: bool,
+    ) -> (String, bool, FsStat) {
+        (
+            dev.to_string(),
+            writable,
+            FsStat {
+                mount: Arc::from(mount),
+                total,
+                avail,
+            },
+        )
+    }
+
+    #[test]
+    fn a_read_only_filesystem_cannot_fill_up() {
+        // A squashfs snap has no available space by construction and would read
+        // as 100% full forever. An Ubuntu machine carries twenty-odd, and each
+        // is its own device, so the real root could never be reported past
+        // them.
+        let out = merge_filesystems(vec![
+            rofs("/dev/loop3", "/snap/core22/1234", 1000, 0, false),
+            fs("/dev/vda1", "/", 1000, 400),
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(&*out[0].mount, "/");
+    }
+
+    #[test]
+    fn a_sealed_system_volume_lends_its_name_to_the_writable_half() {
+        // Since Catalina the volume macOS mounts at `/` is the read-only system
+        // one and the writable half is `/System/Volumes/Data`. Filtering
+        // read-only volumes before merging removed the root of every Mac;
+        // filtering after keeps the name a reader knows and the space that can
+        // actually run out.
+        let out = merge_filesystems(vec![
+            rofs("/dev/disk3s1s1", "/", 1000, 900, false),
+            fs("/dev/disk3s5", "/System/Volumes/Data", 1000, 120),
+        ]);
+        assert_eq!(out.len(), 1, "the machine's own disk disappeared");
+        assert_eq!(&*out[0].mount, "/", "the writable half's obscure name won");
+        assert_eq!(out[0].avail, 120, "the sealed volume's free space was used");
+    }
+
+    #[test]
+    fn one_filesystem_at_several_paths_is_reported_once() {
+        // A bind mount. This container has `/dev/vda1` at three paths, all
+        // reporting the same numbers.
+        let out = merge_filesystems(vec![
+            fs("/dev/vda1", "/etc/resolv.conf", 1000, 400),
+            fs("/dev/vda1", "/", 1000, 400),
+            fs("/dev/vda1", "/etc/hosts", 1000, 400),
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(&*out[0].mount, "/", "the longest path was kept");
+    }
+
+    #[test]
+    fn volumes_sharing_a_container_report_the_worst_of_them() {
+        // APFS. Seven volumes in one container, each reserving a little, so
+        // they differ slightly on what is left. Reporting
+        // `/System/Volumes/VM 86.1% full` was accurate and no use to anybody,
+        // and reporting the roomiest would have been worse than no use.
+        let out = merge_filesystems(vec![
+            fs("/dev/disk3s1s1", "/", 1000, 400),
+            fs("/dev/disk3s6", "/System/Volumes/VM", 1000, 130),
+            fs("/dev/disk3s5", "/System/Volumes/Data", 1000, 390),
+        ]);
+        assert_eq!(out.len(), 1, "one container was reported three times");
+        assert_eq!(&*out[0].mount, "/", "an obscure volume was named");
+        assert_eq!(out[0].avail, 130, "the roomiest volume was reported");
+    }
+
+    #[test]
+    fn two_disks_of_equal_size_are_two_disks() {
+        // Identically-sized logical volumes are a normal way to provision a
+        // machine. Keyed on size, the second would not be renamed — it would be
+        // deleted, and the survivor's figure reported under the wrong mount.
+        let out = merge_filesystems(vec![
+            fs("/dev/vg0/lv1", "/srv/a", 1000, 400),
+            fs("/dev/vg0/lv2", "/srv/b", 1000, 50),
+        ]);
+        assert_eq!(out.len(), 2, "an identically-sized disk disappeared");
+    }
+
+    #[test]
+    fn separate_containers_stay_apart() {
+        let out = merge_filesystems(vec![
+            fs("/dev/disk1s1", "/System/Volumes/xarts", 500, 480),
+            fs("/dev/disk3s1s1", "/", 1000, 400),
+        ]);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn a_partition_is_not_a_volume_in_a_container() {
+        // `/dev/disk3s1` and `/dev/disk3s5` are volumes in one APFS container;
+        // `/dev/vda1` and `/dev/vda2` are two partitions that are not.
+        assert_eq!(container_of("/dev/disk3s1s1"), "/dev/disk3");
+        assert_eq!(container_of("/dev/disk3s5"), "/dev/disk3");
+        assert_eq!(container_of("/dev/disk11s2"), "/dev/disk11");
+        assert_eq!(container_of("/dev/vda1"), "/dev/vda1");
+        assert_eq!(container_of("/dev/nvme0n1p2"), "/dev/nvme0n1p2");
+        assert_eq!(container_of("overlay"), "overlay");
+    }
+
+    #[test]
+    fn a_filesystem_list_with_no_root_is_refused() {
+        // Every machine has a sized filesystem at `/`. A list without one means
+        // the offsets are not pointing where this code believes.
+        let ok = vec![fs("/dev/vda1", "/", 1000, 400).2];
+        assert!(with_a_root(ok).is_some());
+        let no_root = vec![fs("/dev/vda2", "/home", 1000, 400).2];
+        assert_eq!(
+            with_a_root(no_root),
+            None,
+            "a list with no root was accepted"
+        );
+        assert_eq!(with_a_root(Vec::new()), None);
+        // A root with no size is not a root that was read.
+        let empty_root = vec![fs("/dev/vda1", "/", 0, 0).2];
+        assert_eq!(with_a_root(empty_root), None);
+    }
+
+    #[test]
+    fn what_lives_in_memory_is_not_a_disk() {
+        for kind in ["tmpfs", "ramfs", "devtmpfs", "devfs"] {
+            assert!(is_ram_backed(kind), "{kind} was counted as disk");
+        }
+        assert!(!is_ram_backed("ext4"));
+        assert!(!is_ram_backed("apfs"));
     }
 }
