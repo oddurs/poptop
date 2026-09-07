@@ -152,9 +152,9 @@ impl Out {
         self.u8(u8::from(v.is_some()));
         match v {
             Some(s) => self.str(s),
-            // A placeholder index, never read back. Writing nothing would make
-            // the record's length depend on its content, which every other
-            // optional here avoids.
+            // A placeholder, never looked up. Writing nothing would make the
+            // record's length depend on its content, which every other optional
+            // here avoids.
             None => self.u32(0),
         }
     }
@@ -225,8 +225,16 @@ impl<'a> In<'a> {
     }
     fn opt_str(&mut self) -> Option<Option<Arc<str>>> {
         let some = self.u8()? != 0;
-        let s = self.str()?;
-        Some(some.then_some(s))
+        if !some {
+            // Consume the placeholder without resolving it. Looking it up
+            // instead worked only because `name` and `user` are written before
+            // `cmd`, so index 0 always existed by the time a `None` was read —
+            // load-bearing coupling between two fields that have no reason to
+            // know about each other.
+            self.u32()?;
+            return Some(None);
+        }
+        Some(Some(self.str()?))
     }
     fn opt_u64(&mut self) -> Option<Option<u64>> {
         let present = self.u8()? != 0;
@@ -876,6 +884,22 @@ mod tests {
             (40 - back.len()) as f32,
             "the surviving samples are not the newest contiguous run"
         );
+    }
+
+    #[test]
+    fn a_missing_string_decodes_without_a_string_table_to_look_it_up_in() {
+        // `opt_str` writes a placeholder index for `None`, and resolving it
+        // worked only because every process writes its name and user first. A
+        // record whose only string is optional and absent has an empty table,
+        // and there is no index 0 to find.
+        let mut out = Out::default();
+        out.opt_str(None);
+        let mut r = In {
+            bytes: &out.bytes,
+            at: 0,
+            strings: Vec::new(),
+        };
+        assert_eq!(r.opt_str(), Some(None), "an absent string did not decode");
     }
 
     #[test]
