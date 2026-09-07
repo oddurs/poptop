@@ -1656,6 +1656,14 @@ mod floors {
         );
 
         assert!(!why.is_empty(), "a floor with no reason reads as arbitrary");
+        // The floor lives in one place. Supporting evidence may carry figures
+        // of its own — the `/proc` reason cites 1ms at 400 processes — but a
+        // sentence restating *the floor* is a second copy to keep in step, and
+        // that one drifted within the hour of being written.
+        assert!(
+            !why.contains(&format!("{floor:?}")),
+            "the reason restates the floor, which the caller already prints: {why}"
+        );
         assert!(floor <= MAX_INTERVAL, "the bounds cross");
     }
 

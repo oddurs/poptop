@@ -3740,3 +3740,31 @@ fn show_metric_audit() {
     let biggest = s.procs.iter().max_by_key(|p| p.rss).unwrap();
     println!("largest rss: {} = {} bytes", biggest.name, biggest.rss);
 }
+
+#[test]
+fn the_first_sample_reports_no_cpu_rather_than_a_wrong_one() {
+    // Both backends need a previous reading before CPU means anything, and
+    // neither gets one on the first sample. `/proc` has said zero all along;
+    // sysinfo was refreshed by `System::new_all` microseconds earlier and
+    // returned a figure from inside the very interval the config floor exists
+    // to refuse — drawn as the first frame, pushed into history, and persisted.
+    use crate::collect::{Collector, Needs, Platform};
+    let mut c = Platform::new().unwrap();
+    let first = c.sample(Needs { io: false }).unwrap();
+
+    assert_eq!(first.cpu_total, 0.0, "the first sample claims a CPU figure");
+    assert!(
+        first.cpu_per_core.iter().all(|&c| c == 0.0),
+        "a core claims a figure on the first sample"
+    );
+    assert!(
+        first.procs.iter().all(|p| p.cpu == 0.0),
+        "a process claims a figure on the first sample"
+    );
+    // …and the machine is still described: this is about CPU, not about
+    // refusing to sample.
+    assert!(
+        first.mem.total > 0,
+        "the first sample carries nothing at all"
+    );
+}
