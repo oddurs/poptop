@@ -2,7 +2,7 @@
 id: 54
 title: Kernel threads crowd out the processes anyone is looking for
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -37,7 +37,7 @@ usable table and a wall of `kworker`.
 
 ## Acceptance criteria
 
-- [ ] Kernel threads are hidden by default on Linux
-- [ ] A key shows them, and the footer lists it
-- [ ] The number hidden is stated rather than silently dropped
-- [ ] Sorting, filtering and the tree behave with them hidden
+- [x] Kernel threads are hidden by default on Linux
+- [x] A key shows them, and the footer lists it
+- [x] The number hidden is stated rather than silently dropped
+- [x] Sorting, filtering and the tree behave with them hidden

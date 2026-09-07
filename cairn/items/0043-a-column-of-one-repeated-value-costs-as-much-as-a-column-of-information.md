@@ -2,7 +2,7 @@
 id: 43
 title: A column of one repeated value costs as much as a column of information
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -56,7 +56,7 @@ that runs out.
 
 ## Acceptance criteria
 
-- [ ] A column with one distinct value across the visible rows yields its width
-- [ ] What it said appears once, in the section title
-- [ ] The layout does not oscillate as processes come and go
-- [ ] Measured: columns returned to `COMMAND` on a single-user machine
+- [x] A column with one distinct value across the visible rows yields its width
+- [x] What it said appears once, in the section title
+- [x] The layout does not oscillate as processes come and go
+- [x] Measured: columns returned to `COMMAND` on a single-user machine
