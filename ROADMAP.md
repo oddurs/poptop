@@ -23,13 +23,16 @@ Timeline, scrubbing, process tree, colour that survives a colourblind reader and
 
 ## v0.2 — Cheap enough to run
 
-`#########·` 89% · 8 of 9 done · due 2026-11-01
+`#######···` 67% · 8 of 12 done · due 2026-11-01
 
 Collector fast enough for sub-second sampling, and the data-fidelity gaps against atop closed or disclosed.
 
 ### backlog
 
 - [ ] `0011` Capture processes that live and die between samples <sup>feature · p0</sup>
+- [ ] `0023` RSS is wrong by an integer factor on any kernel without 4K pages <sup>bug · p0</sup>
+- [ ] `0024` Per-process CPU is wrong on macOS below a 200ms sample interval <sup>bug · p1</sup>
+- [ ] `0025` A process that exits mid-sample is reported as needing root <sup>bug · p1</sup>
 
 ### done
 
@@ -44,9 +47,14 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`##########` 100% · 4 of 4 done · due 2027-01-01
+`#######···` 67% · 4 of 6 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
+
+### backlog
+
+- [ ] `0026` macOS reports no start time for a third of processes, weakening process identity <sup>bug · p2</sup>
+- [ ] `0027` Per-process CPU is clamped on Linux and not on macOS <sup>bug · p3</sup>
 
 ### done
 

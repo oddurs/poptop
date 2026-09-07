@@ -3697,3 +3697,46 @@ fn the_key_says_why_it_did_nothing_on_a_narrow_panel() {
     app.toggle_io();
     assert!(!render(&app, 78, 30).contains("too narrow"));
 }
+
+/// The measurements behind the metric-accuracy audit (items 0023-0027).
+///
+/// Kept because the findings are claims about live numbers, and a claim about a
+/// live number is only as good as the last time someone ran it.
+#[test]
+#[ignore]
+fn show_metric_audit() {
+    use crate::collect::{Collector, Needs, Platform};
+    let mut c = Platform::new().unwrap();
+    c.sample(Needs { io: false }).unwrap();
+
+    // Does a fast sample rate still produce sane CPU? 0013 allows 50ms, and
+    // sysinfo documents a 200ms minimum between CPU refreshes.
+    for ms in [50u64, 100, 200, 1000] {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        let s = c.sample(Needs { io: false }).unwrap();
+        println!(
+            "interval {ms:>4}ms -> cpu_total {:>6.1}%  max core {:>6.1}%  max proc {:>7.1}%",
+            s.cpu_total,
+            s.cpu_per_core.iter().cloned().fold(0.0f32, f32::max),
+            s.procs.iter().map(|p| p.cpu).fold(0.0f32, f32::max),
+        );
+    }
+
+    let s = c.sample(Needs { io: false }).unwrap();
+    let cores = s.cpu_per_core.len();
+    let zero_start = s.procs.iter().filter(|p| p.started == 0).count();
+    let over = s
+        .procs
+        .iter()
+        .filter(|p| p.cpu > cores as f32 * 100.0)
+        .count();
+    println!(
+        "procs {}  started==0 {}  cpu over cores*100 {}  cores {}",
+        s.procs.len(),
+        zero_start,
+        over,
+        cores
+    );
+    let biggest = s.procs.iter().max_by_key(|p| p.rss).unwrap();
+    println!("largest rss: {} = {} bytes", biggest.name, biggest.rss);
+}
