@@ -784,23 +784,24 @@ queries work.
 ## Tests
 
 ```sh
-cargo test                     # host backend
-cargo clippy --all-targets -- -D warnings        # what CI enforces
-cargo test -- --ignored --nocapture show_frame   # print a rendered frame
+./check                        # everything CI enforces, on the host
+./check --linux                # the same again inside rust:1-slim
+./check --quick                # fmt, build, test; skip clippy and live data
 
-# Both of the first two, on Linux, from a Mac:
-docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/tmp/t rust:1-slim sh -c \
-  'rustup component add clippy && cargo test && cargo clippy --all-targets -- -D warnings'
+cargo test -- --ignored --nocapture show_frame   # print a rendered frame
 ```
 
 The last one matters on a Mac: the `/proc` backend is `cfg`'d out of a macOS
 build entirely, so it is neither compiled nor tested unless you run it on Linux.
 
-Note the `rustup component add`. The `rust:1-slim` image ships without clippy, so
-`docker run … cargo clippy` fails with "not installed for the toolchain" — which
+`./check` exists because of one property: **a tool that is missing is a failed
+check, never a skipped one.** The `rust:1-slim` image ships without clippy, so
+`docker run … cargo clippy` exits with "not installed for the toolchain" — which
 looks nothing like a lint warning and is easy to read as a clean run. That is how
-a dead field in `collect/linux.rs` reached a PR: `cargo test` passed on both
-platforms, and the clippy step that would have caught it was never running.
+a dead field in `collect/linux.rs` reached a pull request: `cargo test` passed on
+both platforms, and the clippy step that would have caught it had never once
+executed. The script installs the component inside the container, and reports
+anything it could not run rather than passing quietly.
 
 UI tests render through ratatui's `TestBackend` and assert on the resulting
 buffer, including a 1×1 terminal — a monitor that panics on a small window is
