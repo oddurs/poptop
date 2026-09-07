@@ -622,6 +622,13 @@ at 400 processes, so 50 ms already spends 2% of a core and 10 ms would spend
 
 ## How it works
 
+The page size is read from `/proc/self/smaps` at startup rather than assumed.
+RSS is a count of pages multiplied by it, so a hardcoded 4096 reports every
+process at a quarter of its real memory on a 16 KiB-page kernel and a sixteenth
+on a 64 KiB one — Asahi and RHEL aarch64 respectively — and nothing about the
+output looks wrong. Where the kernel will not say, ptop assumes 4096 and says
+that it did.
+
 Two backends behind one `Collector` trait:
 
 - **Linux** (`src/collect/linux.rs`) parses `/proc` directly with nothing but

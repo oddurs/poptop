@@ -150,6 +150,11 @@ fn main() -> io::Result<()> {
     let mut collector = Platform::new()?;
 
     let mut warnings = Vec::new();
+    // Whatever the backend had to assume about this machine. Said once, with
+    // the config warnings, rather than folded into every figure that rests on
+    // it — an assumption nobody is told about is the same shape as a wrong
+    // number.
+    warnings.extend(collector.notes().into_iter().map(config::Warning));
     let file = config::read(&mut warnings);
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let (settings, positional, file_warnings) = config::resolve(

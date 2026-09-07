@@ -2,7 +2,7 @@
 id: 23
 title: RSS is wrong by an integer factor on any kernel without 4K pages
 type: bug
-status: backlog
+status: done
 milestone: v0.2
 created: 2026-09-06
 updated: 2026-09-06
