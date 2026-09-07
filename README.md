@@ -489,7 +489,10 @@ worth watching.
 
 macOS reports `—`. `sysinfo::Disks::refresh` costs **12.5ms** steady state,
 measured, against a whole sample budget of about 4ms; an em dash is the honest
-answer until there is a cheaper route to the same counters.
+answer until there is a cheaper route to the same counters. `poptop --help` has
+an `ON MACOS` section listing every figure that is Linux-only, which is where a
+reader wondering about a missing number will look — poptop does not announce it
+at startup, because an absence that never changes is not news twice.
 
 ### Filesystem capacity
 
