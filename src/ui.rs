@@ -1212,7 +1212,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
                     .style(app.theme.dim_style()),
                 Cell::from(p.state.to_string()),
-                Cell::from(p.threads.to_string()),
+                // An em dash, never a number we do not have. See
+                // `ProcSample::threads`: a fabricated `1` sits next to a CPU
+                // percentage that can openly contradict it.
+                Cell::from(match p.threads {
+                    Some(n) => n.to_string(),
+                    None => "—".into(),
+                }),
             ];
             if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));

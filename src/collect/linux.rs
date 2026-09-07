@@ -499,7 +499,7 @@ fn parse_proc_stat(
         user,
         cpu,
         rss: rss_pages * ctx.page_size,
-        threads,
+        threads: Some(threads),
         state,
         started: Some(starttime),
         io: None,
@@ -856,7 +856,11 @@ mod tests {
         .unwrap();
         assert_eq!(p.name.as_ref(), "(evil) proc)");
         assert_eq!(p.ppid, 1);
-        assert_eq!(p.threads, 8);
+        assert_eq!(
+            p.threads,
+            Some(8),
+            "the thread count from /proc stat field 20"
+        );
         assert_eq!(p.state, 'S');
     }
 

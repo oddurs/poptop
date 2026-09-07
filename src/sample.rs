@@ -170,7 +170,17 @@ pub struct ProcSample {
     pub cpu: f32,
     /// Resident set size in bytes.
     pub rss: u64,
-    pub threads: u32,
+    /// Threads in this process, or `None` where the platform will not say.
+    ///
+    /// Not `1`. A flat `1` is not a missing figure but a wrong one, and it is
+    /// visibly wrong next to the column beside it: a single thread cannot use
+    /// three cores, yet macOS reported exactly that for every virtual machine
+    /// on the box. `None` renders as an em dash and claims nothing.
+    ///
+    /// Always known on Linux, where `/proc/<pid>/stat` publishes it for every
+    /// process. Known on macOS for processes this user owns, which in practice
+    /// is every process busy enough for the figure to matter.
+    pub threads: Option<u32>,
     pub state: char,
     /// An opaque token, unique to one run of one process on this machine.
     ///

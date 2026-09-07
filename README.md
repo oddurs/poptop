@@ -436,6 +436,17 @@ whether two samples are adjacent.
 macOS publishes no equivalent counter, so poptop says nothing there rather than
 zero. "I do not know" and "none happened" are opposite answers.
 
+The same rule governs the `THR` column. macOS will only report a thread count
+for processes you own — about two thirds of the table — and poptop used to fill
+the rest with `1`. That is not a missing figure but a wrong one, and next to the
+column beside it, visibly wrong: a virtual machine using three cores rendered as
+`300%` beside `1 thread`, and one thread cannot use three cores. The unreadable
+ones now show `—`.
+
+In practice the dash lands where it costs nothing. A process busy enough for its
+thread count to matter is almost always one of your own: measured across a
+660-process table, **no process above 5% CPU had an unreadable thread count.**
+
 **Actually capturing those processes** needs `taskstats` over netlink, which
 needs `CAP_NET_ADMIN` — tracked in the roadmap, and the remaining substantive
 capability gap against atop.

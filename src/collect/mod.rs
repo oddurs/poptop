@@ -74,7 +74,7 @@ pub use linux::ProcFs as Platform;
 #[cfg(not(target_os = "linux"))]
 mod darwin;
 #[cfg(not(target_os = "linux"))]
-mod kinfo;
+mod procinfo;
 #[cfg(not(target_os = "linux"))]
 use darwin as backend;
 #[cfg(not(target_os = "linux"))]
@@ -109,7 +109,7 @@ mod tests {
                     user: Arc::from("root"),
                     cpu,
                     rss: 0,
-                    threads: 1,
+                    threads: Some(1),
                     state: 'R',
                     started: Some(1),
                     io: None,

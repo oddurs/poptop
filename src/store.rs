@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
 
 /// When the machine this sample came from was booted.
 ///
@@ -308,7 +308,7 @@ fn write_sample(out: &mut Out, s: &Sample) {
         out.str(&p.user);
         out.f32(p.cpu);
         out.u64(p.rss);
-        out.u32(p.threads);
+        out.opt_u32(p.threads);
         out.u8(p.state as u8);
         out.opt_u64(p.started);
         out.u8(u8::from(p.io.is_some()));
@@ -385,7 +385,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         let user = r.str()?;
         let cpu = r.f32()?;
         let rss = r.u64()?;
-        let threads = r.u32()?;
+        let threads = r.opt_u32()?;
         let state = r.u8()? as char;
         let started = r.opt_u64()?;
         let has_io = r.u8()? != 0;
@@ -466,7 +466,7 @@ mod tests {
             user: Arc::from("oddurs"),
             cpu: 12.5,
             rss: 4 << 20,
-            threads: 3,
+            threads: Some(3),
             state: 'S',
             started: Some(987),
             io: Some(IoRates {
@@ -539,6 +539,21 @@ mod tests {
                 y.io.map(|i| (i.read, i.write))
             );
         }
+    }
+
+    #[test]
+    fn an_unknown_thread_count_does_not_come_back_as_one() {
+        // Restoring `1` for a process whose count was never known would put the
+        // fabricated figure back on screen, one restart later.
+        let mut s = sample_of(1.0, 2);
+        s.procs[0].threads = None;
+        s.procs[1].threads = Some(36);
+        let back = decode(&encode(&[&s])).unwrap();
+        assert_eq!(
+            back[0].procs[0].threads, None,
+            "a thread count was invented"
+        );
+        assert_eq!(back[0].procs[1].threads, Some(36));
     }
 
     #[test]
@@ -737,7 +752,7 @@ mod tests_support {
                     user: Arc::from(if i % 3 == 0 { "root" } else { "oddurs" }),
                     cpu: 1.0,
                     rss: 1 << 20,
-                    threads: 4,
+                    threads: Some(4),
                     state: 'S',
                     started: Some(i as u64),
                     io: None,
