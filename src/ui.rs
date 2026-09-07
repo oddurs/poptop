@@ -23,7 +23,13 @@ const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 // Boxes also compete with their own contents for attention; a hairline rule
 // separates without doing that. L2 then folded the cores section in here,
 // trading its divider and its data row for one header line.
-pub const HEADER_H: u16 = 3; // title, figures, cores
+/// Two rows: the figures, with the live/paused marker in front of them and the
+/// heat legend behind, and the per-core meters.
+///
+/// It was three. The extra one carried the marker, the legend and the word
+/// `poptop` — and on a thirty-row terminal every chrome row is a process the
+/// table cannot show.
+pub const HEADER_H: u16 = 2;
 /// The height the timeline had when it was fixed.
 ///
 /// It is the floor, not a minimum for legibility: growing a panel must never
@@ -169,35 +175,96 @@ fn fmt_uptime(d: Duration) -> String {
 /// that fits: a rule you can predict from the ranking beats one that fits two
 /// more characters, since the whole point is that the reader knows what
 /// survives.
-fn fit(figures: Vec<Figure<'_>>, width: usize) -> Vec<Span<'_>> {
-    const SEP: &str = "   ";
+/// The width every figure would draw to, separators included.
+///
+/// What "wide enough for everything" means, and so what the heat legend has to
+/// fit alongside.
+fn full_width(figures: &[Figure<'_>]) -> usize {
+    let mut order: Vec<&Figure<'_>> = figures.iter().collect();
+    order.sort_by_key(|f| f.group);
+    let mut w = 0;
+    let mut last: Option<Group> = None;
+    for f in order {
+        w += match last {
+            None => 0,
+            Some(g) if g == f.group => 2,
+            Some(_) => 5,
+        } + f
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum::<usize>();
+        last = Some(f.group);
+    }
+    w
+}
+
+fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a>> {
+    /// Between two figures about the same resource.
+    const NEAR: &str = "  ";
+    /// Between two groups. Wider, and marked, because a group boundary that
+    /// looks like the gap inside a group is not a boundary — and the mark
+    /// carries on a terminal with no colour to spend.
+    const FAR: &str = "  │  ";
+
     let widths: Vec<usize> = figures
         .iter()
         .map(|f| f.spans.iter().map(|s| s.content.chars().count()).sum())
         .collect();
+
+    let groups: Vec<Group> = figures.iter().map(|f| f.group).collect();
+
+    // The width a set of figures actually draws to, separators included.
+    //
+    // Measured rather than estimated. Charging the wider separator for every
+    // gap — which is what this did first — overstated the line by three columns
+    // per group boundary, and the figure that fell off the end was `LOAD` on a
+    // 180-column terminal with room to spare.
+    let drawn = |keep: &[bool]| {
+        let mut shown: Vec<usize> = (0..keep.len()).filter(|&i| keep[i]).collect();
+        shown.sort_by_key(|&i| groups[i]);
+        let mut w = 0;
+        let mut last: Option<Group> = None;
+        for &i in &shown {
+            w += match last {
+                None => 0,
+                Some(g) if g == groups[i] => NEAR.len(),
+                Some(_) => FAR.len(),
+            } + widths[i];
+            last = Some(groups[i]);
+        }
+        w
+    };
+
+    // What to keep: by rank, least diagnostic first out.
     let mut order: Vec<usize> = (0..figures.len()).collect();
     order.sort_by_key(|&i| figures[i].rank);
-
     let mut keep = vec![false; figures.len()];
-    let mut used = 0;
     for &i in &order {
-        let extra = widths[i] + if used == 0 { 0 } else { SEP.len() };
-        if used + extra > width {
+        keep[i] = true;
+        if drawn(&keep) > width {
+            keep[i] = false;
             break;
         }
-        used += extra;
-        keep[i] = true;
     }
 
+    // Where they sit: by group, and by declaration order within it — which is
+    // why this sort has to be stable. `MEM`, its byte detail and `SWP` are
+    // ranked 50, 90 and 60, and belong on screen in that written order.
+    let mut shown: Vec<usize> = (0..figures.len()).filter(|&i| keep[i]).collect();
+    shown.sort_by_key(|&i| figures[i].group);
+
+    let mut spans: Vec<Vec<Span<'a>>> = figures.into_iter().map(|f| f.spans).collect();
     let mut out = Vec::new();
-    for (i, figure) in figures.into_iter().enumerate() {
-        if !keep[i] {
-            continue;
+    let mut last: Option<Group> = None;
+    for &i in &shown {
+        match last {
+            None => {}
+            Some(g) if g == groups[i] => out.push(Span::raw(NEAR)),
+            Some(_) => out.push(Span::styled(FAR, theme.chrome_style())),
         }
-        if !out.is_empty() {
-            out.push(Span::raw(SEP));
-        }
-        out.extend(figure.spans);
+        last = Some(groups[i]);
+        out.append(&mut spans[i]);
     }
     out
 }
@@ -207,8 +274,30 @@ fn fit(figures: Vec<Figure<'_>>, width: usize) -> Vec<Span<'_>> {
 /// The header is a fixed line and the figures do not fit on every terminal, so
 /// something has to go first. Ranking them is the only way to make that a
 /// decision rather than whatever ratatui's clipping happens to reach.
+/// Which resource a figure is about, and so where it sits.
+///
+/// The reading order of the question this tool is opened to answer: is the
+/// machine busy, is it out of memory, is it waiting on a disk, is the network
+/// unhealthy — and then the two figures that are neither a symptom nor a cause.
+///
+/// Separate from [`Figure::rank`] because *where a figure sits* and *when it is
+/// given up* are different questions with different answers. `LOAD` is the least
+/// diagnostic figure here and should go early; if it is shown at all it belongs
+/// beside CPU, not after uptime. With one number doing both jobs the header read
+/// compute, storage, compute, network, memory, network, memory, machine —
+/// network split in half with memory in between.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Group {
+    Compute,
+    Memory,
+    Storage,
+    Network,
+    Machine,
+}
+
 struct Figure<'a> {
     spans: Vec<Span<'a>>,
+    group: Group,
     /// Lower is kept longer.
     ///
     /// Spaced by tens rather than numbered consecutively, so a figure can be
@@ -274,6 +363,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // is what people look for; saturation immediately after because it is what
     // actually tells them something is wrong.
     let mut figures = vec![Figure {
+        group: Group::Compute,
         rank: 0,
         spans: vec![
             Span::styled("CPU ", dim),
@@ -288,6 +378,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // anything". Absent on a platform that will not say, rather than zero.
     if let Some(iowait) = s.iowait {
         figures.push(Figure {
+            group: Group::Compute,
             rank: 10,
             spans: vec![
                 Span::styled("WAIT ", dim),
@@ -313,7 +404,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         if let Some(a) = d.await_ms {
             spans.push(Span::styled(format!(" {a:.1}ms"), dim));
         }
-        figures.push(Figure { rank: 20, spans });
+        figures.push(Figure {
+            group: Group::Storage,
+            rank: 20,
+            spans,
+        });
     }
 
     // What stopped, rather than what was busy. Ranked beside the storage
@@ -327,6 +422,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     if let Some(p) = s.pressure {
         let (what, pct) = p.worst();
         figures.push(Figure {
+            group: Group::Compute,
             rank: 25,
             spans: vec![
                 Span::styled("STALL ", dim),
@@ -344,6 +440,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     if let Some(running) = s.running {
         let pressure = (running as f32 / cores as f32) * 100.0;
         figures.push(Figure {
+            group: Group::Compute,
             rank: 30,
             spans: vec![
                 Span::styled("RUN ", dim),
@@ -366,6 +463,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     if let Some(f) = s.fullest().filter(|f| f.used_pct() >= app.theme.warn_pct) {
         let pct = f.used_pct();
         figures.push(Figure {
+            group: Group::Storage,
             rank: 15,
             spans: vec![
                 // Capped, because a mount point has no length limit and the
@@ -387,6 +485,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // slow packet, it is a packet that did not arrive.
     if let Some((what, n)) = s.net.as_ref().and_then(NetStat::trouble) {
         figures.push(Figure {
+            group: Group::Network,
             rank: 45,
             spans: vec![
                 Span::styled("NET ", dim),
@@ -403,6 +502,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // that says so — so it is heated on any value at all, not on a threshold.
     if let Some(blocked) = s.blocked {
         figures.push(Figure {
+            group: Group::Compute,
             rank: 40,
             spans: vec![
                 Span::styled("BLOCKED ", dim),
@@ -458,6 +558,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // of them is carrying anything.
     if let Some(l) = s.net.as_ref().and_then(NetStat::busiest) {
         figures.push(Figure {
+            group: Group::Network,
             rank: 55,
             spans: vec![
                 Span::styled(format!("{} ", l.name), dim),
@@ -469,6 +570,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     }
 
     figures.push(Figure {
+        group: Group::Memory,
         rank: 50,
         spans: mem_spans,
     });
@@ -477,6 +579,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // under a prefix rule one wide figure blocks every shorter one behind it:
     // at a hundred columns it fit nothing and cost two figures that would have.
     figures.push(Figure {
+        group: Group::Memory,
         rank: 90,
         // Shorter than it was: the bar shows what is available, so saying it
         // again in words was the third statement of one fact on one line.
@@ -488,6 +591,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
 
     if s.mem.swap_total > 0 {
         figures.push(Figure {
+            group: Group::Memory,
             rank: 60,
             spans: vec![
                 Span::styled("SWP ", dim),
@@ -500,10 +604,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     }
 
     figures.push(Figure {
+        group: Group::Machine,
         rank: 70,
         spans: vec![Span::styled("UP ", dim), Span::raw(fmt_uptime(s.uptime))],
     });
     figures.push(Figure {
+        group: Group::Machine,
         rank: 80,
         spans: vec![
             Span::styled("PROCS ", dim),
@@ -515,6 +621,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // the smoothing it adds is what the timeline is for. Kept for the people
     // who look for it, first to go when the line is tight.
     figures.push(Figure {
+        group: Group::Compute,
         rank: 100,
         spans: vec![
             Span::styled("LOAD ", dim),
@@ -525,31 +632,56 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         ],
     });
 
-    let spans = fit(figures, area.width as usize);
-
+    // The state marker sits with the figures rather than on a line of its own.
+    // It qualifies them — `PAUSED -12s` means *these numbers are twelve seconds
+    // old* — so it belongs in front of them, and the row it used to occupy was
+    // shared with the word `poptop`, the only thing on screen that never said
+    // anything.
+    //
+    // Never dropped, and so never passed to `fit`. Reading a stale process
+    // table as the current one is the single worst thing this tool could let
+    // you do, which makes this the one figure that cannot be given up for room.
     let state = if app.history.is_live() {
-        Span::styled(" poptop — LIVE ", app.theme.live_style())
+        Span::styled(" LIVE ", app.theme.live_style())
     } else {
-        // Loud on purpose: reading a stale process table as the current one is
-        // the single worst thing this tool could let you do.
         Span::styled(
-            format!(" poptop — PAUSED  -{} ", fmt_lag(app.history.time_behind())),
+            format!(" PAUSED  -{} ", fmt_lag(app.history.time_behind())),
             app.theme.paused_style(),
         )
     };
+    let state_w = state.content.chars().count();
 
-    // The heat scale lives on the title line: it is a reference for the
-    // figures just below it, and the header is always drawn.
-    let mut title = vec![state];
-    if let Some(scale) = heat_scale(area.width, &app.theme) {
-        title.push(Span::styled(scale, app.theme.dim_style()));
+    let width = area.width as usize;
+
+    // Room for the legend is judged against *every* figure, not against the
+    // ones that happen to fit. Judged against the leftovers it was not
+    // monotonic: narrowing the terminal dropped a figure, freed twenty columns,
+    // and the scale reappeared on a smaller screen than the one it had just
+    // vanished from. Against the full set the condition depends on width alone,
+    // and the scale is strictly the first thing given up — which is what the
+    // ladder always said it was.
+    let scale = heat_scale(area.width, &app.theme)
+        .filter(|s| state_w + full_width(&figures) + 2 + s.chars().count() <= width);
+    let reserved = scale.as_ref().map_or(0, |s| s.chars().count() + 2);
+
+    let mut line = vec![state];
+    let spans = fit(
+        figures,
+        width.saturating_sub(state_w + reserved + 1),
+        &app.theme,
+    );
+
+    line.extend(spans);
+    if let Some(scale) = scale {
+        // A plain gap, not the rule that divides one resource from another:
+        // this is a reference for the row, not another thing on it.
+        line.push(Span::raw("  "));
+        line.push(Span::styled(scale, app.theme.dim_style()));
     }
-    let title = Line::from(title);
 
     f.render_widget(
         Paragraph::new(vec![
-            title,
-            Line::from(spans),
+            Line::from(line),
             core_meters(s, area.width, &app.theme),
         ]),
         area,
@@ -674,7 +806,8 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
 
     // Reserve the cursor marker and legend, then divide the rest exactly so no
     // row is left blank. CPU takes the larger share as the spikier signal.
-    let graph_rows = inner_h.saturating_sub(2).max(1);
+    // One row below the graph, not two: the axis and the caption share it now.
+    let graph_rows = inner_h.saturating_sub(1).max(1);
 
     // A left gutter carrying the scale. Dropped entirely on a narrow panel:
     // four columns of axis is a poor trade against four columns of history
@@ -860,21 +993,12 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    lines.push(cursor_row(
-        app,
-        Window {
-            series: &at_cursor,
-            len: window.len(),
-            start: window_start,
-            zoom,
-            slots,
-            spc,
-            graph_w,
-            gutter,
-        },
-    ));
-
-    if lines.len() < inner_h {
+    // Computed whichever way the panel went. It used to be gated on there being
+    // room for a second row below the axis; there is no second row now, and the
+    // gate was quietly emptying the caption — taking the series identification
+    // with it on exactly the narrow panels where the gutter cannot label the
+    // rows either.
+    let legend = {
         // Real elapsed time, not sample count. A caption saying `4m32s shown`
         // beside a seam saying `time missing` is the graph contradicting
         // itself in adjacent characters — the window really did span nine
@@ -929,18 +1053,50 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // identification growing from a fixed `cpu · mem` to as much as
         // `cpu · wait · mem` is what pushed the old two-tier version past a
         // narrow panel and let the terminal cut `1s/slot` in half.
-        let keys = " — ←/→ scrub, +/- zoom";
-        let legend = [
-            format!("{ident}{span} shown, {per_slot}/slot{gap_note}{keys}"),
+        // No key hints. They were the bottom rung of this ladder and are listed
+        // in full in the footer of every frame — a reminder that is always on
+        // screen twice is not a reminder, it is noise charged against the row
+        // it shares.
+        [
             format!("{ident}{span} shown, {per_slot}/slot{gap_note}"),
             format!("{ident}{span} shown"),
             ident.trim_end_matches([' ', '—']).trim_end().to_string(),
         ]
         .into_iter()
         .find(|l| l.chars().count() <= inner_w)
-        .unwrap_or_default();
-        lines.push(Line::from(Span::styled(legend, app.theme.dim_style())));
+        .unwrap_or_default()
+    };
+
+    // One row under the graph, and what it says depends on what you are doing.
+    //
+    // It was two: an axis reading `past … now`, and a caption reading
+    // `1s shown, 1s/slot`. Both describe the x-axis, and while the timeline is
+    // live the axis says nothing the caption does not. While scrubbing the
+    // opposite holds — the cursor's position is the whole point, and the exact
+    // lag is already in the header — so the row carries the cursor instead.
+    //
+    // Always one row, never one-or-two: a panel that changed height when a key
+    // was pressed would move the process table under the reader's hands.
+    if std::env::var_os("POPTOP_DBG").is_some() {
+        eprintln!("legend={legend:?} graph_w={graph_w} gutter={gutter} inner_w={inner_w}");
     }
+    lines.push(if app.history.is_live() {
+        axis_with_caption(&legend, inner_w, &app.theme)
+    } else {
+        cursor_row(
+            app,
+            Window {
+                series: &at_cursor,
+                len: window.len(),
+                start: window_start,
+                zoom,
+                slots,
+                spc,
+                graph_w,
+                gutter,
+            },
+        )
+    });
 
     // Retained is what the clock says; capacity is what the buffer will hold at
     // the nominal rate, which is a claim about the future and so is nominal by
@@ -1251,6 +1407,46 @@ struct Window<'a> {
     gutter: usize,
 }
 
+/// The row under the graph while the timeline is live: which way time runs,
+/// and what one cell is worth.
+///
+/// The two used to be separate rows. `past … now` and `1s shown, 1s/slot` are
+/// both statements about the same axis, and neither is worth a row of a
+/// thirty-row terminal on its own — every chrome row is a process the table
+/// cannot show.
+///
+/// The caption is centred between the anchors rather than left-aligned under
+/// them, so the row reads as one axis instead of three left-aligned fragments.
+/// It is dropped, not truncated, when the panel is too narrow to hold all
+/// three: a caption cut mid-phrase is worse than no caption, and `past`/`now`
+/// is the half a first-time reader needs.
+fn axis_with_caption(caption: &str, width: usize, theme: &Theme) -> Line<'static> {
+    const ANCHORS: usize = 4 + 3; // "past" and "now"
+    // The full panel width, gutter included. `past` marks the oldest sample on
+    // screen and the gutter is left of every sample there is, so the anchor
+    // belongs at column zero — and a row indented past the gutter leaves the
+    // leftmost column of the panel unused on every frame.
+    let n = caption.chars().count();
+    let text = if caption.is_empty() {
+        format!("{:<w$}now", "past", w = width.saturating_sub(3))
+    } else if n + ANCHORS + 4 <= width {
+        let room = width - ANCHORS - n;
+        let left = room / 2;
+        format!(
+            "past{}{caption}{}now",
+            " ".repeat(left),
+            " ".repeat(room - left)
+        )
+    } else {
+        // The anchors go, not the caption. The caption has its own ladder and
+        // gives up identification last — which on a panel this narrow is the
+        // only thing naming the rows, since the gutter cannot label them
+        // either. Dropping it here would leave an unlabelled graph.
+        caption.to_string()
+    };
+    Line::from(Span::styled(text, theme.dim_style()))
+}
+
 /// The row under the graph marking where the scrub cursor sits.
 ///
 /// When a cell holds two samples the marker picks the correct half, so packing
@@ -1259,6 +1455,8 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     let (n_values, window_start, zoom, slots, spc, graph_w, gutter) =
         (w.len, w.start, w.zoom, w.slots, w.spc, w.graph_w, w.gutter);
     let pad = " ".repeat(gutter);
+    // Live is handled by `axis_with_caption` now; this stays for the empty
+    // buffer, where there is no cursor to place and no span to caption.
     if app.history.is_live() || n_values == 0 {
         return Line::from(Span::styled(
             format!(

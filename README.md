@@ -247,6 +247,29 @@ one, so widening the window brings them back with their history intact.
 ## Reading the header
 
 ```text
+ LIVE CPU  33.0%  │  MEM  84.1% ██████████░░  20.7G / 24.0G  SWP  73.3%  │  / 86.4% full  │  en0 598B/s 887B/s  │  UP 4d 14h  PROCS 844  · warn 50 · crit 80
+ 14 cores ▄▃▂▂ ▅▅▄▃ ▄▃▂▃ ▂▂
+```
+
+Figures sit with the resource they are about — compute, memory, storage,
+network, then the two facts that are neither symptom nor cause — and the rules
+between the groups are wider than the gaps inside them. The order is the one the
+question "why is this slow" walks through.
+
+**Where a figure sits and when it is given up are separate decisions.** One
+number used to do both, and it read compute, storage, compute, network, memory,
+network, memory, machine: the network split in half with memory between the
+halves, and `LOAD` — the most compute figure there is — after uptime. Rank still
+governs what a narrow terminal drops; it no longer governs where anything sits.
+
+`LIVE` and `PAUSED -12s` sit with the figures because they qualify them: paused
+means *these numbers are twelve seconds old*. The marker is the one thing on the
+row that is never dropped for room — reading a stale process table as the
+current one is the single worst thing this tool could let you do.
+
+
+
+```text
 CPU  12.4%   WAIT  61.2%   RUN 1/14   BLOCKED 23   MEM  37.5%
 ```
 
