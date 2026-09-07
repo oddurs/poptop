@@ -65,7 +65,7 @@ impl SysinfoCollector {
 }
 
 impl Collector for SysinfoCollector {
-    fn sample(&mut self, needs: Needs) -> io::Result<Sample> {
+    fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
         // `System::new_all` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
         // needs between CPU refreshes. So the first sample's CPU figures are
