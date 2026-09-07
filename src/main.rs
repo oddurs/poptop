@@ -107,7 +107,11 @@ KEYS:
     Up/Down         select a process
     s               cycle sort column
     t               toggle the process tree
-    i               toggle per-process disk IO columns
+    i               show or hide the per-process disk IO columns. Shown by
+                    default where they can be read: `/proc/<pid>/io` needs
+                    CAP_SYS_PTRACE for other users' processes, so on a box
+                    running its services as root they would be a wall of
+                    dashes, and ptop withdraws them after one sample.
     /               filter by name or pid
 ";
 
@@ -262,6 +266,7 @@ fn main() -> io::Result<()> {
     // Collect once before drawing so the first frame has real numbers. CPU
     // still reads zero — there is no previous counter to diff against yet.
     let first = collector.sample(app.needs())?;
+    app.probe_io(&first);
 
     // Restored before the first live sample, so the new run's history lands
     // after the old one rather than being buried by it. Whatever gap sits

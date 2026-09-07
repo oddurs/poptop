@@ -114,8 +114,14 @@ impl App {
             editing_filter: false,
             should_quit: false,
             tree: false,
-            show_io: false,
-            io_ratchet: false,
+            // On by default. The header may have just told the user their
+            // machine is blocked on IO, and the table is where the culprit is
+            // named — a default that hides it makes the default view unable to
+            // answer the question the default view raised. Withdrawn after one
+            // real sample where most of it turns out to be unreadable; see
+            // `probe_io`.
+            show_io: true,
+            io_ratchet: true,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
             theme: Theme::default(),
@@ -135,6 +141,40 @@ impl App {
     pub fn toggle_io(&mut self) {
         self.show_io = !self.show_io;
         self.io_ratchet |= self.show_io;
+    }
+
+    /// The share of a sample's processes whose IO could not be read, above
+    /// which the columns are not worth showing by default.
+    ///
+    /// `/proc/<pid>/io` is mode 0400 and owned by the process owner, so reading
+    /// other users' processes needs `CAP_SYS_PTRACE`. On a laptop almost every
+    /// process is yours and the columns are useful; on a box running its
+    /// services as root while you are not, they are a wall of em dashes. Half
+    /// is the line because a column that is mostly unreadable is worse than no
+    /// column: it costs width, and it invites the reading that those processes
+    /// are doing no IO.
+    const IO_MOSTLY_DENIED: f32 = 0.5;
+
+    /// Decide from one real sample whether the IO columns earn their place.
+    ///
+    /// A probe rather than a guess: whether `/proc/<pid>/io` is readable
+    /// depends on who is running ptop and who owns the processes, which nothing
+    /// short of trying it can answer.
+    ///
+    /// If they do not, collection stops as well. The ratchet exists so history
+    /// has one clean boundary between "not collected" and "collected", and a
+    /// probe that answered "no" never really crossed it — continuing to pay
+    /// half a millisecond a sample for a column nobody can read would be the
+    /// worse trade.
+    pub fn probe_io(&mut self, s: &Sample) {
+        if s.procs.is_empty() {
+            return;
+        }
+        let denied = s.io_denied as f32 / s.procs.len() as f32;
+        if denied > Self::IO_MOSTLY_DENIED {
+            self.show_io = false;
+            self.io_ratchet = false;
+        }
     }
 
     /// Samples per display slot.
