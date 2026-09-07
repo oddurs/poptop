@@ -231,6 +231,10 @@ impl Collector for SysinfoCollector {
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.
             io_denied,
+            // `sysinfo::Disks::refresh` costs 12.5ms steady state, measured,
+            // against a whole sample of about 4ms. An em dash until there is a
+            // cheaper route to the same counters — see `notes`.
+            disks: None,
         })
     }
 }

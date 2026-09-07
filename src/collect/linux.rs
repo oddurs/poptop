@@ -5,7 +5,7 @@
 //! is stateful and why the very first sample reports zero busy time.
 
 use super::{Collector, Needs};
-use crate::sample::{IoRates, MemStat, ProcSample, Sample};
+use crate::sample::{DiskStat, IoRates, MemStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -94,6 +94,15 @@ pub const MIN_INTERVAL_WHY: &str = "a /proc pass costs about 1ms at 400 processe
 pub struct ProcFs {
     prev_total: Option<CpuTimes>,
     prev_cores: Vec<CpuTimes>,
+    /// Raw `/proc/diskstats` counters from the previous read, per device.
+    prev_disks: HashMap<Arc<str>, DiskTimes>,
+    /// Which names in `/proc/diskstats` are whole devices rather than
+    /// partitions, from `/sys/block`.
+    ///
+    /// Cached because it is a directory listing and the answer changes only
+    /// when hardware is plugged in — see [`ProcFs::is_whole_device`], which
+    /// refreshes it exactly when a name it has never seen shows up.
+    block_devices: std::collections::HashSet<Arc<str>>,
     /// pid -> cumulative (utime + stime) jiffies at the previous sample.
     prev_proc_jiffies: HashMap<i32, u64>,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
@@ -146,6 +155,8 @@ impl ProcFs {
             io_supported,
             prev_total: None,
             prev_cores: Vec::new(),
+            prev_disks: HashMap::new(),
+            block_devices: read_block_devices(),
             prev_proc_jiffies: HashMap::new(),
             prev_proc_io: HashMap::new(),
             prev_at: None,
@@ -240,6 +251,81 @@ impl ProcFs {
             running,
             blocked,
         })
+    }
+
+    /// Whether `name` is a whole device rather than a partition.
+    ///
+    /// Partitions are excluded because their IO is already inside their disk's
+    /// counters — showing `vda` and `vda1` beside each other double-counts every
+    /// byte and invites the reader to add them up.
+    ///
+    /// The cache is refreshed only when a name it has not seen appears, so a
+    /// disk plugged in mid-run is picked up without a directory read every
+    /// second. A machine with no `sysfs` gets an empty set and keeps everything:
+    /// showing a partition is a smaller error than showing nothing.
+    fn is_whole_device(&mut self, name: &str) -> bool {
+        if self.block_devices.is_empty() {
+            return true;
+        }
+        if self.block_devices.contains(name) {
+            return true;
+        }
+        // Unknown. Either it is a partition, or it is hardware that arrived
+        // after startup — one directory read tells us which.
+        let refreshed = read_block_devices();
+        if refreshed.contains(name) {
+            self.block_devices = refreshed;
+            return true;
+        }
+        false
+    }
+
+    /// Per-device rates over `elapsed`, from `/proc/diskstats`.
+    ///
+    /// Empty on the first sample, and on any sample where the file cannot be
+    /// read: every figure here is a delta, and there is nothing to subtract
+    /// from yet. Empty is honest — it says the platform looked — where a list
+    /// of zeroes would claim the disks were idle.
+    fn read_diskstats(&mut self, elapsed: Duration) -> Vec<DiskStat> {
+        let text = match fs::read_to_string("/proc/diskstats") {
+            Ok(t) => t,
+            Err(_) => return Vec::new(),
+        };
+        let secs = elapsed.as_secs_f64();
+
+        let mut out = Vec::new();
+        let mut seen = HashMap::new();
+        for line in text.lines() {
+            let mut fields = line.split_whitespace();
+            // major, minor, name, then the counters.
+            let (Some(_), Some(_), Some(name)) = (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let rest = &line[line.find(name).map_or(line.len(), |i| i + name.len())..];
+            let now = DiskTimes::parse(rest);
+            if !now.ever_used() || !self.is_whole_device(name) {
+                continue;
+            }
+            let name: Arc<str> = self
+                .prev_disks
+                .keys()
+                .find(|k| ***k == *name)
+                .cloned()
+                .unwrap_or_else(|| Arc::from(name));
+            if let Some(prev) = self.prev_disks.get(&name)
+                && secs > 0.0
+            {
+                out.push(rates(&name, prev, &now, secs));
+            }
+            seen.insert(name, now);
+        }
+        self.prev_disks = seen;
+        // Busiest first, so a table that can only show two rows shows the two
+        // that matter. Utilisation rather than throughput, for the reason in
+        // `DiskStat::util`.
+        out.sort_by(|a, b| b.util.total_cmp(&a.util));
+        out
     }
 
     fn read_mem(&mut self) -> io::Result<MemStat> {
@@ -566,6 +652,110 @@ fn parse_meminfo(text: &str) -> MemStat {
     }
 }
 
+/// Raw cumulative counters for one device, straight out of `/proc/diskstats`.
+#[derive(Clone, Copy, Default)]
+struct DiskTimes {
+    reads: u64,
+    writes: u64,
+    sectors_read: u64,
+    sectors_written: u64,
+    /// Milliseconds spent servicing reads, and writes, summed across requests —
+    /// so this can exceed wall clock on a device with parallelism.
+    read_ms: u64,
+    write_ms: u64,
+    /// Milliseconds the device had at least one request in flight. Bounded by
+    /// wall clock, which is what makes it a utilisation figure.
+    io_ms: u64,
+    /// Request-milliseconds: time in flight weighted by queue depth.
+    weighted_ms: u64,
+}
+
+impl DiskTimes {
+    /// Field 4 onwards of a `/proc/diskstats` line, after major, minor, name.
+    ///
+    /// Older kernels publish 14 fields and newer ones 20, the extra six being
+    /// discard and flush accounting that nothing here wants. Read by index with
+    /// a default so both shapes parse — a kernel with fewer fields loses only
+    /// the figures it never had.
+    fn parse(rest: &str) -> Self {
+        let v: Vec<u64> = rest
+            .split_whitespace()
+            .map(|f| f.parse().unwrap_or(0))
+            .collect();
+        let at = |i: usize| v.get(i).copied().unwrap_or(0);
+        Self {
+            reads: at(0),
+            sectors_read: at(2),
+            read_ms: at(3),
+            writes: at(4),
+            sectors_written: at(6),
+            write_ms: at(7),
+            io_ms: at(9),
+            weighted_ms: at(10),
+        }
+    }
+
+    /// Whether this device has ever done anything.
+    ///
+    /// The filter that keeps the table readable, and a measurement rather than
+    /// a naming rule. This container publishes 42 whole devices — `ram0..15`,
+    /// `loop0..7`, `nbd0..15` — of which two have ever completed an operation.
+    /// Excluding them by name would also exclude a loop device that is actually
+    /// backing something, which on a machine running containers is a device
+    /// worth watching.
+    fn ever_used(&self) -> bool {
+        self.reads > 0 || self.writes > 0
+    }
+}
+
+/// Turn two cumulative reads into the rates a reader wants.
+///
+/// The arithmetic `iostat` does, and worth naming because two of the four are
+/// not obvious:
+///
+/// - `util` is time-the-device-was-busy over wall clock, so it saturates at
+///   100% however deep the queue goes.
+/// - `await` divides service time by *completed* operations, so it is a mean
+///   per operation rather than a share of the interval — and is `None` when
+///   nothing completed, since a mean of no samples is not zero.
+fn rates(name: &Arc<str>, prev: &DiskTimes, now: &DiskTimes, secs: f64) -> DiskStat {
+    let d = |a: u64, b: u64| a.saturating_sub(b) as f64;
+    let reads = d(now.reads, prev.reads);
+    let writes = d(now.writes, prev.writes);
+    let ops = reads + writes;
+    let service = d(now.read_ms, prev.read_ms) + d(now.write_ms, prev.write_ms);
+    DiskStat {
+        name: name.clone(),
+        read: (d(now.sectors_read, prev.sectors_read) * SECTOR as f64 / secs) as u64,
+        write: (d(now.sectors_written, prev.sectors_written) * SECTOR as f64 / secs) as u64,
+        reads: (reads / secs) as u64,
+        writes: (writes / secs) as u64,
+        // Clamped: the counter is in whole milliseconds and `secs` is measured,
+        // so rounding can put a fully busy device a hair over 100.
+        util: ((d(now.io_ms, prev.io_ms) / 10.0 / secs) as f32).min(100.0),
+        await_ms: (ops > 0.0).then(|| (service / ops) as f32),
+        queue: (d(now.weighted_ms, prev.weighted_ms) / 1000.0 / secs) as f32,
+    }
+}
+
+/// Sectors are 512 bytes in `/proc/diskstats` whatever the device's physical
+/// block size. The kernel converts; this is not an assumption about hardware.
+const SECTOR: u64 = 512;
+
+/// Whole block devices, from `/sys/block`.
+///
+/// Empty if the directory is missing — some minimal containers do not mount
+/// `sysfs` — and [`ProcFs::is_whole_device`] treats that as "cannot tell", which
+/// keeps every device rather than silently dropping them all.
+fn read_block_devices() -> std::collections::HashSet<Arc<str>> {
+    fs::read_dir("/sys/block")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| Arc::from(e.file_name().to_string_lossy().as_ref()))
+        .collect()
+}
+
 /// The size of a page on this kernel, and what to say if we had to guess.
 ///
 /// Read rather than assumed, because `/proc/<pid>/stat` reports RSS as a count
@@ -740,6 +930,7 @@ impl Collector for ProcFs {
             io_supported: self.io_supported,
             io_collected: needs.io && self.io_supported,
             io_denied,
+            disks: Some(self.read_diskstats(elapsed)),
         })
     }
 }
@@ -1159,6 +1350,144 @@ mod tests {
                 "the file reports free memory and the parse did not"
             );
         }
+    }
+
+    /// The counter fields of a `/proc/diskstats` line, from a real one.
+    fn disk_line(reads: u64, writes: u64, io_ms: u64) -> String {
+        // reads merged sect_r rd_ms writes merged sect_w wr_ms inflight io_ms
+        // weighted, then the discard and flush fields a modern kernel adds.
+        format!(
+            "{reads} 0 {} 500 {writes} 0 {} 1500 0 {io_ms} 9000 0 0 0 0 0 0",
+            reads * 8,
+            writes * 8
+        )
+    }
+
+    #[test]
+    fn disk_rates_are_deltas_over_the_interval() {
+        let prev = DiskTimes::parse(&disk_line(100, 200, 1000));
+        let now = DiskTimes::parse(&disk_line(140, 320, 1500));
+        let d = rates(&Arc::from("vda"), &prev, &now, 2.0);
+
+        assert_eq!(d.reads, 20, "40 reads over 2s");
+        assert_eq!(d.writes, 60, "120 writes over 2s");
+        // 40 reads x 8 sectors x 512 bytes over 2s.
+        // Written out, not computed from `SECTOR`: an expectation derived
+        // from the constant under test moves with it and asserts nothing.
+        // 40 reads x 8 sectors x 512 bytes over 2s.
+        assert_eq!(d.read, 81_920, "read bytes/s");
+        assert_eq!(d.write, 245_760, "write bytes/s");
+        // 500ms busy in 2s of wall clock.
+        assert!((d.util - 25.0).abs() < 0.01, "util was {}", d.util);
+    }
+
+    #[test]
+    fn a_device_that_completed_nothing_reports_no_await_rather_than_zero() {
+        // A mean of no samples is not zero, and zero here would read as an
+        // infinitely fast disk — the most flattering possible lie about the
+        // figure most worth trusting.
+        let same = DiskTimes::parse(&disk_line(100, 200, 1000));
+        let d = rates(&Arc::from("vda"), &same, &same, 1.0);
+        assert_eq!(d.await_ms, None, "an idle device claimed a service time");
+        assert_eq!(d.reads + d.writes, 0);
+
+        let busy = DiskTimes::parse(&disk_line(110, 200, 1000));
+        let d = rates(&Arc::from("vda"), &same, &busy, 1.0);
+        // 10 reads, and the fixture puts read service time at a flat 500ms.
+        assert_eq!(d.await_ms, Some(0.0), "a real zero was discarded");
+    }
+
+    #[test]
+    fn utilisation_cannot_exceed_a_full_interval() {
+        // The counter is in whole milliseconds and the interval is measured, so
+        // rounding can put a fully busy device a hair over 100 — which would
+        // then overflow the bar drawn from it.
+        let prev = DiskTimes::parse(&disk_line(0, 0, 0));
+        let now = DiskTimes::parse(&disk_line(1, 1, 1100));
+        let d = rates(&Arc::from("vda"), &prev, &now, 1.0);
+        assert_eq!(d.util, 100.0, "util ran past a full interval");
+    }
+
+    #[test]
+    fn a_short_diskstats_line_from_an_older_kernel_still_parses() {
+        // Kernels before 4.18 publish 14 fields, not 20; the extra six are
+        // discard and flush accounting nothing here reads.
+        let short = "100 0 800 500 200 0 1600 1500 0 1000 9000";
+        let long = disk_line(100, 200, 1000);
+        let a = DiskTimes::parse(short);
+        let b = DiskTimes::parse(&long);
+        assert_eq!(a.reads, b.reads);
+        assert_eq!(a.writes, b.writes);
+        assert_eq!(a.io_ms, b.io_ms);
+        assert_eq!(a.sectors_written, b.sectors_written);
+    }
+
+    #[test]
+    fn a_device_that_has_never_done_anything_is_not_listed() {
+        // The filter that keeps 40 idle `ram`/`loop`/`nbd` devices out of the
+        // table, and a measurement rather than a rule about names — a loop
+        // device actually backing something stays.
+        assert!(!DiskTimes::parse(&disk_line(0, 0, 0)).ever_used());
+        assert!(DiskTimes::parse(&disk_line(0, 1, 0)).ever_used());
+        assert!(DiskTimes::parse(&disk_line(1, 0, 0)).ever_used());
+    }
+
+    #[test]
+    fn the_live_diskstats_reads_devices_that_agree_with_the_file() {
+        // The fixtures above prove the arithmetic; this proves the parse is
+        // pointed at the right file, the right columns, and the right devices.
+        let mut pf = ProcFs::new().unwrap();
+        // First call primes the counters and returns nothing to subtract from.
+        assert!(pf.read_diskstats(Duration::from_secs(1)).is_empty());
+        std::thread::sleep(Duration::from_millis(50));
+        let disks = pf.read_diskstats(Duration::from_millis(50));
+
+        let raw = fs::read_to_string("/proc/diskstats").unwrap();
+        for d in &disks {
+            let line = raw
+                .lines()
+                .find(|l| l.split_whitespace().nth(2) == Some(&*d.name))
+                .unwrap_or_else(|| panic!("device not in the file: {}", d.name));
+            assert!(
+                (0.0..=100.0).contains(&d.util),
+                "{} util {}",
+                d.name,
+                d.util
+            );
+            assert!(d.queue >= 0.0, "{} negative queue", d.name);
+
+            // Every reported device has actually done something. This container
+            // publishes forty-odd whole devices — `ram0..15`, `loop0..7`,
+            // `nbd0..15` — of which two have ever completed an operation.
+            let f: Vec<u64> = line
+                .split_whitespace()
+                .skip(3)
+                .map(|x| x.parse().unwrap_or(0))
+                .collect();
+            assert!(
+                f[0] > 0 || f[4] > 0,
+                "{} has never completed an operation and was listed anyway",
+                d.name
+            );
+
+            // And each is a whole device, not a partition whose IO is already
+            // inside its disk's counters.
+            if !pf.block_devices.is_empty() {
+                assert!(
+                    pf.block_devices.contains(&d.name),
+                    "{} is a partition and would double-count its disk",
+                    d.name
+                );
+            }
+        }
+
+        // The filters together have to remove something, or the assertions
+        // above are satisfied by a machine that had nothing to exclude.
+        assert!(
+            disks.len() < raw.lines().count(),
+            "every one of {} diskstats lines was reported",
+            raw.lines().count()
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! The format is hand-rolled and versioned, like everything else here. A store
 //! written by a different version is discarded rather than guessed at.
 
-use crate::sample::{IoRates, MemStat, ProcSample, Sample};
+use crate::sample::{DiskStat, IoRates, MemStat, ProcSample, Sample};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 
 /// When the machine this sample came from was booted.
 ///
@@ -316,6 +316,23 @@ fn write_sample(out: &mut Out, s: &Sample) {
         out.u64(io.read);
         out.u64(io.write);
     }
+    // Tagged as a whole, then per device. `None` is "this platform does not
+    // read disks"; an empty list is "it looked and found none that have ever
+    // done IO". The restore has to keep those apart or a macOS buffer comes
+    // back claiming the machine has no disks.
+    out.u8(u8::from(s.disks.is_some()));
+    let disks = s.disks.as_deref().unwrap_or_default();
+    out.u32(disks.len() as u32);
+    for d in disks {
+        out.str(&d.name);
+        out.u64(d.read);
+        out.u64(d.write);
+        out.u64(d.reads);
+        out.u64(d.writes);
+        out.f32(d.util);
+        out.opt_f32(d.await_ms);
+        out.f32(d.queue);
+    }
 }
 
 /// Parse a store, or `None` if it is not one this version understands.
@@ -404,6 +421,21 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
             io: has_io.then_some(IoRates { read, write }),
         });
     }
+    let has_disks = r.u8()? != 0;
+    let n_disks = r.u32()? as usize;
+    let mut disks = Vec::with_capacity(n_disks.min(1 << 10));
+    for _ in 0..n_disks {
+        disks.push(DiskStat {
+            name: r.str()?,
+            read: r.u64()?,
+            write: r.u64()?,
+            reads: r.u64()?,
+            writes: r.u64()?,
+            util: r.f32()?,
+            await_ms: r.opt_f32()?,
+            queue: r.f32()?,
+        });
+    }
     Some(Sample {
         at,
         cpu_total,
@@ -419,6 +451,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         io_supported,
         io_collected,
         io_denied,
+        disks: has_disks.then_some(disks),
     })
 }
 
@@ -484,6 +517,31 @@ mod tests {
             // Distinct on purpose. Equal values would let a read that swapped
             // `running` and `blocked` round-trip cleanly, and the field a user
             // scrubs back to is the one that says whether the box was stuck.
+            // Two devices, one with no completed operation in the interval, so
+            // the round trip is made to carry a `None` await as well as a real
+            // one — the pair this format must not collapse.
+            disks: Some(vec![
+                DiskStat {
+                    name: Arc::from("nvme0n1"),
+                    read: 1 << 20,
+                    write: 3 << 20,
+                    reads: 40,
+                    writes: 120,
+                    util: 62.5,
+                    await_ms: Some(7.75),
+                    queue: 3.25,
+                },
+                DiskStat {
+                    name: Arc::from("sdb"),
+                    read: 0,
+                    write: 0,
+                    reads: 0,
+                    writes: 0,
+                    util: 0.0,
+                    await_ms: None,
+                    queue: 0.0,
+                },
+            ]),
             iowait: Some(61.25),
             running: Some(3),
             blocked: Some(17),
@@ -523,6 +581,9 @@ mod tests {
         assert_eq!(a.io_supported, b.io_supported);
         assert_eq!(a.io_collected, b.io_collected);
         assert_eq!(a.io_denied, b.io_denied);
+        // Compared as `Option<Vec<_>>`, so "this platform does not read disks"
+        // and "it looked and found none" stay distinguishable across the file.
+        assert_eq!(a.disks, b.disks);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
             assert_eq!(x.pid, y.pid);
@@ -539,6 +600,25 @@ mod tests {
                 y.io.map(|i| (i.read, i.write))
             );
         }
+    }
+
+    #[test]
+    fn a_platform_that_reads_no_disks_does_not_come_back_owning_none() {
+        // macOS writes `None` here. Restored as an empty list it would read as
+        // "this machine has no disks", which is a claim rather than a silence —
+        // and the panel would draw an empty table instead of saying why.
+        let mut s = sample_of(1.0, 1);
+        s.disks = None;
+        assert_eq!(decode(&encode(&[&s])).unwrap()[0].disks, None);
+
+        // And the other way: a machine that looked and found nothing keeps
+        // saying so, rather than being turned back into "cannot tell".
+        s.disks = Some(Vec::new());
+        assert_eq!(
+            decode(&encode(&[&s])).unwrap()[0].disks,
+            Some(Vec::new()),
+            "an empty device list came back as an absent one"
+        );
     }
 
     #[test]
@@ -739,6 +819,7 @@ mod tests_support {
             at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             cpu_total: cpu,
             cpu_per_core: vec![1.0; 16],
+            disks: None,
             iowait: None,
             running: None,
             blocked: None,
