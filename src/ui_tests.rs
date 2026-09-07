@@ -2644,6 +2644,29 @@ fn a_platform_that_reads_no_disks_draws_no_disk_row() {
 }
 
 #[test]
+fn an_idle_machine_names_the_device_the_collector_meant() {
+    // Every device at zero is the common case, and `max_by` returns the *last*
+    // of equal maxima — so the header would name whichever device happened to
+    // sort last, `loop3 0.0%` where the collector meant `nvme0n1`. A figure
+    // that names a device reads as "this is the disk poptop is watching", so
+    // which one it picks matters even when the number does not.
+    use crate::sample::DiskStat;
+    let idle = |name: &str| DiskStat {
+        name: std::sync::Arc::from(name),
+        read: 0,
+        write: 0,
+        reads: 0,
+        writes: 0,
+        util: 0.0,
+        await_ms: None,
+        queue: 0.0,
+    };
+    let mut s = sample(10.0);
+    s.disks = Some(vec![idle("nvme0n1"), idle("loop3"), idle("sdb")]);
+    assert_eq!(&*s.busiest_disk().unwrap().name, "nvme0n1");
+}
+
+#[test]
 fn the_busiest_device_is_the_one_reported() {
     // One figure, so it has to be the worst device rather than the first: a
     // machine with a quiet system disk and a saturated data disk must not

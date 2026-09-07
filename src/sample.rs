@@ -125,11 +125,21 @@ impl Sample {
     /// and not for a panel — and because the question the header answers is
     /// "is storage the problem", which the worst device settles. The others are
     /// a device table's job, if one is ever built.
+    /// Ties go to the earlier device, which `max_by` would not do — it returns
+    /// the last of equal maxima. On an idle machine every device is at 0.0, and
+    /// the header would name whichever one happened to sort last: `loop3 0.0%`
+    /// where the collector meant `nvme0n1`. A figure that names a device is
+    /// read as "this is the disk poptop is watching", so which one it picks
+    /// matters even when the number does not.
     pub fn busiest_disk(&self) -> Option<&DiskStat> {
-        self.disks
-            .as_ref()?
-            .iter()
-            .max_by(|a, b| a.util.total_cmp(&b.util))
+        let mut it = self.disks.as_ref()?.iter();
+        let mut best = it.next()?;
+        for d in it {
+            if d.util > best.util {
+                best = d;
+            }
+        }
+        Some(best)
     }
 }
 

@@ -103,6 +103,10 @@ pub struct ProcFs {
     /// when hardware is plugged in — see [`ProcFs::is_whole_device`], which
     /// refreshes it exactly when a name it has never seen shows up.
     block_devices: std::collections::HashSet<Arc<str>>,
+    /// Names already established not to be whole devices. See
+    /// [`ProcFs::is_whole_device`]: without this, every mounted partition costs
+    /// a directory enumeration on every sample.
+    partitions: std::collections::HashSet<Arc<str>>,
     /// pid -> cumulative (utime + stime) jiffies at the previous sample.
     prev_proc_jiffies: HashMap<i32, u64>,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
@@ -157,6 +161,7 @@ impl ProcFs {
             prev_cores: Vec::new(),
             prev_disks: HashMap::new(),
             block_devices: read_block_devices(),
+            partitions: std::collections::HashSet::new(),
             prev_proc_jiffies: HashMap::new(),
             prev_proc_io: HashMap::new(),
             prev_at: None,
@@ -259,38 +264,56 @@ impl ProcFs {
     /// counters — showing `vda` and `vda1` beside each other double-counts every
     /// byte and invites the reader to add them up.
     ///
-    /// The cache is refreshed only when a name it has not seen appears, so a
-    /// disk plugged in mid-run is picked up without a directory read every
-    /// second. A machine with no `sysfs` gets an empty set and keeps everything:
-    /// showing a partition is a smaller error than showing nothing.
+    /// Both answers are cached, and the negative one especially. A mounted
+    /// partition has nonzero reads from its superblock alone, so it reaches
+    /// here on every sample — and without remembering the miss, each one costs
+    /// a full `/sys/block` enumeration. Three mounted partitions at the 50ms
+    /// floor is sixty directory reads a second, against a per-sample budget of
+    /// about a millisecond.
+    ///
+    /// So the directory is re-read only for a name neither set has seen, which
+    /// is what picks up a disk plugged in mid-run. A machine with no `sysfs`
+    /// gets an empty set and keeps everything: showing a partition is a smaller
+    /// error than showing nothing.
     fn is_whole_device(&mut self, name: &str) -> bool {
-        if self.block_devices.is_empty() {
+        if self.block_devices.is_empty() || self.block_devices.contains(name) {
             return true;
         }
-        if self.block_devices.contains(name) {
-            return true;
+        if self.partitions.contains(name) {
+            return false;
         }
-        // Unknown. Either it is a partition, or it is hardware that arrived
-        // after startup — one directory read tells us which.
+        // Genuinely new. Either a partition seen for the first time, or
+        // hardware that arrived after startup — one directory read tells us
+        // which, and either answer is remembered.
         let refreshed = read_block_devices();
         if refreshed.contains(name) {
             self.block_devices = refreshed;
             return true;
         }
+        self.partitions.insert(Arc::from(name));
         false
     }
 
     /// Per-device rates over `elapsed`, from `/proc/diskstats`.
     ///
-    /// Empty on the first sample, and on any sample where the file cannot be
-    /// read: every figure here is a delta, and there is nothing to subtract
-    /// from yet. Empty is honest — it says the platform looked — where a list
-    /// of zeroes would claim the disks were idle.
-    fn read_diskstats(&mut self, elapsed: Duration) -> Vec<DiskStat> {
-        let text = match fs::read_to_string("/proc/diskstats") {
-            Ok(t) => t,
-            Err(_) => return Vec::new(),
-        };
+    /// `None` when the file cannot be read at all, which is the same "this
+    /// platform will not say" that macOS reports — the panel then draws no disk
+    /// row rather than a flat one.
+    ///
+    /// Empty on the first sample, because every figure here is a delta and
+    /// there is nothing to subtract from yet. That one is drawn as zero, the
+    /// same way the first sample's CPU is: a rate needs two reads, and the
+    /// alternative is a graph that starts one sample later than every other.
+    fn read_diskstats(&mut self, elapsed: Duration) -> Option<Vec<DiskStat>> {
+        let text = fs::read_to_string("/proc/diskstats").ok()?;
+        Some(self.diskstats_from(&text, elapsed))
+    }
+
+    /// Split from the read so the filters and the arithmetic can be tested
+    /// against a fixture rather than against whatever devices this machine
+    /// happens to have — the same split `parse_meminfo` has, for the same
+    /// reason.
+    fn diskstats_from(&mut self, text: &str, elapsed: Duration) -> Vec<DiskStat> {
         let secs = elapsed.as_secs_f64();
 
         let mut out = Vec::new();
@@ -901,6 +924,14 @@ impl Collector for ProcFs {
             .unwrap_or(Duration::ZERO);
         self.prev_at = Some(now);
 
+        // Before anything fallible. `prev_at` has already moved, so if a later
+        // read fails with `?` the next successful sample measures one interval
+        // of wall clock against two intervals of counters — every disk rate
+        // roughly doubled, and `util` silently clamping to 100 on a device that
+        // was never busy. Taking the snapshot here keeps the two in step
+        // whatever happens below.
+        let disks = self.read_diskstats(elapsed);
+
         let mut io_denied = 0;
         let procs = self.read_procs(elapsed, needs, &mut io_denied)?;
         // `/proc/stat` is read *after* the process walk, not before, so every
@@ -930,7 +961,7 @@ impl Collector for ProcFs {
             io_supported: self.io_supported,
             io_collected: needs.io && self.io_supported,
             io_denied,
-            disks: Some(self.read_diskstats(elapsed)),
+            disks,
         })
     }
 }
@@ -1432,15 +1463,104 @@ mod tests {
         assert!(DiskTimes::parse(&disk_line(1, 0, 0)).ever_used());
     }
 
+    /// A whole `/proc/diskstats` file: one busy disk, its partition, an idle
+    /// device, and a second disk.
+    fn diskstats_fixture(reads: u64, writes: u64, io_ms: u64) -> String {
+        format!(
+            "254 0 vda {}\n254 1 vda1 {}\n1 0 ram0 {}\n254 16 vdb {}\n",
+            disk_line(reads, writes, io_ms),
+            disk_line(reads, writes, io_ms),
+            disk_line(0, 0, 0),
+            disk_line(reads / 2, writes / 2, io_ms / 2),
+        )
+    }
+
+    /// A collector that believes `vda` and `vdb` are whole devices, as
+    /// `/sys/block` would say.
+    fn pf_with_devices() -> ProcFs {
+        let mut pf = ProcFs::new().unwrap();
+        pf.prev_disks.clear();
+        pf.partitions.clear();
+        pf.block_devices = ["vda", "vdb", "ram0"]
+            .iter()
+            .map(|s| Arc::from(*s))
+            .collect();
+        pf
+    }
+
+    #[test]
+    fn a_partition_is_not_listed_beside_the_disk_it_belongs_to() {
+        // Its IO is already inside the disk's counters, so showing both invites
+        // the reader to add them up.
+        let mut pf = pf_with_devices();
+        pf.diskstats_from(&diskstats_fixture(100, 200, 1000), Duration::from_secs(1));
+        let out = pf.diskstats_from(&diskstats_fixture(140, 320, 1500), Duration::from_secs(1));
+        let names: Vec<&str> = out.iter().map(|d| &*d.name).collect();
+        assert_eq!(names, vec!["vda", "vdb"], "expected the two whole disks");
+    }
+
+    #[test]
+    fn a_device_that_has_never_worked_is_left_out_of_the_table() {
+        // `ram0` is in `/sys/block` and has done nothing. Excluded by
+        // measurement, not by its name.
+        let mut pf = pf_with_devices();
+        pf.diskstats_from(&diskstats_fixture(100, 200, 1000), Duration::from_secs(1));
+        let out = pf.diskstats_from(&diskstats_fixture(140, 320, 1500), Duration::from_secs(1));
+        assert!(
+            !out.iter().any(|d| &*d.name == "ram0"),
+            "an idle device was listed"
+        );
+    }
+
+    #[test]
+    fn the_busiest_device_sorts_first() {
+        let mut pf = pf_with_devices();
+        pf.diskstats_from(&diskstats_fixture(100, 200, 1000), Duration::from_secs(1));
+        let out = pf.diskstats_from(&diskstats_fixture(140, 320, 1500), Duration::from_secs(1));
+        assert_eq!(&*out[0].name, "vda", "the quieter disk sorted first");
+        assert!(out[0].util > out[1].util);
+    }
+
+    #[test]
+    fn the_first_read_has_nothing_to_subtract_from() {
+        let mut pf = pf_with_devices();
+        assert!(
+            pf.diskstats_from(&diskstats_fixture(100, 200, 1000), Duration::from_secs(1))
+                .is_empty(),
+            "rates were reported from a single read"
+        );
+    }
+
+    #[test]
+    fn a_partition_is_only_looked_up_in_sysfs_once() {
+        // Without remembering the miss, every mounted partition costs a full
+        // `/sys/block` enumeration on every sample — sixty a second at the
+        // interval floor, against a per-sample budget of about a millisecond.
+        let mut pf = pf_with_devices();
+        assert!(!pf.is_whole_device("vda1"));
+        assert!(
+            pf.partitions.iter().any(|p| &**p == "vda1"),
+            "the miss was not remembered, so it will be re-read every sample"
+        );
+        // And the answer does not change on the second ask.
+        assert!(!pf.is_whole_device("vda1"));
+    }
+
     #[test]
     fn the_live_diskstats_reads_devices_that_agree_with_the_file() {
         // The fixtures above prove the arithmetic; this proves the parse is
         // pointed at the right file, the right columns, and the right devices.
         let mut pf = ProcFs::new().unwrap();
         // First call primes the counters and returns nothing to subtract from.
-        assert!(pf.read_diskstats(Duration::from_secs(1)).is_empty());
+        assert!(
+            pf.read_diskstats(Duration::from_secs(1))
+                .unwrap()
+                .is_empty()
+        );
         std::thread::sleep(Duration::from_millis(50));
-        let disks = pf.read_diskstats(Duration::from_millis(50));
+        let disks = pf
+            .read_diskstats(Duration::from_millis(50))
+            .expect("/proc/diskstats is readable on this kernel");
 
         let raw = fs::read_to_string("/proc/diskstats").unwrap();
         for d in &disks {
