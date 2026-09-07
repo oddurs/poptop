@@ -5,7 +5,7 @@
 //! is stateful and why the very first sample reports zero busy time.
 
 use super::{Collector, Needs};
-use crate::sample::{DiskStat, IoRates, MemStat, ProcSample, Sample};
+use crate::sample::{DiskStat, IoRates, MemStat, Pressure, ProcSample, Sample, Stall};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -349,6 +349,21 @@ impl ProcFs {
         // `DiskStat::util`.
         out.sort_by(|a, b| b.util.total_cmp(&a.util));
         out
+    }
+
+    /// Stall pressure for all three resources, or `None` if the kernel does not
+    /// publish it.
+    ///
+    /// All three or nothing: a kernel with `/proc/pressure` has all of them, so
+    /// a partial read means something stranger is happening than a missing
+    /// config option, and half an answer is worse than none.
+    fn read_pressure(&self) -> Option<Pressure> {
+        let one = |what: &str| fs::read_to_string(format!("/proc/pressure/{what}")).ok();
+        pressure_from(
+            one("cpu").as_deref(),
+            one("io").as_deref(),
+            one("memory").as_deref(),
+        )
     }
 
     fn read_mem(&mut self) -> io::Result<MemStat> {
@@ -761,6 +776,51 @@ fn rates(name: &Arc<str>, prev: &DiskTimes, now: &DiskTimes, secs: f64) -> DiskS
     }
 }
 
+/// One `/proc/pressure/*` file: a `some` line and, on most kernels, a `full`
+/// one.
+///
+/// ```text
+/// some avg10=3.60 avg60=2.59 avg300=6.23 total=736109049
+/// full avg10=3.60 avg60=2.57 avg300=6.14 total=722044449
+/// ```
+///
+/// Only `avg10` is taken. The longer windows are the kernel's own smoothing and
+/// poptop has a timeline for that — a ten-second average is already smoothed
+/// enough to read and short enough to move when the machine does.
+///
+/// A missing `full` line leaves it zero, which is what older kernels mean by
+/// omitting it: they publish `full` for IO and memory and not for CPU, where it
+/// is undefined.
+fn parse_pressure(text: &str) -> Stall {
+    let avg10 = |kind: &str| {
+        text.lines()
+            .find(|l| l.starts_with(kind))?
+            .split_whitespace()
+            .find_map(|f| f.strip_prefix("avg10="))?
+            .parse()
+            .ok()
+    };
+    Stall {
+        some: avg10("some").unwrap_or(0.0),
+        full: avg10("full").unwrap_or(0.0),
+    }
+}
+
+/// All three resources, or `None` if any file is missing.
+///
+/// Split from the read so the all-or-nothing rule can be tested. A kernel with
+/// `/proc/pressure` has all three, so a partial read means something stranger
+/// is going on than a missing config option — and half an answer here is worse
+/// than none, because the half that is missing would render as a machine that
+/// never stalled on that resource.
+fn pressure_from(cpu: Option<&str>, io: Option<&str>, memory: Option<&str>) -> Option<Pressure> {
+    Some(Pressure {
+        cpu: parse_pressure(cpu?),
+        io: parse_pressure(io?),
+        memory: parse_pressure(memory?),
+    })
+}
+
 /// Sectors are 512 bytes in `/proc/diskstats` whatever the device's physical
 /// block size. The kernel converts; this is not an assumption about hardware.
 const SECTOR: u64 = 512;
@@ -962,6 +1022,7 @@ impl Collector for ProcFs {
             io_collected: needs.io && self.io_supported,
             io_denied,
             disks,
+            pressure: self.read_pressure(),
         })
     }
 }
@@ -1486,6 +1547,75 @@ mod tests {
             .map(|s| Arc::from(*s))
             .collect();
         pf
+    }
+
+    #[test]
+    fn pressure_takes_the_ten_second_average_of_both_lines() {
+        let s = parse_pressure(
+            "some avg10=3.60 avg60=2.59 avg300=6.23 total=736109049\n\
+             full avg10=1.25 avg60=2.57 avg300=6.14 total=722044449\n",
+        );
+        assert_eq!(s.some, 3.60);
+        assert_eq!(s.full, 1.25);
+    }
+
+    #[test]
+    fn a_pressure_file_with_no_full_line_reports_none_of_it() {
+        // Which is what older kernels mean by omitting it: `full` is published
+        // for IO and memory and not for CPU, where it is undefined.
+        let s = parse_pressure("some avg10=0.40 avg60=0.27 avg300=0.47 total=106158967\n");
+        assert_eq!(s.some, 0.40);
+        assert_eq!(s.full, 0.0);
+    }
+
+    #[test]
+    fn pressure_is_all_three_resources_or_none() {
+        // A kernel with `/proc/pressure` has all three. Half an answer would
+        // render the missing half as a machine that never stalled on it.
+        let some = "some avg10=1.0\nfull avg10=0.5\n";
+        assert!(pressure_from(Some(some), Some(some), Some(some)).is_some());
+        assert_eq!(pressure_from(None, Some(some), Some(some)), None);
+        assert_eq!(pressure_from(Some(some), None, Some(some)), None);
+        assert_eq!(pressure_from(Some(some), Some(some), None), None);
+    }
+
+    #[test]
+    fn a_pressure_file_that_makes_no_sense_reports_nothing_rather_than_guessing() {
+        assert_eq!(parse_pressure(""), Stall::default());
+        assert_eq!(parse_pressure("some avg60=1.0\n"), Stall::default());
+        assert_eq!(parse_pressure("garbage\n"), Stall::default());
+    }
+
+    #[test]
+    fn the_live_pressure_files_read_as_percentages() {
+        // Present on every kernel checked here and absent on plenty still in
+        // service, so this asserts the shape of an answer rather than that
+        // there is one.
+        let pf = ProcFs::new().unwrap();
+        let Some(p) = pf.read_pressure() else {
+            return;
+        };
+        for (what, s) in [("cpu", p.cpu), ("io", p.io), ("memory", p.memory)] {
+            assert!(
+                (0.0..=100.0).contains(&s.some),
+                "{what} some out of range: {}",
+                s.some
+            );
+            assert!(
+                (0.0..=100.0).contains(&s.full),
+                "{what} full out of range: {}",
+                s.full
+            );
+            // `full` is a subset of `some` by construction: every task stalled
+            // implies some task stalled. A parse that crossed the two lines
+            // would break this and nothing else would notice.
+            assert!(
+                s.full <= s.some + 0.01,
+                "{what} full {} exceeds some {}",
+                s.full,
+                s.some
+            );
+        }
     }
 
     #[test]

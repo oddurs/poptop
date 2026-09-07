@@ -210,7 +210,42 @@ fn fit(figures: Vec<Figure<'_>>, width: usize) -> Vec<Span<'_>> {
 struct Figure<'a> {
     spans: Vec<Span<'a>>,
     /// Lower is kept longer.
+    ///
+    /// Spaced by tens rather than numbered consecutively, so a figure can be
+    /// slotted between two existing ones without renumbering the ladder below
+    /// it. Three insertions in a row each rewrote every rank underneath, and
+    /// each rewrite was a chance to introduce a duplicate that nothing would
+    /// have caught but a careful reading.
     rank: u8,
+}
+
+/// Where a stall percentage sits on the scale the user configured for
+/// *utilisation* percentages.
+///
+/// The two are not the same quantity and cannot share thresholds. A CPU at 50%
+/// is unremarkable; a machine that spent 50% of the last ten seconds with
+/// nothing at all running is in serious trouble. Feeding the raw figure to
+/// `figure_style` would leave it cold until it was catastrophic, and scaling it
+/// by a constant — which is what this did first — silently reinterprets whatever
+/// the user set: at `--warn 90` a quadrupled figure needs 22.5% before it warns,
+/// which is two and a quarter seconds in every ten with the machine stopped.
+///
+/// So the thresholds are stated here, in the units of the thing being measured,
+/// and mapped onto the theme's own scale so a user's colours still apply.
+fn stall_heat(pct: f32, theme: &Theme) -> f32 {
+    /// Half a second in every ten with nothing running.
+    const WARN: f32 = 5.0;
+    /// Two seconds in every ten.
+    const CRITICAL: f32 = 20.0;
+    // Returned as the theme's own boundaries rather than as fixed numbers, so a
+    // user who recoloured warn and critical still gets their colours here.
+    if pct >= CRITICAL {
+        theme.critical_pct
+    } else if pct >= WARN {
+        theme.warn_pct
+    } else {
+        0.0
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
@@ -237,7 +272,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // anything". Absent on a platform that will not say, rather than zero.
     if let Some(iowait) = s.iowait {
         figures.push(Figure {
-            rank: 1,
+            rank: 10,
             spans: vec![
                 Span::styled("WAIT ", dim),
                 Span::styled(format!("{iowait:>5.1}%"), app.theme.figure_style(iowait)),
@@ -262,7 +297,30 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         if let Some(a) = d.await_ms {
             spans.push(Span::styled(format!(" {a:.1}ms"), dim));
         }
-        figures.push(Figure { rank: 2, spans });
+        figures.push(Figure { rank: 20, spans });
+    }
+
+    // What stopped, rather than what was busy. Ranked beside the storage
+    // figures because it usually explains them, and above `RUN` because a
+    // machine where every task is stalled is in a worse state than one with a
+    // deep run queue and work getting done.
+    //
+    // `full`, not `some`: some task being stalled is what a busy machine does
+    // all day. Every runnable task being stalled has no benign reading, which
+    // is why it is heated from zero rather than against a threshold.
+    if let Some(p) = s.pressure {
+        let (what, pct) = p.worst();
+        figures.push(Figure {
+            rank: 25,
+            spans: vec![
+                Span::styled("STALL ", dim),
+                Span::styled(format!("{what} "), dim),
+                Span::styled(
+                    format!("{pct:>4.1}%"),
+                    app.theme.figure_style(stall_heat(pct, &app.theme)),
+                ),
+            ],
+        });
     }
 
     // Runnable against cores, because a bare count means nothing without its
@@ -270,7 +328,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     if let Some(running) = s.running {
         let pressure = (running as f32 / cores as f32) * 100.0;
         figures.push(Figure {
-            rank: 3,
+            rank: 30,
             spans: vec![
                 Span::styled("RUN ", dim),
                 Span::styled(
@@ -286,7 +344,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // that says so — so it is heated on any value at all, not on a threshold.
     if let Some(blocked) = s.blocked {
         figures.push(Figure {
-            rank: 4,
+            rank: 40,
             spans: vec![
                 Span::styled("BLOCKED ", dim),
                 Span::styled(
@@ -336,7 +394,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // platform that cannot separate cache from free simply has none.
     debug_assert!(has_cache || widths[1] == 0);
     figures.push(Figure {
-        rank: 5,
+        rank: 50,
         spans: mem_spans,
     });
     // Ranked below uptime and the process count despite being about memory,
@@ -344,7 +402,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // under a prefix rule one wide figure blocks every shorter one behind it:
     // at a hundred columns it fit nothing and cost two figures that would have.
     figures.push(Figure {
-        rank: 9,
+        rank: 90,
         // Shorter than it was: the bar shows what is available, so saying it
         // again in words was the third statement of one fact on one line.
         spans: vec![Span::styled(
@@ -355,7 +413,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
 
     if s.mem.swap_total > 0 {
         figures.push(Figure {
-            rank: 6,
+            rank: 60,
             spans: vec![
                 Span::styled("SWP ", dim),
                 Span::styled(
@@ -367,11 +425,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     }
 
     figures.push(Figure {
-        rank: 7,
+        rank: 70,
         spans: vec![Span::styled("UP ", dim), Span::raw(fmt_uptime(s.uptime))],
     });
     figures.push(Figure {
-        rank: 8,
+        rank: 80,
         spans: vec![
             Span::styled("PROCS ", dim),
             Span::raw(s.procs.len().to_string()),
@@ -382,7 +440,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // the smoothing it adds is what the timeline is for. Kept for the people
     // who look for it, first to go when the line is tight.
     figures.push(Figure {
-        rank: 10,
+        rank: 100,
         spans: vec![
             Span::styled("LOAD ", dim),
             Span::raw(format!(
@@ -611,6 +669,22 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             window
                 .iter()
                 .map(|s| s.busiest_disk().map_or(0.0, |d| d.util))
+                .collect(),
+        ));
+    }
+
+    // And what the machine lost to waiting, which is not the same question as
+    // `WAIT` one row up. `iowait` is the CPU's view — idle with IO outstanding
+    // — so a box with plenty of other work to do reports a calm `iowait` while
+    // every task that matters is stuck behind the disk. This is the row that
+    // catches that, so it is worth a row of its own despite the family
+    // resemblance.
+    if app.history.current().is_some_and(|s| s.pressure.is_some()) {
+        candidates.push((
+            "STALL",
+            window
+                .iter()
+                .map(|s| s.pressure.map_or(0.0, |p| p.worst().1))
                 .collect(),
         ));
     }
@@ -918,11 +992,31 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
     (0..series).map(|i| base + usize::from(i < extra)).collect()
 }
 
+/// Every name the timeline gutter may have to hold.
+///
+/// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
+/// silently rendered as `STAL` for exactly as long as the width was a hand-
+/// maintained number with a comment claiming `WAIT` was the longest.
+const SERIES_NAMES: [&str; 5] = ["CPU", "WAIT", "MEM", "DISK", "STALL"];
+
+const fn widest(names: &[&str]) -> usize {
+    let (mut max, mut i) = (0, 0);
+    while i < names.len() {
+        if names[i].len() > max {
+            max = names[i].len();
+        }
+        i += 1;
+    }
+    max
+}
+
 /// Width of the scale gutter, and the panel width below which it is dropped.
-/// Five, not four: the widest series name is `WAIT`, and a gutter that cannot
-/// hold its own labels either truncates them to nonsense or lets them push the
-/// graph out of alignment with its neighbours.
-pub const GUTTER_W: usize = 5;
+///
+/// One wider than the longest series name: [`axis_label`] right-aligns into
+/// `gutter - 1` so a label never abuts its graph. Derived rather than written
+/// down, because a gutter that cannot hold its own labels truncates them
+/// silently — nothing looks wrong, the name is simply a letter shorter.
+pub const GUTTER_W: usize = widest(&SERIES_NAMES) + 1;
 const MIN_WIDTH_FOR_GUTTER: usize = 30;
 /// A section shorter than this cannot carry both ends of the scale, so it
 /// carries none: see [`axis_label`].
@@ -933,6 +1027,18 @@ const MIN_ROWS_FOR_LABEL: usize = 3;
 // The gutter must fit inside the panel it is dropped from, or `graph_w`
 // underflows. The two constants are unrelated by construction, so tie them.
 const _: () = assert!(MIN_WIDTH_FOR_GUTTER > GUTTER_W);
+
+/// Exposed for tests: the names the gutter has to be wide enough for.
+#[cfg(test)]
+pub fn series_names() -> &'static [&'static str] {
+    &SERIES_NAMES
+}
+
+/// Exposed for tests: where a stall percentage lands on the theme's scale.
+#[cfg(test)]
+pub fn stall_heat_for_test(pct: f32, theme: &Theme) -> f32 {
+    stall_heat(pct, theme)
+}
 
 /// Exposed for tests: the gutter's width guarantee is a claim about a string,
 /// and the only way to check it is to read one. Same pattern as

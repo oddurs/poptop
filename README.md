@@ -468,6 +468,43 @@ macOS reports `—`. `sysinfo::Disks::refresh` costs **12.5ms** steady state,
 measured, against a whole sample budget of about 4ms; an em dash is the honest
 answer until there is a cheaper route to the same counters.
 
+### Stall pressure
+
+```text
+CPU  27.4%   WAIT   6.7%   vda  34.8% 7.2ms   STALL io  6.1%   RUN 2/14   BLOCKED 2
+```
+
+`STALL io 6.1%` is Pressure Stall Information: the share of the last ten seconds
+in which **every runnable task** was stopped waiting for IO. Not "some task was
+waiting", which a busy machine does all day and healthily — every one of them,
+with nothing getting done by anybody.
+
+It is coloured against thresholds of its own, 5% and 20%, rather than the warn
+and critical percentages you set for everything else. Those are about
+utilisation, where 50% is unremarkable; a machine that spent 50% of ten seconds
+with nothing at all running is in serious trouble, and borrowing the same
+numbers would leave the figure cold until long past the point of caring. Five
+percent is half a second in every ten with the machine stopped.
+
+It says something `WAIT` cannot. `iowait` is the CPU's view — idle with IO
+outstanding — so a box with plenty of other work to do reports a calm `iowait`
+while every task that matters is stuck behind the disk. That is the case this
+catches, which is why it earns a figure and a graph row of its own rather than
+being folded in beside `WAIT`.
+
+Read from `/proc/pressure/{cpu,io,memory}`, `avg10` only: the longer windows are
+the kernel's own smoothing, and poptop has a timeline for that. CPU is collected
+and stored but never named in the figure — the kernel documents `full` as
+undefined there and reports zero, so including it would win every tie.
+
+**It is optional and treated as such.** `/proc/pressure` needs `CONFIG_PSI=y`,
+and some distributions ship it behind `psi=1` on the kernel command line. It was
+present on every kernel checked here — but checking four container images tests
+*one* kernel, since containers share the host's, so that is much weaker evidence
+than it looks. Nothing in the default view depends on it: an absent
+`/proc/pressure` means no figure and no graph row rather than a zero, and the
+row goes back to the graphs that were already there.
+
 ### What the table cannot show
 
 poptop reads `/proc` at an instant, so **a process that lived 200ms never existed

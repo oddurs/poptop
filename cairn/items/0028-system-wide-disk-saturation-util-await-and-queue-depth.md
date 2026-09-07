@@ -2,7 +2,7 @@
 id: 28
 title: 'System-wide disk saturation: %util, await and queue depth'
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07

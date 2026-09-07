@@ -15,7 +15,7 @@
 //! The format is hand-rolled and versioned, like everything else here. A store
 //! written by a different version is discarded rather than guessed at.
 
-use crate::sample::{DiskStat, IoRates, MemStat, ProcSample, Sample};
+use crate::sample::{DiskStat, IoRates, MemStat, Pressure, ProcSample, Sample, Stall};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 8;
+const VERSION: u32 = 9;
 
 /// When the machine this sample came from was booted.
 ///
@@ -333,6 +333,14 @@ fn write_sample(out: &mut Out, s: &Sample) {
         out.opt_f32(d.await_ms);
         out.f32(d.queue);
     }
+    // Tagged, because a kernel that does not publish pressure and one reporting
+    // a machine that never stalled are opposite answers.
+    out.u8(u8::from(s.pressure.is_some()));
+    let p = s.pressure.unwrap_or_default();
+    for stall in [p.cpu, p.io, p.memory] {
+        out.f32(stall.some);
+        out.f32(stall.full);
+    }
 }
 
 /// Parse a store, or `None` if it is not one this version understands.
@@ -436,6 +444,12 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
             queue: r.f32()?,
         });
     }
+    let has_pressure = r.u8()? != 0;
+    let mut stalls = [Stall::default(); 3];
+    for stall in &mut stalls {
+        stall.some = r.f32()?;
+        stall.full = r.f32()?;
+    }
     Some(Sample {
         at,
         cpu_total,
@@ -452,6 +466,11 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         io_collected,
         io_denied,
         disks: has_disks.then_some(disks),
+        pressure: has_pressure.then(|| Pressure {
+            cpu: stalls[0],
+            io: stalls[1],
+            memory: stalls[2],
+        }),
     })
 }
 
@@ -517,6 +536,20 @@ mod tests {
             // Distinct on purpose. Equal values would let a read that swapped
             // `running` and `blocked` round-trip cleanly, and the field a user
             // scrubs back to is the one that says whether the box was stuck.
+            pressure: Some(Pressure {
+                cpu: Stall {
+                    some: 1.5,
+                    full: 0.0,
+                },
+                io: Stall {
+                    some: 9.25,
+                    full: 4.75,
+                },
+                memory: Stall {
+                    some: 0.5,
+                    full: 0.25,
+                },
+            }),
             // Two devices, one with no completed operation in the interval, so
             // the round trip is made to carry a `None` await as well as a real
             // one — the pair this format must not collapse.
@@ -584,6 +617,7 @@ mod tests {
         // Compared as `Option<Vec<_>>`, so "this platform does not read disks"
         // and "it looked and found none" stay distinguishable across the file.
         assert_eq!(a.disks, b.disks);
+        assert_eq!(a.pressure, b.pressure);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
             assert_eq!(x.pid, y.pid);
@@ -820,6 +854,7 @@ mod tests_support {
             cpu_total: cpu,
             cpu_per_core: vec![1.0; 16],
             disks: None,
+            pressure: None,
             iowait: None,
             running: None,
             blocked: None,

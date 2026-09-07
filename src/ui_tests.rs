@@ -38,6 +38,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         cpu_total: cpu,
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
+        pressure: None,
         iowait: None,
         running: None,
         blocked: None,
@@ -1019,7 +1020,10 @@ fn gutter_text(app: &App, w: u16, h: u16) -> String {
     let graph_rows = (h as usize - 1).saturating_sub(2).max(1);
     (0..graph_rows)
         .map(|row| {
-            (0..4u16.min(w))
+            // The gutter's own width, not a literal. Hardcoding four meant
+            // widening the gutter for a longer series name broke four tests
+            // that were not about the gutter's width at all.
+            (0..(ui::GUTTER_W as u16 - 1).min(w))
                 .map(|x| buf[(x, 1 + row as u16)].symbol())
                 .collect::<String>()
         })
@@ -2196,9 +2200,11 @@ fn the_rules_do_not_mark_a_buffer_that_has_no_data_yet() {
     // Graph rows only — the range also covers the cursor and legend rows.
     let range = ui::timeline_rows_range(14);
     let graph_rows = (range.len() - 1).saturating_sub(2).max(1);
-    // The left third of the graph holds no samples at all.
+    // The left third of the graph holds no samples at all. Starting past the
+    // gutter, whose width is derived from the series names rather than fixed —
+    // an axis figure sitting in column four is a label, not a sample.
     for y in range.start + 1..range.start + 1 + graph_rows as u16 {
-        for x in 4..25u16 {
+        for x in ui::GUTTER_W as u16..25u16 {
             let s = buf[(x, y)].symbol();
             assert!(
                 s == " " || s == "\u{2800}",
@@ -2640,6 +2646,164 @@ fn a_platform_that_reads_no_disks_draws_no_disk_row() {
             labelled(&present, h, "MEM") || !labelled(&present, h, "DISK"),
             "at height {h} the disk graph displaced memory"
         );
+    }
+}
+
+/// A sample reporting the given IO and memory stall percentages.
+fn with_pressure(io_full: f32, mem_full: f32) -> Sample {
+    use crate::sample::{Pressure, Stall};
+    let mut s = sample(10.0);
+    s.pressure = Some(Pressure {
+        cpu: Stall {
+            some: 1.0,
+            full: 0.0,
+        },
+        io: Stall {
+            some: io_full * 2.0,
+            full: io_full,
+        },
+        memory: Stall {
+            some: mem_full * 2.0,
+            full: mem_full,
+        },
+    });
+    s
+}
+
+#[test]
+fn every_series_name_fits_the_gutter_it_is_drawn_in() {
+    // `STALL` shipped rendering as `STAL`. The gutter truncates silently — the
+    // name is simply a letter shorter and nothing looks wrong — so the guard
+    // has to be that every name the timeline can draw survives being drawn.
+    const ROWS: usize = 4;
+    for name in ui::series_names() {
+        // Scanned rather than aimed at one row: the anchors and the name sit on
+        // different rows and which one carries the label is the gutter's own
+        // business, not something this test should encode.
+        let drawn: Vec<String> = (0..ROWS)
+            .map(|r| ui::axis_label_for_test(r, ROWS, Some(name)))
+            .collect();
+        assert!(
+            drawn.iter().any(|l| l.contains(name)),
+            "series {name:?} never appears in its gutter: {drawn:?}"
+        );
+    }
+}
+
+#[test]
+fn a_stall_is_measured_against_stall_thresholds_not_cpu_ones() {
+    // A CPU at 50% is unremarkable; a machine that spent 50% of ten seconds
+    // with nothing running at all is in serious trouble. Feeding the raw figure
+    // to the utilisation thresholds leaves it cold until it is catastrophic.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert_eq!(ui::stall_heat_for_test(0.0, &t), 0.0);
+    assert_eq!(
+        ui::stall_heat_for_test(4.9, &t),
+        0.0,
+        "cold below the floor"
+    );
+    assert_eq!(
+        ui::stall_heat_for_test(6.1, &t),
+        t.warn_pct,
+        "the README's own worked example rendered cold"
+    );
+    assert_eq!(ui::stall_heat_for_test(25.0, &t), t.critical_pct);
+}
+
+#[test]
+fn stall_colouring_follows_the_thresholds_the_user_set() {
+    // Scaling the figure by a constant — which is what this did first —
+    // silently reinterprets whatever the user configured: at `--warn 90` a
+    // quadrupled figure needs 22.5% before it warns.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor).with_thresholds(90.0, 95.0);
+    assert_eq!(
+        ui::stall_heat_for_test(6.1, &t),
+        90.0,
+        "a raised threshold moved where stall starts warning"
+    );
+}
+
+#[test]
+fn the_header_names_which_resource_stopped_the_machine() {
+    let mut app = App::new(60);
+    app.push(with_pressure(7.5, 0.5));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(f.contains("STALL"), "no stall figure");
+    assert!(f.contains("io"), "the resource was not named");
+    assert!(f.contains("7.5%"), "the figure was not shown");
+
+    let mut app = App::new(60);
+    app.push(with_pressure(0.5, 9.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(f.contains("mem"), "memory pressure was reported as io");
+    assert!(f.contains("9.0%"));
+}
+
+#[test]
+fn cpu_never_wins_the_stall_figure() {
+    // The kernel documents `full` as undefined for CPU and reports zero, so
+    // including it would win every tie and name the wrong resource.
+    use crate::sample::{Pressure, Stall};
+    let p = Pressure {
+        cpu: Stall {
+            some: 99.0,
+            full: 99.0,
+        },
+        io: Stall {
+            some: 1.0,
+            full: 0.5,
+        },
+        memory: Stall::default(),
+    };
+    assert_eq!(p.worst(), ("io", 0.5));
+}
+
+#[test]
+fn a_kernel_without_pressure_says_nothing_rather_than_zero() {
+    let mut absent = App::new(60);
+    let mut present = App::new(60);
+    for _ in 0..20 {
+        absent.push(sample(10.0));
+        present.push(with_pressure(6.0, 0.0));
+    }
+    absent.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    present.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    assert!(
+        !render(&absent, 200, 30).contains("STALL"),
+        "a stall figure was drawn for a kernel that publishes none"
+    );
+    assert!(render(&present, 200, 30).contains("STALL"));
+
+    let gutter = |app: &App, h: u16| {
+        rows(app, 200, h)
+            .iter()
+            .skip_while(|l| !l.contains("── timeline"))
+            .take_while(|l| !l.contains("shown,"))
+            .any(|l| l.contains("STALL"))
+    };
+    assert!(
+        !gutter(&absent, 44),
+        "a stall graph was drawn with no pressure"
+    );
+
+    // And it never displaces the three rows that were there before it.
+    for h in 14..46 {
+        for row in ["CPU", "MEM"] {
+            let has = |a: &App| {
+                rows(a, 200, h)
+                    .iter()
+                    .skip_while(|l| !l.contains("── timeline"))
+                    .take_while(|l| !l.contains("shown,"))
+                    .any(|l| l.contains(row))
+            };
+            assert!(
+                has(&present) || !gutter(&present, h),
+                "at height {h} the stall graph displaced {row}"
+            );
+        }
     }
 }
 
