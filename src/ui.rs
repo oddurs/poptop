@@ -1551,13 +1551,64 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
 /// default. Adding up what the table actually asks for is the only way to know
 /// where that starts, and doing it here rather than by eye means it cannot
 /// drift as columns change.
+/// Everything to the left of the command: pid, user, cpu% and its bar, rss and
+/// its bar, state, threads, history.
+const FIXED_COLUMNS: u16 =
+    7 + 10 + 6 + (BAR_W as u16 + 1) + 8 + BAR_W as u16 + 2 + 4 + SPARK_W as u16;
+
 const MIN_WIDTH_FOR_IO: u16 = {
-    // pid, user, cpu%, cpu bar, rss, mem bar, state, threads, history
-    let fixed = 7 + 10 + 6 + (BAR_W as u16 + 1) + 8 + BAR_W as u16 + 2 + 4 + SPARK_W as u16;
-    // …the two IO columns, one space between each of the twelve, and enough
-    // left for a command name to be worth reading.
-    fixed + 9 + 9 + 11 + 16
+    // The two IO columns, one space between each of the twelve, and enough left
+    // for a command name to be worth reading.
+    FIXED_COLUMNS + 9 + 9 + 11 + 16
 };
+
+/// How much of the line is left for the command name.
+///
+/// The identity column is the one that takes what nothing else claimed, so it
+/// is the one that runs out — at 104 columns with the IO columns shown it gets
+/// nineteen, one more than the two disk-rate columns together. Knowing the
+/// figure is what lets the name be elided deliberately rather than clipped by
+/// the terminal.
+fn command_width(width: u16, show_io: bool) -> usize {
+    let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
+    width
+        .saturating_sub(FIXED_COLUMNS + io + (columns - 1))
+        .max(1) as usize
+}
+
+/// Exposed for tests: eliding is a claim about a string.
+#[cfg(test)]
+pub fn elide_middle_for_test(name: &str, w: usize) -> String {
+    elide_middle(name, w)
+}
+
+/// A name shortened to `w` columns, keeping both ends.
+///
+/// Cutting the tail is what the terminal does on its own, and for a process
+/// name it removes exactly the part that tells two of them apart: three rows
+/// reading `Google Chrome Helpe` are a renderer, a GPU process and a network
+/// service. Cutting the head is no better — `…Helper (Renderer)` could belong
+/// to any application on the machine.
+///
+/// So both ends stay and the middle goes. The head keeps slightly more, because
+/// it is what a reader scans down the column for; the tail keeps enough to carry
+/// a parenthetical role.
+fn elide_middle(name: &str, w: usize) -> String {
+    let n = name.chars().count();
+    if n <= w {
+        return name.to_string();
+    }
+    if w <= 3 {
+        return name.chars().take(w).collect();
+    }
+    let room = w - 1;
+    let tail = room / 2;
+    let head = room - tail;
+    let mut out: String = name.chars().take(head).collect();
+    out.push('…');
+    out.extend(name.chars().skip(n - tail));
+    out
+}
 
 fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // Dropped on a panel too narrow to carry them, like every other element
@@ -1565,6 +1616,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // the ratchet is a history one, so widening the window brings them back
     // with their history intact.
     let show_io = app.show_io && area.width >= MIN_WIDTH_FOR_IO;
+    let cmd_w = command_width(area.width, show_io);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -1677,9 +1729,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 ))
                 .style(app.theme.dim_style()),
             );
+            // Elided here rather than clipped by the terminal, so the part
+            // that identifies the process survives — see `elide_middle`.
+            let room = cmd_w.saturating_sub(r.prefix.chars().count());
             cells.push(Cell::from(Line::from(vec![
                 Span::styled(r.prefix.clone(), app.theme.chrome_style()),
-                Span::raw(p.name.to_string()),
+                Span::raw(elide_middle(&p.name, room)),
             ])));
             Row::new(cells).style(style)
         })

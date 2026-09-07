@@ -636,6 +636,26 @@ than it looks. Nothing in the default view depends on it: an absent
 `/proc/pressure` means no figure and no graph row rather than a zero, and the
 row goes back to the graphs that were already there.
 
+### Identifying a row
+
+The command is the column that says which process a row is, and it is the one
+that takes whatever the fixed columns left — at 104 columns with the disk
+columns shown, nineteen, one more than the two disk-rate columns together.
+
+That is not enough for a name like `Google Chrome Helper (Renderer)`, and
+letting the terminal clip it removes exactly the part that tells three such rows
+apart. So the middle goes and both ends stay:
+
+```text
+81977   oddurs   17.3  ▊   6.1G  █   S  34   Google Chr…(Renderer)
+5613    oddurs   20.0  ▊   514M  ▏   S  27   Google Chr…er (GPU)
+```
+
+The head is what a reader scans down the column for; the tail carries the role.
+Cutting either alone loses a distinction the other cannot supply. In tree mode
+the indent is charged against the name rather than the column, so `│  └─ ` does
+not push the tail off the end.
+
 ### What the table cannot show
 
 poptop reads `/proc` at an instant, so **a process that lived 200ms never existed

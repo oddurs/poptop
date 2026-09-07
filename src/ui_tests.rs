@@ -3881,6 +3881,115 @@ fn a_platform_that_cannot_see_a_signal_omits_it_rather_than_showing_zero() {
 }
 
 #[test]
+fn a_tree_prefix_is_charged_against_the_name_it_indents() {
+    // The prefix and the name share one column. Eliding the name against the
+    // column's full width lets `│  └─ ` push its tail off the end — the tail
+    // being the half that says which of several similar processes this is.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    let long = "Google Chrome Helper (Renderer)";
+    s.procs = vec![
+        proc_named(1, "launchd", 0.1, 1 << 20),
+        ProcSample {
+            cpu: 9.0,
+            ..proc_named(42, long, 0.0, 1 << 20)
+        },
+    ];
+    s.procs[1].ppid = 1;
+    app.push(s);
+    app.tree = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let row = rows(&app, 104, 20)
+        .into_iter()
+        .find(|l| l.contains("Chrome") || l.contains('…'))
+        .expect("no row for the nested process");
+    let row = row.trim_end();
+    assert!(
+        row.ends_with("nderer)"),
+        "the indent pushed the identifying tail off the line: {row:?}"
+    );
+    assert!(
+        row.chars().count() <= 104,
+        "the row overflowed its terminal: {row:?}"
+    );
+}
+
+#[test]
+fn a_long_name_keeps_both_ends() {
+    // Cutting the tail is what the terminal does on its own, and for a process
+    // name it removes exactly the part that tells two of them apart.
+    assert_eq!(ui::elide_middle_for_test("short", 20), "short");
+    assert_eq!(ui::elide_middle_for_test("exactlyten", 10), "exactlyten");
+
+    let cut = ui::elide_middle_for_test("Google Chrome Helper (Renderer)", 20);
+    assert_eq!(cut.chars().count(), 20);
+    assert!(cut.starts_with("Google"), "the head was lost: {cut:?}");
+    assert!(
+        cut.ends_with("nderer)"),
+        "the identifying tail was lost: {cut:?}"
+    );
+    assert!(cut.contains('…'), "no elision mark: {cut:?}");
+
+    // Absurd widths do not panic or produce something wider than asked for.
+    for w in 0..8 {
+        assert!(
+            ui::elide_middle_for_test("Google Chrome Helper", w)
+                .chars()
+                .count()
+                <= w
+        );
+    }
+}
+
+#[test]
+fn processes_that_differ_only_by_a_suffix_are_told_apart() {
+    // Three rows reading `Google Chrome Helpe` are a renderer, a GPU process
+    // and a network service, and the table said nothing about which was which.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            cpu: 9.0,
+            ..proc_named(1, "Google Chrome Helper (Renderer)", 0.0, 1 << 20)
+        },
+        ProcSample {
+            cpu: 8.0,
+            ..proc_named(2, "Google Chrome Helper (GPU)", 0.0, 1 << 20)
+        },
+        ProcSample {
+            cpu: 7.0,
+            ..proc_named(3, "Google Chrome Helper (Network Service)", 0.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let shown: Vec<String> = rows(&app, 104, 20)
+        .into_iter()
+        .filter(|l| l.contains("Chrome") || l.contains('…'))
+        .map(|l| l.trim_end().to_string())
+        .collect();
+    assert_eq!(shown.len(), 3, "expected three rows: {shown:?}");
+
+    // The distinguishing tail, not the whole row. Whole rows differ by pid
+    // whatever the name does, so comparing them passes even when every command
+    // reads `Google Chrome Helpe` — which is the bug.
+    for tail in ["Renderer)", "(GPU)", "Service)"] {
+        assert!(
+            shown.iter().any(|l| l.ends_with(tail)),
+            "no row identifies itself as {tail}: {shown:?}"
+        );
+    }
+    // And each was actually shortened, so the test is not passing because the
+    // column happened to be wide enough.
+    assert!(
+        shown.iter().all(|l| l.contains('…')),
+        "nothing was elided, so this proves nothing: {shown:?}"
+    );
+}
+
+#[test]
 fn figures_sit_with_the_resource_they_are_about() {
     // Ranked and ordered by one number, the header read compute, storage,
     // compute, network, memory, network, memory, machine — network split in
