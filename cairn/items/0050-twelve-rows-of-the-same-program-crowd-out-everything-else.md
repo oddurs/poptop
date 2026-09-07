@@ -19,12 +19,12 @@ poptop's own interface survey shows exactly the case it exists for — twelve of
 the fifteen visible rows were the same program:
 
 ```text
-26622   oddurs   5.9   422.9M  S  41   claude
-91942   oddurs   4.6   457.2M  S  40   claude
-90394   oddurs   3.6   405.8M  S  26   claude
-93272   oddurs   3.5   468.0M  S  40   claude
-32359   oddurs   3.4   287.4M  S  39   claude
-21159   oddurs   3.2   256.6M  S  40   claude
+26622   deploy   5.9   422.9M  S  41   ruby
+91942   deploy   4.6   457.2M  S  40   ruby
+90394   deploy   3.6   405.8M  S  26   ruby
+93272   deploy   3.5   468.0M  S  40   ruby
+32359   deploy   3.4   287.4M  S  39   ruby
+21159   deploy   3.2   256.6M  S  40   ruby
 ```
 
 Six rows to say one thing. Individually each is unremarkable; together they are
