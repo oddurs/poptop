@@ -123,6 +123,98 @@ impl Pressure {
     }
 }
 
+/// One network interface's traffic over the interval.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    /// Kernel name — `en0`, `eth0`, `wlan0`.
+    pub name: Arc<str>,
+    /// Bytes per second.
+    pub rx: u64,
+    pub tx: u64,
+    /// Packets per second.
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+}
+
+impl Link {
+    /// Bytes per second in both directions, which is what "busiest" means here.
+    pub fn bytes(&self) -> u64 {
+        self.rx.saturating_add(self.tx)
+    }
+}
+
+/// What the network did during the interval, and whether it was healthy.
+///
+/// Throughput is the figure every monitor draws and the one that least often
+/// explains a slow machine: a link at 3% of its capacity dropping 2% of its
+/// packets is slow, and one at 90% is usually fine. So the counters that say
+/// something is *wrong* are collected alongside, and they are what the header
+/// gives its scarce space to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NetStat {
+    /// Interfaces that have ever carried a byte. A laptop publishes twenty-odd
+    /// of them, almost all idle tunnels.
+    pub links: Vec<Link>,
+    /// Packets the interface itself reported as bad, over the interval.
+    pub errors: Option<u64>,
+    /// Packets the kernel threw away because it could not keep up. `None`
+    /// where the platform does not count them separately from errors.
+    pub drops: Option<u64>,
+    /// TCP segments sent a second time, over the interval.
+    ///
+    /// The single best "the network path is unhealthy" number on a server, and
+    /// the one that most often explains a slow machine whose interfaces look
+    /// quiet. `None` where the platform does not publish it.
+    pub retrans: Option<u64>,
+    /// Connections dropped because the accept queue was full — a service
+    /// failing to keep up, which no other figure here would show.
+    pub listen_drops: Option<u64>,
+}
+
+impl NetStat {
+    /// The interface carrying the most traffic, if any is known.
+    ///
+    /// Ties go to the earlier one, as with [`Sample::busiest_disk`]: on an idle
+    /// machine every interface is at zero, and naming whichever sorted last
+    /// reads as a claim about which one poptop is watching.
+    pub fn busiest(&self) -> Option<&Link> {
+        let mut it = self.links.iter();
+        let mut best = it.next()?;
+        for l in it {
+            if l.bytes() > best.bytes() {
+                best = l;
+            }
+        }
+        Some(best)
+    }
+
+    /// The worst thing that happened to the network this interval, if anything
+    /// did.
+    ///
+    /// Ordered by how much each narrows the problem down rather than by size.
+    /// Retransmits point at the path between here and elsewhere; listen drops
+    /// point at a service on this machine that is not accepting fast enough;
+    /// plain drops point at the kernel or the ring buffer; errors point at the
+    /// link or the cable. A machine with one retransmit and four hundred
+    /// errors is telling you about the cable, but the retransmit is the figure
+    /// that changes what you do next.
+    ///
+    /// `None` when nothing went wrong, so the header spends no space saying so.
+    pub fn trouble(&self) -> Option<(&'static str, u64)> {
+        [
+            ("retrans", self.retrans),
+            ("listen drops", self.listen_drops),
+            ("drops", self.drops),
+            ("errors", self.errors),
+        ]
+        .into_iter()
+        .find_map(|(what, n)| match n {
+            Some(n) if n > 0 => Some((what, n)),
+            _ => None,
+        })
+    }
+}
+
 /// One block device's activity over the interval that produced this sample.
 ///
 /// Rates, not counters: `/proc/diskstats` publishes cumulative totals and every
@@ -408,6 +500,8 @@ pub struct Sample {
     /// the default view is allowed to depend on it, and it renders as an em
     /// dash rather than a zero when it is missing.
     pub pressure: Option<Pressure>,
+    /// Network traffic and health, or `None` where the platform will not say.
+    pub net: Option<NetStat>,
 }
 
 impl Sample {
@@ -432,6 +526,7 @@ impl Sample {
             io_denied: 0,
             disks: None,
             pressure: None,
+            net: None,
         }
     }
 }

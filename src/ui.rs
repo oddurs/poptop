@@ -6,7 +6,7 @@
 use crate::app::{self, App};
 use crate::glyphs::{self, GlyphSet};
 use crate::history;
-use crate::sample::{IoRates, Sample};
+use crate::sample::{IoRates, NetStat, Sample};
 use crate::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Cell, Paragraph, Row, Table};
@@ -339,6 +339,26 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         });
     }
 
+    // Something went wrong on the network, and only then. A figure reading
+    // `NET 0 drops` every second would spend header space to say nothing, and
+    // the space is the scarcest thing here.
+    //
+    // Treated like `BLOCKED`: any of these above zero is worth the critical
+    // style, because none of them has a healthy amount. A retransmit is not a
+    // slow packet, it is a packet that did not arrive.
+    if let Some((what, n)) = s.net.as_ref().and_then(NetStat::trouble) {
+        figures.push(Figure {
+            rank: 45,
+            spans: vec![
+                Span::styled("NET ", dim),
+                Span::styled(
+                    format!("{n} {what}"),
+                    app.theme.figure_style(app.theme.critical_pct),
+                ),
+            ],
+        });
+    }
+
     // Uninterruptible sleep. Thirty processes on one hung mount give a load
     // average of thirty on a completely idle box, and this is the only figure
     // that says so — so it is heated on any value at all, not on a threshold.
@@ -393,6 +413,22 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // Nothing says the middle segment is cache except its presence, so a
     // platform that cannot separate cache from free simply has none.
     debug_assert!(has_cache || widths[1] == 0);
+    // Throughput, which is what everyone looks for and what least often
+    // explains a slow machine — so it sits below memory and is given up before
+    // it. The interface is named because a laptop has twenty-odd and only one
+    // of them is carrying anything.
+    if let Some(l) = s.net.as_ref().and_then(NetStat::busiest) {
+        figures.push(Figure {
+            rank: 55,
+            spans: vec![
+                Span::styled(format!("{} ", l.name), dim),
+                Span::styled(format!("{}/s", fmt_bytes(l.rx)), dim),
+                Span::styled(" ", dim),
+                Span::styled(format!("{}/s", fmt_bytes(l.tx)), dim),
+            ],
+        });
+    }
+
     figures.push(Figure {
         rank: 50,
         spans: mem_spans,
@@ -688,6 +724,16 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 .collect(),
         ));
     }
+
+    // No network row. The timeline draws percentages of a fixed denominator —
+    // it prints `100` at the top, rules the warn and critical thresholds across
+    // the graph, and reads out `NET 100.0%` under the cursor. Bytes per second
+    // has no such denominator, and normalising to the window's own peak makes
+    // the busiest sample 100 by construction: an idle laptop moving 8 B/s of
+    // loopback painted a full-scale graph through the critical rule.
+    //
+    // The header figure carries the number until the timeline can draw a series
+    // with a scale of its own — cairn 0032.
 
     let row_split = sections(graph_rows, candidates.len(), gutter);
     candidates.truncate(row_split.len());

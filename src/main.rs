@@ -395,6 +395,26 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     if let Some(blocked) = s.blocked {
         outln!("blocked {blocked}  in uninterruptible sleep");
     }
+    if let Some(p) = s.pressure {
+        let (what, pct) = p.worst();
+        outln!("stall   {pct:.1}%  of the last 10s with every task stopped, on {what}");
+    }
+    if let Some(d) = s.busiest_disk() {
+        match d.await_ms {
+            Some(a) => outln!(
+                "disk    {:.1}%  {} utilised, {a:.1}ms per operation",
+                d.util,
+                d.name
+            ),
+            None => outln!("disk    {:.1}%  {} utilised", d.util, d.name),
+        }
+    }
+    // The counter that says the network is unhealthy, which no other line here
+    // would show: a script reading cpu and mem sees a machine with a dead path
+    // to its peers as perfectly idle.
+    if let Some((what, n)) = s.net.as_ref().and_then(sample::NetStat::trouble) {
+        outln!("net     {n}  {what} in the last interval");
+    }
     outln!(
         "mem     {:.1}%  {} / {} used, {} available",
         s.mem.used_pct(),

@@ -468,6 +468,57 @@ macOS reports `—`. `sysinfo::Disks::refresh` costs **12.5ms** steady state,
 measured, against a whole sample budget of about 4ms; an em dash is the honest
 answer until there is a cheaper route to the same counters.
 
+### The network
+
+Two figures, and the ordering between them is the point:
+
+```text
+CPU  27.9%   NET 37 retrans   en0 4.4K/s 1.1K/s   MEM  80.4%
+```
+
+`en0 4.4K/s 1.1K/s` is throughput — what every monitor shows, and what least
+often explains a slow machine. A link at 3% of its capacity dropping 2% of its
+packets is slow; one at 90% is usually fine. So throughput sits *below* memory in
+the ladder and is given up before it.
+
+`NET 37 retrans` appears only when something has gone wrong, and is kept almost
+to the end when it does. A figure reading `NET 0 drops` every second would spend
+the scarcest thing on screen to say nothing happened.
+
+Four counters, reported in the order that narrows the problem down rather than by
+size:
+
+| counter | what it points at |
+|---|---|
+| `retrans` | the path between here and elsewhere |
+| `listen drops` | a service on this machine not accepting fast enough |
+| `drops` | the kernel or a ring buffer |
+| `errors` | the link or the cable |
+
+A machine with one retransmit and four hundred errors is telling you about the
+cable, but the retransmit is the figure that changes what you do next.
+
+Interfaces are listed once they have carried a byte, the same measurement the
+disk table uses — this laptop publishes twenty-seven and thirteen have. The
+figure names the busiest rather than aggregating, because a total across
+twenty-five idle tunnels and one real link is a number about the tunnels.
+
+There is no network row on the timeline. That panel draws percentages of a fixed
+denominator — it prints `100` at the top, rules the warn and critical thresholds
+across the graph, and reads out `NET 100.0%` under the cursor. Bytes per second
+has no such denominator, and scaling to the window's own peak makes the busiest
+sample 100 by construction: an idle laptop moving 8 B/s of loopback painted a
+full-scale graph straight through the critical rule. The header carries the
+figure until the timeline can draw a series with a scale of its own.
+
+macOS reports throughput and errors, and **em dashes for drops, retransmits and
+listen drops**: `sysinfo` counts errors without separating drops, and there is no
+TCP counter behind it at all. Three zeroes there would claim a perfectly healthy
+network on a machine that cannot see one.
+
+Per-process network attribution is still out of scope — it needs `/proc/net`
+inode matching or eBPF and is its own project.
+
 ### Stall pressure
 
 ```text

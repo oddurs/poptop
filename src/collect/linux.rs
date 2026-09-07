@@ -5,7 +5,9 @@
 //! is stateful and why the very first sample reports zero busy time.
 
 use super::{Collector, Needs};
-use crate::sample::{DiskStat, IoRates, MemStat, Pressure, ProcSample, Sample, Stall};
+use crate::sample::{
+    DiskStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
+};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -96,6 +98,13 @@ pub struct ProcFs {
     prev_cores: Vec<CpuTimes>,
     /// Raw `/proc/diskstats` counters from the previous read, per device.
     prev_disks: HashMap<Arc<str>, DiskTimes>,
+    /// Raw `/proc/net/dev` counters from the previous read, per interface.
+    prev_links: HashMap<Arc<str>, LinkTimes>,
+    /// Previous cumulative totals for the whole-stack counters.
+    /// `None` until the first read. Not a zeroed `NetTotals`: subtracting from
+    /// zero turns the machine's lifetime error count into this second's, which
+    /// is a large and very alarming number to invent.
+    prev_net: Option<NetTotals>,
     /// Which names in `/proc/diskstats` are whole devices rather than
     /// partitions, from `/sys/block`.
     ///
@@ -160,6 +169,8 @@ impl ProcFs {
             prev_total: None,
             prev_cores: Vec::new(),
             prev_disks: HashMap::new(),
+            prev_links: HashMap::new(),
+            prev_net: None,
             block_devices: read_block_devices(),
             partitions: std::collections::HashSet::new(),
             prev_proc_jiffies: HashMap::new(),
@@ -364,6 +375,98 @@ impl ProcFs {
             one("io").as_deref(),
             one("memory").as_deref(),
         )
+    }
+
+    /// Traffic and health over `elapsed`, or `None` if `/proc/net/dev` cannot
+    /// be read.
+    ///
+    /// The interface list is filtered the same way the disk list is: an
+    /// interface appears once it has ever carried a byte. A laptop publishes
+    /// twenty-odd, almost all of them idle `utun*` tunnels, and a measurement
+    /// keeps the real one visible without a rule about names.
+    fn read_net(&mut self, elapsed: Duration) -> Option<NetStat> {
+        let dev = fs::read_to_string("/proc/net/dev").ok()?;
+        // Absent files stay absent rather than becoming zeroes: a kernel that
+        // does not publish retransmits and one reporting none are opposite
+        // answers, and only `/proc/net/dev` is required for the rest to mean
+        // anything.
+        let snmp = fs::read_to_string("/proc/net/snmp").unwrap_or_default();
+        let netstat = fs::read_to_string("/proc/net/netstat").unwrap_or_default();
+        Some(self.net_from(&dev, &snmp, &netstat, elapsed))
+    }
+
+    /// Split from the read so the counters, the filter and the absent-file
+    /// rules can be tested against fixtures — the same split `parse_meminfo`,
+    /// `diskstats_from` and `pressure_from` have.
+    fn net_from(&mut self, dev: &str, snmp: &str, netstat: &str, elapsed: Duration) -> NetStat {
+        let secs = elapsed.as_secs_f64();
+
+        let mut links = Vec::new();
+        let mut seen = HashMap::new();
+        // Summed from per-interface deltas, not from a whole-machine total
+        // diffed against the last one. An interface that appears mid-session —
+        // a NIC plugged in, a namespace settling — brings its lifetime counters
+        // with it, and a difference of sums would charge all of them to this
+        // second. One that disappears would shrink the sum and swallow a real
+        // interval's errors as zero.
+        let (mut errors, mut drops) = (0u64, 0u64);
+        let mut had_baseline = false;
+        for line in dev.lines() {
+            let Some((name, rest)) = line.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            let now = parse_link(rest);
+            let name: Arc<str> = self
+                .prev_links
+                .keys()
+                .find(|k| ***k == *name)
+                .cloned()
+                .unwrap_or_else(|| Arc::from(name));
+            if let Some(prev) = self.prev_links.get(&name) {
+                had_baseline = true;
+                let d = |a: u64, b: u64| a.saturating_sub(b);
+                errors += d(now.rx_errs, prev.rx_errs) + d(now.tx_errs, prev.tx_errs);
+                drops += d(now.rx_drop, prev.rx_drop) + d(now.tx_drop, prev.tx_drop);
+                // Listed only once it has carried something, the same
+                // measurement the disk table uses — but its errors are counted
+                // either way, because an interface erroring and passing nothing
+                // is the worst case there is.
+                if secs > 0.0 && (now.rx > 0 || now.tx > 0) {
+                    let rate = |a: u64, b: u64| (d(a, b) as f64 / secs) as u64;
+                    links.push(Link {
+                        name: name.clone(),
+                        rx: rate(now.rx, prev.rx),
+                        tx: rate(now.tx, prev.tx),
+                        rx_packets: rate(now.rx_packets, prev.rx_packets),
+                        tx_packets: rate(now.tx_packets, prev.tx_packets),
+                    });
+                }
+            }
+            seen.insert(name, now);
+        }
+        self.prev_links = seen;
+
+        // Each counter carries its own baseline, so a file that was unreadable
+        // last sample reports nothing this sample rather than everything since
+        // boot. `None` here means the counter was not found — which is not the
+        // same as a counter that found nothing.
+        let totals = NetTotals {
+            retrans: snmp_counter(snmp, "Tcp:", "RetransSegs"),
+            listen_drops: snmp_counter(netstat, "TcpExt:", "ListenDrops"),
+        };
+        let prev = self.prev_net.replace(totals);
+        // Both halves must be present: a counter needs a reading now *and* a
+        // reading to subtract from.
+        let since =
+            |now: Option<u64>, was: Option<Option<u64>>| Some(now?.saturating_sub(was.flatten()?));
+        NetStat {
+            links,
+            errors: had_baseline.then_some(errors),
+            drops: had_baseline.then_some(drops),
+            retrans: since(totals.retrans, prev.map(|p| p.retrans)),
+            listen_drops: since(totals.listen_drops, prev.map(|p| p.listen_drops)),
+        }
     }
 
     fn read_mem(&mut self) -> io::Result<MemStat> {
@@ -806,6 +909,67 @@ fn parse_pressure(text: &str) -> Stall {
     }
 }
 
+/// Cumulative per-interface counters from one `/proc/net/dev` line.
+#[derive(Clone, Copy, Default)]
+struct LinkTimes {
+    rx: u64,
+    rx_packets: u64,
+    rx_errs: u64,
+    rx_drop: u64,
+    tx: u64,
+    tx_packets: u64,
+    tx_errs: u64,
+    tx_drop: u64,
+}
+
+/// Whole-stack cumulative counters.
+///
+/// Each is an `Option` in its own right, not a number guarded by one shared
+/// flag: `/proc/net/snmp` can be unreadable on one sample and readable on the
+/// next, and a baseline of zero would then report the machine's lifetime
+/// retransmit count as one interval's worth.
+#[derive(Clone, Copy, Default)]
+struct NetTotals {
+    retrans: Option<u64>,
+    listen_drops: Option<u64>,
+}
+
+/// One `/proc/net/dev` line's counters, after the `iface:` label.
+///
+/// Receive is bytes, packets, errs, drop, fifo, frame, compressed, multicast;
+/// transmit is bytes, packets, errs, drop, fifo, colls, carrier, compressed.
+/// Sixteen fields, unchanged since the format was introduced.
+fn parse_link(rest: &str) -> LinkTimes {
+    let v: Vec<u64> = rest
+        .split_whitespace()
+        .map(|f| f.parse().unwrap_or(0))
+        .collect();
+    let at = |i: usize| v.get(i).copied().unwrap_or(0);
+    LinkTimes {
+        rx: at(0),
+        rx_packets: at(1),
+        rx_errs: at(2),
+        rx_drop: at(3),
+        tx: at(8),
+        tx_packets: at(9),
+        tx_errs: at(10),
+        tx_drop: at(11),
+    }
+}
+
+/// A named counter out of `/proc/net/snmp` or `/proc/net/netstat`.
+///
+/// Both files pair a header line of names with a values line, per protocol.
+/// Looked up **by name rather than by position**, because the set of counters a
+/// kernel publishes grows: `TcpExt` alone has gained fields across releases, and
+/// a fixed index would silently read the wrong one on a kernel that added
+/// something ahead of it.
+fn snmp_counter(text: &str, prefix: &str, name: &str) -> Option<u64> {
+    let mut lines = text.lines().filter(|l| l.starts_with(prefix));
+    let col = lines.next()?.split_whitespace().position(|f| f == name)?;
+    lines.next()?.split_whitespace().nth(col)?.parse().ok()
+}
+
 /// All three resources, or `None` if any file is missing.
 ///
 /// Split from the read so the all-or-nothing rule can be tested. A kernel with
@@ -991,6 +1155,7 @@ impl Collector for ProcFs {
         // was never busy. Taking the snapshot here keeps the two in step
         // whatever happens below.
         let disks = self.read_diskstats(elapsed);
+        let net = self.read_net(elapsed);
 
         let mut io_denied = 0;
         let procs = self.read_procs(elapsed, needs, &mut io_denied)?;
@@ -1023,6 +1188,7 @@ impl Collector for ProcFs {
             io_denied,
             disks,
             pressure: self.read_pressure(),
+            net,
         })
     }
 }
@@ -1547,6 +1713,204 @@ mod tests {
             .map(|s| Arc::from(*s))
             .collect();
         pf
+    }
+
+    #[test]
+    fn a_net_dev_line_parses_both_directions() {
+        // Receive is bytes, packets, errs, drop, fifo, frame, compressed,
+        // multicast; transmit is the same shape starting at field eight.
+        let l = parse_link("  1000 10 1 2 0 0 0 0   2000 20 3 4 0 0 0 0");
+        assert_eq!((l.rx, l.rx_packets, l.rx_errs, l.rx_drop), (1000, 10, 1, 2));
+        assert_eq!((l.tx, l.tx_packets, l.tx_errs, l.tx_drop), (2000, 20, 3, 4));
+    }
+
+    #[test]
+    fn snmp_counters_are_found_by_name_not_by_position() {
+        // The set of counters a kernel publishes grows: `TcpExt` has gained
+        // fields across releases, and a fixed index would silently read the
+        // wrong one on a kernel that added something ahead of it.
+        let before = "Tcp: RtoAlgorithm RetransSegs InErrs\nTcp: 1 42 7\n";
+        let after = "Tcp: RtoAlgorithm NewCounter RetransSegs InErrs\nTcp: 1 99 42 7\n";
+        assert_eq!(snmp_counter(before, "Tcp:", "RetransSegs"), Some(42));
+        assert_eq!(
+            snmp_counter(after, "Tcp:", "RetransSegs"),
+            Some(42),
+            "a counter inserted ahead of it shifted the reading"
+        );
+        assert_eq!(snmp_counter(before, "Tcp:", "NotThere"), None);
+        assert_eq!(snmp_counter("", "Tcp:", "RetransSegs"), None);
+    }
+
+    /// A `/proc/net/dev` file: a busy interface, an idle tunnel, and loopback.
+    fn net_dev_fixture(rx: u64, tx: u64, errs: u64, drop: u64) -> String {
+        format!(
+            "Inter-|   Receive  |  Transmit\n face |bytes packets errs drop\n\
+             {:>7}: {rx} 10 {errs} {drop} 0 0 0 0 {tx} 20 0 0 0 0 0 0\n\
+             {:>7}: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
+             {:>7}: 500 5 0 0 0 0 0 0 500 5 0 0 0 0 0 0\n",
+            "eth0", "utun0", "lo"
+        )
+    }
+
+    #[test]
+    fn a_counter_that_becomes_readable_reports_nothing_not_everything() {
+        // `/proc/net/snmp` can be unreadable on one sample and readable on the
+        // next — a transient failure, or a container namespace settling. With a
+        // shared baseline of zero the next sample reported the machine's
+        // lifetime retransmit count as one interval's worth, in critical red.
+        let mut pf = ProcFs::new().unwrap();
+        let dev = net_dev_fixture(1000, 2000, 0, 0);
+        pf.net_from(&dev, "", "", Duration::from_secs(1));
+        let after = pf.net_from(
+            &dev,
+            "Tcp: RetransSegs\nTcp: 5000000\n",
+            "",
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            after.retrans, None,
+            "a lifetime counter was charged to one second"
+        );
+        // And the sample after that, with a baseline, reports the real delta.
+        let then = pf.net_from(
+            &dev,
+            "Tcp: RetransSegs\nTcp: 5000004\n",
+            "",
+            Duration::from_secs(1),
+        );
+        assert_eq!(then.retrans, Some(4));
+    }
+
+    #[test]
+    fn a_counter_the_kernel_does_not_publish_is_absent_not_zero() {
+        // The file exists and does not carry the counter. Reporting zero would
+        // say "this kernel is retransmitting nothing", which is the confident
+        // lie this module refuses everywhere else.
+        let mut pf = ProcFs::new().unwrap();
+        let dev = net_dev_fixture(1000, 2000, 0, 0);
+        let snmp = "Tcp: RtoAlgorithm InErrs\nTcp: 1 0\n";
+        pf.net_from(&dev, snmp, "", Duration::from_secs(1));
+        let net = pf.net_from(&dev, snmp, "", Duration::from_secs(1));
+        assert_eq!(net.retrans, None, "a missing counter became a zero");
+    }
+
+    #[test]
+    fn an_interface_appearing_mid_session_does_not_dump_its_history() {
+        // A NIC plugged in, or a namespace settling, brings its lifetime
+        // counters with it. Diffing whole-machine sums would charge all of
+        // them to this second; diffing per interface charges none of them,
+        // because there is nothing yet to subtract from.
+        let mut pf = ProcFs::new().unwrap();
+        let one = "eth0: 1000 10 5 5 0 0 0 0 2000 20 0 0 0 0 0 0\n";
+        let two = "eth0: 1000 10 5 5 0 0 0 0 2000 20 0 0 0 0 0 0\n\
+                   eth1: 500 5 900 900 0 0 0 0 500 5 0 0 0 0 0 0\n";
+        pf.net_from(one, "", "", Duration::from_secs(1));
+        let net = pf.net_from(two, "", "", Duration::from_secs(1));
+        assert_eq!(
+            net.errors,
+            Some(0),
+            "a new interface's lifetime errors were charged to this interval"
+        );
+    }
+
+    #[test]
+    fn an_interface_going_away_does_not_swallow_a_real_interval() {
+        // The inverse: a VPN tunnel disappearing shrinks a whole-machine sum,
+        // and `saturating_sub` would report a real interval's errors as zero.
+        let mut pf = ProcFs::new().unwrap();
+        let two = "eth0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n\
+                   utun0: 500 5 100 0 0 0 0 0 500 5 0 0 0 0 0 0\n";
+        let gone = "eth0: 1000 10 7 0 0 0 0 0 2000 20 0 0 0 0 0 0\n";
+        pf.net_from(two, "", "", Duration::from_secs(1));
+        let net = pf.net_from(gone, "", "", Duration::from_secs(1));
+        assert_eq!(net.errors, Some(7), "a real interval's errors were lost");
+    }
+
+    #[test]
+    fn an_absent_snmp_file_leaves_the_counter_absent_rather_than_zero() {
+        // A kernel that does not publish retransmits and one reporting none are
+        // opposite answers, and only `/proc/net/dev` is required for the rest.
+        let mut pf = ProcFs::new().unwrap();
+        let dev = net_dev_fixture(1000, 2000, 0, 0);
+        let snmp = "Tcp: RetransSegs\nTcp: 5\n";
+        let netstat = "TcpExt: ListenDrops\nTcpExt: 2\n";
+
+        pf.net_from(&dev, snmp, netstat, Duration::from_secs(1));
+        let with = pf.net_from(&dev, snmp, netstat, Duration::from_secs(1));
+        assert_eq!(with.retrans, Some(0), "no retransmits since the last read");
+        assert_eq!(with.listen_drops, Some(0));
+
+        let mut pf = ProcFs::new().unwrap();
+        pf.net_from(&dev, "", "", Duration::from_secs(1));
+        let without = pf.net_from(&dev, "", "", Duration::from_secs(1));
+        assert_eq!(without.retrans, None, "an absent file became a zero");
+        assert_eq!(without.listen_drops, None);
+        // The interface counters still work: only the missing halves are absent.
+        assert_eq!(without.errors, Some(0));
+    }
+
+    #[test]
+    fn an_idle_interface_is_not_listed() {
+        // A laptop publishes twenty-odd interfaces and almost all are idle
+        // tunnels. Excluded by measurement, not by a rule about names.
+        let mut pf = ProcFs::new().unwrap();
+        let dev = net_dev_fixture(1000, 2000, 0, 0);
+        pf.net_from(&dev, "", "", Duration::from_secs(1));
+        let net = pf.net_from(
+            &net_dev_fixture(3000, 6000, 0, 0),
+            "",
+            "",
+            Duration::from_secs(1),
+        );
+        let names: Vec<&str> = net.links.iter().map(|l| &*l.name).collect();
+        assert_eq!(names, vec!["eth0", "lo"], "an idle tunnel was listed");
+        // 2000 bytes over one second, in each direction's own delta.
+        let eth = net.links.iter().find(|l| &*l.name == "eth0").unwrap();
+        assert_eq!((eth.rx, eth.tx), (2000, 4000));
+    }
+
+    #[test]
+    fn errors_and_drops_are_summed_across_interfaces() {
+        let mut pf = ProcFs::new().unwrap();
+        pf.net_from(&net_dev_fixture(0, 0, 0, 0), "", "", Duration::from_secs(1));
+        let net = pf.net_from(&net_dev_fixture(0, 0, 7, 3), "", "", Duration::from_secs(1));
+        assert_eq!(net.errors, Some(7));
+        assert_eq!(net.drops, Some(3));
+    }
+
+    #[test]
+    fn the_live_network_reads_interfaces_that_carry_something() {
+        let mut pf = ProcFs::new().unwrap();
+        // First read primes the counters; rates need two.
+        let first = pf
+            .read_net(Duration::from_secs(1))
+            .expect("no /proc/net/dev");
+        assert!(first.links.is_empty(), "rates from a single read");
+        assert_eq!(first.errors, None, "a delta was reported from one read");
+
+        std::thread::sleep(Duration::from_millis(50));
+        let net = pf.read_net(Duration::from_millis(50)).unwrap();
+
+        let raw = fs::read_to_string("/proc/net/dev").unwrap();
+        for l in &net.links {
+            let line = raw
+                .lines()
+                .find(|x| x.split_once(':').is_some_and(|(n, _)| n.trim() == &*l.name))
+                .unwrap_or_else(|| panic!("interface not in the file: {}", l.name));
+            // Every listed interface has carried something. A laptop publishes
+            // twenty-odd and almost all are idle tunnels.
+            let c = parse_link(line.split_once(':').unwrap().1);
+            assert!(
+                c.rx > 0 || c.tx > 0,
+                "{} has never carried a byte and was listed",
+                l.name
+            );
+        }
+        assert!(
+            net.links.len() < raw.lines().count(),
+            "every line of /proc/net/dev was reported"
+        );
+        assert!(net.errors.is_some(), "errors went unreported on Linux");
     }
 
     #[test]

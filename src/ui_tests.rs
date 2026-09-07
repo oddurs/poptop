@@ -39,6 +39,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
         pressure: None,
+        net: None,
         iowait: None,
         running: None,
         blocked: None,
@@ -2721,6 +2722,126 @@ fn stall_colouring_follows_the_thresholds_the_user_set() {
         90.0,
         "a raised threshold moved where stall starts warning"
     );
+}
+
+/// A sample with one busy interface and the given trouble counters.
+fn with_net(rx: u64, tx: u64, retrans: Option<u64>, drops: Option<u64>) -> Sample {
+    use crate::sample::{Link, NetStat};
+    let mut s = sample(10.0);
+    s.net = Some(NetStat {
+        links: vec![
+            Link {
+                name: std::sync::Arc::from("lo0"),
+                rx: 8,
+                tx: 8,
+                rx_packets: 1,
+                tx_packets: 1,
+            },
+            Link {
+                name: std::sync::Arc::from("en0"),
+                rx,
+                tx,
+                rx_packets: 900,
+                tx_packets: 400,
+            },
+        ],
+        errors: Some(0),
+        drops,
+        retrans,
+        listen_drops: Some(0),
+    });
+    s
+}
+
+#[test]
+fn a_healthy_network_spends_no_header_space_saying_so() {
+    // `NET 0 drops` every second would use the scarcest thing here to say
+    // nothing happened.
+    let mut app = App::new(60);
+    app.push(with_net(1 << 20, 1 << 18, Some(0), Some(0)));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(!f.contains("drops"), "a quiet network announced itself");
+    assert!(!f.contains("retrans"));
+    // But the throughput figure is there, and names the busy interface rather
+    // than the loopback.
+    assert!(f.contains("en0"), "the busy interface was not named");
+}
+
+#[test]
+fn the_worst_thing_that_happened_is_the_one_reported() {
+    // Ordered by how much each narrows the problem down, not by size. A machine
+    // with one retransmit and four hundred errors is telling you about the
+    // cable, but the retransmit is what changes what you do next.
+    use crate::sample::NetStat;
+    let n = |retrans, listen, drops, errors| NetStat {
+        links: Vec::new(),
+        errors,
+        drops,
+        retrans,
+        listen_drops: listen,
+    };
+    assert_eq!(
+        n(Some(1), Some(9), Some(9), Some(400)).trouble(),
+        Some(("retrans", 1))
+    );
+    assert_eq!(
+        n(Some(0), Some(2), Some(9), Some(400)).trouble(),
+        Some(("listen drops", 2))
+    );
+    assert_eq!(
+        n(Some(0), Some(0), Some(3), Some(400)).trouble(),
+        Some(("drops", 3))
+    );
+    assert_eq!(
+        n(Some(0), Some(0), Some(0), Some(400)).trouble(),
+        Some(("errors", 400))
+    );
+    assert_eq!(n(Some(0), Some(0), Some(0), Some(0)).trouble(), None);
+    // A platform that does not count a thing is not a platform where none of it
+    // happened, so `None` is skipped rather than read as zero.
+    assert_eq!(n(None, None, None, Some(5)).trouble(), Some(("errors", 5)));
+}
+
+#[test]
+fn a_retransmitting_network_says_so_loudly() {
+    let mut app = App::new(60);
+    app.push(with_net(1 << 20, 1 << 18, Some(37), Some(0)));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let f = render(&app, 200, 30);
+    assert!(
+        f.contains("37 retrans"),
+        "retransmits went unreported: {f:?}"
+    );
+}
+
+#[test]
+fn the_network_gets_no_timeline_row_because_it_has_no_denominator() {
+    // The timeline draws percentages of a fixed denominator: it prints `100` at
+    // the top, rules the warn and critical thresholds across the graph, and
+    // reads out `NET 100.0%` under the cursor. Bytes per second has no such
+    // denominator, and normalising to the window's own peak makes the busiest
+    // sample 100 by construction — an idle laptop moving 8 B/s of loopback
+    // painted a full-scale graph straight through the critical rule.
+    let mut app = App::new(60);
+    for _ in 0..20 {
+        // Two orders of magnitude apart, so a peak-relative scale would put the
+        // larger one at the top of the graph whatever its absolute size.
+        app.push(with_net(8, 8, Some(0), Some(0)));
+        app.push(with_net(1 << 30, 1 << 30, Some(0), Some(0)));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let drawn = rows(&app, 200, 48)
+        .iter()
+        .skip_while(|l| !l.contains("── timeline"))
+        .take_while(|l| !l.contains("shown,"))
+        .any(|l| l.contains("NET"));
+    assert!(
+        !drawn,
+        "a network row was drawn on an axis that cannot mean anything"
+    );
+    // The header still carries the figure, which is where the number lives.
+    assert!(render(&app, 200, 30).contains("en0"));
 }
 
 #[test]

@@ -15,7 +15,9 @@
 //! The format is hand-rolled and versioned, like everything else here. A store
 //! written by a different version is discarded rather than guessed at.
 
-use crate::sample::{DiskStat, IoRates, MemStat, Pressure, ProcSample, Sample, Stall};
+use crate::sample::{
+    DiskStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
+};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 9;
+const VERSION: u32 = 10;
 
 /// When the machine this sample came from was booted.
 ///
@@ -341,6 +343,24 @@ fn write_sample(out: &mut Out, s: &Sample) {
         out.f32(stall.some);
         out.f32(stall.full);
     }
+
+    out.u8(u8::from(s.net.is_some()));
+    // Borrowed, not cloned: `write_sample` only reads it, and a deep copy of
+    // the link vector per sample is an allocation per sample per persist.
+    let empty = NetStat::default();
+    let net = s.net.as_ref().unwrap_or(&empty);
+    out.u32(net.links.len() as u32);
+    for l in &net.links {
+        out.str(&l.name);
+        out.u64(l.rx);
+        out.u64(l.tx);
+        out.u64(l.rx_packets);
+        out.u64(l.tx_packets);
+    }
+    out.opt_u64(net.errors);
+    out.opt_u64(net.drops);
+    out.opt_u64(net.retrans);
+    out.opt_u64(net.listen_drops);
 }
 
 /// Parse a store, or `None` if it is not one this version understands.
@@ -450,6 +470,25 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         stall.some = r.f32()?;
         stall.full = r.f32()?;
     }
+    let has_net = r.u8()? != 0;
+    let n_links = r.u32()? as usize;
+    let mut links = Vec::with_capacity(n_links.min(1 << 10));
+    for _ in 0..n_links {
+        links.push(Link {
+            name: r.str()?,
+            rx: r.u64()?,
+            tx: r.u64()?,
+            rx_packets: r.u64()?,
+            tx_packets: r.u64()?,
+        });
+    }
+    let net = NetStat {
+        links,
+        errors: r.opt_u64()?,
+        drops: r.opt_u64()?,
+        retrans: r.opt_u64()?,
+        listen_drops: r.opt_u64()?,
+    };
     Some(Sample {
         at,
         cpu_total,
@@ -466,6 +505,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         io_collected,
         io_denied,
         disks: has_disks.then_some(disks),
+        net: has_net.then_some(net),
         pressure: has_pressure.then(|| Pressure {
             cpu: stalls[0],
             io: stalls[1],
@@ -536,6 +576,21 @@ mod tests {
             // Distinct on purpose. Equal values would let a read that swapped
             // `running` and `blocked` round-trip cleanly, and the field a user
             // scrubs back to is the one that says whether the box was stuck.
+            net: Some(NetStat {
+                links: vec![Link {
+                    name: Arc::from("en0"),
+                    rx: 1 << 20,
+                    tx: 3 << 18,
+                    rx_packets: 900,
+                    tx_packets: 400,
+                }],
+                errors: Some(3),
+                // A platform that counts errors and not drops, so the round
+                // trip carries both answers rather than only the easy one.
+                drops: None,
+                retrans: Some(11),
+                listen_drops: Some(0),
+            }),
             pressure: Some(Pressure {
                 cpu: Stall {
                     some: 1.5,
@@ -618,6 +673,7 @@ mod tests {
         // and "it looked and found none" stay distinguishable across the file.
         assert_eq!(a.disks, b.disks);
         assert_eq!(a.pressure, b.pressure);
+        assert_eq!(a.net, b.net);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
             assert_eq!(x.pid, y.pid);
@@ -855,6 +911,7 @@ mod tests_support {
             cpu_per_core: vec![1.0; 16],
             disks: None,
             pressure: None,
+            net: None,
             iowait: None,
             running: None,
             blocked: None,

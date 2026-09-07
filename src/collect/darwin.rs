@@ -6,12 +6,12 @@
 
 use super::procinfo::{self, Kinfo};
 use super::{Collector, Needs};
-use crate::sample::{IoRates, MemStat, ProcSample, Sample};
+use crate::sample::{IoRates, Link, MemStat, NetStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use sysinfo::{ProcessesToUpdate, System, Users};
+use sysinfo::{Networks, ProcessesToUpdate, System, Users};
 
 /// The fastest sysinfo can be sampled and still report the truth.
 ///
@@ -45,6 +45,18 @@ pub struct SysinfoCollector {
     /// pid -> (start time, name). Same key as the Linux collector, and for the
     /// same reason: a recycled pid must not inherit the dead process's name.
     names: HashMap<i32, (Option<u64>, Arc<str>)>,
+    /// Per-interface counters. sysinfo reports these as counts *since the last
+    /// refresh*, so there is nothing to diff — but there is still something to
+    /// divide by, which is what `net_at` is for.
+    nets: Networks,
+    /// When the interfaces were last refreshed, so a count since then can be
+    /// turned into a rate. Without it a ten-second interval reported ten
+    /// seconds of traffic as one second's worth.
+    net_at: Option<std::time::Instant>,
+    /// Interned interface names, so the ring buffer holds one `Arc<str>` per
+    /// interface rather than one per interface per sample. The `/proc` backend
+    /// interns against its previous read for the same reason.
+    link_names: HashMap<String, Arc<str>>,
     /// Start times for processes this user does not own, which sysinfo will not
     /// report. `None` if this kernel's `kinfo_proc` is not the one
     /// [`Kinfo::probe`] recognises, in which case sysinfo's answer is used and
@@ -59,6 +71,9 @@ impl SysinfoCollector {
             sys: System::new_all(),
             users: Users::new_with_refreshed_list(),
             names: HashMap::new(),
+            nets: Networks::new_with_refreshed_list(),
+            net_at: None,
+            link_names: HashMap::new(),
             kinfo: Kinfo::probe(),
         })
     }
@@ -117,6 +132,59 @@ impl Collector for SysinfoCollector {
         // a process that slipped from one source to the other would look like a
         // different process — the exact failure this key exists to prevent.
         let starts = self.kinfo.as_mut().map(|k| k.starts());
+
+        // 418us warm for twenty-seven interfaces, measured — about a tenth of a
+        // sample, which is affordable where the disk equivalent at 12ms was
+        // not.
+        self.nets.refresh(false);
+        // sysinfo counts bytes *since the last refresh*, not per second, and
+        // the two only coincide at a one-second interval. At `interval = 10s` a
+        // link doing 4.4K/s was being reported at 44K/s.
+        let now = std::time::Instant::now();
+        let secs = self
+            .net_at
+            .replace(now)
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64());
+        let rate = |n: u64| {
+            if secs > 0.0 {
+                (n as f64 / secs) as u64
+            } else {
+                0
+            }
+        };
+        let names = &mut self.link_names;
+        let net = NetStat {
+            links: self
+                .nets
+                .iter()
+                // Ever carried a byte. This machine publishes twenty-seven
+                // interfaces and thirteen have; the rest are idle tunnels.
+                .filter(|(_, d)| d.total_received() + d.total_transmitted() > 0)
+                .map(|(name, d)| Link {
+                    name: names
+                        .entry(name.clone())
+                        .or_insert_with(|| Arc::from(name.as_str()))
+                        .clone(),
+                    rx: rate(d.received()),
+                    tx: rate(d.transmitted()),
+                    rx_packets: rate(d.packets_received()),
+                    tx_packets: rate(d.packets_transmitted()),
+                })
+                .collect(),
+            errors: Some(
+                self.nets
+                    .values()
+                    .map(|d| d.errors_on_received() + d.errors_on_transmitted())
+                    .sum(),
+            ),
+            // sysinfo counts errors and does not separate out drops, and there
+            // is no TCP counter behind it at all. Three em dashes rather than
+            // three zeroes: this platform does not know, which is not the same
+            // as nothing having gone wrong.
+            drops: None,
+            retrans: None,
+            listen_drops: None,
+        };
 
         let Self {
             sys, users, names, ..
@@ -251,6 +319,7 @@ impl Collector for SysinfoCollector {
             // No equivalent on this platform. Not zero: a machine that never
             // stalls and a machine that cannot say are opposite answers.
             pressure: None,
+            net: Some(net),
         })
     }
 }
@@ -300,6 +369,101 @@ fn cached_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interface_counts_are_turned_into_rates() {
+        // sysinfo counts bytes *since the last refresh*, and the two only
+        // coincide at a one-second interval — which is why the bug survived a
+        // default-configured eyeball. At `interval = 10s` a link doing 4.4K/s
+        // was reported at 44K/s.
+        //
+        // Told apart by measuring over *less* than a second: a rate is then
+        // strictly larger than the count it came from, and a raw count is not.
+        // Traffic is generated here rather than waited for, so the test does
+        // not depend on the machine being busy.
+        use std::io::{Read as _, Write as _};
+        const BYTES: usize = 4 << 20;
+
+        let mut c = SysinfoCollector::new().unwrap();
+        c.collect(Needs::default()).unwrap();
+        // The collector's window opens at that refresh, so time it from here.
+        let opened = std::time::Instant::now();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut sink = vec![0u8; 1 << 16];
+            let mut seen = 0;
+            while seen < BYTES {
+                match s.read(&mut sink) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => seen += n,
+                }
+            }
+        });
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        let block = vec![0u8; 1 << 16];
+        let mut sent = 0;
+        while sent < BYTES {
+            client.write_all(&block).unwrap();
+            sent += block.len();
+        }
+        drop(client);
+        server.join().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let secs = opened.elapsed().as_secs_f64();
+        let s = c.collect(Needs::default()).unwrap();
+        let net = s.net.expect("no network");
+        let busiest = net.busiest().expect("no interface carried anything");
+
+        // Compared against a computed expectation rather than against the count
+        // itself. TCP framing puts a few percent more on the wire than was
+        // sent, which is enough for a raw count to clear a bare `> BYTES` — the
+        // first version of this test passed against the bug for exactly that
+        // reason. A rate over a window this short is several times the count,
+        // so the band is wide enough for a loaded machine and far too tight for
+        // the bug.
+        let expected = BYTES as f64 / secs;
+        assert!(
+            busiest.rx as f64 > expected * 0.5,
+            "{} reported {} over {secs:.3}s for {BYTES} bytes — expected about \
+             {expected:.0}/s, where a raw count would read about {BYTES}",
+            busiest.name,
+            busiest.rx
+        );
+    }
+
+    #[test]
+    fn interface_names_are_interned_across_samples() {
+        // These live in the ring buffer, which holds up to 86401 samples. One
+        // allocation per interface per sample is a million strings a day.
+        let mut c = SysinfoCollector::new().unwrap();
+        let a = c.collect(Needs::default()).unwrap().net.unwrap();
+        let b = c.collect(Needs::default()).unwrap().net.unwrap();
+        let (Some(x), Some(y)) = (a.links.first(), b.links.first()) else {
+            return;
+        };
+        assert!(
+            Arc::ptr_eq(&x.name, &y.name),
+            "the interface name was reallocated"
+        );
+    }
+
+    #[test]
+    fn the_counters_this_platform_lacks_are_absent_rather_than_zero() {
+        // sysinfo counts errors and does not separate drops, and there is no
+        // TCP counter behind it at all. Three zeroes would claim a perfectly
+        // healthy network on a machine that cannot see one.
+        let mut c = SysinfoCollector::new().unwrap();
+        let s = c.collect(Needs::default()).unwrap();
+        let net = s.net.expect("no network at all");
+        assert_eq!(net.drops, None, "drops were invented");
+        assert_eq!(net.retrans, None, "retransmits were invented");
+        assert_eq!(net.listen_drops, None, "listen drops were invented");
+        assert!(net.errors.is_some(), "errors are available and went unread");
+    }
 
     #[test]
     fn the_absence_of_disk_figures_is_announced_once() {
