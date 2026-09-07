@@ -192,6 +192,35 @@ really are more than one tick apart and the seams are telling you so. Gaps aggre
 the same reason values aggregate by peak — zooming out must not be able to
 erase an event, least of all at the zoom where the whole buffer is on screen.
 
+## Reading the table
+
+The per-process disk IO columns are **shown by default**, because the header
+may have just told you the machine is blocked on IO and the table is where the
+culprit is named. A default that hid them would make the default view unable to
+answer the question the default view raised.
+
+`/proc/<pid>/io` is mode 0400 and owned by the process owner, so reading other
+users' processes needs `CAP_SYS_PTRACE`. Kernel threads are excluded from that
+accounting entirely — `kworker/*` and friends are root-owned and unreadable,
+and on a many-core box they outnumber the real processes, so counting them
+would withdraw the columns on exactly the laptop this protects. On a laptop almost every process is
+yours; on a box running its services as root while you are not, the columns
+would be a wall of em dashes. So ptop **probes** — it collects one real sample,
+and if more than half of it came back unreadable it withdraws the columns and
+stops collecting for them. That is a question nothing short of trying can
+answer, and half a millisecond a sample is not worth paying for a column nobody
+can read.
+
+`i` still overrides whichever way the probe went. Someone with partial access
+may well want the column for the processes they can see.
+
+They also drop on a panel too narrow to carry them, like everything else here.
+Every column in the table is a fixed width, so without that rule ratatui
+squeezes them all rather than dropping any — an eighty-column terminal rendered
+truncated figures under an `RSS` header reading `512.`. Collection is untouched
+when they go: the columns are a rendering decision and the ratchet is a history
+one, so widening the window brings them back with their history intact.
+
 ## Reading the header
 
 ```text

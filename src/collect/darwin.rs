@@ -44,6 +44,27 @@ impl Collector for SysinfoCollector {
         };
 
         let Self { sys, users, names } = self;
+
+        // Whose processes we can actually see the IO of.
+        //
+        // sysinfo returns zeros for a process the caller has no access to, and
+        // zero is indistinguishable from idle — so without this every other
+        // user's work is reported as doing no IO at all. That is the confident
+        // lie the `/proc` backend refuses to tell, and it became a default the
+        // moment the columns stopped being opt-in.
+        let me = sysinfo::get_current_pid()
+            .ok()
+            .and_then(|pid| sys.process(pid))
+            .and_then(|p| p.user_id().cloned());
+        let readable = |uid: Option<&sysinfo::Uid>| match (&me, uid) {
+            // Root sees everything; otherwise only our own.
+            (Some(mine), _) if **mine == 0 => true,
+            (Some(mine), Some(theirs)) => mine == theirs,
+            // Our own uid unknown: claim nothing rather than guess.
+            _ => false,
+        };
+
+        let mut io_denied = 0usize;
         let procs = sys
             .processes()
             .iter()
@@ -81,13 +102,20 @@ impl Collector for SysinfoCollector {
                     // sysinfo already reports these as bytes since the last
                     // refresh, so unlike the /proc backend there is no counter to
                     // diff here.
-                    io: needs.io.then(|| {
-                        let d = p.disk_usage();
-                        IoRates {
-                            read: d.read_bytes,
-                            write: d.written_bytes,
-                        }
-                    }),
+                    io: needs
+                        .io
+                        .then(|| {
+                            if !readable(p.user_id()) {
+                                io_denied += 1;
+                                return None;
+                            }
+                            let d = p.disk_usage();
+                            Some(IoRates {
+                                read: d.read_bytes,
+                                write: d.written_bytes,
+                            })
+                        })
+                        .flatten(),
                 }
             })
             .collect();
@@ -129,7 +157,7 @@ impl Collector for SysinfoCollector {
             io_collected: needs.io,
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.
-            io_denied: 0,
+            io_denied,
         })
     }
 }

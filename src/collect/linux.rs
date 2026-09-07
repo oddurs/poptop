@@ -341,7 +341,12 @@ impl ProcFs {
             else {
                 continue;
             };
-            if needs.io {
+            // Kernel threads are skipped rather than attempted and counted as
+            // denied. They are root-owned and unreadable to an ordinary user,
+            // and on a many-core box they outnumber the real processes — so
+            // counting them would fire the IO probe on exactly the laptop it
+            // exists to protect. Skipping also saves an open and a read each.
+            if needs.io && !p.is_kernel_thread() {
                 match read_proc_io(pid, elapsed_secs, &mut seen_io, prev_proc_io, path, buf) {
                     Ok(rates) => p.io = rates,
                     Err(()) => *denied += 1,
@@ -356,9 +361,15 @@ impl ProcFs {
         // without bound exactly like the counters would.
         names.retain(|pid, _| seen.contains_key(pid));
         *prev_proc_jiffies = seen;
-        if needs.io {
-            *prev_proc_io = seen_io;
-        }
+        // Cleared rather than kept while collection is off. Rates are a delta
+        // against the previous read divided by one interval, so counters left
+        // over from five minutes ago would render every long-lived process at
+        // three hundred times its real rate on the frame collection resumes —
+        // and a pid reused in the meantime would diff against a stranger.
+        //
+        // Collection could not resume before the probe existed, which is why
+        // this held: the ratchet only ever went off to on.
+        *prev_proc_io = if needs.io { seen_io } else { HashMap::new() };
         Ok(out)
     }
 }
@@ -846,6 +857,34 @@ mod tests {
                 &mut Vec::new()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn turning_io_off_forgets_its_counters() {
+        // Rates are a cumulative counter diffed against the previous read and
+        // divided by one interval. Counters kept while collection is off would
+        // be diffed across the whole gap on the frame it resumes — five
+        // minutes of bytes reported as one second of rate, on every long-lived
+        // process at once — and a pid reused meanwhile would diff against a
+        // stranger's total.
+        //
+        // This could not happen before the IO probe existed: the ratchet only
+        // ever went off to on.
+        let mut pf = ProcFs::new().unwrap();
+        let mut denied = 0;
+        pf.read_procs(Duration::from_secs(1), Needs { io: true }, &mut denied)
+            .unwrap();
+        assert!(
+            !pf.prev_proc_io.is_empty(),
+            "collecting IO recorded no counters"
+        );
+
+        pf.read_procs(Duration::from_secs(1), Needs { io: false }, &mut denied)
+            .unwrap();
+        assert!(
+            pf.prev_proc_io.is_empty(),
+            "counters survived collection being switched off"
         );
     }
 

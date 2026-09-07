@@ -1112,7 +1112,28 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     Line::from(spans)
 }
 
+/// The narrowest table that can carry the disk IO columns.
+///
+/// Every column here is a fixed `Length`, so ratatui squeezes them all when
+/// they do not fit rather than dropping any — which turned an eighty-column
+/// terminal into a table of truncated figures the moment the columns became a
+/// default. Adding up what the table actually asks for is the only way to know
+/// where that starts, and doing it here rather than by eye means it cannot
+/// drift as columns change.
+const MIN_WIDTH_FOR_IO: u16 = {
+    // pid, user, cpu%, cpu bar, rss, mem bar, state, threads, history
+    let fixed = 7 + 10 + 6 + (BAR_W as u16 + 1) + 8 + BAR_W as u16 + 2 + 4 + SPARK_W as u16;
+    // …the two IO columns, one space between each of the twelve, and enough
+    // left for a command name to be worth reading.
+    fixed + 9 + 9 + 11 + 16
+};
+
 fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
+    // Dropped on a panel too narrow to carry them, like every other element
+    // here. Collection is untouched: the columns are a rendering decision and
+    // the ratchet is a history one, so widening the window brings them back
+    // with their history intact.
+    let show_io = app.show_io && area.width >= MIN_WIDTH_FOR_IO;
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -1193,7 +1214,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 Cell::from(p.state.to_string()),
                 Cell::from(p.threads.to_string()),
             ];
-            if app.show_io {
+            if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
             }
@@ -1220,7 +1241,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     let mut header_cells = vec!["PID", "USER", "CPU%", "", "RSS", "", "S", "THR", "HISTORY"];
-    if app.show_io {
+    if show_io {
         header_cells.extend(["DISK R", "DISK W"]);
     }
     header_cells.push("COMMAND");
@@ -1261,7 +1282,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         app.sort.label(),
         if app.tree { " · tree" } else { "" },
         churn,
-        io_status(app, collected, &rows_data)
+        io_status(show_io, app, collected)
     );
 
     let mut widths = vec![
@@ -1274,7 +1295,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(2),
         Constraint::Length(4),
     ];
-    if app.show_io {
+    if show_io {
         widths.push(Constraint::Length(9));
         widths.push(Constraint::Length(9));
     }
@@ -1377,9 +1398,15 @@ fn io_cell(collected: bool, io: Option<IoRates>, write: bool, theme: &Theme) -> 
 ///
 /// If most processes are unreadable the table would otherwise look broken; this
 /// says why, and implies the fix.
-fn io_status(app: &App, collected: bool, rows: &[crate::tree::TreeRow]) -> String {
+fn io_status(show_io: bool, app: &App, collected: bool) -> String {
     if !app.show_io {
         return String::new();
+    }
+    // Asked for but not drawn. Without this the key is a silent no-op on a
+    // narrow panel: the columns do not appear, nothing says why, and the
+    // obvious conclusion is that the feature is broken.
+    if !show_io {
+        return " · io: panel too narrow".into();
     }
     if !collected {
         return " · io: not collected here".into();
@@ -1387,12 +1414,17 @@ fn io_status(app: &App, collected: bool, rows: &[crate::tree::TreeRow]) -> Strin
     // Only unreadable processes are worth mentioning: a process awaiting its
     // second reading also shows a dash, but resolves on its own and needs no
     // action from anyone.
-    let denied = app.history.current().map_or(0, |s| s.io_denied);
-    if denied == 0 {
-        " · io".into()
-    } else {
-        format!(" · io: {denied}/{} need root", rows.len())
+    let Some(s) = app.history.current() else {
+        return " · io".into();
+    };
+    if s.io_denied == 0 {
+        return " · io".into();
     }
+    // Against the processes IO was attempted for, not the rows on screen. The
+    // two are different numbers the moment a filter is active, and `90/2 need
+    // root` is not a ratio of anything.
+    let eligible = s.procs.iter().filter(|p| !p.is_kernel_thread()).count();
+    format!(" · io: {}/{eligible} need root", s.io_denied)
 }
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {

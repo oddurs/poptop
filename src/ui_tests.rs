@@ -398,21 +398,28 @@ fn show_real_tree() {
 }
 
 #[test]
-fn io_columns_appear_only_when_asked_for() {
+fn io_columns_are_there_before_anyone_asks() {
+    // The header may have just said the machine is blocked on IO, and the
+    // table is where the culprit is named. A default that hides it makes the
+    // default view unable to answer the question the default view raised.
     let mut app = App::new(60);
     app.push(sample(10.0));
-    assert!(!render(&app, 120, 30).contains("DISK"));
+    assert!(
+        render(&app, 120, 30).contains("DISK"),
+        "the columns are hidden by default"
+    );
     app.toggle_io();
-    assert!(render(&app, 120, 30).contains("DISK"));
+    assert!(
+        !render(&app, 120, 30).contains("DISK"),
+        "the key cannot hide them"
+    );
 }
 
 #[test]
 fn io_collection_is_a_ratchet() {
     use crate::collect::Needs;
+    // Collection starts with the columns, which are on by default.
     let mut app = App::new(60);
-    assert_eq!(app.needs(), Needs { io: false });
-
-    app.toggle_io();
     assert_eq!(app.needs(), Needs { io: true });
 
     // Hiding the columns must NOT stop collection: resuming later would leave
@@ -420,6 +427,16 @@ fn io_collection_is_a_ratchet() {
     app.toggle_io();
     assert!(!app.show_io);
     assert_eq!(app.needs(), Needs { io: true }, "collection must not stop");
+
+    // …and showing them again changes nothing, because it never stopped.
+    app.toggle_io();
+    assert_eq!(app.needs(), Needs { io: true });
+
+    // The one thing that does stop it is the probe deciding the column is
+    // unreadable — a boundary at the very start rather than in the middle.
+    let mut probed = App::new(60);
+    probed.probe_io(&with_denied(100, 90));
+    assert_eq!(probed.needs(), Needs { io: false });
 }
 
 #[test]
@@ -428,7 +445,6 @@ fn history_without_io_says_so_rather_than_showing_zero() {
     let mut old = sample(10.0);
     old.io_collected = false; // recorded before the column was switched on
     app.push(old);
-    app.toggle_io();
 
     let out = render(&app, 120, 30);
     assert!(out.contains("not collected"), "must explain the blank");
@@ -447,7 +463,6 @@ fn unreadable_processes_are_blank_not_zero() {
     // procs[1] and [2] stay None: readable by root only.
     s.io_denied = 2;
     app.push(s);
-    app.toggle_io();
 
     let out = render(&app, 120, 30);
     assert!(out.contains("2.0K/s"), "a real rate renders as a rate");
@@ -699,6 +714,9 @@ fn every_section_rule_uses_the_chrome_token() {
     app.push(sample(50.0));
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     app.tree = true;
+    // The IO columns push the table past a hundred columns, and a clipped
+    // panel has no rule to find. This test is about the rules, not the width.
+    app.toggle_io();
 
     let (w, h) = (100u16, 30u16);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -3496,4 +3514,186 @@ fn a_platform_that_cannot_partition_memory_draws_two_parts_not_three() {
     // …and the two parts still agree with the figure beside them: 18/24 is 9
     // of 12.
     assert_eq!(bar.chars().filter(|c| *c == '█').count(), 9, "{bar}");
+}
+
+/// A sample where `denied` of `n` processes had unreadable IO.
+fn with_denied(n: usize, denied: usize) -> Sample {
+    let mut s = sample(5.0);
+    s.procs = (0..n)
+        .map(|i| proc_named(i as i32, "worker", 1.0, 1 << 20))
+        .collect();
+    s.io_collected = true;
+    s.io_denied = denied;
+    s
+}
+
+#[test]
+fn io_columns_stay_where_most_of_the_table_can_be_read() {
+    // The header may have just said the machine is blocked on IO, and the table
+    // is where the culprit is named. A default that hides it makes the default
+    // view unable to answer the question the default view raised.
+    let mut app = App::new(60);
+    app.probe_io(&with_denied(100, 3));
+    assert!(app.show_io, "the columns were withdrawn on a readable box");
+    assert!(app.needs().io, "collection stopped on a readable box");
+}
+
+#[test]
+fn io_columns_withdraw_where_they_would_be_a_wall_of_dashes() {
+    // `/proc/<pid>/io` needs CAP_SYS_PTRACE for other users' processes. On a
+    // box running its services as root while you are not, the columns cost
+    // width and invite the reading that those processes are doing no IO.
+    let mut app = App::new(60);
+    app.probe_io(&with_denied(100, 90));
+    assert!(!app.show_io, "a wall of em dashes was shown by default");
+    // …and collection stops too, rather than paying half a millisecond a
+    // sample for a column nobody can read.
+    assert!(
+        !app.needs().io,
+        "collection continued for an unreadable column"
+    );
+}
+
+#[test]
+fn the_probe_does_not_fire_on_an_empty_sample() {
+    // The first sample on a machine ptop cannot read at all would otherwise
+    // divide by zero, or decide from nothing.
+    let mut app = App::new(60);
+    let mut empty = sample(5.0);
+    empty.procs.clear();
+    app.probe_io(&empty);
+    assert!(app.show_io);
+}
+
+#[test]
+fn the_key_still_overrides_whatever_the_probe_decided() {
+    // It is a default, not a policy. Someone with partial access may well want
+    // the column for the processes they can see.
+    let mut app = App::new(60);
+    app.probe_io(&with_denied(100, 90));
+    assert!(!app.show_io);
+    app.toggle_io();
+    assert!(app.show_io, "the key could not bring the columns back");
+    assert!(app.needs().io, "the key did not restart collection");
+}
+
+#[test]
+fn the_io_columns_drop_rather_than_squeezing_the_table() {
+    // Every column is a fixed `Length`, so ratatui squeezes them all when they
+    // do not fit rather than dropping any. Before the columns became a
+    // default nobody hit that; afterwards, an eighty-column terminal rendered
+    // truncated figures under a `RSS` header reading `512.`.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs[0].io = Some(crate::sample::IoRates {
+        read: 2048,
+        write: 4096,
+    });
+    app.push(s);
+    assert!(app.show_io, "the fixture is not testing what it claims");
+
+    let wide = render(&app, 120, 30);
+    assert!(wide.contains("DISK R") && wide.contains("2.0K/s"));
+
+    // Narrow: the columns go, and nothing else is truncated to make room.
+    let narrow = render(&app, 78, 30);
+    assert!(
+        !narrow.contains("DISK"),
+        "the columns squeezed the table instead"
+    );
+    assert!(
+        narrow.contains("512.0M"),
+        "a figure was truncated to fit the IO columns"
+    );
+
+    // Every width in between is either clean or without the columns; nothing
+    // in the table is ever cut mid-figure.
+    for w in 60..=130u16 {
+        let out = render(&app, w, 30);
+        assert!(
+            !out.contains("DISK") || out.contains("512.0M"),
+            "at w={w} the IO columns were kept at the cost of the table"
+        );
+    }
+}
+
+#[test]
+fn kernel_threads_do_not_trigger_the_io_probe() {
+    // They are root-owned and unreadable to an ordinary user, and on a
+    // many-core box they outnumber the real processes — so counting them would
+    // withdraw the columns on exactly the laptop the probe exists to protect.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.io_collected = true;
+    // Two readable programs, and a crowd of kworkers under kthreadd.
+    s.procs = vec![
+        proc_named(100, "nginx", 1.0, 0),
+        proc_named(101, "psql", 1.0, 0),
+    ];
+    for pid in 200..260 {
+        let mut k = proc_named(pid, "kworker/0:1", 0.0, 0);
+        k.ppid = 2;
+        s.procs.push(k);
+    }
+    s.io_denied = 0; // the collector skips them, so none are counted
+
+    app.probe_io(&s);
+    assert!(
+        app.show_io,
+        "sixty kernel threads withdrew the columns on a readable box"
+    );
+
+    // …and they must not hide real denial either. Two programs, both
+    // unreadable, is a box where the column is useless — whatever crowd of
+    // kernel threads happens to be standing next to them.
+    let mut app = App::new(60);
+    s.io_denied = 2;
+    app.probe_io(&s);
+    assert!(
+        !app.show_io,
+        "sixty kernel threads diluted a fully unreadable box into a passing one"
+    );
+}
+
+#[test]
+fn the_denied_ratio_is_not_measured_against_the_filtered_rows() {
+    // `90/2 need root` is not a ratio of anything. The two numbers came from
+    // different populations the moment a filter was active.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.io_collected = true;
+    // From 100, because pid 2 is kthreadd and would rightly be excluded from
+    // the denominator — which is a different fact from the one under test.
+    s.procs = (100..110)
+        .map(|i| proc_named(i, if i == 100 { "nginx" } else { "other" }, 1.0, 0))
+        .collect();
+    s.io_denied = 6;
+    app.push(s);
+    app.filter = "nginx".into();
+
+    let out = render(&app, 130, 30);
+    assert!(out.contains("6/10 need root"), "{out}");
+}
+
+#[test]
+fn the_key_says_why_it_did_nothing_on_a_narrow_panel() {
+    // Otherwise `i` is a silent no-op: the columns do not appear, nothing says
+    // why, and the obvious conclusion is that the feature is broken.
+    let mut app = App::new(60);
+    let mut s = sample(5.0);
+    s.io_collected = true;
+    app.push(s);
+    assert!(app.show_io);
+
+    let narrow = render(&app, 78, 30);
+    assert!(!narrow.contains("DISK"), "the columns fit after all");
+    assert!(
+        narrow.contains("too narrow"),
+        "the panel does not say why: {narrow}"
+    );
+
+    // …and says nothing when the columns were not asked for.
+    app.toggle_io();
+    assert!(!render(&app, 78, 30).contains("too narrow"));
 }
