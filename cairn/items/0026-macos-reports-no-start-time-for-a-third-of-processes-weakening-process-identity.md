@@ -2,7 +2,7 @@
 id: 26
 title: macOS reports no start time for a third of processes, weakening process identity
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-06
 updated: 2026-09-06

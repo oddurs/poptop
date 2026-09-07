@@ -2,7 +2,7 @@
 id: 27
 title: Per-process CPU is clamped on Linux and not on macOS
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-06
 updated: 2026-09-06

@@ -769,21 +769,38 @@ auditing this UI against data-visualisation practice. Start with
 
 ## Status
 
-Early. What works: both backends, the timeline and scrubbing, sorting,
-filtering, `--once`. Not there yet: process tree view (`ppid` is collected but
-unused), per-process disk and network attribution, killing processes,
-configurable intervals, persisting history across restarts.
+Early. What works: both backends, the timeline with scrubbing and zoom, the
+process tree (`t`), sorting, filtering, per-process disk throughput,
+configurable intervals, persisting history across restarts (`store`), themes
+with colour-vision validation, and `--once`.
+
+Not there yet: per-process network attribution, which needs `/proc/net` inode
+matching or eBPF and is its own project; killing or renicing processes; mouse
+support; and capturing processes that live and die entirely between two samples,
+where the `taskstats` exit-record path is written but cannot be verified on any
+kernel available here — listener registration returns `EINVAL` while per-pid
+queries work.
 
 ## Tests
 
 ```sh
 cargo test                     # host backend
+cargo clippy --all-targets -- -D warnings        # what CI enforces
 cargo test -- --ignored --nocapture show_frame   # print a rendered frame
-docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/tmp/t rust:1-slim cargo test
+
+# Both of the first two, on Linux, from a Mac:
+docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/tmp/t rust:1-slim sh -c \
+  'rustup component add clippy && cargo test && cargo clippy --all-targets -- -D warnings'
 ```
 
 The last one matters on a Mac: the `/proc` backend is `cfg`'d out of a macOS
 build entirely, so it is neither compiled nor tested unless you run it on Linux.
+
+Note the `rustup component add`. The `rust:1-slim` image ships without clippy, so
+`docker run … cargo clippy` fails with "not installed for the toolchain" — which
+looks nothing like a lint warning and is easy to read as a clean run. That is how
+a dead field in `collect/linux.rs` reached a PR: `cargo test` passed on both
+platforms, and the clippy step that would have caught it was never running.
 
 UI tests render through ratatui's `TestBackend` and assert on the resulting
 buffer, including a 1×1 terminal — a monitor that panics on a small window is

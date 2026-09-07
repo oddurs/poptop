@@ -47,14 +47,9 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`#######···` 67% · 4 of 6 done · due 2027-01-01
+`##########` 100% · 6 of 6 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
-
-### backlog
-
-- [ ] `0026` macOS reports no start time for a third of processes, weakening process identity <sup>bug · p2</sup>
-- [ ] `0027` Per-process CPU is clamped on Linux and not on macOS <sup>bug · p3</sup>
 
 ### done
 
@@ -62,6 +57,8 @@ Config file, user themes, documented and safe to depend on.
 - [x] `0002` User theme files with partial overrides <sup>feature · p2</sup>
 - [x] `0003` Validate user themes and say why one fails <sup>feature · p1</sup>
 - [x] `0004` Configurable warn and critical thresholds <sup>feature · p3</sup>
+- [x] `0026` macOS reports no start time for a third of processes, weakening process identity <sup>bug · p2</sup>
+- [x] `0027` Per-process CPU is clamped on Linux and not on macOS <sup>bug · p3</sup>
 
 ## later — Someday
 
