@@ -680,6 +680,75 @@ so they cost nothing: 1.05 ms per sample at 402 processes, unchanged. macOS
 publishes no equivalent and shows none of them, rather than a zero that would
 claim the box is never stuck.
 
+### Which half of the machine is full
+
+A two-socket box is two machines that share a process table. Node 0 can be idle
+with forty gigabytes free while node 1 is at ninety percent CPU and one
+gigabyte from swapping, and every whole-machine figure on the header above
+averages that into a comfortable middle: `CPU 50%`, `MEM 62%`, nothing wrong.
+The processes pinned to node 1 are the ones stalling, and there is no figure on
+a whole-machine header that can say so.
+
+So the header grows a third row, but only on a machine that has more than one
+node:
+
+```text
+  2 nodes n0   6.0% 48.0G free   n1  93.0% 1.0G free
+```
+
+Per node: the mean utilisation of the cores it owns, and the memory it has
+left. Free rather than used, because on a NUMA box "free" is the number that
+decides whether the next allocation stays local or goes across the
+interconnect.
+
+**The colour is not the number.** Page cache on a node is memory that comes
+back, so the figure is heated on what is *not* reclaimable — free plus
+`FilePages` against the node's total. Heating on free alone would paint a node
+holding twenty gigabytes of cache critical while the `MEM` figure two rows up
+read a comfortable third, which is the same misreading the whole-machine bar
+draws three segments to avoid.
+
+**Cores are matched by kernel id, not by position.** `/proc/stat` emits a line
+only for an online CPU, so on a machine with `cpu0-7` offlined the first entry
+of the per-core vector is `cpu8` — and a node's `cpulist` names absolute ids.
+Indexing one into the other hands each node mostly another node's cores, which
+is wrong in exactly the case this row exists for. A node with some cores parked
+is the mean of the ones that are running; a node with all of them parked reads
+`—`, because `0.0%` would say it was idle.
+
+**A single-node machine spends nothing here.** The row is absent, not empty —
+its per-node figures would be the two rows above restated, and a permanent row
+saying so is a row the process table does not get. The same rule the throttling
+and steal figures follow. macOS says nothing at all: it publishes no node
+topology, and one invented from core counts would be a guess.
+
+Nodes come from `/sys/devices/system/node`: one small `meminfo` per node each
+sample, so the cost is bounded by socket count rather than by anything that
+scales with the machine — which is why this is not behind the cost model that
+gates threads, PSS and cgroups. Which nodes exist and which cores each owns is
+read once and kept: a socket does not appear while poptop is running, and
+re-walking the directory every second to learn that is the same cost the clock
+policies are gated to a minute for.
+
+A node whose `meminfo` cannot be read is dropped rather than reported with zero
+of everything — a container that exposes the directory and restricts the files
+under it would otherwise draw `0 B free` on every node, which is the loudest
+thing this row can say and a claim rather than an absence. A machine where that
+leaves fewer than two readable nodes reports none.
+
+**The row belongs to the machine, not to the sample.** Once a machine has
+reported nodes the row is reserved for every sample, and history recorded
+before poptop read them says `nodes not recorded in this sample` rather than
+leaving it blank. Derived per-sample it looked correct and scrubbed badly:
+crossing the boundary moved the timeline and the whole process table up and
+down by a row on every keypress, in a tool whose entire point is the rewind.
+
+The row follows the same ladder as the rest of the header: too narrow for every
+node and it drops them from the right with `+3`, so the count is never silently
+wrong; too narrow for even one and it states `8 nodes` alone.
+
+`--once` prints a line per node, and `nodes   —` on a machine with one.
+
 The header drops its least diagnostic figures first rather than letting the
 terminal clip whatever is rightmost — rightmost is not least useful. At sixty
 columns you still get all four of the figures above. `--once` reports the same

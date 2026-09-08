@@ -79,6 +79,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         tasks: None,
         exited: None,
         cgroups: None,
+        nodes: None,
         pressure: None,
         net: None,
         filesystems: None,
@@ -148,6 +149,257 @@ fn rows(app: &App, w: u16, h: u16) -> Vec<String> {
         .map(|c| c.symbol().to_string())
         .collect();
     cells.chunks(w as usize).map(|row| row.concat()).collect()
+}
+
+/// A sample from a two-node machine, with the nodes deliberately lopsided:
+/// node 1 is nearly out of memory while node 0 is idle, which is the failure
+/// the whole-machine figures average away.
+fn two_node_sample() -> Sample {
+    let mut s = sample(40.0);
+    s.nodes = Some(vec![
+        crate::sample::NodeStat {
+            id: 0,
+            total: 64 << 30,
+            free: 48 << 30,
+            file: None,
+            dirty: None,
+            shmem: None,
+            cpu: Some(6.0),
+        },
+        crate::sample::NodeStat {
+            id: 1,
+            total: 64 << 30,
+            free: 1 << 30,
+            file: None,
+            dirty: None,
+            shmem: None,
+            cpu: Some(93.0),
+        },
+    ]);
+    s
+}
+
+#[test]
+fn one_node_costs_no_row_and_two_get_one() {
+    let mut plain = App::new(600);
+    plain.push(sample(40.0));
+    let mut numa = App::new(600);
+    numa.push(two_node_sample());
+
+    assert_eq!(ui::header_height(&plain), 2);
+    assert_eq!(ui::header_height(&numa), 3);
+
+    let flat = rows(&plain, 100, 30);
+    let numa_rows = rows(&numa, 100, 30);
+    assert!(
+        !flat.iter().any(|r| r.contains("nodes")),
+        "a one-node machine spent a row saying so:\n{}",
+        flat.join("\n")
+    );
+
+    // Both nodes, each with its own CPU and its own free memory.
+    let line = numa_rows
+        .iter()
+        .find(|r| r.contains("nodes"))
+        .unwrap_or_else(|| panic!("no node row:\n{}", numa_rows.join("\n")));
+    assert!(line.contains("2 nodes"), "{line}");
+    assert!(line.contains("n0") && line.contains("n1"), "{line}");
+    assert!(line.contains("6.0%") && line.contains("93.0%"), "{line}");
+    assert!(line.contains("48.0G") && line.contains("1.0G"), "{line}");
+
+    // The row is one the layout knows about, not one drawn over the timeline:
+    // the panel below the header must start a row lower than it does without
+    // nodes, and the table must not lose a row to make up for it.
+    let node_y = numa_rows.iter().position(|r| r.contains("nodes")).unwrap();
+    assert_eq!(node_y, 2, "the node row landed outside the header");
+    let below = &numa_rows[3];
+    assert!(
+        !below.contains("nodes"),
+        "the node row was drawn twice, or over the timeline: {below}"
+    );
+
+    // The row belongs to the machine, not to the sample under the cursor.
+    // History restored from a build that did not read nodes has `None` in it,
+    // and a header that shrank there moved the timeline and the whole table by
+    // a row on every keypress across the boundary.
+    let mut mixed = App::new(600);
+    mixed.push(sample(40.0));
+    mixed.push(two_node_sample());
+    mixed.history.scrub(-1);
+    let scrubbed = rows(&mixed, 100, 30);
+    assert_eq!(
+        ui::header_height(&mixed),
+        3,
+        "the header shrank while scrubbing"
+    );
+    assert!(
+        scrubbed[2].contains("nodes"),
+        "the reserved row went blank instead of saying why: {:?}",
+        scrubbed[2]
+    );
+    assert!(
+        scrubbed[2].contains("not recorded"),
+        "a sample with no nodes drew somebody else's figures: {:?}",
+        scrubbed[2]
+    );
+
+    // And it never lets go. A single sample where `/sys` could not be read
+    // must not take the row away from the machine it belongs to — that is the
+    // same jitter, arriving from the live end instead of the scrubbed one.
+    mixed.history.goto_live();
+    mixed.push(sample(40.0));
+    assert_eq!(
+        ui::header_height(&mixed),
+        3,
+        "one unreadable sample took the row off a NUMA machine"
+    );
+}
+
+#[test]
+fn a_nodes_colour_does_not_call_page_cache_lost_memory() {
+    // The rule `MemStat::free` states, applied a row down: a node holding
+    // twenty gigabytes of reclaimable page cache and one gigabyte genuinely
+    // free is not a node in trouble, and heating on free alone paints it
+    // critical while the `MEM` figure two rows up reads a comfortable third.
+    let mut app = App::new(600);
+    let mut s = sample(40.0);
+    let node = |free: u64, file: Option<u64>| crate::sample::NodeStat {
+        id: 0,
+        total: 64 << 30,
+        free,
+        file,
+        dirty: None,
+        shmem: None,
+        cpu: Some(10.0),
+    };
+    let mut cached = node(1 << 30, Some(40 << 30));
+    let mut full = node(1 << 30, Some(0));
+    cached.id = 0;
+    full.id = 1;
+    s.nodes = Some(vec![cached, full]);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let row: Vec<_> = (0..100u16).map(|x| buf[(x, 2)].clone()).collect();
+    let text: String = row.iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("n0") && text.contains("n1"), "{text}");
+
+    // Both print the same free figure; only the colour separates them, so the
+    // figures themselves are what has to be sampled — the `n0` label beside
+    // them is dim on every node by design.
+    let figures: Vec<_> = text
+        .match_indices("G free")
+        .map(|(b, _)| row[text[..b].chars().count()].fg)
+        .collect();
+    assert_eq!(figures.len(), 2, "expected one free figure a node: {text}");
+    let (cached_fg, full_fg) = (figures[0], figures[1]);
+    assert_ne!(
+        cached_fg, full_fg,
+        "a node holding cache and a node genuinely full were coloured alike"
+    );
+    assert_ne!(
+        cached_fg, app.theme.critical,
+        "reclaimable page cache was coloured as memory that is gone"
+    );
+    assert_eq!(
+        full_fg, app.theme.critical,
+        "a node with one gigabyte left and no cache to reclaim was not loud"
+    );
+}
+
+#[test]
+fn the_node_row_gives_up_nodes_rather_than_overflowing() {
+    let mut app = App::new(600);
+    let mut s = sample(40.0);
+    s.nodes = Some(
+        (0..8)
+            .map(|id| crate::sample::NodeStat {
+                id,
+                total: 64 << 30,
+                free: 8 << 30,
+                file: None,
+                dirty: None,
+                shmem: None,
+                cpu: Some(id as f32 * 10.0),
+            })
+            .collect(),
+    );
+    app.push(s);
+
+    // Every width from far too narrow to far too wide. The count is stated at
+    // every one of them: a row of node figures that cannot say how many are
+    // missing is worse than the count alone.
+    let mut seen_marker = false;
+    for w in [10u16, 20, 30, 45, 60, 80, 100, 140, 200] {
+        let r = rows(&app, w, 30);
+        let line = r
+            .iter()
+            .find(|r| r.contains("nodes"))
+            .unwrap_or_else(|| panic!("width {w} lost the node row:\n{}", r.join("\n")));
+        assert!(line.contains("8 nodes"), "width {w}: {line}");
+        // Trailing blanks are the terminal, not the line: what matters is that
+        // nothing was clipped, which shows up as a missing marker.
+        let drawn = line.trim_end();
+        assert!(
+            drawn.chars().count() <= w as usize,
+            "width {w} overflowed: {drawn}"
+        );
+        let shown = drawn.matches("free").count();
+        match drawn.split_once(" +") {
+            Some((_, rest)) => {
+                let hidden: usize = rest
+                    .trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("width {w}: unreadable overflow marker in {drawn}"));
+                assert_eq!(shown + hidden, 8, "width {w} lost a node silently: {drawn}");
+                seen_marker = true;
+            }
+            None => assert!(
+                shown == 8 || shown == 0,
+                "width {w} showed {shown} of 8 nodes and said nothing: {drawn}"
+            ),
+        }
+    }
+    assert!(
+        seen_marker,
+        "no width was narrow enough to exercise the overflow marker"
+    );
+}
+
+#[test]
+#[ignore]
+fn show_node_row() {
+    let mut app = App::new(600);
+    app.push(two_node_sample());
+    for w in [100u16, 60, 44, 30, 12] {
+        println!("--- width {w}");
+        for r in rows(&app, w, 14).iter().take(3) {
+            println!("|{r}|");
+        }
+    }
+    let mut many = App::new(600);
+    let mut s = sample(40.0);
+    s.nodes = Some(
+        (0..8)
+            .map(|id| crate::sample::NodeStat {
+                id,
+                total: 64 << 30,
+                free: (id as u64 + 1) << 30,
+                file: None,
+                dirty: None,
+                shmem: None,
+                cpu: Some(id as f32 * 13.0),
+            })
+            .collect(),
+    );
+    many.push(s);
+    for w in [140u16, 100, 70] {
+        println!("--- eight nodes at width {w}");
+        println!("|{}|", rows(&many, w, 14)[2]);
+    }
 }
 
 #[test]
@@ -2047,9 +2299,9 @@ fn growing_the_timeline_never_shrinks_it() {
     let smallest_that_fits = ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
     for total in smallest_that_fits..=200u16 {
         assert!(
-            ui::timeline_height(total) >= ui::TIMELINE_MIN_H,
+            ui::timeline_height(total, ui::HEADER_H) >= ui::TIMELINE_MIN_H,
             "total={total}: {} rows, below the {} it had when fixed",
-            ui::timeline_height(total),
+            ui::timeline_height(total, ui::HEADER_H),
             ui::TIMELINE_MIN_H
         );
     }
@@ -2057,7 +2309,7 @@ fn growing_the_timeline_never_shrinks_it() {
 
 #[test]
 fn the_timeline_grows_above_the_floor_and_stops() {
-    let h = |t| ui::timeline_height(t);
+    let h = |t| ui::timeline_height(t, ui::HEADER_H);
     assert_eq!(h(24), ui::TIMELINE_MIN_H, "should still be at the floor");
     assert!(h(40) > h(24), "did not grow when there was room");
     for total in [80u16, 200, 500] {
@@ -2207,7 +2459,7 @@ fn a_short_terminal_shows_processes_rather_than_a_taller_graph() {
     // table's floor was two *panel* rows, and a table spends two on chrome
     // before any data.
     for total in 12..=17u16 {
-        let table = total - ui::HEADER_H - 1 - ui::timeline_height(total);
+        let table = total - ui::HEADER_H - 1 - ui::timeline_height(total, ui::HEADER_H);
         assert!(
             table >= ui::PROCS_FLOOR_H,
             "total={total}: the table got {table} rows, below its floor of {}",
@@ -2226,7 +2478,8 @@ fn the_process_table_always_keeps_some_rows() {
     // Including on terminals too small for the timeline's own floor, where the
     // timeline takes what is left rather than the height it would prefer.
     for total in 6..=80u16 {
-        let left = total.saturating_sub(ui::HEADER_H + ui::timeline_height(total) + 1);
+        let left =
+            total.saturating_sub(ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1);
         assert!(left >= 1, "total={total}: process table got {left} rows");
     }
 }

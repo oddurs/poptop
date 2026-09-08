@@ -401,6 +401,15 @@ pub struct App {
     /// rest of a session because somebody once pressed `y` is a worse bargain
     /// than a gap in history that the panel names.
     thread_ratchet: bool,
+    /// Whether this machine has ever reported NUMA nodes.
+    ///
+    /// Sticky, and read by the layout rather than the sample under the cursor.
+    /// Header height derived per-sample looked right and scrubbed badly: on a
+    /// NUMA box whose restored history predates this field, every keypress
+    /// across the boundary moved the timeline and the whole process table up
+    /// and down a row. A tool built around rewinding cannot have the rewind
+    /// shift the thing you are reading.
+    pub numa: bool,
     /// Samples since the thread view was turned off. Counts only while the
     /// ratchet is still holding.
     thread_idle: u32,
@@ -455,6 +464,7 @@ impl App {
             detail: false,
             io_ratchet: true,
             thread_ratchet: false,
+            numa: false,
             thread_idle: 0,
             sample_count: 0,
             withheld: Vec::new(),
@@ -674,6 +684,7 @@ impl App {
                 self.thread_ratchet = false;
             }
         }
+        self.numa |= s.nodes.is_some();
         self.sample_count = self.sample_count.wrapping_add(1);
         self.history.push(s);
     }
