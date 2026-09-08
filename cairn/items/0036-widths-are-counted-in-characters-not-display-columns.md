@@ -2,7 +2,7 @@
 id: 36
 title: Widths are counted in characters, not display columns
 type: bug
-status: backlog
+status: done
 milestone: later
 created: 2026-09-07
 updated: 2026-09-07
@@ -32,6 +32,6 @@ Worth doing in one change rather than half here and half there.
 
 ## Acceptance criteria
 
-- [ ] Header figures are measured with `Span::width`
-- [ ] `elide_middle` cuts on display columns and never exceeds its budget
-- [ ] A test with a double-width name asserts the drawn row fits its column
+- [x] Header figures are measured with `Span::width`
+- [x] `elide_middle` cuts on display columns and never exceeds its budget
+- [x] A test with a double-width name asserts the drawn row fits its column
