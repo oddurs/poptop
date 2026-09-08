@@ -914,6 +914,7 @@ dependencies = [
  "crossterm",
  "ratatui",
  "sysinfo",
+ "unicode-width",
 ]
 
 [[package]]

@@ -8011,3 +8011,162 @@ fn pressing_detail_with_nothing_selected_says_what_to_do() {
         .unwrap();
     assert!(!chosen.contains("pick a process"), "{chosen:?}");
 }
+
+#[test]
+fn elision_never_exceeds_its_budget_in_columns() {
+    // `chars().count()` counts scalar values, not terminal columns. A name
+    // elided "to nineteen columns" of CJK draws thirty-eight and is clipped by
+    // the terminal anyway — defeating the point of eliding deliberately, which
+    // is that the part identifying the process survives.
+    let names = [
+        "postgres",
+        "データベースサーバー",             // two columns per character
+        "node /srv/api/サーバー.js --port", // mixed
+        "🔥🔥🔥🔥🔥🔥🔥🔥",                 // emoji, two columns each
+        "e\u{301}e\u{301}e\u{301}e\u{301}", // combining marks: zero columns
+        // The cases where per-character widths and per-string width disagree,
+        // which is what makes summing the characters wrong. A text symbol plus
+        // a variation selector measures two as a string and one as a sum, so a
+        // budget filled by summing takes twice what it was given; a family
+        // emoji joined by zero-width joiners measures two and sums to six, so
+        // the same code throws away columns it was allowed.
+        "☂\u{FE0F}☂\u{FE0F}☂\u{FE0F}☂\u{FE0F}☂\u{FE0F}",
+        "👨\u{200D}👩\u{200D}👧abcdefgh",
+        "⚠\u{FE0F} warning ⚠\u{FE0F}",
+        "a",
+        "",
+    ];
+    for name in names {
+        for w in 0..=40usize {
+            let out = ui::elide_middle(name, w);
+            assert!(
+                ui::cols(&out) <= w,
+                "{name:?} elided to {w} columns drew {}: {out:?}",
+                ui::cols(&out)
+            );
+            // And it does not throw away room it was given.
+            if ui::cols(name) <= w {
+                assert_eq!(out, name, "an already-short name was elided at {w}");
+            }
+            // A zero-width mark left at the front of the tail renders on the
+            // elision mark instead — and a variation selector there makes `…`
+            // itself take emoji presentation and two columns, which is the
+            // budget overrun arriving by the back door.
+            if let Some(i) = out.find('…') {
+                let after = &out[i + '…'.len_utf8()..];
+                assert!(
+                    after
+                        .chars()
+                        .next()
+                        .is_none_or(|c| ui::cols(&c.to_string()) > 0),
+                    "a mark from the dropped character was left on the ellipsis: {out:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_double_width_name_keeps_the_tail_it_was_elided_to_keep() {
+    // The rendered check. Measuring the drawn row in columns does not work:
+    // ratatui writes a double-width character into one cell and pads the next
+    // with a space, so a row of CJK measures wider than the terminal while
+    // occupying exactly its cells. What over-budgeting actually costs is the
+    // *tail* — we hand ratatui a 38-column string for a 19-column cell, it
+    // truncates from the right, and the half of the name that middle elision
+    // deliberately kept is the half that disappears.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cmd: Some(std::sync::Arc::from(
+            "データベースサーバー・ロングネーム・ジャーナル",
+        )),
+        ..proc_named(101, "postgres", 20.0, 1 << 20)
+    }];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for w in 60..=140u16 {
+        let row = rows(&app, w, 20)
+            .into_iter()
+            .find(|l| l.contains("101"))
+            .unwrap_or_else(|| panic!("no process row at {w}"));
+        // Matched on characters, not substrings: ratatui writes a wide
+        // character into one cell and pads the next, so the drawn row reads
+        // `デ ー ` and no substring of the original appears in it.
+        let head = row.contains('デ');
+        let tail = row.contains('ル');
+        assert!(head, "the head of the name is gone at {w}: {row:?}");
+        // Either the whole name fits, or it was elided and both ends survive.
+        if row.contains('…') {
+            assert!(tail, "the elided tail was truncated away at {w}: {row:?}");
+        }
+    }
+}
+
+#[test]
+fn the_header_measures_its_figures_in_columns() {
+    // A group of figures whose content is double-width would overflow the row.
+    // Asserted on the arithmetic rather than on the drawn cells, for the same
+    // reason as above — and this is the arithmetic that decides what to drop.
+    let wide = "/データ/ベース";
+    assert!(
+        ui::cols(wide) > wide.chars().count(),
+        "columns and characters agree on the fixture, so the distinction this \
+         test exists for is untested: {} against {}",
+        ui::cols(wide),
+        wide.chars().count()
+    );
+
+    // `short_mount` is the header's own elider, and its budget is in columns.
+    for w in 1..=20usize {
+        let out = ui::elide_middle(wide, w);
+        assert!(ui::cols(&out) <= w, "{out:?} is wider than {w} columns");
+    }
+}
+
+#[test]
+fn a_wide_mount_keeps_the_end_that_identifies_it() {
+    // The measure was converted to columns and the cut was left as a character
+    // index, which for a wide mount overshoots by the difference:
+    // `/データベース/ストレージプール` is thirty columns and sixteen characters,
+    // and skipping thirty of them left three columns and none of the last path
+    // component — the end the doc comment says identifies it.
+    //
+    // This is also the test the elision one claimed to be: it said
+    // "`short_mount` is the header's own elider" and then called
+    // `elide_middle`, so `short_mount` had no coverage at all and this passed.
+    for mount in [
+        "/データベース/ストレージプール",
+        "/媒体/バックアップ",
+        "/var/lib/postgresql/17/main/base",
+        "/",
+        "/mnt/データ",
+    ] {
+        let out = ui::short_mount_for_test(mount);
+        assert!(
+            ui::cols(&out) <= 16,
+            "{mount:?} shortened to {out:?}, {} columns",
+            ui::cols(&out)
+        );
+        // It spends the budget it was given. Cutting on characters while
+        // measuring in columns overshoots by the difference and leaves `…ル` —
+        // three columns of sixteen — which passes a width check and is useless.
+        if ui::cols(mount) > 16 {
+            assert!(
+                ui::cols(&out) >= 15,
+                "{mount:?} shortened to {out:?}, using {} of 16 columns",
+                ui::cols(&out)
+            );
+        }
+        // The end is what identifies a mount, so the last component survives
+        // whenever there is room for it.
+        let last = mount.rsplit('/').next().unwrap_or("");
+        if ui::cols(last) <= 15 {
+            assert!(
+                out.ends_with(last),
+                "{mount:?} lost the component that names it: {out:?}"
+            );
+        }
+    }
+}

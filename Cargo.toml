@@ -9,6 +9,10 @@ readme = "README.md"
 [dependencies]
 crossterm = "0.29.0"
 ratatui = "0.30.2"
+# Text is measured in terminal columns, not scalar values. Already here through
+# ratatui, which uses it for the same reason; declared directly because this
+# crate calls it directly.
+unicode-width = "0.2.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = "0.38.4"
