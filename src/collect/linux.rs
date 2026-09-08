@@ -54,6 +54,9 @@ struct CpuTimes {
     /// time is the answer to why user time looks low while nothing is idle.
     irq: u64,
     softirq: u64,
+    /// Whether the line carried the fields beyond idle and iowait. A short line
+    /// is a platform that does not publish them, not one where they are zero.
+    extended: bool,
 }
 
 impl CpuTimes {
@@ -73,11 +76,17 @@ impl CpuTimes {
         // summing every field as-is would double-count them.
         let total: u64 = v.iter().take(8).sum();
         let iowait = v.get(4).copied().unwrap_or(0);
+        // The extended classes need the fields to actually be there. A line
+        // that stops short is a platform that does not publish them, and a zero
+        // would be poptop claiming it does — the one thing this codebase
+        // refuses everywhere else.
+        let extended = v.len() >= 8;
         let at = |i: usize| v.get(i).copied().unwrap_or(0);
         Some(Self {
             idle: v[3] + iowait,
             total,
             iowait,
+            extended,
             irq: at(5),
             softirq: at(6),
             steal: at(7),
@@ -280,10 +289,10 @@ struct StatRead {
     /// that answers "why is load high when nothing is running".
     blocked: Option<u32>,
     /// Shares of the interval, on the same denominator as `busy`.
-    steal: f32,
-    guest: f32,
-    irq: f32,
-    softirq: f32,
+    steal: Option<f32>,
+    guest: Option<f32>,
+    irq: Option<f32>,
+    softirq: Option<f32>,
     /// Context switches and interrupts since boot, to be turned into rates.
     ctxt: Option<u64>,
     intr: Option<u64>,
@@ -396,6 +405,7 @@ impl ProcFs {
             }
         }
 
+        let extended = total_now.extended;
         let (total_pct, iowait_pct, steal, guest, irq, softirq) = match *prev_total {
             Some(prev) => (
                 total_now.busy_pct_since(&prev),
@@ -425,10 +435,10 @@ impl ProcFs {
             forks,
             running,
             blocked,
-            steal,
-            guest,
-            irq,
-            softirq,
+            steal: extended.then_some(steal),
+            guest: extended.then_some(guest),
+            irq: extended.then_some(irq),
+            softirq: extended.then_some(softirq),
             ctxt,
             intr,
         })
@@ -2086,18 +2096,27 @@ impl Collector for ProcFs {
         // taken between consecutive reads, so moving both by a millisecond
         // changes nothing about it.
         let stat = self.read_stat_file()?;
-        let (was_ctxt, was_intr) = (self.prev_ctxt, self.prev_intr);
-        self.prev_ctxt = stat.ctxt;
-        self.prev_intr = stat.intr;
+        // Taken and stored together with the read, before anything else
+        // fallible — the same discipline as `prev_at` above, and for the same
+        // reason it states: a sample that dies on a later `?` leaves the clock
+        // advanced and the counter behind, so the next successful sample
+        // divides two intervals of counters by one interval of wall clock and
+        // reports the rate at twice what it was. The jiffy figures are immune
+        // because they are jiffies over jiffies; these two divide by seconds.
+        // `replace` only when the file actually carried the counter: a kernel
+        // that publishes neither must not have its `None` recorded as a
+        // baseline, or the next sample would diff against nothing.
+        let was_ctxt = stat.ctxt.and_then(|n| self.prev_ctxt.replace(n));
+        let was_intr = stat.intr.and_then(|n| self.prev_intr.replace(n));
         Ok(Sample {
             at: now,
             cpu_total: stat.busy,
             cpu_per_core: stat.per_core,
             iowait: Some(stat.iowait),
-            steal: Some(stat.steal),
-            guest: Some(stat.guest),
-            irq: Some(stat.irq),
-            softirq: Some(stat.softirq),
+            steal: stat.steal,
+            guest: stat.guest,
+            irq: stat.irq,
+            softirq: stat.softirq,
             // Cumulative counters as rates, like every other counter here. A
             // first sighting reports nothing rather than a boot's worth of
             // switches divided by one interval.
@@ -2662,6 +2681,7 @@ mod tests {
             guest: 0,
             irq: 0,
             softirq: 0,
+            extended: true,
         };
         let b = CpuTimes {
             idle: 950,
@@ -2671,6 +2691,7 @@ mod tests {
             guest: 0,
             irq: 0,
             softirq: 0,
+            extended: true,
         };
         // 100 jiffies passed, 50 idle -> 50% busy
         assert!((b.busy_pct_since(&a) - 50.0).abs() < 0.01);
@@ -2688,6 +2709,7 @@ mod tests {
             guest: 0,
             irq: 0,
             softirq: 0,
+            extended: true,
         };
         let b = CpuTimes {
             idle: 980,
@@ -2697,6 +2719,7 @@ mod tests {
             guest: 0,
             irq: 0,
             softirq: 0,
+            extended: true,
         };
         // 100 jiffies passed: 80 idle (30 of it waiting), 20 busy.
         assert!((b.busy_pct_since(&a) - 20.0).abs() < 0.01);
@@ -2715,6 +2738,7 @@ mod tests {
             guest: 0,
             irq: 0,
             softirq: 0,
+            extended: true,
         };
         let b = CpuTimes {
             idle: 100,
@@ -2724,6 +2748,7 @@ mod tests {
             guest: 0,
             irq: 0,
             softirq: 0,
+            extended: true,
         };
         assert_eq!(
             b.busy_pct_since(&a),
@@ -2743,6 +2768,7 @@ mod tests {
             guest: 0,
             irq: 0,
             softirq: 0,
+            extended: true,
         };
         assert_eq!(a.busy_pct_since(&a), 0.0);
     }

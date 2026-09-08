@@ -616,10 +616,17 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
             None => outln!("{label:<7} —  not published here"),
         }
     }
-    match (s.ctxt, s.intr) {
-        (Some(c), Some(i)) => outln!("switch  {c}/s context, {i}/s interrupts"),
-        _ => outln!("switch  —  not published here"),
-    }
+    // Each says its own absence. Collapsing the pair into one line claimed the
+    // platform published neither when it had only withheld one.
+    let rate_of = |v: Option<u64>| match v {
+        Some(n) => format!("{n}/s"),
+        None => "—".to_string(),
+    };
+    outln!(
+        "switch  {} context, {} interrupts",
+        rate_of(s.ctxt),
+        rate_of(s.intr)
+    );
     outln!("procs   {}", s.procs.len());
     // The processes that lived and died inside the interval — the ones a
     // sample of `/proc` at an instant cannot see at all. An em dash where the

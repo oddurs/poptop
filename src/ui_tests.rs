@@ -9729,3 +9729,29 @@ fn steal_appears_only_when_the_hypervisor_is_taking_time() {
         "a machine losing half its time to the hypervisor said nothing:\n{loud}"
     );
 }
+
+#[test]
+fn steal_is_coloured_on_its_own_scale_not_the_utilisation_one() {
+    // A CPU at 30% is unremarkable; a guest losing 30% of its time to the
+    // hypervisor is the condition the figure exists to expose. Passing the raw
+    // number to `figure_style` leaves it in the calm colour until it reaches
+    // half — the mistake `stall_heat` was written to avoid, one figure over.
+    let theme = crate::theme::Theme::default();
+    let heat = |v| crate::ui::steal_heat_for_test(v, &theme);
+
+    assert_eq!(heat(0.5), 0.0, "scheduling noise was coloured");
+    assert_eq!(heat(4.9), 0.0);
+    assert_eq!(
+        heat(5.0),
+        theme.warn_pct,
+        "a twentieth of the box went unmarked"
+    );
+    assert_eq!(
+        heat(30.0),
+        theme.critical_pct,
+        "a guest losing a third of its time drew as calm"
+    );
+    // And it maps onto the theme's own boundaries, so a user who recoloured
+    // warn and critical still gets their colours.
+    assert!(theme.warn_pct < theme.critical_pct);
+}

@@ -964,6 +964,12 @@ mod tests {
         let s = Sample::unknown();
         let claims: Vec<&str> = [
             ("iowait", s.iowait.is_some()),
+            ("steal", s.steal.is_some()),
+            ("guest", s.guest.is_some()),
+            ("irq", s.irq.is_some()),
+            ("softirq", s.softirq.is_some()),
+            ("ctxt", s.ctxt.is_some()),
+            ("intr", s.intr.is_some()),
             ("running", s.running.is_some()),
             ("blocked", s.blocked.is_some()),
             ("forks", s.forks.is_some()),
