@@ -1,5 +1,5 @@
 ---
-id: 72
+id: 96
 title: Nothing compares the site's braille to the terminal's
 type: chore
 status: done

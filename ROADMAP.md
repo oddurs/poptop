@@ -29,17 +29,17 @@ The landing page works and is honest, but it lists features where it should
 
 ### done
 
-- [x] `0056` Extract the frame renderer so a section can draw a still <sup>chore · p0</sup>
-- [x] `0057` The hero opens on the wrong moment, then rewinds itself <sup>feature · p0</sup>
-- [x] `0058` The page never states the problem it solves <sup>feature · p0</sup>
-- [x] `0059` Make the colour-vision work something you can operate <sup>feature · p0</sup>
-- [x] `0060` Draw peak versus mean instead of asserting it <sup>feature · p1</sup>
 - [x] `0061` Show the buffer starting empty, because that is the trade <sup>feature · p1</sup>
-- [x] `0062` Prove the process table rewinds, do not claim it <sup>feature · p1</sup>
-- [x] `0063` State where poptop loses rather than tabling it <sup>feature · p2</sup>
-- [x] `0064` The keymap should drive the frame it documents <sup>feature · p2</sup>
 - [x] `0065` Close on the empty buffer the page opened by filling <sup>feature · p2</sup>
-- [x] `0066` The audit should cover the sections this milestone adds <sup>chore · p1</sup>
+- [x] `0080` Extract the frame renderer so a section can draw a still <sup>chore · p0</sup>
+- [x] `0081` The hero opens on the wrong moment, then rewinds itself <sup>feature · p0</sup>
+- [x] `0082` The page never states the problem it solves <sup>feature · p0</sup>
+- [x] `0083` Make the colour-vision work something you can operate <sup>feature · p0</sup>
+- [x] `0084` Draw peak versus mean instead of asserting it <sup>feature · p1</sup>
+- [x] `0086` Prove the process table rewinds, do not claim it <sup>feature · p1</sup>
+- [x] `0087` State where poptop loses rather than tabling it <sup>feature · p2</sup>
+- [x] `0088` The keymap should drive the frame it documents <sup>feature · p2</sup>
+- [x] `0090` The audit should cover the sections this milestone adds <sup>chore · p1</sup>
 
 ## web.1 — The site holds up under cross-examination
 
@@ -49,15 +49,15 @@ Findings from an adversarial review of `web/`. Thirteen charges, seven upheld,
 
 ### done
 
-- [x] `0068` Nothing enforces the browser audit <sup>chore · p0</sup>
-- [x] `0069` The colour-vision drift check only runs one way <sup>chore · p0</sup>
-- [x] `0070` The 404 page exists twice, verbatim <sup>chore · p1</sup>
 - [x] `0071` One number, written three times <sup>chore · p1</sup>
-- [x] `0072` Nothing compares the site's braille to the terminal's <sup>chore · p1</sup>
 - [x] `0074` Page furniture is filed under the components layer <sup>chore · p2</sup>
-- [x] `0075` ui::section takes five positional arguments <sup>chore · p2</sup>
-- [x] `0076` The site has no rule governing its own simulation <sup>docs · p1</sup>
-- [x] `0077` The single-binary claim borrows the tool's rhetoric <sup>docs · p2</sup>
+- [x] `0092` Nothing enforces the browser audit <sup>chore · p0</sup>
+- [x] `0093` The colour-vision drift check only runs one way <sup>chore · p0</sup>
+- [x] `0094` The 404 page exists twice, verbatim <sup>chore · p1</sup>
+- [x] `0096` Nothing compares the site's braille to the terminal's <sup>chore · p1</sup>
+- [x] `0099` ui::section takes five positional arguments <sup>chore · p2</sup>
+- [x] `0100` The site has no rule governing its own simulation <sup>docs · p1</sup>
+- [x] `0101` The single-binary claim borrows the tool's rhetoric <sup>docs · p2</sup>
 
 ## v2.0 — Nothing escapes
 
@@ -70,7 +70,7 @@ The foundation for atop parity: a model that can carry two hundred metrics
 - [ ] `0011` Capture processes that live and die between samples <sup>feature · p0</sup>
 - [ ] `0059` A store upgrade must not discard history <sup>bug · p0</sup>
 - [ ] `0060` Collection cost is a global switch, not a per-subsystem budget <sup>feature · p1</sup>
-- [ ] `0061` Threads are counted but never shown <sup>feature · p1</sup>
+- [ ] `0085` Threads are counted but never shown <sup>feature · p1</sup>
 
 ### done
 
@@ -87,13 +87,13 @@ Breadth and depth: the subsystems atop reports that poptop does not — NUMA,
 - [ ] `0062` Nothing says which processes a container is running <sup>feature · p1</sup>
 - [ ] `0063` cgroup v2 utilisation and pressure, per cgroup <sup>feature · p1</sup>
 - [ ] `0064` CPU accounting stops at busy and idle <sup>feature · p2</sup>
-- [ ] `0065` Memory is a percentage and a total, with no composition <sup>feature · p2</sup>
 - [ ] `0066` Paging, swapping and the OOM killer are invisible <sup>feature · p2</sup>
 - [ ] `0067` NUMA nodes are averaged into one machine <sup>feature · p3</sup>
 - [ ] `0068` NFS, GPU and the interconnects are not reported at all <sup>feature · p3</sup>
 - [ ] `0069` A process has eleven fields where atop shows seventy <sup>feature · p1</sup>
 - [ ] `0070` One table cannot show seventy columns <sup>feature · p1</sup>
-- [ ] `0071` Work accumulates by program but not by user or container <sup>feature · p2</sup>
+- [ ] `0089` Memory is a percentage and a total, with no composition <sup>feature · p2</sup>
+- [ ] `0095` Work accumulates by program but not by user or container <sup>feature · p2</sup>
 
 ## v2.2 — An institution
 
@@ -104,11 +104,11 @@ What makes atop something a fleet depends on rather than something you run:
 ### backlog
 
 - [ ] `0072` History ends when the process does <sup>feature · p0</sup>
-- [ ] `0073` There is no way to open yesterday <sup>feature · p0</sup>
-- [ ] `0074` The only machine-readable output is one plain-text sample <sup>feature · p1</sup>
 - [ ] `0075` Nothing summarises a day <sup>feature · p2</sup>
 - [ ] `0076` Nothing can be done to a process, only watched <sup>feature · p3</sup>
 - [ ] `0077` The comparison table will be wrong the moment this lands <sup>docs · p2</sup>
+- [ ] `0097` There is no way to open yesterday <sup>feature · p0</sup>
+- [ ] `0098` The only machine-readable output is one plain-text sample <sup>feature · p1</sup>
 
 ## v0.2 — Cheap enough to run
 
