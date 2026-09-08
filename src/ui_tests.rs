@@ -9316,6 +9316,9 @@ fn grouping_cycles_through_name_and_container_rather_than_adding_a_mode() {
     assert_eq!(names, vec!["node", "sshd"], "grouping by name changed");
     drop(by_name);
 
+    // …then by user, then by container. Three keys, one cycle.
+    app.group = app.group.next();
+    assert_eq!(app.group, Grouping::User);
     app.group = app.group.next();
     assert_eq!(app.group, Grouping::Container);
     let rows_now = app.visible_rows();
@@ -9999,4 +10002,88 @@ fn one_frame_of_ordinary_reclaim_does_not_flip_the_advice() {
         app.push(quiet(64 << 20));
     }
     assert_eq!(app.constraint(), Some(Constraint::Memory));
+}
+
+#[test]
+fn work_accumulates_by_user() {
+    use crate::app::Grouping;
+    // On a shared box "which user is eating the machine" is the first question,
+    // and the `USER` column cannot answer it: it is folded away precisely when
+    // it is constant, and one column of many rows when it is not.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    let owned = |pid, user: &str, cpu| ProcSample {
+        user: std::sync::Arc::from(user),
+        ..proc_named(pid, "ruby", cpu, 64 << 20)
+    };
+    s.procs = vec![
+        owned(4001, "alice", 30.0),
+        owned(4002, "alice", 20.0),
+        owned(4003, "bob", 5.0),
+    ];
+    app.push(s);
+    app.group = Grouping::User;
+
+    let rows_now = app.visible_rows();
+    let labels: Vec<&str> = rows_now.iter().map(|r| r.proc.name.as_ref()).collect();
+    assert_eq!(labels, vec!["alice", "bob"], "the rows are not the users");
+    // The key, summed — not one member's figure.
+    assert_eq!(
+        rows_now[0].proc.cpu, 50.0,
+        "alice's two processes did not sum"
+    );
+    assert_eq!(rows_now[0].count(), 2);
+    // …and the refusals still hold: a group of two has no one state.
+    assert_eq!(rows_now[0].proc.state, '—');
+    drop(rows_now);
+
+    // The `USER` column is the identity now, so it is not also a column.
+    let shown = rows(&app, 160, 10).join("\n");
+    assert!(
+        shown.contains("alice"),
+        "the user is not on screen:\n{shown}"
+    );
+    assert!(
+        !shown.contains("USER"),
+        "the identity is drawn twice, once as a column:\n{shown}"
+    );
+}
+
+#[test]
+fn a_user_group_is_followed_across_samples() {
+    use crate::app::Grouping;
+    // Selection follows a group by its key, so a user whose process list turns
+    // over entirely is still the row that was selected.
+    let mut app = App::new(600);
+    let s = |pid| {
+        let mut s = sample(10.0);
+        s.procs = vec![
+            ProcSample {
+                user: std::sync::Arc::from("alice"),
+                ..proc_named(pid, "ruby", 30.0, 64 << 20)
+            },
+            ProcSample {
+                user: std::sync::Arc::from("bob"),
+                ..proc_named(9000, "sshd", 1.0, 8 << 20)
+            },
+        ];
+        s
+    };
+    app.push(s(4001));
+    app.group = Grouping::User;
+    app.select_delta(1);
+    let first = app.visible_rows();
+    let picked = app.row_of(&first).expect("nothing selected");
+    assert_eq!(first[picked].proc.name.as_ref(), "alice");
+    drop(first);
+
+    // Every one of alice's processes is replaced.
+    app.push(s(7777));
+    let later = app.visible_rows();
+    let still = app.row_of(&later).expect("the selection was lost");
+    assert_eq!(
+        later[still].proc.name.as_ref(),
+        "alice",
+        "the selection did not follow the user across a turnover"
+    );
 }

@@ -2550,7 +2550,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // A column whose every value is the same is telling you one fact, and a
     // fact belongs in a sentence. See `App::one_user`.
     let one_user = app.one_user();
-    let show_user = one_user.is_none();
+    // Folded away when it is the *identity* as well as a column: grouping by
+    // user puts the name in the command column, and a `USER` column beside it
+    // would be the same word twice. That inverts 0043's rule, which drops the
+    // column when every row shares a value — here every row has a different
+    // one and it is still redundant.
+    let show_user = one_user.is_none() && app.group != crate::app::Grouping::User;
     // In the disk view the throughput columns are the point, so they are not
     // subject to the width test that hides them elsewhere — which is the
     // concrete thing views fix: today those figures vanish on a narrow terminal

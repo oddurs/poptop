@@ -248,6 +248,13 @@ pub enum Grouping {
     Off,
     /// Processes sharing a name, which is 0050's behaviour.
     Name,
+    /// Processes belonging to one user.
+    ///
+    /// On a shared box "which user is eating the machine" is the first
+    /// question, and the `USER` column cannot answer it: it is folded away
+    /// precisely when it is constant, and one column of many rows when it is
+    /// not.
+    User,
     /// Processes in the same container. Processes in none are not shown: the
     /// question is what each container is doing.
     Container,
@@ -258,7 +265,8 @@ impl Grouping {
     pub fn next(self) -> Self {
         match self {
             Grouping::Off => Grouping::Name,
-            Grouping::Name => Grouping::Container,
+            Grouping::Name => Grouping::User,
+            Grouping::User => Grouping::Container,
             Grouping::Container => Grouping::Off,
         }
     }
@@ -268,6 +276,7 @@ impl Grouping {
         match self {
             Grouping::Off => None,
             Grouping::Name => Some(|p| Some(&p.name)),
+            Grouping::User => Some(|p| Some(&p.user)),
             Grouping::Container => Some(|p| p.container.as_ref()),
         }
     }
@@ -277,6 +286,7 @@ impl Grouping {
         match self {
             Grouping::Off => "",
             Grouping::Name => "grouped by name",
+            Grouping::User => "grouped by user",
             Grouping::Container => "grouped by container",
         }
     }
@@ -1449,7 +1459,11 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                     // bob are not alice's, and taking whichever sorted first
                     // renders a fact the group does not have — the same reason
                     // `state` is an em dash.
-                    user: match members.iter().all(|p| p.user == first.user) {
+                    // Grouping by user, every member shares it by definition —
+                    // and it is the row's identity, so the check below would
+                    // reach the same answer the long way round.
+                    user: match by == Grouping::User || members.iter().all(|p| p.user == first.user)
+                    {
                         true => first.user.clone(),
                         false => Arc::from("—"),
                     },
