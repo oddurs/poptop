@@ -10087,3 +10087,70 @@ fn a_user_group_is_followed_across_samples() {
         "the selection did not follow the user across a turnover"
     );
 }
+
+#[test]
+fn a_selected_group_is_not_reported_absent_when_it_is_running() {
+    use crate::app::{Grouping, Watched};
+    // A group's name is whatever it folds on — a username, a container id — so
+    // matching it against the *process* name finds nothing the moment the key
+    // is not the name, and the panel says `alice not running here` about a user
+    // who is running plenty. The false claim about the machine this check
+    // exists to avoid.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        user: std::sync::Arc::from("alice"),
+        ..proc_named(4001, "ruby", 30.0, 64 << 20)
+    }];
+    app.push(s);
+    app.group = Grouping::User;
+    app.selected = Some(Watched::Group {
+        name: std::sync::Arc::from("alice"),
+    });
+
+    // Filtered out of the rows, but still on the machine.
+    app.filter = "nothingmatchesthis".into();
+    let rows_now = app.visible_rows();
+    assert!(rows_now.is_empty(), "the fixture does not test the case");
+    assert!(
+        app.watched_but_absent(&rows_now).is_none(),
+        "a user who is running was reported as not running"
+    );
+    drop(rows_now);
+
+    // And a group that really is gone still says so.
+    app.filter.clear();
+    let mut empty = sample(10.0);
+    empty.procs = vec![proc_named(9000, "sshd", 1.0, 8 << 20)];
+    app.push(empty);
+    let rows_now = app.visible_rows();
+    assert!(
+        app.watched_but_absent(&rows_now).is_some(),
+        "a user who really has gone was not reported"
+    );
+}
+
+#[test]
+fn an_unresolvable_owner_is_not_folded_into_one_user() {
+    use crate::app::Grouping;
+    // macOS falls back to `?` for a uid it cannot look up. Folding on it heaps
+    // every such process into one row and presents the total as one user's
+    // usage — a heap called none, wearing a name.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    let owned = |pid, user: &str| ProcSample {
+        user: std::sync::Arc::from(user),
+        ..proc_named(pid, "ruby", 10.0, 64 << 20)
+    };
+    s.procs = vec![owned(4001, "?"), owned(4002, "?"), owned(4003, "alice")];
+    app.push(s);
+    app.group = Grouping::User;
+
+    let rows_now = app.visible_rows();
+    let labels: Vec<&str> = rows_now.iter().map(|r| r.proc.name.as_ref()).collect();
+    assert_eq!(
+        labels,
+        vec!["alice"],
+        "two processes with unlookupable owners were folded into one user"
+    );
+}

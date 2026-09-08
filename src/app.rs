@@ -276,7 +276,12 @@ impl Grouping {
         match self {
             Grouping::Off => None,
             Grouping::Name => Some(|p| Some(&p.name)),
-            Grouping::User => Some(|p| Some(&p.user)),
+            // Not the `?` an unresolvable uid falls back to on macOS. It is a
+            // placeholder, not an identity, so folding on it heaps every
+            // process whose owner could not be looked up into one row and
+            // presents the total as one user's usage — the "heap called none"
+            // this function refuses for containers, wearing a name.
+            Grouping::User => Some(|p| (&*p.user != "?").then_some(&p.user)),
             Grouping::Container => Some(|p| p.container.as_ref()),
         }
     }
@@ -1279,7 +1284,20 @@ impl App {
                 .procs
                 .iter()
                 .any(|p| p.pid == *pid && p.started == *started),
-            Watched::Group { name } => sample.procs.iter().any(|p| *p.name == **name),
+            // Through the *grouping's* key, not the process name. A group's
+            // name is whatever it folds on — a username, a container id — so
+            // matching it against `p.name` finds nothing the moment the key is
+            // not the name, and the panel says `alice not running here` about a
+            // user who is running plenty. Precisely the false claim about the
+            // machine this function exists to avoid.
+            Watched::Group { name } => match self.group.key() {
+                Some(key) => sample
+                    .procs
+                    .iter()
+                    .any(|p| key(p).is_some_and(|k| k == name)),
+                // Not grouping any more, so there is no group to be absent.
+                None => true,
+            },
         };
         (!here).then_some(w)
     }

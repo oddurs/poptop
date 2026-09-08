@@ -2595,7 +2595,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // and the sparkline whether or not they are on screen, so gating on it hid
     // the column at every width a hundred-column terminal has — on exactly the
     // container host this exists for.
-    let show_cid = app.any_container()
+    // Not while grouping by user: every group row's container is `None` — its
+    // members can be in different ones — so the column would be a header and
+    // twelve blank columns on every row, which is the argument that drops
+    // `USER` two lines up.
+    let show_cid = app.group != crate::app::Grouping::User
+        && app.any_container()
         && command_width(area.width, show_io, show_user, true, dropped, taken) as u16
             > MIN_COMMAND_W;
     let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped, taken);

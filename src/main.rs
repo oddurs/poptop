@@ -150,7 +150,7 @@ KEYS:
                     an interpreter heap copy-on-write and it is counted once
                     per member. The PSS column in the memory view (v) is the
                     measurement, and sums correctly. Not available with the
-                    tree. Press again to fold by container instead.
+                    tree. Press again to fold by user, then by container.
     K               show kernel threads. Hidden by default on Linux: kworker,
                     ksoftirqd, irq and the rest outnumber the real processes
                     several times over on a many-core box, and none of them is
@@ -916,9 +916,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         }
         KeyCode::Char('d') => app.detail = !app.detail,
         KeyCode::Char('g') => {
-            // A cycle: off, by name, by container. Folding by container is the
-            // same machinery with a different key, so it is a choice rather
-            // than a fifth exclusive layout.
+            // A cycle: off, by name, by user, by container — atop's `p`, `u`
+            // and `j` on one key. Each is the same machinery with a different
+            // key, so they are a choice rather than three exclusive layouts.
             app.group = app.group.next();
             if app.group != crate::app::Grouping::Off {
                 app.tree = false;
