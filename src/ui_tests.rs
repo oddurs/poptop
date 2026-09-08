@@ -6312,6 +6312,16 @@ fn the_readme_shows_the_table_this_version_draws() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     let drawn = rows(&app, 78, 24);
 
+    // The footer too. It is the line most likely to drift, because every key
+    // added to the ladder changes what fits — and at this width the ladder
+    // drops the newest ones, so the README is right only by a margin nobody
+    // would notice going.
+    let footer = drawn.last().expect("no footer").trim_end();
+    assert!(
+        readme.contains(footer),
+        "the README's key line is not the one poptop draws:\n  drawn: {footer:?}"
+    );
+
     for pat in [
         "processes (",
         "CPU%",

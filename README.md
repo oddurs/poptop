@@ -124,9 +124,26 @@ cargo build --release
 | `Home` / `End` | jump to oldest / live |
 | `↑` / `↓` | select a process |
 | `s` | cycle sort column |
+| `S` | sort by whatever is stopping work, when the panel names one |
 | `t` | toggle the process tree |
+| `g` | fold processes sharing a name into one row |
+| `d` | show the selected process's own history instead of the machine's |
+| `K` | show kernel threads, which are hidden by default on Linux |
 | `i` | toggle per-process disk IO columns |
-| `/` | filter by name or pid |
+| `/` | filter — a substring, or a small query language |
+
+`d` is the one worth trying first. The buffer already holds every retained
+sample's whole process table, so "what has *this* process been doing" is a
+question the data can answer — it was a ten-column sparkline in a table row, and
+it is now the whole timeline panel: CPU, memory, threads and disk over the
+window, with the moments the process was **not running** marked rather than
+interpolated. When it started and when it went is often the entire answer.
+
+`S` is offered, never applied. The panel names the resource that is stopping
+work — `disk is the constraint (S)` — and that key is the only thing that acts
+on it, because a table that reorders itself under the reader is worse than one
+that does not. It reads the constraint **at the cursor**, so scrubbing back to a
+spike tells you what was in the way *then*.
 
 `poptop --once` prints a single plain-text sample and exits, for scripts and cron.
 `poptop --bench` times 20 collection passes, for checking the cost of a change.
@@ -158,6 +175,40 @@ shipping `series_cpu` and `series_mem` only 6.7 apart, because rounding each
 channel to its nearest cube level independently is not perceptually safe. The
 replacement then failed the second, sitting at 2.03:1 against the selected-row
 background — separated, and invisible.
+
+### Filtering
+
+A bare word is a substring match on the name, the command line, the user or the
+pid, which is what `/` has always done. It is also a small query language, for
+the questions a substring cannot ask — and each of these is a figure the header
+is already showing you and the table had no way to itemise:
+
+```text
+state = D              stuck in uninterruptible sleep, which BLOCKED counts
+write > 1mb            who is causing the disk saturation just reported
+threads > 100          the thing leaking threads
+cpu > 5 and user = root
+```
+
+Fields: `cpu`, `mem` (`rss`), `threads` (`thr`), `state`, `pid`, `read`,
+`write`, `user`, `name` (`command`). Operators `>` `>=` `<` `<=` `=` `!=`,
+joined by `and`. Sizes take `k`/`m`/`g`/`t` and are binary, like the column they
+filter: `1mb` is 1048576.
+
+Deliberately smaller than the tool it is borrowed from: no `or`, no negation, no
+parentheses, no regex. `field op value` joined by `and` answers every question
+above, and the rest is a precedence table and a syntax to document.
+
+A figure the platform could not read matches **nothing** — not `> 0`, and not
+`< 1mb` either. A process whose IO could not be read is not one doing no IO, so
+it must not answer a question about its IO in either direction; that is the same
+refusal the `—` in the column is making. And a malformed query filters nothing
+away and says what is wrong, naming every field, because on a one-line filter
+box the error message is the only place discovery can happen.
+
+It is evaluated **at the cursor**, so scrubbing answers *what was in D-state at
+the moment of the spike* — which is a question no live-only monitor can be
+asked.
 
 `--glyphs=braille|block|ascii` picks how the timeline is drawn. Braille packs
 two samples into every character cell and stacks cells vertically for twelve
@@ -1071,9 +1122,10 @@ auditing this UI against data-visualisation practice. Start with
 ## Status
 
 Early. What works: both backends, the timeline with scrubbing and zoom, the
-process tree (`t`), sorting, filtering, per-process disk throughput,
-configurable intervals, persisting history across restarts (`store`), themes
-with colour-vision validation, and `--once`.
+process tree (`t`), grouping (`g`), the per-process history panel (`d`), sorting
+including by whatever is constrained (`S`), the query filter, per-process disk
+throughput, clock-ceiling reporting, configurable intervals, persisting history
+across restarts (`store`), themes with colour-vision validation, and `--once`.
 
 Not there yet: per-process network attribution, which needs `/proc/net` inode
 matching or eBPF and is its own project; killing or renicing processes; mouse
