@@ -34,6 +34,6 @@ read per node, so the cost is small and bounded by socket count.
 
 ## Acceptance criteria
 
-- [ ] Per-node memory and CPU where the machine has more than one node
-- [ ] A single-node machine spends no space saying it has one node
-- [ ] macOS says nothing rather than reporting one node
+- [x] Per-node memory and CPU where the machine has more than one node
+- [x] A single-node machine spends no space saying it has one node
+- [x] macOS says nothing rather than reporting one node
