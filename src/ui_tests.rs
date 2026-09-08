@@ -173,16 +173,30 @@ fn sort_by_mem_puts_the_biggest_process_first() {
 }
 
 #[test]
-fn selection_survives_the_list_shrinking_under_it() {
+fn a_filter_that_hides_the_watched_process_says_so() {
+    // The selection is of a process, so there is no index to strand: the row
+    // simply is not there, and the panel says which process is missing rather
+    // than highlighting whatever landed at that position.
     let mut app = App::new(60);
     app.push(sample(10.0));
-    app.selected = 2;
-    // A filter that leaves a single row would otherwise strand the cursor
-    // past the end of the table.
+    app.select_delta(2);
+    let watched = app.selected.clone().expect("nothing selected");
+
     app.filter = "nginx".into();
-    app.clamp_selection();
-    assert_eq!(app.selected, 0);
-    render(&app, 100, 30);
+    let rows = app.visible_rows();
+    assert_eq!(
+        app.selected.as_ref(),
+        Some(&watched),
+        "the filter moved the selection to a different process"
+    );
+    assert!(
+        app.watched_but_absent(&rows).is_some(),
+        "the watched process is filtered out and the panel does not know"
+    );
+    assert!(
+        render(&app, 100, 30).contains(&format!("{} not running here", watched.name)),
+        "the absence is not stated"
+    );
 }
 
 #[test]
@@ -1246,9 +1260,12 @@ fn timeline_rows(app: &App, w: u16, h: u16) -> Vec<String> {
 }
 
 #[test]
-fn the_cursor_reports_the_values_at_the_cursor_not_the_live_ones() {
-    // The whole point of the readout. If it showed the newest sample it would
-    // contradict the process table beside it, which does follow the cursor.
+fn the_header_reports_the_values_at_the_cursor_not_the_live_ones() {
+    // This used to be about the timeline's own readout, which repeated what the
+    // header was already showing two centimetres above it. The readout is gone;
+    // the claim it was making is the header's, and still worth pinning — a
+    // header showing the newest sample would contradict the process table
+    // beside it, which does follow the cursor.
     let mut app = App::new(600);
     // Oldest 90%, newest 10%, so the two are impossible to confuse.
     for i in (0..40).rev() {
@@ -1257,32 +1274,61 @@ fn the_cursor_reports_the_values_at_the_cursor_not_the_live_ones() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     app.history.scrub(-35); // back into the 90% region
 
-    let text = timeline_rows(&app, 100, 12).join("\n");
+    let header = rows(&app, 100, 24)
+        .into_iter()
+        .find(|l| l.contains("CPU"))
+        .expect("no header");
     assert!(
-        text.contains("CPU 90.0%"),
-        "readout shows the live value, not the cursor's:\n{text}"
+        header.contains("90.0%"),
+        "the header shows the live value, not the cursor's: {header:?}"
     );
-    assert!(!text.contains("CPU 10.0%"));
+    assert!(!header.contains("10.0%"), "{header:?}");
 }
 
 #[test]
-fn the_readout_is_absent_while_live() {
+fn the_cursor_row_states_the_scale_and_repeats_no_figure() {
+    // The row is positional. It used to carry `CPU 50.0%` as well — a copy of
+    // what the header shows while scrubbing, two centimetres away — while the
+    // slot size, which nothing else states, was dropped in that mode because
+    // this row replaced the caption that used to carry it.
     let mut app = App::new(600);
     for i in (0..40).rev() {
         app.push(sample_at(50.0, i));
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let live = timeline_rows(&app, 100, 12).join("\n");
-    assert!(!live.contains("CPU 50.0%"), "readout shown while live");
-    assert!(live.contains("past"), "live row should show the time axis");
-
-    app.history.scrub(-5);
-    assert!(
-        timeline_rows(&app, 100, 12)
-            .join("\n")
-            .contains("CPU 50.0%")
-    );
+    for scrubbed in [false, true] {
+        if scrubbed {
+            app.history.scrub(-5);
+        }
+        let text = timeline_rows(&app, 100, 12).join("\n");
+        assert!(
+            !text.contains("CPU 50.0%"),
+            "the cursor row repeats a figure the header is showing (scrubbed: {scrubbed}):\n{text}"
+        );
+        assert!(
+            text.contains("/slot"),
+            "the slot size is not stated (scrubbed: {scrubbed}):\n{text}"
+        );
+        // The anchors are what make the marker's position mean anything. An
+        // anchor the marker lands in is dropped rather than half-overwritten —
+        // a marker at the right edge already says `now` — so each is required
+        // unless the cursor is standing in it.
+        let marker = cursor_column(&app, 100, 12);
+        if marker.is_none_or(|c| c >= 4) {
+            assert!(text.contains("past"), "the past anchor is gone:\n{text}");
+        }
+        if marker.is_none_or(|c| c + 3 <= 100 - 3) {
+            assert!(text.contains("now"), "the now anchor is gone:\n{text}");
+        }
+        // …and never a fragment of one, which names nothing at all.
+        for fragment in ["▌ow", "▐ow", "pas▌", "pas▐", " ow ", " as "] {
+            assert!(
+                !text.contains(fragment),
+                "an anchor was written through (scrubbed: {scrubbed}): {fragment:?}\n{text}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1327,8 +1373,8 @@ fn the_readout_never_pushes_the_marker_off_its_column() {
 #[test]
 fn scrubbing_past_the_left_edge_scrolls_the_window() {
     // G4 made the off-window case honest — an explicit marker and no figures.
-    // G7 removes the case: Home now scrolls the graph to the oldest samples,
-    // so the readout can state them because they are on screen.
+    // G7 removes the case: Home now scrolls the graph to the oldest samples, so
+    // the cursor can be drawn where it actually is.
     let mut app = App::new(600);
     for i in (0..500).rev() {
         app.push(sample_at(if i > 400 { 11.0 } else { 88.0 }, i as u64));
@@ -1338,12 +1384,17 @@ fn scrubbing_past_the_left_edge_scrolls_the_window() {
 
     let text = timeline_rows(&app, 100, 12).join("\n");
     assert!(
-        text.contains("CPU 11.0%"),
-        "window did not follow the cursor to the oldest sample:\n{text}"
-    );
-    assert!(
         !text.contains('◀'),
-        "off-window marker shown when the window can reach the cursor"
+        "off-window marker shown when the window can reach the cursor:\n{text}"
+    );
+    // Checked by where the marker is, not by a figure beside it: the cursor row
+    // no longer repeats the header's values. At the oldest sample the marker
+    // belongs at the left edge of the graph, which is only true if the window
+    // followed.
+    let col = cursor_column(&app, 100, 12).expect("no cursor marker drawn");
+    assert!(
+        col <= ui::GUTTER_W as u16 + 1,
+        "the window did not follow the cursor to the oldest sample: marker at {col}"
     );
 }
 
@@ -1398,27 +1449,34 @@ fn zoom_still_works_at_any_scroll_position() {
 }
 
 #[test]
-fn the_readout_flips_side_rather_than_being_clipped() {
-    // With the cursor at the newest sample the marker sits at the right edge,
-    // so the text has to go to its left.
+fn the_caption_moves_aside_rather_than_being_written_through() {
+    // The marker is placed last and wins its cell outright — a marker a caption
+    // can overwrite is a marker that sometimes lies about where the cursor is.
+    // So the caption has to go to whichever side of it has room.
     let mut app = App::new(600);
     for i in (0..20).rev() {
         app.push(sample_at(77.0, i));
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    app.history.scrub(-1);
 
-    let rows = timeline_rows(&app, 100, 12);
-    let cursor_row = rows
-        .iter()
-        .find(|r| r.contains('▌') || r.contains('▐'))
-        .expect("cursor row");
-    let marker = cursor_row.find(['▌', '▐']).unwrap();
-    let text = cursor_row.find("CPU 77.0%").expect("readout missing");
-    assert!(
-        text < marker,
-        "readout should sit left of a right-edge cursor: {cursor_row:?}"
-    );
+    // Sweep the cursor across the whole graph: at every position the caption
+    // must be intact and the marker must still be drawn.
+    for back in 1..19 {
+        app.history.goto_live();
+        app.history.scrub(-back);
+        let rows = timeline_rows(&app, 100, 12);
+        let row = rows
+            .iter()
+            .find(|r| r.contains('▌') || r.contains('▐'))
+            .unwrap_or_else(|| panic!("no cursor row at -{back}: {rows:?}"));
+        assert!(
+            row.contains("/slot"),
+            "the caption was written through at -{back}: {row:?}"
+        );
+        let marker = row.find(['▌', '▐']).unwrap();
+        let caption = row.find("shown,").expect("caption missing");
+        assert_ne!(marker, caption, "the marker landed inside the caption");
+    }
 }
 
 /// The distinct foreground colours used by the graph rows of the timeline,
@@ -2701,8 +2759,11 @@ fn scrolling_the_list_does_not_rescale_everybody_else_history() {
     };
 
     let at_top = axis_of(&app);
-    // Far enough down that the 900% row is well off screen.
-    app.selected = 38;
+    // Far enough down that the 900% row is well off screen. Selected by
+    // walking, because a selection is of a process rather than an index.
+    for _ in 0..38 {
+        app.select_delta(1);
+    }
     let scrolled = axis_of(&app);
     assert_eq!(
         at_top, scrolled,
@@ -4639,38 +4700,49 @@ fn the_gutter_is_exactly_its_width_whatever_it_is_given() {
 }
 
 #[test]
-fn the_scrub_readout_names_the_rows_that_are_on_screen() {
-    // A terminal has no hover, so the marker *is* the crosshair — and a
-    // crosshair that reports a series the graph is not drawing disagrees with
-    // the thing it points at. It said `MEM` while the graph showed `WAIT`.
+fn the_caption_names_the_rows_that_are_on_screen_while_scrubbing() {
+    // A caption that identifies a series the graph is not drawing disagrees
+    // with the thing it labels. It said `MEM` while the graph showed `WAIT`.
     //
-    // Scoped to the timeline: the header always names memory, and searching
-    // the whole frame finds that instead.
-    let readout = |app: &App, h: u16| {
-        let rows = ui::timeline_rows_range(h);
-        render_lines(app, 90, h)[rows.start as usize..rows.end as usize]
+    // At a width where the gutter can label the rows the caption does not
+    // identify them at all — that is the ladder working, not a bug — so this is
+    // checked at the width where the caption is the only thing naming them. And
+    // while scrubbing, because that is the mode where this row used to be
+    // replaced wholesale and the identification went with it.
+    let caption = |app: &App, h: u16| {
+        let r = ui::timeline_rows_range(h);
+        render_lines(app, 24, h)[r.start as usize..r.end as usize]
             .iter()
-            .find(|l| l.contains('%'))
+            .find(|l| l.contains("cpu"))
             .cloned()
             .unwrap_or_default()
     };
 
     let mut app = App::new(600);
     stalled_history(&mut app, 200);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     app.history.scrub(-10);
 
-    let short = readout(&app, 24);
-    assert!(
-        short.contains("CPU") && short.contains("WAIT"),
-        "the readout omits a row that is drawn: {short:?}"
-    );
-    assert!(
-        !short.contains("MEM"),
-        "the readout names a row that is not drawn: {short:?}"
-    );
+    // Short: only CPU has room, so the caption must not claim anything else.
+    let short = caption(&app, 14);
+    assert!(short.contains("cpu"), "{short:?}");
+    for absent in ["wait", "mem"] {
+        assert!(
+            !short.contains(absent),
+            "the caption names {absent}, which is not drawn at this height: {short:?}"
+        );
+    }
 
-    // …and picks memory up again when the graph does.
-    assert!(readout(&app, 50).contains("MEM"));
+    // Taller: stall pressure gains a row, and the caption picks it up.
+    let taller = caption(&app, 20);
+    assert!(
+        taller.contains("cpu") && taller.contains("wait"),
+        "the caption omits a row that is drawn: {taller:?}"
+    );
+    assert!(
+        !taller.contains("mem"),
+        "the caption names a row that is not drawn: {taller:?}"
+    );
 }
 
 #[test]
@@ -5423,9 +5495,10 @@ fn a_filter_does_not_bring_hidden_kernel_threads_back() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn the_selection_stays_in_range_when_kernel_threads_are_hidden() {
-    // Toggling them off shrinks the list under the cursor, exactly as a filter
-    // does — and a selection past the end draws no highlight at all.
+fn hiding_kernel_threads_does_not_silently_select_another_process() {
+    // Toggling them off takes the watched row away. There is no index to
+    // strand any more — the question is whether the panel says the process is
+    // gone or quietly highlights whatever is at that position.
     let mut app = App::new(60);
     let mut s = sample(10.0);
     s.procs = vec![proc_named(101, "nginx", 9.0, 1 << 20)];
@@ -5434,12 +5507,27 @@ fn the_selection_stays_in_range_when_kernel_threads_are_hidden() {
     app.show_kernel = true;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    app.selected = app.visible_rows().len() - 1;
+    // Walk to a kworker.
+    for _ in 0..20 {
+        app.select_delta(1);
+    }
+    let watched = app.selected.clone().expect("nothing selected");
+    assert!(watched.name.starts_with("kworker"), "{watched:?}");
+
     app.show_kernel = false;
-    app.clamp_selection();
+    let rows = app.visible_rows();
+    assert_eq!(
+        app.selected.as_ref(),
+        Some(&watched),
+        "the selection jumped to a different process"
+    );
     assert!(
-        app.selected < app.visible_rows().len(),
-        "the selection was left past the end of the list"
+        app.row_of(&rows).is_none(),
+        "a hidden process is still being highlighted"
+    );
+    assert!(
+        app.watched_but_absent(&rows).is_some(),
+        "the panel does not know its selection is gone"
     );
 }
 
@@ -6142,4 +6230,223 @@ fn the_readme_shows_the_table_this_version_draws() {
             "the README does not show what poptop draws:\n  drawn:  {line:?}"
         );
     }
+}
+
+/// A run of samples where three processes trade places, so the table is sorted
+/// differently at every one.
+fn shuffling_history(app: &mut App) {
+    // postgres climbs, nginx falls, redis peaks in the middle: at sample 0 the
+    // order is redis/nginx/postgres and by sample 9 it is postgres/redis/nginx.
+    for i in 0..10 {
+        let f = i as f32;
+        let mut s = sample_at(50.0, 9 - i);
+        s.procs = vec![
+            ProcSample {
+                cpu: f * 10.0,
+                started: Some(1),
+                ..proc_named(101, "postgres", 0.0, 1 << 20)
+            },
+            ProcSample {
+                cpu: 90.0 - f * 10.0,
+                started: Some(2),
+                ..proc_named(102, "nginx", 0.0, 1 << 20)
+            },
+            ProcSample {
+                cpu: 45.0 - (f - 5.0).abs() * 5.0,
+                started: Some(3),
+                ..proc_named(103, "redis", 0.0, 1 << 20)
+            },
+        ];
+        app.push(s);
+    }
+}
+
+#[test]
+fn scrubbing_keeps_the_same_process_selected_while_the_table_reorders() {
+    // The gesture this tool exists for: find the moment it went wrong, then
+    // watch what that process was doing around it. Selection followed the row
+    // index, so scrubbing moved the highlight from row 3 to row 11 to
+    // off-screen while the reader sat still — the one gesture the tool is for
+    // was the one that lost your place.
+    let mut app = App::new(60);
+    shuffling_history(&mut app);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    // Pick redis, which is neither top nor bottom at the live sample.
+    while app.selected.as_ref().is_none_or(|w| &*w.name != "redis") {
+        app.select_delta(1);
+    }
+
+    let mut positions = Vec::new();
+    for _ in 0..9 {
+        app.history.scrub(-1);
+        let rows = app.visible_rows();
+        let i = app
+            .row_of(&rows)
+            .expect("redis is in every sample and lost the selection");
+        assert_eq!(
+            &*rows[i].proc.name, "redis",
+            "the selection landed on a different process"
+        );
+        positions.push(i);
+    }
+    // The table really did reorder underneath: if redis sat on the same row
+    // throughout, this test would pass without proving anything.
+    assert!(
+        positions.windows(2).any(|w| w[0] != w[1]),
+        "the table never reordered, so following it was never tested: {positions:?}"
+    );
+}
+
+#[test]
+fn sorting_does_not_move_the_selection_to_a_different_process() {
+    let mut app = App::new(60);
+    shuffling_history(&mut app);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    while app.selected.as_ref().is_none_or(|w| &*w.name != "redis") {
+        app.select_delta(1);
+    }
+
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        app.sort = app.sort.next();
+        let rows = app.visible_rows();
+        let i = app.row_of(&rows).expect("the sort lost the selection");
+        assert_eq!(&*rows[i].proc.name, "redis", "the sort moved the selection");
+        seen.push(i);
+    }
+    assert!(
+        seen.windows(2).any(|w| w[0] != w[1]),
+        "no sort actually reordered the rows: {seen:?}"
+    );
+}
+
+#[test]
+fn a_process_absent_at_the_cursor_is_stated_rather_than_swapped() {
+    // A process appearing partway through the buffer is information, and often
+    // it is the information the reader scrubbed back to find.
+    let mut app = App::new(60);
+    for i in 0..6 {
+        let mut s = sample_at(50.0, 5 - i);
+        s.procs = vec![ProcSample {
+            started: Some(1),
+            ..proc_named(101, "postgres", 20.0, 1 << 20)
+        }];
+        // The build only starts halfway through.
+        if i >= 3 {
+            s.procs.push(ProcSample {
+                started: Some(2),
+                ..proc_named(102, "cargo", 90.0, 1 << 20)
+            });
+        }
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    while app.selected.as_ref().is_none_or(|w| &*w.name != "cargo") {
+        app.select_delta(1);
+    }
+
+    // Back before it started.
+    app.history.goto_oldest();
+    let rows = app.visible_rows();
+    assert!(
+        app.row_of(&rows).is_none(),
+        "something is highlighted for a process that was not running"
+    );
+    assert_eq!(
+        app.watched_but_absent(&rows).map(|w| w.name.to_string()),
+        Some("cargo".to_string())
+    );
+    assert!(
+        render(&app, 120, 20).contains("cargo not running here"),
+        "the absence is silent"
+    );
+
+    // Forward to where it exists again: the selection was held, not dropped.
+    app.history.goto_live();
+    let rows = app.visible_rows();
+    let i = app
+        .row_of(&rows)
+        .expect("the selection was dropped, not held");
+    assert_eq!(&*rows[i].proc.name, "cargo");
+}
+
+#[test]
+fn following_a_process_does_not_follow_a_recycled_pid() {
+    // The whole reason the start time is part of the key. A pid reused between
+    // samples would otherwise silently move the selection to a stranger — the
+    // same splice `ProcSample::key` refuses one field over.
+    let mut app = App::new(60);
+    let mut before = sample_at(50.0, 1);
+    before.procs = vec![ProcSample {
+        started: Some(100),
+        ..proc_named(4821, "the-first-one", 20.0, 1 << 20)
+    }];
+    app.push(before);
+
+    app.select_delta(1);
+    let watched = app.selected.clone().expect("nothing selected");
+    assert_eq!(&*watched.name, "the-first-one");
+
+    // Same pid, different process.
+    let mut after = sample_at(50.0, 0);
+    after.procs = vec![ProcSample {
+        started: Some(200),
+        ..proc_named(4821, "a-stranger", 20.0, 1 << 20)
+    }];
+    app.push(after);
+
+    let rows = app.visible_rows();
+    assert!(
+        app.row_of(&rows).is_none(),
+        "the selection followed a recycled pid onto a different process"
+    );
+    assert_eq!(
+        app.watched_but_absent(&rows).map(|w| w.name.to_string()),
+        Some("the-first-one".to_string()),
+        "the panel does not know the process it was following is gone"
+    );
+}
+
+#[test]
+fn the_cursor_row_keeps_its_anchors_when_there_is_no_room_for_a_caption() {
+    // The narrowest panels drop every rung of the caption ladder. The anchors
+    // are what is left, and they are the only thing that makes the marker's
+    // position mean anything — a lone `▐` in an unlabelled row says nothing.
+    //
+    // Reachable between about eight and ten columns: below that even `past`
+    // does not fit beside the marker, above it some rung of the ladder always
+    // does. A first draft swept 12 to 20 and asserted nothing at all, because
+    // every width in that range still had a caption.
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.history.scrub(-20);
+
+    let mut checked = 0;
+    for w in 6..=12u16 {
+        let r = ui::timeline_rows_range(24);
+        let row = render_lines(&app, w, 24)[r.end as usize - 1].clone();
+        if row.contains("shown") || row.contains("cpu") {
+            continue; // the other branch, which has its own test
+        }
+        // `past` is drawn only where the marker is not standing in it.
+        let Some(col) = cursor_column(&app, w, 24) else {
+            continue;
+        };
+        if col >= 4 {
+            checked += 1;
+            assert!(
+                row.contains("past"),
+                "a caption-less cursor row lost its anchor at {w}: {row:?}"
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "no width exercised the caption-less branch, so this test asserted nothing"
+    );
 }

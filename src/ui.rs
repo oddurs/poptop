@@ -1073,21 +1073,13 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    // The value of each drawn series at the cursor, in the order they appear.
-    let at_cursor: Vec<(&str, f32)> = candidates
-        .iter()
-        .map(|(name, values)| {
-            let idx = app.history.cursor_index().saturating_sub(window_start);
-            (*name, values.get(idx).copied().unwrap_or(0.0))
-        })
-        .collect();
-
+    let live = app.history.is_live();
     // Computed whichever way the panel went. It used to be gated on there being
     // room for a second row below the axis; there is no second row now, and the
     // gate was quietly emptying the caption — taking the series identification
     // with it on exactly the narrow panels where the gutter cannot label the
     // rows either.
-    let legend = {
+    let ladder = {
         // Real elapsed time, not sample count. A caption saying `4m32s shown`
         // beside a seam saying `time missing` is the graph contradicting
         // itself in adjacent characters — the window really did span nine
@@ -1151,28 +1143,25 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             format!("{ident}{span} shown"),
             ident.trim_end_matches([' ', '—']).trim_end().to_string(),
         ]
-        .into_iter()
-        .find(|l| l.chars().count() <= inner_w)
-        .unwrap_or_default()
     };
-
-    // One row under the graph, and what it says depends on what you are doing.
-    //
-    // It was two: an axis reading `past … now`, and a caption reading
-    // `1s shown, 1s/slot`. Both describe the x-axis, and while the timeline is
-    // live the axis says nothing the caption does not. While scrubbing the
-    // opposite holds — the cursor's position is the whole point, and the exact
-    // lag is already in the header — so the row carries the cursor instead.
-    //
-    // Always one row, never one-or-two: a panel that changed height when a key
-    // was pressed would move the process table under the reader's hands.
-    lines.push(if app.history.is_live() {
+    // The widest rung that fits. While live that is a straight width test;
+    // while scrubbing the row also carries the cursor, and how much room is
+    // left depends on where the marker is — so the choice moves into
+    // `cursor_row`, which knows. A single narrower budget could not do it: with
+    // the marker halfway across, a caption two columns shorter still lands
+    // under it.
+    let legend = ladder
+        .iter()
+        .find(|l| l.chars().count() <= inner_w)
+        .cloned()
+        .unwrap_or_default();
+    lines.push(if live {
         axis_with_caption(&legend, inner_w, &app.theme)
     } else {
         cursor_row(
             app,
             Window {
-                series: &at_cursor,
+                captions: &ladder,
                 len: window.len(),
                 start: window_start,
                 zoom,
@@ -1476,10 +1465,10 @@ fn window_start(history: &history::History, shown: usize) -> usize {
 /// Where the timeline's window sits and how it maps to columns. Bundled for
 /// the same reason `GraphRow` is: the parameter list had outgrown readability.
 struct Window<'a> {
-    /// The series actually drawn, so the scrub readout reports the rows on
-    /// screen rather than a fixed pair. It named `MEM` while the graph showed
-    /// `WAIT`, which is the crosshair disagreeing with the thing it points at.
-    series: &'a [(&'a str, f32)],
+    /// The caption ladder, widest rung first. This row picks its own rung
+    /// because only it knows where the marker is, and the room left for text
+    /// is whatever the marker is not standing in.
+    captions: &'a [String],
     /// Samples drawn.
     len: usize,
     /// Index of the first sample drawn.
@@ -1541,8 +1530,8 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     let (n_values, window_start, zoom, slots, spc, graph_w, gutter) =
         (w.len, w.start, w.zoom, w.slots, w.spc, w.graph_w, w.gutter);
     let pad = " ".repeat(gutter);
-    // Live is handled by `axis_with_caption` now; this stays for the empty
-    // buffer, where there is no cursor to place and no span to caption.
+    // Live is handled by `axis_with_caption`; this stays for the empty buffer,
+    // where there is no cursor to place and no span to caption.
     if app.history.is_live() || n_values == 0 {
         return Line::from(Span::styled(
             format!(
@@ -1584,49 +1573,120 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     let cell = (slot / spc).min(graph_w.saturating_sub(1));
     let marker = app.glyphs.cursor_marker(spc == 2 && slot % spc == 1);
 
-    // The values at the cursor, beside the cursor. A terminal has no hover, so
-    // the scrub marker *is* the crosshair — and its readout has been living in
-    // the header, far from where the eye is actually fixed.
-    // One decimal, matching the header: both are on screen while scrubbing, so
-    // rounding them differently makes a sample at 89.6% read `89.6` in one
-    // place and `90` in the other.
-    let readout = (!w.series.is_empty()).then(|| {
-        w.series
-            .iter()
-            .map(|(name, v)| format!("{name} {v:.1}%"))
-            .collect::<Vec<_>>()
-            .join("  ")
-    });
+    // This row is positional. It used to carry the values at the cursor as
+    // well, which read as a crosshair readout and was in fact a copy: while
+    // scrubbing the header *is* showing the sample under the cursor, so
+    // `CPU 16.5%  MEM 82.7%` appeared twice on the same screen, two
+    // centimetres apart.
+    //
+    // What it carries instead is what only it can say — where in time the
+    // cursor is — plus the two things a scrubbing reader actually wants from
+    // it. The anchors, so the marker's position means something; and the slot
+    // size, which was dropped entirely while scrubbing because this row
+    // replaced the caption that used to state it. The exact lag stays in the
+    // header, where the state marker's loudness is what stops a stale table
+    // being read as live.
+    // The whole panel width, gutter included, exactly as the live axis is
+    // drawn: `past` marks the oldest sample on screen and the gutter is left of
+    // every sample there is, so the anchor belongs at column zero. Indenting
+    // this row by the gutter made the axis jump six columns sideways the moment
+    // anyone pressed an arrow key.
+    let width = gutter + graph_w;
+    let mut row = vec![' '; width];
+    let put = |row: &mut Vec<char>, at: usize, s: &str| {
+        for (i, c) in s.chars().enumerate() {
+            if let Some(slot) = row.get_mut(at + i) {
+                *slot = c;
+            }
+        }
+    };
+    // The marker is the one thing here that must line up with the graph, so it
+    // alone is measured from the gutter.
+    let cell = gutter + cell;
 
-    // Prefer to the right of the marker; fall back to the left when the cursor
-    // is near the right edge, so the text can never overflow the panel.
-    let mut spans = vec![Span::raw(pad)];
-    let right_room = graph_w.saturating_sub(cell + 1);
-    let left_room = cell;
-    match readout {
-        Some(text) if right_room > text.chars().count() => {
-            spans.push(Span::raw(" ".repeat(cell)));
-            spans.push(Span::styled(marker.to_string(), app.theme.cursor_style()));
-            spans.push(Span::styled(format!(" {text}"), app.theme.dim_style()));
-            let used = cell + 1 + 1 + text.chars().count();
-            spans.push(Span::raw(" ".repeat(graph_w - used)));
+    const ANCHOR_L: usize = 4;
+    const ANCHOR_R: usize = 3;
+    // The widest rung that fits entirely on one side of the marker, preferring
+    // to keep the anchors. Without this the caption was placed under the marker
+    // and lost a character to it — `1▐/slot`, which names nothing and hides the
+    // scale it was there to state.
+    let room = |a: usize, b: usize| b.saturating_sub(a);
+    let side = |n: usize, anchors: bool| -> Option<(usize, usize)> {
+        let (l0, r1) = if anchors {
+            (ANCHOR_L + 1, width.saturating_sub(ANCHOR_R))
+        } else {
+            (0, width)
+        };
+        let pad = if anchors { 2 } else { 1 };
+        let left = (l0, cell);
+        let right = (cell + 1, r1);
+        let ok = |(a, b): (usize, usize)| room(a, b) >= n + pad;
+        match (ok(left), ok(right)) {
+            (true, true) => Some(if room(left.0, left.1) >= room(right.0, right.1) {
+                left
+            } else {
+                right
+            }),
+            (true, false) => Some(left),
+            (false, true) => Some(right),
+            (false, false) => None,
         }
-        Some(text) if left_room > text.chars().count() => {
-            let lead = cell - text.chars().count() - 1;
-            spans.push(Span::raw(" ".repeat(lead)));
-            spans.push(Span::styled(format!("{text} "), app.theme.dim_style()));
-            spans.push(Span::styled(marker.to_string(), app.theme.cursor_style()));
-            spans.push(Span::raw(" ".repeat(right_room)));
+    };
+    // Anchors first, because they are what make the marker's position mean
+    // anything; only when no rung fits beside them are they given up — the same
+    // choice `axis_with_caption` makes while live, and for the same reason: on
+    // a panel this narrow the caption is the only thing naming the rows, since
+    // the gutter cannot label them either.
+    let chosen = w
+        .captions
+        .iter()
+        .find_map(|c| {
+            let n = c.chars().count();
+            (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), n, s, true)))?
+        })
+        .or_else(|| {
+            w.captions.iter().find_map(|c| {
+                let n = c.chars().count();
+                (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), n, s, false)))?
+            })
+        });
+
+    match chosen {
+        Some((caption, n, (a, b), anchors)) => {
+            if anchors {
+                // An anchor the marker would land in is not drawn at all. That
+                // is agreement rather than collision — a marker at the right
+                // edge *is* `now` — and the alternative is overwriting one
+                // character of it and leaving `▌ow`, which names nothing.
+                if cell >= ANCHOR_L {
+                    put(&mut row, 0, "past");
+                }
+                if cell + ANCHOR_R <= width.saturating_sub(ANCHOR_R) {
+                    put(&mut row, width.saturating_sub(ANCHOR_R), "now");
+                }
+            }
+            put(&mut row, a + (b - a - n) / 2, caption);
         }
-        // No room either side: the marker alone still locates the sample, and
-        // the header still carries the figures.
-        _ => {
-            spans.push(Span::raw(" ".repeat(cell)));
-            spans.push(Span::styled(marker.to_string(), app.theme.cursor_style()));
-            spans.push(Span::raw(" ".repeat(right_room)));
+        // Nothing to say but where the cursor is.
+        None => {
+            if cell >= ANCHOR_L {
+                put(&mut row, 0, "past");
+            }
+            if cell + ANCHOR_R <= width.saturating_sub(ANCHOR_R) {
+                put(&mut row, width.saturating_sub(ANCHOR_R), "now");
+            }
         }
     }
-    Line::from(spans)
+
+    // Last, so it wins its cell outright: a marker a caption can overwrite is
+    // a marker that sometimes lies about where the cursor is.
+    let head: String = row[..cell].iter().collect();
+    let tail: String = row[cell + 1..].iter().collect();
+    Line::from(vec![
+        Span::styled(head, app.theme.dim_style()),
+        Span::styled(marker.to_string(), app.theme.cursor_style()),
+        Span::styled(tail, app.theme.dim_style()),
+    ])
 }
 
 /// The narrowest table that can carry the disk IO columns.
@@ -1828,7 +1888,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // history, zenith's is aggregate-only, and atop has the data but replays
     // whole intervals from a logfile rather than putting a trend beside a row.
     let visible_rows = area.height.saturating_sub(2) as usize;
-    let row_offset = app.selected.saturating_sub(visible_rows.saturating_sub(1));
+    // Resolved from the watched process each frame, not carried as an index.
+    let selected_row = app.row_of(&rows_data).unwrap_or(0);
+    let row_offset = selected_row.saturating_sub(visible_rows.saturating_sub(1));
     let keys: Vec<(i32, u64)> = rows_data
         .iter()
         .skip(row_offset)
@@ -1865,7 +1927,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     let rows_visible = area.height.saturating_sub(2) as usize;
 
     // Keep the selected row on screen while scrolling through a long list.
-    let offset = app.selected.saturating_sub(rows_visible.saturating_sub(1));
+    let offset = selected_row.saturating_sub(rows_visible.saturating_sub(1));
 
     // Measurements first, contiguous, scanned down the left where the eye
     // starts; the sparkline closing them; then identity — PID, USER, COMMAND —
@@ -1899,7 +1961,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .map(|(i, r)| {
             let p = r.proc;
             let mut style = Style::default();
-            if i == app.selected {
+            if Some(i) == app.row_of(&rows_data) {
                 style = app.theme.selection_style();
             } else if r.context_only {
                 // Present only as an ancestor of a filter match: visible for
@@ -2071,10 +2133,20 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // of statement. `N/M need root` is a warning — a reason a column is empty,
     // and something someone can act on — and behind an identical `·` it read as
     // one more fact in a string of facts.
+    // The watched process is not in this sample. Said, not silently swapped: a
+    // process that appears partway through the buffer is information, and often
+    // it is *the* information — the reader scrubbed back to find out when it
+    // started. Ranked just under the count, because while scrubbing it explains
+    // why nothing is highlighted.
+    let absent = app
+        .watched_but_absent(&rows_data)
+        .map_or(String::new(), |w| format!(" · {} not running here", w.name));
+
     let (io_text, io_is_warning) = io_status(show_io, app, collected);
     let plain = app.theme.title_style();
     let parts = [
         (0u8, format!(" processes ({})", rows_data.len()), plain),
+        (5, absent, plain),
         (10, all_one, plain),
         (20, hidden, plain),
         (40, format!(" — sort: {}", app.sort.label()), plain),

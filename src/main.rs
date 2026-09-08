@@ -543,7 +543,6 @@ fn run(
             // Sampling continues while paused — that is the whole point. The
             // cursor stays put, the buffer keeps filling behind it.
             app.push(collector.sample(app.needs())?);
-            app.clamp_selection();
             next_sample += interval;
             // Falling a whole interval behind means the host cannot sustain
             // the rate. Resync rather than catch up: catching up would sample
@@ -569,11 +568,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             KeyCode::Enter | KeyCode::Esc => app.editing_filter = false,
             KeyCode::Backspace => {
                 app.filter.pop();
-                app.clamp_selection();
             }
             KeyCode::Char(c) => {
                 app.filter.push(c);
-                app.clamp_selection();
             }
             _ => {}
         }
@@ -593,7 +590,6 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 1
             };
             app.history.scrub(-step);
-            app.clamp_selection();
         }
         KeyCode::Right | KeyCode::Char('l') => {
             let step = if mods.contains(KeyModifiers::SHIFT) {
@@ -602,7 +598,6 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 1
             };
             app.history.scrub(step);
-            app.clamp_selection();
         }
         KeyCode::Char(' ') => {
             // Space toggles: pause pins the cursor where it is, resume returns
@@ -612,15 +607,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             } else {
                 app.history.goto_live();
             }
-            app.clamp_selection();
         }
         KeyCode::Home => {
             app.history.goto_oldest();
-            app.clamp_selection();
         }
         KeyCode::End => {
             app.history.goto_live();
-            app.clamp_selection();
         }
 
         KeyCode::Up | KeyCode::Char('k') => app.select_delta(-1),
@@ -632,19 +624,13 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::Char('+' | '=') => app.zoom_in(),
         KeyCode::Char('-' | '_') => app.zoom_out(),
 
-        KeyCode::Char('s') => {
-            app.sort = app.sort.next();
-            app.selected = 0;
-        }
+        // The selection is of a process, so re-sorting moves the row under it
+        // and keeps it selected. Resetting to the top here was the same bug as
+        // the one scrubbing had.
+        KeyCode::Char('s') => app.sort = app.sort.next(),
         KeyCode::Char('i') => app.toggle_io(),
-        KeyCode::Char('K') => {
-            app.show_kernel = !app.show_kernel;
-            app.clamp_selection();
-        }
-        KeyCode::Char('t') => {
-            app.tree = !app.tree;
-            app.selected = 0;
-        }
+        KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
+        KeyCode::Char('t') => app.tree = !app.tree,
         KeyCode::Char('/') => {
             app.editing_filter = true;
             app.filter.clear();
