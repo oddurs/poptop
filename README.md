@@ -299,7 +299,7 @@ these fields has cost, and every optional pays its tag byte whether or not the
 platform answers it.
 
 Not on macOS: sysinfo publishes no PSS, virtual size or fault counts, so those
-three are em dashes rather than zeros.  works there — it is derived from
+three are em dashes rather than zeros. `GROW` works there — it is derived from
 RSS, which sysinfo does publish.
 
 ### What the table shows
