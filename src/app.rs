@@ -659,8 +659,17 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
         .map(|name| {
             let members = &by_name[&**name];
             let first = members[0];
+            // A lone process keeps its own figures — its state, its command
+            // line, its history are all real and there is nothing to reconcile
+            // — but it is still a *group row*, standing for a name. Returning
+            // an ordinary row here made the selection vanish the moment a pool
+            // shrank to one: the row stopped being a group, and a group
+            // selection stopped matching it.
             if members.len() == 1 {
-                return TreeRow::of(first);
+                return TreeRow {
+                    members: Some(1),
+                    ..TreeRow::of(first)
+                };
             }
             let io = members
                 .iter()
@@ -673,11 +682,31 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
                 });
             TreeRow {
                 proc: std::borrow::Cow::Owned(ProcSample {
-                    pid: 0,
+                    // For ordering only, and never drawn — the column shows the
+                    // count instead. The lowest member's, so sorting by PID
+                    // puts a group where its oldest process would be; a
+                    // placeholder zero sorted every group above every process
+                    // regardless of what was in it.
+                    pid: members.iter().map(|p| p.pid).min().unwrap_or(0),
                     ppid: 0,
                     name: name.clone(),
-                    user: first.user.clone(),
+                    // Not `first.user`. Three rubies owned by alice and three by
+                    // bob are not alice's, and taking whichever sorted first
+                    // renders a fact the group does not have — the same reason
+                    // `state` is an em dash.
+                    user: match members.iter().all(|p| p.user == first.user) {
+                        true => first.user.clone(),
+                        false => Arc::from("—"),
+                    },
                     cpu: members.iter().map(|p| p.cpu).sum(),
+                    // An upper bound, not a measurement. Forked workers share
+                    // an interpreter heap copy-on-write, and this counts those
+                    // pages once per member, so six workers reading 2.3GB is
+                    // more than the kernel has committed for them. Summed
+                    // anyway because the shape of the answer — this pool is
+                    // large — is what the six separate rows could not give, and
+                    // the alternative needs `smaps_rollup`, which costs a read
+                    // per process and exists only on Linux.
                     rss: members.iter().map(|p| p.rss).sum(),
                     threads: members.iter().map(|p| p.threads).sum(),
                     state: '—',
@@ -687,7 +716,7 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
                 }),
                 prefix: String::new(),
                 context_only: false,
-                members: members.len(),
+                members: Some(members.len()),
             }
         })
         .collect()

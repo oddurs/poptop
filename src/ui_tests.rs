@@ -7031,7 +7031,7 @@ fn grouping_folds_a_worker_pool_into_one_row_that_sums() {
         .iter()
         .find(|r| &*r.proc.name == "ruby")
         .expect("no ruby row");
-    assert_eq!(group.members, 6);
+    assert_eq!(group.members, Some(6));
     // 6 + 5 + 4 + 3 + 2 + 1
     assert!(
         (group.proc.cpu - 21.0).abs() < 0.001,
@@ -7062,7 +7062,10 @@ fn a_group_states_nothing_it_cannot_sum() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     let rows_data = app.visible_rows();
-    let group = rows_data.iter().find(|r| r.is_group()).unwrap();
+    // The row that folds more than one. Every row is a group row while
+    // grouping — that is what makes a pool shrinking to one keep its selection
+    // — so `is_group()` alone also finds the lone `node`.
+    let group = rows_data.iter().find(|r| r.count() > 1).unwrap();
 
     // Four sleeping and two running is not a state.
     assert_eq!(group.proc.state, '—', "a group claimed a single state");
@@ -7097,7 +7100,10 @@ fn a_group_with_one_unreadable_member_reports_no_io_rather_than_a_short_total() 
     app.group = true;
 
     let rows_data = app.visible_rows();
-    let group = rows_data.iter().find(|r| r.is_group()).unwrap();
+    // The row that folds more than one. Every row is a group row while
+    // grouping — that is what makes a pool shrinking to one keep its selection
+    // — so `is_group()` alone also finds the lone `node`.
+    let group = rows_data.iter().find(|r| r.count() > 1).unwrap();
     assert_eq!(
         group.proc.io.map(|io| io.read),
         Some(6 << 20),
@@ -7120,7 +7126,10 @@ fn a_group_with_one_unreadable_member_reports_no_io_rather_than_a_short_total() 
         .collect();
     app.push(s);
     let rows_data = app.visible_rows();
-    let group = rows_data.iter().find(|r| r.is_group()).unwrap();
+    // The row that folds more than one. Every row is a group row while
+    // grouping — that is what makes a pool shrinking to one keep its selection
+    // — so `is_group()` alone also finds the lone `node`.
+    let group = rows_data.iter().find(|r| r.count() > 1).unwrap();
     assert!(
         group.proc.io.is_none(),
         "a group summed five of six and presented it as the total"
@@ -7175,5 +7184,135 @@ fn a_group_can_be_followed_across_samples() {
     let i = app
         .row_of(&rows_data)
         .expect("the group lost its selection");
-    assert_eq!(rows_data[i].members, 5);
+    assert_eq!(rows_data[i].members, Some(5));
+}
+
+#[test]
+fn the_title_counts_processes_even_when_a_row_stands_for_six() {
+    // Rows and processes were the same thing until a row could stand for six of
+    // them. The title then read `processes (2)` above seven running processes —
+    // the lie by omission this panel is careful never to tell.
+    let mut app = App::new(60);
+    worker_pool(&mut app, None);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let title_of = |app: &App| {
+        rows(app, 130, 16)
+            .into_iter()
+            .find(|l| l.contains("processes ("))
+            .expect("no title")
+    };
+    assert!(
+        title_of(&app).contains("processes (7)"),
+        "{:?}",
+        title_of(&app)
+    );
+
+    app.group = true;
+    let grouped = title_of(&app);
+    assert!(
+        grouped.contains("processes (7)"),
+        "grouping made the panel understate what is running: {grouped:?}"
+    );
+    assert!(grouped.contains("grouped"), "{grouped:?}");
+}
+
+#[test]
+fn a_group_of_mixed_owners_claims_neither() {
+    // Three rubies owned by alice and three by bob are not alice's, and taking
+    // whichever sorted first renders a fact the group does not have.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.procs = (0..6)
+            .map(|i| ProcSample {
+                user: std::sync::Arc::from(if i < 3 { "alice" } else { "bob" }),
+                started: Some(i as u64 + 1),
+                ..proc_named(26622 + i, "ruby", 6.0 - i as f32, 100 << 20)
+            })
+            .collect();
+        app.push(s);
+    }
+    app.group = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let rows_data = app.visible_rows();
+    let group = rows_data.iter().find(|r| r.count() > 1).unwrap();
+    assert_eq!(&*group.proc.user, "—", "the group took one member's user");
+
+    let frame = rows(&app, 130, 16).join("\n");
+    assert!(
+        !frame.contains("alice") && !frame.contains("bob"),
+        "a mixed-owner group is drawn as belonging to somebody:\n{frame}"
+    );
+
+    // …and when they do agree, it says so.
+    let mut same = App::new(60);
+    worker_pool(&mut same, None);
+    same.group = true;
+    let rows_data = same.visible_rows();
+    let group = rows_data.iter().find(|r| r.count() > 1).unwrap();
+    assert_eq!(&*group.proc.user, "root");
+}
+
+#[test]
+fn a_group_shrinking_to_one_process_keeps_its_selection() {
+    // Every row is a group row while grouping, even a name with one process
+    // under it. Deriving group-ness from the count instead made the highlight
+    // vanish the moment a pool shrank to one, with nothing said — the row
+    // stopped being a group, and a group selection stopped matching it.
+    let mut app = App::new(60);
+    worker_pool(&mut app, None);
+    app.group = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    select_until(&mut app, "the ruby group", |n| n == "ruby");
+
+    for remaining in (1..=5).rev() {
+        let mut s = sample(10.0);
+        s.procs = (0..remaining)
+            .map(|i| ProcSample {
+                started: Some(i as u64 + 1),
+                ..proc_named(26622 + i, "ruby", 1.0, 1 << 20)
+            })
+            .collect();
+        app.push(s);
+
+        let rows_data = app.visible_rows();
+        let i = app
+            .row_of(&rows_data)
+            .unwrap_or_else(|| panic!("selection lost at {remaining} member(s)"));
+        assert_eq!(rows_data[i].count(), remaining as usize);
+    }
+
+    // A lone group keeps the pid, because there is a single process there and
+    // `×1` says less than its number does.
+    let frame = rows(&app, 130, 16).join("\n");
+    assert!(
+        frame.contains("26622"),
+        "the lone process lost its pid:\n{frame}"
+    );
+    assert!(
+        !frame.contains("×1"),
+        "a group of one is drawn as a count:\n{frame}"
+    );
+}
+
+#[test]
+fn sorting_by_pid_puts_a_group_where_its_oldest_process_is() {
+    // A placeholder zero sorted every group above every process regardless of
+    // what was in it, while the column it was nominally sorting by showed `×6`.
+    let mut app = App::new(60);
+    worker_pool(&mut app, None);
+    app.group = true;
+    app.sort = crate::app::Sort::Pid;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let rows_data = app.visible_rows();
+    let names: Vec<&str> = rows_data.iter().map(|r| r.proc.name.as_ref()).collect();
+    // node is pid 5531; the ruby pool starts at 26622.
+    assert_eq!(
+        names,
+        vec!["node", "ruby"],
+        "the group did not sort by the pids it contains"
+    );
 }

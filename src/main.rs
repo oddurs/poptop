@@ -112,8 +112,11 @@ KEYS:
     t               toggle the process tree
     g               fold processes sharing a name into one row, with the count
                     in the PID column. CPU, memory and threads are summed;
-                    state, history and the command line are not — a group has
-                    no single one of those. Not available with the tree.
+                    state, user, history and the command line are not — a group
+                    has no single one of those, and says so with an em dash.
+                    The summed memory is an upper bound: forked workers share
+                    an interpreter heap copy-on-write and it is counted once
+                    per member. Not available with the tree.
     K               show kernel threads. Hidden by default on Linux: kworker,
                     ksoftirqd, irq and the rest outnumber the real processes
                     several times over on a many-core box, and none of them is

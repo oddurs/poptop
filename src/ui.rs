@@ -2017,10 +2017,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             // Identity, all of it together — see the note above `rows`.
             // A group has no pid — it is not a process. The column carries how
             // many were folded in instead, which is the fact that replaces it.
-            cells.push(num(if r.is_group() {
-                format!("×{}", r.members)
-            } else {
-                p.pid.to_string()
+            // A group has no pid — it is not a process. The column carries how
+            // many were folded in instead, which is the fact that replaces it.
+            // A group of one keeps the pid: there is a single process there and
+            // `×1` says less than its number does.
+            cells.push(num(match r.members {
+                Some(n) if n > 1 => format!("×{n}"),
+                _ => p.pid.to_string(),
             }));
             // Dropped, not blanked: an empty cell still occupies its ten
             // columns, and giving them to `COMMAND` is the whole point.
@@ -2115,6 +2118,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         n => format!(" · {n} kernel hidden"),
     };
 
+    // Processes, not rows. They were the same thing until a row could stand
+    // for six of them, and then the title said `processes (2)` above seven
+    // running processes — the lie by omission this panel is careful never to
+    // tell, and which the hidden-kernel-thread count exists to prevent one
+    // line over.
+    let shown_procs: usize = rows_data.iter().map(|r| r.count()).sum();
+
     // What the column said, said once.
     let all_one = one_user
         .as_deref()
@@ -2171,7 +2181,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     let (io_text, io_is_warning) = io_status(show_io, app, collected);
     let plain = app.theme.title_style();
     let parts = [
-        (0u8, format!(" processes ({})", rows_data.len()), plain),
+        (0u8, format!(" processes ({})", shown_procs), plain),
         (5, absent, plain),
         (10, all_one, plain),
         (20, hidden, plain),

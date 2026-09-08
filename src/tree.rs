@@ -23,8 +23,15 @@ pub struct TreeRow<'a> {
     /// True when this row survives only because it is an ancestor of a filter
     /// match, not because it matched itself.
     pub context_only: bool,
-    /// How many processes this row stands for. One for an ordinary row.
-    pub members: usize,
+    /// How many processes this row stands for, when it stands for a *name*
+    /// rather than a process. `None` for an ordinary row.
+    ///
+    /// `Some(1)` is a real state and not the same as `None`: while grouping,
+    /// every row is keyed on the name it folds, even a name with one process
+    /// under it. Deriving group-ness from a count instead made the selection
+    /// vanish the moment a pool shrank to one — the row stopped being a group,
+    /// and a group selection stopped matching it.
+    pub members: Option<usize>,
 }
 
 impl<'a> TreeRow<'a> {
@@ -34,13 +41,18 @@ impl<'a> TreeRow<'a> {
             proc: std::borrow::Cow::Borrowed(p),
             prefix: String::new(),
             context_only: false,
-            members: 1,
+            members: None,
         }
     }
 
-    /// Whether this row stands for more than one process.
+    /// Whether this row stands for a name rather than for one process.
     pub fn is_group(&self) -> bool {
-        self.members > 1
+        self.members.is_some()
+    }
+
+    /// How many processes it folds. One for an ordinary row.
+    pub fn count(&self) -> usize {
+        self.members.unwrap_or(1)
     }
 }
 
