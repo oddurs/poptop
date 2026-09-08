@@ -64,6 +64,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         cpu_total: cpu,
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
+        clock_ceiling: None,
         pressure: None,
         net: None,
         filesystems: None,
@@ -7432,4 +7433,100 @@ fn a_query_finds_the_processes_a_header_figure_counts() {
         assert_eq!(got.len(), 1, "`{q}` matched {} rows", got.len());
         assert_eq!(got[0].proc.command(), want, "`{q}` found the wrong one");
     }
+}
+
+#[test]
+fn a_machine_at_nominal_clock_spends_no_header_space_saying_so() {
+    // A figure present on every frame is one nobody reads by the second day.
+    // Drivers also report ceilings a fraction under the hardware maximum as a
+    // matter of course, so `CLK 99.7%` would be permanent on a machine that is
+    // not throttled at all.
+    let mut app = App::new(60);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for (ceiling, want) in [
+        (None, false),
+        (Some(100.0), false),
+        (Some(99.7), false),
+        (Some(98.0), true),
+        (Some(62.0), true),
+    ] {
+        let mut s = sample(10.0);
+        s.clock_ceiling = ceiling;
+        let mut a = App::new(60);
+        a.theme = app.theme;
+        a.push(s);
+        let header = rows(&a, 160, 20)
+            .into_iter()
+            .find(|l| l.contains("CPU"))
+            .expect("no header");
+        assert_eq!(
+            header.contains("CLK"),
+            want,
+            "clock ceiling {ceiling:?} drew {header:?}"
+        );
+    }
+}
+
+#[test]
+fn the_clock_figure_qualifies_the_cpu_figure_it_sits_beside() {
+    // `CPU 100%` and `CLK 62%` together say the processor is flat out and
+    // getting two thirds of the work done — a different machine from `CPU 100%`
+    // alone, and nothing else on this header can tell them apart. So it sits
+    // next to the figure it qualifies, not at the end of the row.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.cpu_total = 100.0;
+    s.clock_ceiling = Some(62.0);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let header = rows(&app, 160, 20)
+        .into_iter()
+        .find(|l| l.contains("CPU"))
+        .unwrap();
+    let cpu = header.find("CPU").unwrap();
+    let clk = header.find("CLK").expect("the clock figure is not drawn");
+    assert!(clk > cpu, "{header:?}");
+    // Nothing between them but the CPU figure itself.
+    let between = &header[cpu + 3..clk];
+    assert!(
+        !between.contains("MEM") && !between.contains("WAIT"),
+        "another figure came between the clock and the cpu it qualifies: {between:?}"
+    );
+    assert!(header.contains("62.0%"), "{header:?}");
+
+    // And it is given up late, which is the other half of "it qualifies CPU":
+    // a header narrow enough to lose figures must lose the ones that are not
+    // saying the machine is in trouble first. Rank decides what is dropped;
+    // group decides where it sits, so the position above proves nothing about
+    // the ladder.
+    let narrow = rows(&app, 46, 20)
+        .into_iter()
+        .find(|l| l.contains("CPU"))
+        .expect("no header at 46 columns");
+    assert!(
+        narrow.contains("CLK"),
+        "the clock figure was given up before the incidental ones: {narrow:?}"
+    );
+    assert!(
+        !narrow.contains("UP ") && !narrow.contains("PROCS"),
+        "the narrow header still has room for everything, so this asserts \
+         nothing: {narrow:?}"
+    );
+}
+
+#[test]
+fn a_clock_ceiling_survives_a_round_trip() {
+    // It is a fact about the moment, so scrubbing back to a throttled minute
+    // has to still report it.
+    let mut s = sample(10.0);
+    s.clock_ceiling = Some(62.5);
+    let mut quiet = sample(10.0);
+    quiet.clock_ceiling = None;
+    let back = crate::store::decode(&crate::store::encode(&[&s, &quiet])).expect("did not decode");
+    assert_eq!(back[0].clock_ceiling, Some(62.5));
+    assert_eq!(
+        back[1].clock_ceiling, None,
+        "a platform that would not say came back claiming a figure"
+    );
 }

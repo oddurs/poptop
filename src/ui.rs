@@ -442,6 +442,14 @@ fn short_mount(mount: &str) -> String {
     format!("…{tail}")
 }
 
+/// How close to nominal counts as not worth mentioning.
+///
+/// Drivers report ceilings a fraction under the hardware maximum as a matter of
+/// course — rounding in the frequency table, a boost bin excluded from the
+/// policy — and a permanent `CLK 99.7%` on a machine that is not throttled at
+/// all would be the figure that taught everyone to ignore it.
+const CLOCK_NOMINAL: f32 = 99.0;
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let mem_pct = s.mem.used_pct();
     let dim = app.theme.dim_style();
@@ -462,6 +470,32 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             ),
         ],
     }];
+
+    // Only when there is something to say. A machine allowed its full clock
+    // spends no header space announcing it — the same rule the filesystem
+    // figure follows — and a figure that is present on every frame is one
+    // nobody reads by the second day.
+    //
+    // Ranked immediately after CPU because it is the figure that qualifies it:
+    // `CPU 100%` and `CLK 62%` together say the processor is flat out and
+    // getting two thirds of the work done, which is a different machine from
+    // `CPU 100%` alone, and nothing else on this header can tell them apart.
+    if let Some(clock) = s.clock_ceiling.filter(|c| *c < CLOCK_NOMINAL) {
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: 5,
+            spans: vec![
+                Span::styled("CLK ", dim),
+                // Heated on how much is *missing*, so a mild cap is quiet and a
+                // halved clock is loud. Passing the ceiling itself would colour
+                // a throttled machine as though it were idle.
+                Span::styled(
+                    format!("{clock:>5.1}%"),
+                    app.theme.figure_style(100.0 - clock),
+                ),
+            ],
+        });
+    }
 
     // The figure that separates "nothing to do" from "cannot get on with
     // anything". Absent on a platform that will not say, rather than zero.

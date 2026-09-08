@@ -30,7 +30,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 12;
+const VERSION: u32 = 13;
 
 /// When the machine this sample came from was booted.
 ///
@@ -322,6 +322,7 @@ fn write_sample(out: &mut Out, s: &Sample) {
     out.opt_u32(s.blocked);
     out.u64(s.uptime.as_secs());
     out.opt_u64(s.forks);
+    out.opt_f32(s.clock_ceiling);
     out.u8(u8::from(s.io_supported));
     out.u8(u8::from(s.io_collected));
     out.u64(s.io_denied as u64);
@@ -454,6 +455,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
     let blocked = r.opt_u32()?;
     let uptime = Duration::from_secs(r.u64()?);
     let forks = r.opt_u64()?;
+    let clock_ceiling = r.opt_f32()?;
     let io_supported = r.u8()? != 0;
     let io_collected = r.u8()? != 0;
     let io_denied = r.u64()? as usize;
@@ -549,6 +551,7 @@ fn read_sample(r: &mut In<'_>) -> Option<Sample> {
         procs,
         uptime,
         forks,
+        clock_ceiling,
         io_supported,
         io_collected,
         io_denied,
@@ -646,6 +649,7 @@ mod tests {
                 retrans: Some(11),
                 listen_drops: Some(0),
             }),
+            clock_ceiling: None,
             pressure: Some(Pressure {
                 cpu: Stall {
                     some: 1.5,
@@ -1028,6 +1032,7 @@ mod tests_support {
             cpu_total: cpu,
             cpu_per_core: vec![1.0; 16],
             disks: None,
+            clock_ceiling: None,
             pressure: None,
             net: None,
             filesystems: None,
