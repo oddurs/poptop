@@ -194,7 +194,7 @@ fn divider_of(parts: Vec<Span<'static>>, width: u16, theme: &Theme) -> Line<'sta
     Line::from(out)
 }
 
-fn fmt_bytes(b: u64) -> String {
+pub fn fmt_bytes(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut v = b as f64;
     let mut i = 0;
@@ -429,19 +429,12 @@ struct Figure<'a> {
     rank: u8,
 }
 
-/// Where a stall percentage sits on the scale the user configured for
-/// *utilisation* percentages.
+/// Where a steal percentage sits on the utilisation scale — same argument as
+/// [`stall_heat`], same reason it cannot use the raw figure.
 ///
-/// The two are not the same quantity and cannot share thresholds. A CPU at 50%
-/// is unremarkable; a machine that spent 50% of the last ten seconds with
-/// nothing at all running is in serious trouble. Feeding the raw figure to
-/// `figure_style` would leave it cold until it was catastrophic, and scaling it
-/// by a constant — which is what this did first — silently reinterprets whatever
-/// the user set: at `--warn 90` a quadrupled figure needs 22.5% before it warns,
-/// which is two and a quarter seconds in every ten with the machine stopped.
-///
-/// So the thresholds are stated here, in the units of the thing being measured,
-/// and mapped onto the theme's own scale so a user's colours still apply.
+/// A CPU at 30% is unremarkable; a guest losing 30% of its time to the
+/// hypervisor is the condition this figure exists to expose, and
+/// `figure_style` would draw it in the calm colour until it reached half.
 fn steal_heat(pct: f32, theme: &Theme) -> f32 {
     /// A twentieth of the machine going somewhere else. Noticeable, and worth
     /// knowing before it is worth panicking about.
@@ -458,12 +451,19 @@ fn steal_heat(pct: f32, theme: &Theme) -> f32 {
     }
 }
 
-/// Where a steal percentage sits on the utilisation scale — same argument as
-/// [`stall_heat`], same reason it cannot use the raw figure.
+/// Where a stall percentage sits on the scale the user configured for
+/// *utilisation* percentages.
 ///
-/// A CPU at 30% is unremarkable; a guest losing 30% of its time to the
-/// hypervisor is the condition this figure exists to expose, and
-/// `figure_style` would draw it in the calm colour until it reached half.
+/// The two are not the same quantity and cannot share thresholds. A CPU at 50%
+/// is unremarkable; a machine that spent 50% of the last ten seconds with
+/// nothing at all running is in serious trouble. Feeding the raw figure to
+/// `figure_style` would leave it cold until it was catastrophic, and scaling it
+/// by a constant — which is what this did first — silently reinterprets whatever
+/// the user set: at `--warn 90` a quadrupled figure needs 22.5% before it warns,
+/// which is two and a quarter seconds in every ten with the machine stopped.
+///
+/// So the thresholds are stated here, in the units of the thing being measured,
+/// and mapped onto the theme's own scale so a user's colours still apply.
 fn stall_heat(pct: f32, theme: &Theme) -> f32 {
     /// Half a second in every ten with nothing running.
     const WARN: f32 = 5.0;
@@ -474,6 +474,39 @@ fn stall_heat(pct: f32, theme: &Theme) -> f32 {
     if pct >= CRITICAL {
         theme.critical_pct
     } else if pct >= WARN {
+        theme.warn_pct
+    } else {
+        0.0
+    }
+}
+
+/// The share of memory awaiting writeback worth mentioning at all.
+///
+/// One constant, used by both the decision to show the figure and the decision
+/// to colour it. Two would agree today and drift the moment either moved:
+/// raising only the colour threshold would leave the figure on screen in the
+/// calm style for every share between the two.
+const DIRTY_WARN: f32 = 5.0;
+
+/// Dirty pages as a share of the machine's memory.
+fn dirty_share(dirty: u64, total: u64) -> f32 {
+    if total == 0 {
+        return 0.0;
+    }
+    (dirty as f64 / total as f64 * 100.0) as f32
+}
+
+/// Where a dirty share sits on the utilisation scale.
+///
+/// The same argument as [`stall_heat`] and [`steal_heat`]: this is not a
+/// utilisation, so it cannot borrow utilisation's thresholds. A tenth of memory
+/// awaiting writeback is a machine that will stall shortly; the default warn of
+/// 50% would never fire before it already had.
+fn dirty_heat(share: f32, theme: &Theme) -> f32 {
+    const CRITICAL: f32 = 10.0;
+    if share >= CRITICAL {
+        theme.critical_pct
+    } else if share >= DIRTY_WARN {
         theme.warn_pct
     } else {
         0.0
@@ -783,6 +816,36 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         rank: 50,
         spans: mem_spans,
     });
+
+    // Only when there is enough of it to matter. A box with a fifth of its
+    // memory dirty is about to stall on writeback and every other figure on
+    // this header looks fine until it does — but a few megabytes is what an
+    // ordinary machine carries all the time, and a figure that is always there
+    // is one nobody reads.
+    //
+    // Ranked *below* the `MEM` figure it qualifies, and pushed after it, for a
+    // reason the first version got backwards: rank is the drop order, so at
+    // rank 25 a narrow header kept `DIRTY` and dropped `MEM` — a component of
+    // memory stated while the memory figure itself was gone. `CLK` and `STL`
+    // sit just below `CPU` for the same reason.
+    if let Some(dirty) = s
+        .mem
+        .dirty
+        .filter(|d| dirty_share(*d, s.mem.total) >= DIRTY_WARN)
+    {
+        let share = dirty_share(dirty, s.mem.total);
+        figures.push(Figure {
+            group: Group::Memory,
+            rank: 55,
+            spans: vec![
+                Span::styled("DIRTY ", dim),
+                Span::styled(
+                    fmt_bytes(dirty),
+                    app.theme.figure_style(dirty_heat(share, &app.theme)),
+                ),
+            ],
+        });
+    }
     // Ranked below uptime and the process count despite being about memory,
     // which is more diagnostic than either. It is twenty-nine columns wide, and
     // under a prefix rule one wide figure blocks every shorter one behind it:
@@ -1602,13 +1665,20 @@ pub fn series_names() -> &'static [&'static str] {
 
 /// Exposed for tests: where a stall percentage lands on the theme's scale.
 #[cfg(test)]
+pub fn stall_heat_for_test(pct: f32, theme: &Theme) -> f32 {
+    stall_heat(pct, theme)
+}
+
+/// Exposed for tests: where a steal percentage lands on it.
+#[cfg(test)]
 pub fn steal_heat_for_test(pct: f32, theme: &Theme) -> f32 {
     steal_heat(pct, theme)
 }
 
+/// Exposed for tests: where a dirty share lands on it.
 #[cfg(test)]
-pub fn stall_heat_for_test(pct: f32, theme: &Theme) -> f32 {
-    stall_heat(pct, theme)
+pub fn dirty_heat_for_test(share: f32, theme: &Theme) -> f32 {
+    dirty_heat(share, theme)
 }
 
 /// Exposed for tests: the gutter's width guarantee is a claim about a string,

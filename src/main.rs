@@ -627,6 +627,26 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
         rate_of(s.ctxt),
         rate_of(s.intr)
     );
+    // What the machine's memory is actually holding. `used` above is
+    // `total - available`, which includes every one of these — so a leak in
+    // kernel memory shows there as used memory belonging to no process, and
+    // this is where it becomes visible.
+    // A loop rather than a closure: `outln!` returns from the *function* when
+    // stdout is gone, which a closure cannot do for it.
+    for (label, v) in [
+        ("dirty", s.mem.dirty),
+        ("slab", s.mem.slab),
+        ("slabrec", s.mem.slab_reclaimable),
+        ("shmem", s.mem.shmem),
+        ("pgtab", s.mem.page_tables),
+        ("hugetot", s.mem.huge_total),
+        ("hugeuse", s.mem.huge_used),
+    ] {
+        match v {
+            Some(b) => outln!("{label:<7} {}", ui::fmt_bytes(b)),
+            None => outln!("{label:<7} —  not published here"),
+        }
+    }
     outln!("procs   {}", s.procs.len());
     // The processes that lived and died inside the interval — the ones a
     // sample of `/proc` at an instant cannot see at all. An em dash where the
