@@ -2,7 +2,7 @@
 id: 71
 title: Work accumulates by program but not by user or container
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 62
@@ -48,7 +48,31 @@ Container attribution, for the third key.
 
 ## Acceptance criteria
 
-- [ ] Accumulate by user, by program and by container
-- [ ] The identity column shows the key, not a member's value
-- [ ] The same refusals as 0050: nothing summed that cannot be
-- [ ] Selection follows a group across samples, as it does for programs
+- [x] Accumulate by user, by program and by container
+- [x] The identity column shows the key, not a member's value
+- [x] The same refusals as 0050: nothing summed that cannot be
+- [x] Selection follows a group across samples, as it does for programs
+
+## How it was resolved
+
+PR #88. `g` cycles off, by name, by user, by container — atop's `p`, `u` and `j`
+on one key rather than three. 0062 added the container key; this adds the user
+one, and the arithmetic was 0050's unchanged, exactly as the item predicted.
+
+**The identity inverts with the key.** Grouping by user makes the username the
+row's name, so the `USER` column is dropped — drawing it beside the identity is
+the same word twice. That is the opposite of 0043's rule, which folds a column
+away when every row *shares* a value.
+
+**Review found the selection was broken for two of the three keys.**
+`watched_but_absent` resolved a group against the process name, so a username or
+container id matched nothing and the panel reported a running user as absent —
+the false claim the function exists to prevent. It went through `Grouping::key`
+after that, so the lookup and the row that built it cannot disagree.
+
+Also found: macOS falls back to `?` for an unlookupable uid, and folding on a
+placeholder heaps every such process into one row presented as one user's usage.
+
+**Not done:** 0047's suggestion does not follow the grouping. The item phrases
+it as a *could*, and it means deciding what happens when the reader is already
+grouped by something else — left alone rather than guessed at.
