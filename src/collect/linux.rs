@@ -4,7 +4,7 @@
 //! a delta between the previous read and this one, which is why the collector
 //! is stateful and why the very first sample reports zero busy time.
 
-use super::{Collector, Needs, Source, cgroups, taskstats};
+use super::{Collector, Needs, Source, cgroups, nfs, taskstats};
 
 /// Every optional source this backend reads.
 pub const SUPPORTED: &[Source] = &[
@@ -16,8 +16,8 @@ pub const SUPPORTED: &[Source] = &[
     Source::Pss,
 ];
 use crate::sample::{
-    CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, NodeStat, Pressure, ProcSample,
-    Sample, Stall, ThreadSample,
+    CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, NfsStat, NodeStat, Pressure,
+    ProcSample, Sample, Stall, ThreadSample,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -274,6 +274,8 @@ pub struct ProcFs {
     /// here is the kernel saying it does not keep the accounting, not a
     /// permission problem and not a process that exited.
     io_supported: bool,
+    /// The last NFS reading, so cumulative counters become intervals.
+    prev_nfs: nfs::Prev,
     /// Which NUMA nodes exist and which cores each owns, walked once.
     ///
     /// Static in the way `Source::ClockPolicies` is static: a socket does not
@@ -324,6 +326,7 @@ impl ProcFs {
         Ok(Self {
             io_supported,
             numa: Topology::new(),
+            prev_nfs: None,
             prev_total: None,
             prev_cores: Vec::new(),
             prev_disks: HashMap::new(),
@@ -578,6 +581,36 @@ impl ProcFs {
             one("io").as_deref(),
             one("memory").as_deref(),
         )
+    }
+
+    /// NFS, or `None` on a machine that neither mounts nor serves it.
+    ///
+    /// Three world-readable files, no daemon and no library — the reading rule
+    /// the README states, applied. `/proc/net/rpc/nfs` and `.../nfsd` exist on
+    /// any kernel with the modules loaded, so they are read but never taken as
+    /// evidence: a mount, or a running `nfsd`, is what makes this machine one
+    /// with something to say about NFS.
+    fn read_nfs(&mut self, elapsed: Duration) -> Option<NfsStat> {
+        let stats = fs::read_to_string("/proc/self/mountstats").ok()?;
+        let mounts = nfs::parse_mountstats(&stats);
+        let server = fs::read_to_string("/proc/net/rpc/nfsd")
+            .ok()
+            .and_then(|t| nfs::parse_rpc_nfsd(&t));
+        // `None` here is "this machine has no NFS", which `step` treats as a
+        // reason to forget the last reading rather than to keep it.
+        let now = (!mounts.is_empty() || server.is_some()).then(|| {
+            let (client_calls, client_retrans) = fs::read_to_string("/proc/net/rpc/nfs")
+                .ok()
+                .and_then(|t| nfs::parse_rpc_nfs(&t))
+                .unwrap_or((0, 0));
+            nfs::Raw {
+                mounts,
+                client_calls,
+                client_retrans,
+                server,
+            }
+        });
+        nfs::step(&mut self.prev_nfs, now, elapsed.as_secs_f64())
     }
 
     /// Traffic and health over `elapsed`, or `None` if `/proc/net/dev` cannot
@@ -2252,8 +2285,10 @@ impl Collector for ProcFs {
         // baseline, or the next sample would diff against nothing.
         let was_ctxt = stat.ctxt.and_then(|n| self.prev_ctxt.replace(n));
         let was_intr = stat.intr.and_then(|n| self.prev_intr.replace(n));
+        let nfs = self.read_nfs(elapsed);
         Ok(Sample {
             at: now,
+            nfs,
             cpu_total: stat.busy,
             cpu_per_core: stat.per_core,
             iowait: Some(stat.iowait),

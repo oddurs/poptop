@@ -2,7 +2,7 @@
 id: 68
 title: NFS, GPU and the interconnects are not reported at all
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 58
@@ -44,8 +44,8 @@ every future "should poptop shell out to X".
 
 ## Acceptance criteria
 
-- [ ] NFS client and server activity where the machine mounts or serves it
-- [ ] The rule above written into the README, and applied
-- [ ] GPU and infiniband either implemented behind an optional source or
+- [x] NFS client and server activity where the machine mounts or serves it
+- [x] The rule above written into the README, and applied
+- [x] GPU and infiniband either implemented behind an optional source or
       explicitly declined in writing, with the reason
-- [ ] Nothing added here makes poptop fail to start when the source is absent
+- [x] Nothing added here makes poptop fail to start when the source is absent

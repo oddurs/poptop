@@ -504,6 +504,8 @@ pub mod cgroups;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+pub mod nfs;
+#[cfg(target_os = "linux")]
 pub mod taskstats;
 #[cfg(target_os = "linux")]
 use linux as backend;

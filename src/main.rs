@@ -573,6 +573,44 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     if let Some((what, n)) = s.net.as_ref().and_then(sample::NetStat::trouble) {
         outln!("net     {n}  {what} in the last interval");
     }
+    // NFS, where the machine mounts or serves it. On a box whose storage is
+    // remote the `disk` line above describes a local disk doing nothing while
+    // the machine waits on the network, and nothing else here would say so.
+    // Per second, like every other rate here, so a script comparing two
+    // machines does not have to know what interval each was run at.
+    if let Some(nfs) = s.nfs.as_ref().filter(|n| n.in_use()) {
+        for m in &nfs.mounts {
+            // A mean over the interval, not a rate: a mount is not faster
+            // because it was watched for longer. `—` where nothing completed.
+            let rtt = m.rtt_ms.map_or("—".to_string(), |v| format!("{v:.1}ms"));
+            outln!(
+                "nfs     {}  {}, {}/s calls, {}/s resent, {rtt} mean, {}/s read, {}/s written",
+                m.mount,
+                m.server,
+                m.ops,
+                m.retrans,
+                human(m.read),
+                human(m.write)
+            );
+        }
+        outln!(
+            "nfsc    {}/s calls, {}/s resent  client, across every mount",
+            nfs.client_calls,
+            nfs.client_retrans
+        );
+        if let Some(calls) = nfs.server_calls {
+            let part = |v: Option<u64>| v.map_or("—".to_string(), |n| n.to_string());
+            let bytes = |v: Option<u64>| v.map_or("—".to_string(), human);
+            outln!(
+                "nfsd    {calls}/s calls, {}/s read, {}/s written, {} hits, {} misses, {} refused",
+                bytes(nfs.server_read),
+                bytes(nfs.server_write),
+                part(nfs.server_hits),
+                part(nfs.server_misses),
+                part(nfs.server_badauth)
+            );
+        }
+    }
     // The only line here that describes a hard failure rather than a slowdown,
     // and the one a script most wants: a machine out of disk does not get
     // slower, it stops. Printed whatever the fullness, because a script has no
