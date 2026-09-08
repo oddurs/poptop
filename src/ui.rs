@@ -132,7 +132,7 @@ fn fit_title(parts: &[(u8, String, Style)], width: usize) -> Vec<Span<'static>> 
             .iter()
             .zip(keep)
             .filter(|(_, k)| **k)
-            .map(|((_, s, _), _)| s.chars().count())
+            .map(|((_, s, _), _)| cols(s))
             .sum()
     };
     while len(&keep) > width {
@@ -179,8 +179,8 @@ fn divider(title: &str, width: u16, theme: &Theme) -> Line<'static> {
 /// while the timeline keeps its one-sentence title.
 fn divider_of(parts: Vec<Span<'static>>, width: u16, theme: &Theme) -> Line<'static> {
     let lead = "─".repeat(2.min(width as usize));
-    let name: usize = parts.iter().map(|s| s.content.chars().count()).sum();
-    let used = lead.chars().count() + name + 1;
+    let name: usize = parts.iter().map(|s| cols(&s.content)).sum();
+    let used = cols(&lead) + name + 1;
     let tail = "─".repeat((width as usize).saturating_sub(used));
     // The clauses carry their own leading space, so the rule does not add one.
     let mut out = vec![Span::styled(lead, theme.chrome_style())];
@@ -271,8 +271,40 @@ pub fn separator_widths_for_test() -> (usize, usize, usize, usize) {
 /// seven for a five-column separator — and `full_width` had the correct five
 /// written out by hand, so the two disagreed and the header dropped figures
 /// that fitted while leaving nineteen columns of slack.
+/// How many terminal columns a string occupies.
+///
+/// Not `chars().count()`, which counts scalar values. A CJK name or an emoji is
+/// two columns per character, so a name elided "to nineteen columns" could draw
+/// thirty-eight and be clipped by the terminal anyway — defeating the point of
+/// eliding deliberately, which is that the part identifying the process
+/// survives.
+///
+/// This is the same mistake as measuring in *bytes*, which this file has made
+/// twice: `│` is three bytes and one column, and `⚠` is one char and two. Both
+/// were found by rendering rather than by reading, which is why every width in
+/// this file now goes through one function.
+pub fn cols(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    // `width_cjk` would be the other choice: it resolves the East-Asian
+    // *ambiguous* class as wide. This file already draws `·`, `≤` and `─`,
+    // which are all ambiguous, and it lays them out as one column — so
+    // resolving them as two would make every existing measurement wrong to fix
+    // a case that does not arise.
+    s.width()
+}
+
+/// How many terminal columns one character occupies.
+///
+/// Zero for a combining mark, which is the case that makes a per-character loop
+/// necessary at all: a name built from `e` plus a combining acute is two
+/// scalars and one column.
+fn col_width(c: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    c.width().unwrap_or(0)
+}
+
 fn sep_w(sep: &str) -> usize {
-    sep.chars().count()
+    cols(sep)
 }
 
 fn full_width(figures: &[Figure<'_>]) -> usize {
@@ -285,11 +317,7 @@ fn full_width(figures: &[Figure<'_>]) -> usize {
             None => 0,
             Some(g) if g == f.group => sep_w(NEAR),
             Some(_) => sep_w(FAR),
-        } + f
-            .spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum::<usize>();
+        } + f.spans.iter().map(|s| cols(&s.content)).sum::<usize>();
         last = Some(f.group);
     }
     w
@@ -298,7 +326,7 @@ fn full_width(figures: &[Figure<'_>]) -> usize {
 fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a>> {
     let widths: Vec<usize> = figures
         .iter()
-        .map(|f| f.spans.iter().map(|s| s.content.chars().count()).sum())
+        .map(|f| f.spans.iter().map(|s| cols(&s.content)).sum())
         .collect();
 
     let groups: Vec<Group> = figures.iter().map(|f| f.group).collect();
@@ -434,7 +462,7 @@ fn stall_heat(pct: f32, theme: &Theme) -> f32 {
 /// read as a path that exists.
 fn short_mount(mount: &str) -> String {
     const MAX: usize = 16;
-    let n = mount.chars().count();
+    let n = cols(mount);
     if n <= MAX {
         return mount.to_string();
     }
@@ -772,7 +800,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             app.theme.paused_style(),
         )
     };
-    let state_w = state.content.chars().count();
+    let state_w = cols(&state.content);
 
     let width = area.width as usize;
 
@@ -784,8 +812,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // and the scale is strictly the first thing given up — which is what the
     // ladder always said it was.
     let scale = heat_scale(area.width, &app.theme)
-        .filter(|s| state_w + full_width(&figures) + 2 + s.chars().count() <= width);
-    let reserved = scale.as_ref().map_or(0, |s| s.chars().count() + 2);
+        .filter(|s| state_w + full_width(&figures) + 2 + cols(s) <= width);
+    let reserved = scale.as_ref().map_or(0, |s| cols(s) + 2);
 
     let mut line = vec![state];
     let spans = fit(
@@ -834,7 +862,7 @@ fn heat_scale(width: u16, theme: &Theme) -> Option<String> {
     // Room for the state badge. There are no border columns to reserve since
     // L1 — the title is a full-width content line now.
     const RESERVED: usize = 24;
-    (width as usize >= scale.chars().count() + RESERVED).then_some(scale)
+    (width as usize >= cols(&scale) + RESERVED).then_some(scale)
 }
 
 /// Cores drawn between gaps.
@@ -860,10 +888,10 @@ fn core_meters(s: &Sample, width: u16, theme: &Theme) -> Line<'static> {
 
     // Too narrow even for the label: state the count and draw nothing. A row of
     // meters that cannot say how many are missing is worse than no meters.
-    if label.chars().count() >= w {
+    if cols(&label) >= w {
         return Line::from(Span::styled(format!("{n} cores"), theme.dim_style()));
     }
-    let avail = w - label.chars().count();
+    let avail = w - cols(&label);
 
     // The marker's width depends on how many are hidden, which depends on how
     // many fit — so shrink until the whole line fits rather than reserving a
@@ -876,7 +904,7 @@ fn core_meters(s: &Sample, width: u16, theme: &Theme) -> Line<'static> {
         if shown == n {
             0
         } else {
-            format!(" +{}", n - shown).chars().count()
+            cols(&format!(" +{}", n - shown))
         }
     };
     let mut shown = n.min(avail);
@@ -1253,7 +1281,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // under it.
     let legend = ladder
         .iter()
-        .find(|l| l.chars().count() <= inner_w)
+        .find(|l| cols(l) <= inner_w)
         .cloned()
         .unwrap_or_default();
     lines.push(if live {
@@ -1302,7 +1330,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 name.clone(),
             ]
             .into_iter()
-            .find(|l| l.chars().count() <= room)
+            .find(|l| cols(l) <= room)
             // Every rung too long: elide the name itself rather than let the
             // terminal cut it, so what survives identifies the process.
             .unwrap_or_else(|| elide_middle(&name, room));
@@ -1634,7 +1662,7 @@ fn axis_with_caption(caption: &str, width: usize, theme: &Theme) -> Line<'static
     // screen and the gutter is left of every sample there is, so the anchor
     // belongs at column zero — and a row indented past the gutter leaves the
     // leftmost column of the panel unused on every frame.
-    let n = caption.chars().count();
+    let n = cols(caption);
     let text = if caption.is_empty() {
         format!("{:<w$}now", "past", w = width.saturating_sub(3))
     } else if n + ANCHORS + 4 <= width {
@@ -1774,12 +1802,12 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
         .captions
         .iter()
         .find_map(|c| {
-            let n = c.chars().count();
+            let n = cols(c);
             (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), n, s, true)))?
         })
         .or_else(|| {
             w.captions.iter().find_map(|c| {
-                let n = c.chars().count();
+                let n = cols(c);
                 (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), n, s, false)))?
             })
         });
@@ -1893,7 +1921,7 @@ fn spark_header(ceiling: f32) -> String {
     // screen saying that column was history, on exactly the machines where the
     // sparkline matters most. `H` is a stub, but it is a stub of a name.
     for candidate in [format!("HIST {scale}"), format!("H {scale}"), scale] {
-        if candidate.chars().count() <= SPARK_W {
+        if cols(&candidate) <= SPARK_W {
             return candidate;
         }
     }
@@ -1940,15 +1968,17 @@ fn command_width(width: u16, show_io: bool, show_user: bool) -> usize {
 fn fit_prefix(prefix: &str, cmd_w: usize) -> (String, usize) {
     /// Enough for a head, an elision mark and a tail.
     const FLOOR: usize = 5;
-    let n = prefix.chars().count();
+    let n = cols(prefix);
     if n + FLOOR <= cmd_w {
         return (prefix.to_string(), cmd_w - n);
     }
     let keep = cmd_w.saturating_sub(FLOOR);
-    (
-        prefix.chars().skip(n - keep).collect(),
-        cmd_w.saturating_sub(keep),
-    )
+    let kept = take_cols(prefix, keep, true);
+    // What the prefix actually took, not what it was allowed: a tree spine of
+    // double-width characters can come up a column short, and the name should
+    // have that column rather than nobody having it.
+    let room = cmd_w.saturating_sub(cols(&kept));
+    (kept, room)
 }
 
 /// A name shortened to `w` columns, keeping both ends.
@@ -1963,20 +1993,59 @@ fn fit_prefix(prefix: &str, cmd_w: usize) -> (String, usize) {
 /// it is what a reader scans down the column for; the tail keeps enough to carry
 /// a parenthetical role.
 pub fn elide_middle(name: &str, w: usize) -> String {
-    let n = name.chars().count();
+    let n = cols(name);
     if n <= w {
         return name.to_string();
     }
     if w <= 3 {
-        return name.chars().take(w).collect();
+        return take_cols(name, w, false);
     }
+    // The mark itself is a column. Budgeted from `w`, not from the halves, so a
+    // double-width character straddling the boundary cannot push the result one
+    // column over — which is the whole failure this function exists to prevent.
     let room = w - 1;
     let tail = room / 2;
     let head = room - tail;
-    let mut out: String = name.chars().take(head).collect();
+    let mut out = take_cols(name, head, false);
     out.push('…');
-    out.extend(name.chars().skip(n - tail));
+    out.push_str(&take_cols(name, tail, true));
     out
+}
+
+/// As much of `s` as fits in `w` columns, from the front or the back.
+///
+/// A character is taken whole or not at all: half of a double-width glyph is
+/// not a character, so a budget it cannot fill exactly is left one column short
+/// rather than one column over. Under-filling is invisible; over-filling is the
+/// clipped row this is here to avoid.
+fn take_cols(s: &str, w: usize, from_end: bool) -> String {
+    let mut used = 0;
+    let mut out: Vec<char> = Vec::new();
+    let take = |c: char, used: &mut usize| -> bool {
+        let cw = col_width(c);
+        if *used + cw > w {
+            return false;
+        }
+        *used += cw;
+        true
+    };
+    if from_end {
+        for c in s.chars().rev() {
+            if !take(c, &mut used) {
+                break;
+            }
+            out.push(c);
+        }
+        out.reverse();
+    } else {
+        for c in s.chars() {
+            if !take(c, &mut used) {
+                break;
+            }
+            out.push(c);
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// A numeric cell, right-aligned.
@@ -2591,9 +2660,9 @@ fn fit_hints(hints: &[&str], width: u16) -> String {
     let mut out = String::new();
     for h in hints {
         let need = if out.is_empty() {
-            h.chars().count()
+            cols(h)
         } else {
-            out.chars().count() + SEP.chars().count() + h.chars().count()
+            cols(&out) + cols(SEP) + cols(h)
         };
         if need > width {
             break;
