@@ -633,6 +633,24 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     // this is where it becomes visible.
     // A loop rather than a closure: `outln!` returns from the *function* when
     // stdout is gone, which a closure cannot do for it.
+    // Rates, because the swap *level* cannot tell a thrashing box from one
+    // sitting on idle swap — and an OOM count, because a killed process is gone
+    // from the next sample with nothing else saying why.
+    for (label, v) in [
+        ("pagein", s.pgin),
+        ("pageout", s.pgout),
+        ("swapin", s.swin),
+        ("swapout", s.swout),
+    ] {
+        match v {
+            Some(b) => outln!("{label:<7} {}/s", ui::fmt_bytes(b)),
+            None => outln!("{label:<7} —  not published here"),
+        }
+    }
+    match s.oom_kills {
+        Some(n) => outln!("oomkill {n}  in the last interval"),
+        None => outln!("oomkill —  not published here"),
+    }
     for (label, v) in [
         ("dirty", s.mem.dirty),
         ("slab", s.mem.slab),

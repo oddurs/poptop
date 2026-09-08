@@ -2947,6 +2947,20 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {} tasks came and went", c.unseen())
         });
 
+    // An event rather than a level, so it sits beside the other event this
+    // panel reports. The sharpest figure poptop has: a process the OOM killer
+    // ended is gone from the next sample with nothing anywhere saying why, and
+    // scrubbing back to this moment shows the table from the instant before.
+    let killed = app
+        .history
+        .current()
+        .and_then(|s| s.oom_kills)
+        .filter(|n| *n > 0)
+        .map_or(String::new(), |n| match n {
+            1 => " · 1 process killed for memory".to_string(),
+            n => format!(" · {n} processes killed for memory"),
+        });
+
     // Never silently shorter than the count beside it. Placed early, before
     // the parts a narrow terminal drops: a table missing two hundred rows with
     // nothing saying so is worse than a table with no axis label.
@@ -3024,6 +3038,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     //  30  the io status        — the message the `i` key looks broken without
     //  40  the sort column      — not otherwise stated anywhere
     //  50  `tree`               — visible in the rows themselves
+    //  58  OOM kills            — an event, and the answer to "what happened
+    //                             to my process"
     //  60  churn                — a nicety
     //  70  the history axis     — a nicety, and the ladder it was already at
     //                             the bottom of
@@ -3104,6 +3120,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             plain,
         ),
         (60, churn, plain),
+        // Ranked with the churn it sits beside, one above: a process that was
+        // killed is a stronger fact than one that merely came and went, and it
+        // is the answer to a question somebody is actively asking.
+        (58, killed, app.theme.warning_style()),
         (
             30,
             io_text,

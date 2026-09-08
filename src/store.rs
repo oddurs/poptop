@@ -398,6 +398,11 @@ mod tests {
                 listen_drops: Some(0),
             }),
             clock_ceiling: None,
+            pgin: None,
+            pgout: None,
+            swin: None,
+            swout: None,
+            oom_kills: None,
             pressure: Some(Pressure {
                 cpu: Stall {
                     some: 1.5,
@@ -1260,6 +1265,11 @@ mod tests_support {
             cpu_per_core: vec![1.0; 16],
             disks: None,
             clock_ceiling: None,
+            pgin: None,
+            pgout: None,
+            swin: None,
+            swout: None,
+            oom_kills: None,
             pressure: None,
             net: None,
             filesystems: None,

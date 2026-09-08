@@ -1099,6 +1099,16 @@ impl App {
         // rather than in one sample because a constant two gigabytes of swap is
         // an idle Mac and says nothing.
         let (first, last) = (window.first()?, window.last()?);
+        // The rate first, where the platform gives one. Swapping *now* is the
+        // fact; the level is what cannot distinguish a thrashing box from one
+        // sitting on four idle gigabytes, which is why this rule had to infer
+        // it from growth across a window in the first place.
+        if last.swout.is_some_and(|v| v > 0) {
+            return Some(Constraint::Memory);
+        }
+        // The inference, still, for a platform that publishes no rate. Across a
+        // window rather than in one sample, because a constant two gigabytes of
+        // swap is an idle Mac and says nothing.
         if last.mem.swap_total > 0 && last.mem.swap_used > first.mem.swap_used {
             return Some(Constraint::Memory);
         }
