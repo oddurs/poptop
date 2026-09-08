@@ -2,7 +2,7 @@
 id: 47
 title: The table is always sorted by CPU, even when CPU is not the problem
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -48,7 +48,7 @@ That is a better input to this decision than utilisation is.
 
 ## Acceptance criteria
 
-- [ ] The panel names the constrained resource when there is one
-- [ ] Accepting it is one key, and it is never applied without asking
-- [ ] Nothing is claimed when no resource is constrained
-- [ ] While scrubbing, the constraint is the one at the cursor
+- [x] The panel names the constrained resource when there is one
+- [x] Accepting it is one key, and it is never applied without asking
+- [x] Nothing is claimed when no resource is constrained
+- [x] While scrubbing, the constraint is the one at the cursor
