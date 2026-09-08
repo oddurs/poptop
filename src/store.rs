@@ -15,9 +15,7 @@
 //! The format is hand-rolled and versioned, like everything else here. A store
 //! written by a different version is discarded rather than guessed at.
 
-use crate::sample::{
-    DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
-};
+use crate::sample::Sample;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 13;
+const VERSION: u32 = 14;
 
 /// When the machine this sample came from was booted.
 ///
@@ -99,153 +97,11 @@ pub fn path_from(
     Some(base.join("poptop").join("history"))
 }
 
-/// A little-endian writer. Hand-rolled for the same reason the `/proc` parser
-/// is: the format is a dozen scalars and a string table, and `serde` would be
-/// the largest dependency in the project by an order of magnitude.
+use crate::persist::{Codec, In, Out};
+
 /// Bytes the file carries beyond the sample bodies: magic, version, and the
 /// two counts.
 const HEADER_BYTES: usize = MAGIC.len() + 4 + 4 + 4;
-
-#[derive(Default)]
-struct Out {
-    bytes: Vec<u8>,
-    /// What the string table will occupy, tracked as it grows so the trim loop
-    /// can bound the *file* rather than the bodies. Counting only the bodies
-    /// made the "ceiling on the file" in the doc comment untrue by the size of
-    /// the table, which is exactly the part that varies between machines.
-    table_bytes: usize,
-    /// Names and users repeat across every process in every retained sample —
-    /// the same reason they are `Arc<str>` in memory. Written once and
-    /// referenced by index, or the file would be mostly repeated strings.
-    strings: Vec<Arc<str>>,
-    index: std::collections::HashMap<Arc<str>, u32>,
-}
-
-impl Out {
-    fn u8(&mut self, v: u8) {
-        self.bytes.push(v);
-    }
-    fn u32(&mut self, v: u32) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    fn u64(&mut self, v: u64) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    fn i32(&mut self, v: i32) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    fn f32(&mut self, v: f32) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    fn f64(&mut self, v: f64) {
-        self.bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    fn opt_f32(&mut self, v: Option<f32>) {
-        self.u8(u8::from(v.is_some()));
-        self.f32(v.unwrap_or(0.0));
-    }
-    fn opt_u32(&mut self, v: Option<u32>) {
-        self.u8(u8::from(v.is_some()));
-        self.u32(v.unwrap_or(0));
-    }
-    fn opt_str(&mut self, v: Option<&Arc<str>>) {
-        self.u8(u8::from(v.is_some()));
-        match v {
-            Some(s) => self.str(s),
-            // A placeholder, never looked up. Writing nothing would make the
-            // record's length depend on its content, which every other optional
-            // here avoids.
-            None => self.u32(0),
-        }
-    }
-    fn opt_u64(&mut self, v: Option<u64>) {
-        // A tagged optional, because `None` and `0` are different answers
-        // everywhere else in this codebase and the file must not collapse them.
-        self.u8(u8::from(v.is_some()));
-        self.u64(v.unwrap_or(0));
-    }
-    fn str(&mut self, s: &Arc<str>) {
-        let id = match self.index.get(s) {
-            Some(&id) => id,
-            None => {
-                let id = self.strings.len() as u32;
-                self.table_bytes += 4 + s.len();
-                self.strings.push(s.clone());
-                self.index.insert(s.clone(), id);
-                id
-            }
-        };
-        self.u32(id);
-    }
-}
-
-/// A bounds-checked reader. Every read can fail, so a truncated or corrupt
-/// file produces `None` rather than a panic — it is a cache, and the worst
-/// honest outcome is starting with an empty buffer.
-struct In<'a> {
-    bytes: &'a [u8],
-    at: usize,
-    strings: Vec<Arc<str>>,
-}
-
-impl<'a> In<'a> {
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end = self.at.checked_add(n)?;
-        let out = self.bytes.get(self.at..end)?;
-        self.at = end;
-        Some(out)
-    }
-    fn u8(&mut self) -> Option<u8> {
-        Some(self.take(1)?[0])
-    }
-    fn u32(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
-    }
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
-    }
-    fn i32(&mut self) -> Option<i32> {
-        Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?))
-    }
-    fn f32(&mut self) -> Option<f32> {
-        Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
-    }
-    fn f64(&mut self) -> Option<f64> {
-        Some(f64::from_le_bytes(self.take(8)?.try_into().ok()?))
-    }
-    fn opt_f32(&mut self) -> Option<Option<f32>> {
-        let present = self.u8()? != 0;
-        let v = self.f32()?;
-        Some(present.then_some(v))
-    }
-    fn opt_u32(&mut self) -> Option<Option<u32>> {
-        let present = self.u8()? != 0;
-        let v = self.u32()?;
-        Some(present.then_some(v))
-    }
-    fn opt_str(&mut self) -> Option<Option<Arc<str>>> {
-        let some = self.u8()? != 0;
-        if !some {
-            // Consume the placeholder without resolving it. Looking it up
-            // instead worked only because `name` and `user` are written before
-            // `cmd`, so index 0 always existed by the time a `None` was read —
-            // load-bearing coupling between two fields that have no reason to
-            // know about each other.
-            self.u32()?;
-            return Some(None);
-        }
-        Some(Some(self.str()?))
-    }
-    fn opt_u64(&mut self) -> Option<Option<u64>> {
-        let present = self.u8()? != 0;
-        let v = self.u64()?;
-        Some(present.then_some(v))
-    }
-    fn str(&mut self) -> Option<Arc<str>> {
-        let id = self.u32()? as usize;
-        self.strings.get(id).cloned()
-    }
-}
 
 /// Serialise samples, oldest first, dropping the oldest to fit [`MAX_BYTES`].
 pub fn encode(samples: &[&Sample]) -> Vec<u8> {
@@ -263,7 +119,7 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
     for sample in samples.iter().rev() {
         let before = out.bytes.len();
         let table_before = out.table_bytes;
-        write_sample(&mut out, sample);
+        sample.write(&mut out);
         if HEADER_BYTES + out.table_bytes + out.bytes.len() > max_bytes {
             out.bytes.truncate(before);
             out.table_bytes = table_before;
@@ -277,7 +133,7 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
     // alternative of a length-prefixed reverse-scan format nobody could read.
     let mut out = Out::default();
     for sample in kept.iter().rev() {
-        write_sample(&mut out, sample);
+        sample.write(&mut out);
     }
 
     let mut file = Vec::with_capacity(HEADER_BYTES + out.table_bytes + out.bytes.len());
@@ -293,277 +149,31 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
     file
 }
 
-fn write_sample(out: &mut Out, s: &Sample) {
-    let since_epoch = s.at.duration_since(UNIX_EPOCH).unwrap_or_default();
-    out.u64(since_epoch.as_secs());
-    out.u32(since_epoch.subsec_nanos());
-    out.f32(s.cpu_total);
-    out.u32(s.cpu_per_core.len() as u32);
-    for c in &s.cpu_per_core {
-        out.f32(*c);
-    }
-    for v in [
-        s.mem.total,
-        s.mem.used,
-        s.mem.available,
-        s.mem.swap_total,
-        s.mem.swap_used,
-    ] {
-        out.u64(v);
-    }
-    out.opt_u64(s.mem.free);
-    for v in s.load {
-        out.f64(v);
-    }
-    // Tagged, like every other optional here: a platform that cannot see a
-    // figure and a platform that sees zero are different answers on disk too.
-    out.opt_f32(s.iowait);
-    out.opt_u32(s.running);
-    out.opt_u32(s.blocked);
-    out.u64(s.uptime.as_secs());
-    out.opt_u64(s.forks);
-    out.opt_f32(s.clock_ceiling);
-    out.u8(u8::from(s.io_supported));
-    out.u8(u8::from(s.io_collected));
-    out.u64(s.io_denied as u64);
-    out.u32(s.procs.len() as u32);
-    for p in &s.procs {
-        out.i32(p.pid);
-        out.i32(p.ppid);
-        out.str(&p.name);
-        out.str(&p.user);
-        out.f32(p.cpu);
-        out.u64(p.rss);
-        out.opt_u32(p.threads);
-        out.u8(p.state as u8);
-        out.opt_u64(p.started);
-        // Through the string table like every other string, so the hundreds of
-        // samples that retain the same process cost four bytes each rather than
-        // a copy of its command line.
-        out.opt_str(p.cmd.as_ref());
-        out.u8(u8::from(p.io.is_some()));
-        let io = p.io.unwrap_or_default();
-        out.u64(io.read);
-        out.u64(io.write);
-    }
-    // Tagged as a whole, then per device. `None` is "this platform does not
-    // read disks"; an empty list is "it looked and found none that have ever
-    // done IO". The restore has to keep those apart or a macOS buffer comes
-    // back claiming the machine has no disks.
-    out.u8(u8::from(s.disks.is_some()));
-    let disks = s.disks.as_deref().unwrap_or_default();
-    out.u32(disks.len() as u32);
-    for d in disks {
-        out.str(&d.name);
-        out.u64(d.read);
-        out.u64(d.write);
-        out.u64(d.reads);
-        out.u64(d.writes);
-        out.f32(d.util);
-        out.opt_f32(d.await_ms);
-        out.f32(d.queue);
-    }
-    // Tagged, because a kernel that does not publish pressure and one reporting
-    // a machine that never stalled are opposite answers.
-    out.u8(u8::from(s.pressure.is_some()));
-    let p = s.pressure.unwrap_or_default();
-    for stall in [p.cpu, p.io, p.memory] {
-        out.f32(stall.some);
-        out.f32(stall.full);
-    }
-
-    out.u8(u8::from(s.net.is_some()));
-    // Borrowed, not cloned: `write_sample` only reads it, and a deep copy of
-    // the link vector per sample is an allocation per sample per persist.
-    let empty = NetStat::default();
-    let net = s.net.as_ref().unwrap_or(&empty);
-    out.u32(net.links.len() as u32);
-    for l in &net.links {
-        out.str(&l.name);
-        out.u64(l.rx);
-        out.u64(l.tx);
-        out.u64(l.rx_packets);
-        out.u64(l.tx_packets);
-    }
-    out.opt_u64(net.errors);
-    out.opt_u64(net.drops);
-    out.opt_u64(net.retrans);
-    out.opt_u64(net.listen_drops);
-
-    out.u8(u8::from(s.filesystems.is_some()));
-    let fs = s.filesystems.as_deref().unwrap_or_default();
-    out.u32(fs.len() as u32);
-    for f in fs {
-        out.str(&f.mount);
-        out.u64(f.total);
-        out.u64(f.avail);
-    }
-}
-
 /// Parse a store, or `None` if it is not one this version understands.
 ///
-/// Every failure mode lands here: wrong magic, wrong version, truncation,
-/// corruption. All produce `None`, because the file is a cache of something
-/// the machine will produce again within minutes — refusing to start over it,
-/// or worse guessing at it, would both be wrong.
+/// Every failure mode lands here rather than propagating: a wrong magic, a
+/// version that is not exactly [`VERSION`], a truncated body, a string index
+/// with no table entry. This is a cache, and the honest outcome for all of them
+/// is starting with an empty buffer.
 pub fn decode(bytes: &[u8]) -> Option<Vec<Sample>> {
-    let mut r = In {
-        bytes,
-        at: 0,
-        strings: Vec::new(),
-    };
-    if r.take(MAGIC.len())? != MAGIC || r.u32()? != VERSION {
+    let mut r = In::new(bytes, 0, Vec::new());
+    if r.take(MAGIC.len())? != MAGIC || u32::read(&mut r)? != VERSION {
         return None;
     }
-    let n_strings = r.u32()?;
+    let n_strings = u32::read(&mut r)?;
     let mut strings = Vec::with_capacity(n_strings.min(1 << 20) as usize);
     for _ in 0..n_strings {
-        let len = r.u32()? as usize;
+        let len = u32::read(&mut r)? as usize;
         strings.push(Arc::from(std::str::from_utf8(r.take(len)?).ok()?));
     }
     r.strings = strings;
 
-    let n_samples = r.u32()?;
+    let n_samples = u32::read(&mut r)?;
     let mut samples = Vec::with_capacity(n_samples.min(1 << 20) as usize);
     for _ in 0..n_samples {
-        samples.push(read_sample(&mut r)?);
+        samples.push(Sample::read(&mut r)?);
     }
     Some(samples)
-}
-
-fn read_sample(r: &mut In<'_>) -> Option<Sample> {
-    let at = UNIX_EPOCH + Duration::new(r.u64()?, r.u32()?);
-    let cpu_total = r.f32()?;
-    let cores = r.u32()? as usize;
-    // Bounded before allocating: a corrupt length must not be an allocation
-    // request. Every count in this format is checked the same way.
-    let mut cpu_per_core = Vec::with_capacity(cores.min(4096));
-    for _ in 0..cores {
-        cpu_per_core.push(r.f32()?);
-    }
-    let mem = MemStat {
-        total: r.u64()?,
-        used: r.u64()?,
-        available: r.u64()?,
-        swap_total: r.u64()?,
-        swap_used: r.u64()?,
-        free: r.opt_u64()?,
-    };
-    let load = [r.f64()?, r.f64()?, r.f64()?];
-    let iowait = r.opt_f32()?;
-    let running = r.opt_u32()?;
-    let blocked = r.opt_u32()?;
-    let uptime = Duration::from_secs(r.u64()?);
-    let forks = r.opt_u64()?;
-    let clock_ceiling = r.opt_f32()?;
-    let io_supported = r.u8()? != 0;
-    let io_collected = r.u8()? != 0;
-    let io_denied = r.u64()? as usize;
-    let n_procs = r.u32()? as usize;
-    let mut procs = Vec::with_capacity(n_procs.min(1 << 16));
-    for _ in 0..n_procs {
-        let pid = r.i32()?;
-        let ppid = r.i32()?;
-        let name = r.str()?;
-        let user = r.str()?;
-        let cpu = r.f32()?;
-        let rss = r.u64()?;
-        let threads = r.opt_u32()?;
-        let state = r.u8()? as char;
-        let started = r.opt_u64()?;
-        let cmd = r.opt_str()?;
-        let has_io = r.u8()? != 0;
-        let read = r.u64()?;
-        let write = r.u64()?;
-        procs.push(ProcSample {
-            pid,
-            ppid,
-            name,
-            user,
-            cpu,
-            rss,
-            threads,
-            state,
-            started,
-            cmd,
-            io: has_io.then_some(IoRates { read, write }),
-        });
-    }
-    let has_disks = r.u8()? != 0;
-    let n_disks = r.u32()? as usize;
-    let mut disks = Vec::with_capacity(n_disks.min(1 << 10));
-    for _ in 0..n_disks {
-        disks.push(DiskStat {
-            name: r.str()?,
-            read: r.u64()?,
-            write: r.u64()?,
-            reads: r.u64()?,
-            writes: r.u64()?,
-            util: r.f32()?,
-            await_ms: r.opt_f32()?,
-            queue: r.f32()?,
-        });
-    }
-    let has_pressure = r.u8()? != 0;
-    let mut stalls = [Stall::default(); 3];
-    for stall in &mut stalls {
-        stall.some = r.f32()?;
-        stall.full = r.f32()?;
-    }
-    let has_net = r.u8()? != 0;
-    let n_links = r.u32()? as usize;
-    let mut links = Vec::with_capacity(n_links.min(1 << 10));
-    for _ in 0..n_links {
-        links.push(Link {
-            name: r.str()?,
-            rx: r.u64()?,
-            tx: r.u64()?,
-            rx_packets: r.u64()?,
-            tx_packets: r.u64()?,
-        });
-    }
-    let net = NetStat {
-        links,
-        errors: r.opt_u64()?,
-        drops: r.opt_u64()?,
-        retrans: r.opt_u64()?,
-        listen_drops: r.opt_u64()?,
-    };
-    let has_fs = r.u8()? != 0;
-    let n_fs = r.u32()? as usize;
-    let mut filesystems = Vec::with_capacity(n_fs.min(1 << 10));
-    for _ in 0..n_fs {
-        filesystems.push(FsStat {
-            mount: r.str()?,
-            total: r.u64()?,
-            avail: r.u64()?,
-        });
-    }
-    Some(Sample {
-        at,
-        cpu_total,
-        cpu_per_core,
-        iowait,
-        running,
-        blocked,
-        mem,
-        load,
-        procs,
-        uptime,
-        forks,
-        clock_ceiling,
-        io_supported,
-        io_collected,
-        io_denied,
-        disks: has_disks.then_some(disks),
-        net: has_net.then_some(net),
-        filesystems: has_fs.then_some(filesystems),
-        pressure: has_pressure.then(|| Pressure {
-            cpu: stalls[0],
-            io: stalls[1],
-            memory: stalls[2],
-        }),
-    })
 }
 
 /// Read the store, if there is one and it is readable.
@@ -601,6 +211,9 @@ pub fn save(samples: &[&Sample]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sample::{
+        DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Stall,
+    };
 
     fn proc_of(pid: i32, name: &str) -> ProcSample {
         ProcSample {
@@ -892,18 +505,131 @@ mod tests {
 
     #[test]
     fn a_missing_string_decodes_without_a_string_table_to_look_it_up_in() {
-        // `opt_str` writes a placeholder index for `None`, and resolving it
-        // worked only because every process writes its name and user first. A
-        // record whose only string is optional and absent has an empty table,
-        // and there is no index 0 to find.
+        // An absent string used to write a placeholder index that nothing put
+        // in the table. Resolving it worked only because every process writes
+        // its name and user first, so index 0 happened to exist by the time a
+        // `None` was read — load-bearing coupling between fields with no reason
+        // to know about each other. A record whose only string is optional and
+        // absent had an empty table and no index 0 to find.
+        //
+        // The generic `Option` writes `T::default()` for the absent case, so
+        // the placeholder is now a real interned empty string rather than a
+        // fiction, and it is in the table because writing it is what put it
+        // there. Nothing has to be written first.
         let mut out = Out::default();
-        out.opt_str(None);
-        let mut r = In {
-            bytes: &out.bytes,
-            at: 0,
-            strings: Vec::new(),
-        };
-        assert_eq!(r.opt_str(), Some(None), "an absent string did not decode");
+        Codec::write(&None::<Arc<str>>, &mut out);
+        let mut r = In::new(&out.bytes, 0, out.strings.clone());
+        assert_eq!(
+            <Option<Arc<str>>>::read(&mut r),
+            Some(None),
+            "an absent string did not decode"
+        );
+    }
+
+    /// A file with intact magic and version, whose body is `at` and nothing
+    /// else, with the seconds set as high as the field goes.
+    fn a_file_claiming_a_timestamp_of(secs: u64, nanos: u32) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(MAGIC);
+        f.extend_from_slice(&VERSION.to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes()); // no strings
+        f.extend_from_slice(&1u32.to_le_bytes()); // one sample
+        f.extend_from_slice(&secs.to_le_bytes());
+        f.extend_from_slice(&nanos.to_le_bytes());
+        f
+    }
+
+    #[test]
+    fn an_impossible_timestamp_empties_the_buffer_instead_of_killing_the_program() {
+        // `at` is the first field of a sample, so this is the first thing read
+        // out of a corrupt file — and a panic here is a crash on startup, from
+        // a cache, which is the one place the program has no reason to fail.
+        //
+        // Two ways to overflow: the seconds alone, and a nanosecond carry that
+        // tips a seconds count that would otherwise have fit. `Duration::new`
+        // panics on the second and `UNIX_EPOCH + d` on the first.
+        for (secs, nanos) in [
+            (u64::MAX, 0),
+            (u64::MAX, 999_999_999),
+            (u64::MAX - 1, 999_999_999),
+        ] {
+            assert!(
+                decode(&a_file_claiming_a_timestamp_of(secs, nanos)).is_none(),
+                "a timestamp of {secs}s {nanos}ns was not refused"
+            );
+        }
+    }
+
+    #[test]
+    fn no_single_corrupt_byte_can_panic_the_reader() {
+        // The targeted test above covers the field this was found in. This
+        // covers the ones nobody has thought of: every byte of a real store,
+        // flipped, must still land in "not a store I understand" rather than
+        // taking the process down.
+        let mut s = sample_of(7.5, 2);
+        s.procs.truncate(1);
+        let good = encode(&[&s]);
+        for i in 0..good.len() {
+            for mask in [0xFF, 0x80, 0x01] {
+                let mut bad = good.clone();
+                bad[i] ^= mask;
+                // The result is uninteresting — a flipped byte may still decode
+                // to a valid, wrong sample. Not panicking is the assertion.
+                let _ = decode(&bad);
+            }
+        }
+    }
+
+    #[test]
+    fn a_process_state_survives_a_round_trip_and_costs_one_byte() {
+        // Written as a byte rather than a full `char` scalar, which is worth a
+        // test because the saving is the point: three bytes per process per
+        // sample is 4% of the store at 400 processes.
+        let mut s = sample_of(1.0, 0);
+        s.procs = "RSDZTI"
+            .chars()
+            .map(|c| ProcSample {
+                state: c,
+                ..proc_of(1, "x")
+            })
+            .collect();
+        let bytes = encode(&[&s]);
+        let back = decode(&bytes).expect("did not decode");
+        let got: String = back[0].procs.iter().map(|p| p.state).collect();
+        assert_eq!(got, "RSDZTI", "the states did not survive");
+
+        // The saving, asserted rather than described. Six more processes cost
+        // six more records, and a record is:
+        //
+        //   pid 4, ppid 4, name 4, user 4, cpu 4, rss 8, threads 1+4,
+        //   state 1, started 1+8, cmd 1+4, io 1+16  =  65
+        //
+        // Names and users are interned, so a repeated one costs its index and
+        // nothing else — which is why this is the marginal cost of a process
+        // and not the cost of the first one.
+        //
+        // Pinning the total rather than a bound makes this the format's size
+        // test: a `char` written as a `u32` scalar reads 68 here, and so does
+        // any field that quietly grows.
+        let mut wider = s.clone();
+        wider.procs.extend(s.procs.iter().cloned());
+        let per_proc = (encode(&[&wider]).len() - bytes.len()) / 6;
+        assert_eq!(per_proc, 65, "a retained process changed size");
+    }
+
+    #[test]
+    fn a_state_outside_ascii_decodes_as_unknown_rather_than_corrupting_the_row() {
+        // No backend produces one — `status_char` maps everything it does not
+        // recognise to `?` already. This pins what happens if one ever does,
+        // because the alternative to a documented `?` is a byte that silently
+        // becomes a different letter.
+        let mut s = sample_of(1.0, 0);
+        s.procs = vec![ProcSample {
+            state: 'π',
+            ..proc_of(1, "x")
+        }];
+        let back = decode(&encode(&[&s])).expect("did not decode");
+        assert_eq!(back[0].procs[0].state, '?', "a wide state was not flagged");
     }
 
     #[test]
@@ -1020,6 +746,7 @@ mod cost {
 #[cfg(test)]
 mod tests_support {
     use super::*;
+    use crate::sample::{MemStat, ProcSample};
 
     /// A sample with distinct names, so the string table is exercised the way
     /// a real machine would rather than by one repeated word.
