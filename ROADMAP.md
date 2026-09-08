@@ -23,16 +23,13 @@ Timeline, scrubbing, process tree, colour that survives a colourblind reader and
 
 ## v2.0 — Nothing escapes
 
-`########··` 80% · 4 of 5 done · due 2027-04-01
+`##########` 100% · 5 of 5 done · due 2027-04-01
 
 The foundation for atop parity: a model that can carry two hundred metrics
 
-### backlog
-
-- [ ] `0011` Capture processes that live and die between samples <sup>feature · p0</sup>
-
 ### done
 
+- [x] `0011` Capture processes that live and die between samples <sup>feature · p0</sup>
 - [x] `0058` Adding a metric costs four edits and throws away history <sup>chore · p0</sup>
 - [x] `0059` A store upgrade must not discard history <sup>bug · p0</sup>
 - [x] `0060` Collection cost is a global switch, not a per-subsystem budget <sup>feature · p1</sup>

@@ -2,7 +2,7 @@
 id: 11
 title: Capture processes that live and die between samples
 type: feature
-status: backlog
+status: done
 milestone: v2.0
 created: 2026-09-05
 updated: 2026-09-08
@@ -45,10 +45,10 @@ never a fabricated zero.
 
 ## Acceptance criteria
 
-- [ ] A process living 200ms appears in the interval containing it, marked as exited
-- [ ] Missing capability is disclosed, not silent
-- [ ] macOS degrades explicitly
-- [ ] Sampling cost measured before and after with `--bench`
+- [x] A process living 200ms appears in the interval containing it, marked as exited
+- [x] Missing capability is disclosed, not silent
+- [x] macOS degrades explicitly
+- [x] Sampling cost measured before and after with `--bench`
 
 ## Progress
 
@@ -111,3 +111,46 @@ worse than the gap it closes.
 ## 2026-09-08
 
 Refiled from v0.2 to v2.0. v0.2 asked for the data-fidelity gaps against atop to be "closed or disclosed", and the diagnosis above discloses this one thoroughly — it is an environment that cannot reach the kernel path, not an unknown. Closing it belongs with the milestone named for the guarantee it is: nothing escapes.
+
+## 2026-09-08 — closed
+
+PR #80. Approach 1, taskstats over netlink.
+
+**The blocker was environmental and it lifted.** `docker run --pid=host`, which
+previously hung, now works — so the initial-PID-namespace gate diagnosed above
+could be passed and the whole thing became testable. Two more things had to be
+found before it worked:
+
+1. **The first "registered" was a false positive.** Asking for an ack on the
+   *family lookup* makes it produce a reply **and** an ack, so every later read
+   is off by one and the lookup's `err 0` reads as the registration's. That is
+   also what the `0-14` oddity recorded above was: replies shifted by one, not
+   the kernel behaving strangely. Registration now matches on its own sequence
+   number.
+2. **Registration succeeding is not delivery.** `send_cpu_listeners` uses
+   `genlmsg_unicast(&init_net, ...)`, so records go to a port in the initial
+   *network* namespace. A listener in its own hears nothing, and it looks
+   exactly like a kernel without the feature. `--net=host` was the difference
+   between 0 records and 41.
+
+So the requirement is `CAP_NET_ADMIN`, the initial PID namespace, and the
+initial network namespace — three distinguishable failures, each reported with
+what would change it.
+
+**The burst is the case, and the burst broke it.** The first end-to-end run
+against 20,000 exits caught zero: the kernel returned `ENOBUFS` and the loop
+treated it as end-of-stream. `ENOBUFS` means records were dropped and there is
+more behind them. With that and `SO_RCVBUFFORCE` — plain `SO_RCVBUF` is clamped
+to `net.core.rmem_max`, commonly about four hundred records — the same burst
+yields ~7,350 rows.
+
+**Verified live:** a `sleep 0.2` existing entirely between two samples appears
+as a row. Cost: 944us -> 972us idle, +26us to capture 145 records.
+
+**Review caught three wrong numbers** that would have shipped: `ac_btime` stored
+where a live row keeps ticks since boot, making the identity key unmatchable and
+the churn reconciliation saturate; CPU as a lifetime over an interval
+(540,000,000% for a three-hour process), then as a lifetime over its own
+lifetime (367% for a `/bin/true`, from tick quantisation) before landing on the
+live-row formula; and a cpumask from `available_parallelism`, which is what the
+process may run on rather than what the machine has.
