@@ -2,7 +2,7 @@
 id: 49
 title: Filtering is a substring match, so the useful questions cannot be asked
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -57,7 +57,7 @@ spike", which is a question no live-only tool can be asked.
 
 ## Acceptance criteria
 
-- [ ] `state = D`, `write > 1mb` and `and` work, with units on byte fields
-- [ ] A bare word still filters by substring
-- [ ] A malformed query says what is wrong and filters nothing away
-- [ ] The predicate is applied at the cursor while scrubbing, not to the live sample
+- [x] `state = D`, `write > 1mb` and `and` work, with units on byte fields
+- [x] A bare word still filters by substring
+- [x] A malformed query says what is wrong and filters nothing away
+- [x] The predicate is applied at the cursor while scrubbing, not to the live sample
