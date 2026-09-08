@@ -497,51 +497,26 @@ fn io_columns_are_there_before_anyone_asks() {
 
 #[test]
 fn io_collection_is_a_ratchet() {
-    use crate::collect::Needs;
+    use crate::collect::Source;
     // Collection starts with the columns, which are on by default.
     let mut app = App::new(60);
-    assert_eq!(
-        app.needs(),
-        Needs {
-            io: true,
-            threads: false,
-        }
-    );
+    assert!(app.needs().asked(Source::Io));
 
     // Hiding the columns must NOT stop collection: resuming later would leave
     // a hole in the middle of history rather than one clean boundary.
     app.toggle_io();
     assert!(!app.show_io);
-    assert_eq!(
-        app.needs(),
-        Needs {
-            io: true,
-            threads: false,
-        },
-        "collection must not stop"
-    );
+    assert!(app.needs().asked(Source::Io), "collection must not stop");
 
     // …and showing them again changes nothing, because it never stopped.
     app.toggle_io();
-    assert_eq!(
-        app.needs(),
-        Needs {
-            io: true,
-            threads: false,
-        }
-    );
+    assert!(app.needs().asked(Source::Io));
 
     // The one thing that does stop it is the probe deciding the column is
     // unreadable — a boundary at the very start rather than in the middle.
     let mut probed = App::new(60);
     probed.probe_io(&with_denied(100, 90));
-    assert_eq!(
-        probed.needs(),
-        Needs {
-            io: false,
-            threads: false,
-        }
-    );
+    assert!(!probed.needs().asked(Source::Io));
 }
 
 #[test]
@@ -3978,21 +3953,11 @@ fn show_churn_against_a_real_burst() {
     // Linux, where /proc/stat publishes the counter.
     use crate::collect::{Collector, Needs, Platform};
     let mut c = Platform::new().unwrap();
-    let a = c
-        .sample(Needs {
-            io: false,
-            threads: false,
-        })
-        .unwrap();
+    let a = c.sample(Needs::NONE).unwrap();
     for _ in 0..300 {
         let _ = std::process::Command::new("/bin/true").status();
     }
-    let b = c
-        .sample(Needs {
-            io: false,
-            threads: false,
-        })
-        .unwrap();
+    let b = c.sample(Needs::NONE).unwrap();
     match crate::history::churn(&a, &b) {
         Some(ch) => println!(
             "created {} tasks, {} visible in the table, {} came and went",
@@ -5083,7 +5048,10 @@ fn io_columns_stay_where_most_of_the_table_can_be_read() {
     let mut app = App::new(60);
     app.probe_io(&with_denied(100, 3));
     assert!(app.show_io, "the columns were withdrawn on a readable box");
-    assert!(app.needs().io, "collection stopped on a readable box");
+    assert!(
+        app.needs().asked(crate::collect::Source::Io),
+        "collection stopped on a readable box"
+    );
 }
 
 #[test]
@@ -5097,7 +5065,7 @@ fn io_columns_withdraw_where_they_would_be_a_wall_of_dashes() {
     // …and collection stops too, rather than paying half a millisecond a
     // sample for a column nobody can read.
     assert!(
-        !app.needs().io,
+        !app.needs().asked(crate::collect::Source::Io),
         "collection continued for an unreadable column"
     );
 }
@@ -5122,7 +5090,10 @@ fn the_key_still_overrides_whatever_the_probe_decided() {
     assert!(!app.show_io);
     app.toggle_io();
     assert!(app.show_io, "the key could not bring the columns back");
-    assert!(app.needs().io, "the key did not restart collection");
+    assert!(
+        app.needs().asked(crate::collect::Source::Io),
+        "the key did not restart collection"
+    );
 }
 
 #[test]
@@ -5262,22 +5233,13 @@ fn the_key_says_why_it_did_nothing_on_a_narrow_panel() {
 fn show_metric_audit() {
     use crate::collect::{Collector, Needs, Platform};
     let mut c = Platform::new().unwrap();
-    c.sample(Needs {
-        io: false,
-        threads: false,
-    })
-    .unwrap();
+    c.sample(Needs::NONE).unwrap();
 
     // Does a fast sample rate still produce sane CPU? 0013 allows 50ms, and
     // sysinfo documents a 200ms minimum between CPU refreshes.
     for ms in [50u64, 100, 200, 1000] {
         std::thread::sleep(std::time::Duration::from_millis(ms));
-        let s = c
-            .sample(Needs {
-                io: false,
-                threads: false,
-            })
-            .unwrap();
+        let s = c.sample(Needs::NONE).unwrap();
         println!(
             "interval {ms:>4}ms -> cpu_total {:>6.1}%  max core {:>6.1}%  max proc {:>7.1}%",
             s.cpu_total,
@@ -5286,12 +5248,7 @@ fn show_metric_audit() {
         );
     }
 
-    let s = c
-        .sample(Needs {
-            io: false,
-            threads: false,
-        })
-        .unwrap();
+    let s = c.sample(Needs::NONE).unwrap();
     let cores = s.cpu_per_core.len();
     let no_start = s.procs.iter().filter(|p| p.started.is_none()).count();
     let over = s
@@ -5319,12 +5276,7 @@ fn the_first_sample_reports_no_cpu_rather_than_a_wrong_one() {
     // to refuse — drawn as the first frame, pushed into history, and persisted.
     use crate::collect::{Collector, Needs, Platform};
     let mut c = Platform::new().unwrap();
-    let first = c
-        .sample(Needs {
-            io: false,
-            threads: false,
-        })
-        .unwrap();
+    let first = c.sample(Needs::NONE).unwrap();
 
     assert_eq!(first.cpu_total, 0.0, "the first sample claims a CPU figure");
     assert!(
@@ -5359,7 +5311,7 @@ fn a_kernel_with_no_io_accounting_withdraws_the_columns() {
         "empty columns were kept on an unsupporting kernel"
     );
     assert!(
-        !app.needs().io,
+        !app.needs().asked(crate::collect::Source::Io),
         "collection continued for a file that does not exist"
     );
 }
@@ -7761,7 +7713,8 @@ fn the_detail_view_draws_from_the_buffer_with_no_new_collection() {
     app.detail = true;
     let after = app.needs();
     assert_eq!(
-        before.io, after.io,
+        before.asked(crate::collect::Source::Io),
+        after.asked(crate::collect::Source::Io),
         "opening the detail view asked the collector for something new"
     );
 }
@@ -8611,21 +8564,24 @@ fn the_thread_ratchet_lets_go_after_the_view_has_been_off_a_while() {
     let mut app = App::new(600);
     app.push(sample_with_threads());
     app.toggle_threads();
-    assert!(app.needs().threads, "the key did not start collection");
+    assert!(
+        app.needs().asked(crate::collect::Source::Threads),
+        "the key did not start collection"
+    );
 
     app.toggle_threads();
     for _ in 0..30 {
         app.push(sample_with_threads());
     }
     assert!(
-        app.needs().threads,
+        app.needs().asked(crate::collect::Source::Threads),
         "collection stopped while a reader could still scrub back over it"
     );
     for _ in 0..40 {
         app.push(sample_with_threads());
     }
     assert!(
-        !app.needs().threads,
+        !app.needs().asked(crate::collect::Source::Threads),
         "collection never stopped after the view was turned off"
     );
 }
@@ -8718,4 +8674,161 @@ fn a_blocked_single_threaded_process_is_found_by_the_same_predicate() {
         vec!["postgres"],
         "a single-threaded process matched the wrong state"
     );
+}
+
+#[test]
+fn a_cadence_of_one_means_every_sample_including_the_first() {
+    use crate::collect::{Needs, Source};
+    // The off-by-one this shape invites: `tick % every == 0` is true at zero,
+    // so a source read every sample must not be read every sample *but the
+    // first*, and a source on a long cadence must be read at startup rather
+    // than a minute into the run.
+    for tick in 0..5u64 {
+        assert!(
+            Needs::at(tick).due(Source::Io),
+            "a source read every sample was skipped at tick {tick}"
+        );
+    }
+    assert!(
+        Needs::at(0).due(Source::ClockPolicies),
+        "not read at startup"
+    );
+    assert!(!Needs::at(1).due(Source::ClockPolicies));
+    assert!(!Needs::at(59).due(Source::ClockPolicies));
+    assert!(Needs::at(60).due(Source::ClockPolicies), "never read again");
+}
+
+#[test]
+fn a_source_that_is_due_but_unwanted_is_still_not_read() {
+    use crate::collect::{Needs, Source};
+    // Two separate questions. Collapsing them would make a cadence into a
+    // reason to read something nobody asked for.
+    let n = Needs::at(0);
+    assert!(n.due(Source::Io), "the fixture does not test the case");
+    assert!(!n.wants(Source::Io), "an unwanted source was gathered");
+    assert!(n.with(Source::Io).wants(Source::Io));
+}
+
+#[test]
+fn the_budget_gives_up_the_most_expensive_source_first() {
+    use crate::collect::{Needs, Source};
+    // Per unit, and the ordering does not change with the count — which is
+    // what makes this answerable before the collector has walked anything.
+    assert_eq!(
+        Needs::NONE
+            .with(Source::Io)
+            .with(Source::Threads)
+            .costliest(),
+        Some(Source::Io),
+        "per-process IO is dearer per unit than a thread and was not chosen"
+    );
+    // Not the clock policy walk, though its per-sample figure is the biggest
+    // number here. It is a directory listing once a minute: it cannot be why a
+    // sample ran long, so giving it up would cost a figure and fix nothing.
+    // Comparing it against a per-*unit* cost is comparing two different
+    // quantities, and the first version of this did exactly that and chose it
+    // over per-process IO on four hundred processes.
+    assert_eq!(
+        Needs::NONE
+            .with(Source::Io)
+            .with(Source::ClockPolicies)
+            .costliest(),
+        Some(Source::Io),
+        "a fixed once-a-minute cost was chosen over one that scales"
+    );
+    assert_eq!(Needs::NONE.costliest(), None, "nothing to give up");
+}
+
+#[test]
+fn one_slow_sample_does_not_withdraw_anything() {
+    use std::time::Duration;
+    // A page fault, a scheduler decision, another process finishing. Pulling a
+    // column for one of those would be its own kind of noise, and on a busy box
+    // it would happen constantly.
+    let mut app = App::new(600);
+    app.toggle_threads();
+    app.spent(Duration::from_millis(900), Duration::from_secs(1));
+    assert!(
+        app.withheld().is_empty(),
+        "one slow sample withdrew a source"
+    );
+
+    // …and a fast one resets the count, so three *scattered* slow samples are
+    // not three strikes.
+    app.spent(Duration::from_millis(900), Duration::from_secs(1));
+    app.spent(Duration::from_millis(1), Duration::from_secs(1));
+    app.spent(Duration::from_millis(900), Duration::from_secs(1));
+    app.spent(Duration::from_millis(900), Duration::from_secs(1));
+    assert!(
+        app.withheld().is_empty(),
+        "scattered slow samples were counted as consecutive ones"
+    );
+}
+
+#[test]
+fn sustained_over_budget_sampling_withdraws_a_source_and_says_which() {
+    use crate::collect::Source;
+    use std::time::Duration;
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.select_delta(1);
+    app.toggle_threads();
+    assert!(app.needs().asked(Source::Threads));
+    assert!(app.needs().asked(Source::Io), "io is on by default");
+
+    for _ in 0..3 {
+        app.spent(Duration::from_millis(900), Duration::from_secs(1));
+    }
+    // Per-process IO, not threads: it is dearer *per unit*, and there are more
+    // processes than multi-threaded ones. The most expensive thing goes first,
+    // which is not the most recently added thing.
+    assert_eq!(
+        app.withheld(),
+        [Source::Io],
+        "the costliest source was not the one given up"
+    );
+    assert!(
+        !app.needs().asked(Source::Io),
+        "a withheld source was still collected"
+    );
+    assert!(
+        app.needs().asked(Source::Threads),
+        "everything was dropped at once rather than one at a time"
+    );
+
+    // Still over budget, so the next one goes too.
+    for _ in 0..3 {
+        app.spent(Duration::from_millis(900), Duration::from_secs(1));
+    }
+    assert_eq!(app.withheld(), [Source::Io, Source::Threads]);
+
+    // Named on screen. A budget that silently dropped a figure would be the
+    // objection to having a budget at all.
+    let frame = rows(&app, 200, 20).join("\n");
+    assert!(
+        frame.contains("per-process disk IO and threads withheld, sampling was over budget"),
+        "nothing said what stopped being measured:\n{frame}"
+    );
+}
+
+#[test]
+fn asking_for_a_withheld_source_again_gets_it_back() {
+    use crate::collect::Source;
+    use std::time::Duration;
+    // The reader insisting. If it goes over budget again it will be given up
+    // again, which is the honest answer: the machine cannot afford it at this
+    // interval, and `--interval` is what acts on that.
+    let mut app = App::new(600);
+    for _ in 0..3 {
+        app.spent(Duration::from_millis(900), Duration::from_secs(1));
+    }
+    assert_eq!(app.withheld(), [Source::Io]);
+
+    app.toggle_io(); // off
+    app.toggle_io(); // and on again, by name
+    assert!(
+        app.withheld().is_empty(),
+        "asking for it again did not clear the withdrawal"
+    );
+    assert!(app.needs().asked(Source::Io));
 }

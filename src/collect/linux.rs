@@ -4,7 +4,7 @@
 //! a delta between the previous read and this one, which is why the collector
 //! is stateful and why the very first sample reports zero busy time.
 
-use super::{Collector, Needs};
+use super::{Collector, Needs, Source};
 use crate::sample::{
     DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
     ThreadSample,
@@ -586,9 +586,11 @@ impl ProcFs {
     ///
     /// One small read per frequency policy — a handful on any machine — and
     /// none at all on one that publishes none.
-    fn read_clock_ceiling(&mut self) -> Option<f32> {
-        // One directory listing a minute, and only that.
-        if self.tick.is_multiple_of(CLOCK_RESCAN) {
+    fn read_clock_ceiling(&mut self, needs: Needs) -> Option<f32> {
+        // One directory listing a minute, and only that — on the cadence the
+        // source declares rather than a counter kept here. The rule and the
+        // cost now live in one place with every other source's; this reads it.
+        if needs.wants(Source::ClockPolicies) {
             self.nominal_khz = nominal_clocks();
         }
         if self.nominal_khz.is_empty() {
@@ -697,7 +699,7 @@ impl ProcFs {
             // and on a many-core box they outnumber the real processes — so
             // counting them would fire the IO probe on exactly the laptop it
             // exists to protect. Skipping also saves an open and a read each.
-            if needs.io && *io_supported && !p.is_kernel_thread() {
+            if needs.wants(Source::Io) && *io_supported && !p.is_kernel_thread() {
                 match read_proc_io(pid, elapsed_secs, &mut seen_io, prev_proc_io, path, buf) {
                     Ok(rates) => p.io = rates,
                     // Either way the row shows an em dash. Only one of them is
@@ -705,7 +707,7 @@ impl ProcFs {
                     Err(why) => *denied += usize::from(why.counts()),
                 }
             }
-            if needs.threads && p.threads.unwrap_or(1) > 1 {
+            if needs.wants(Source::Threads) && p.threads.unwrap_or(1) > 1 {
                 read_tasks(
                     pid,
                     &p,
@@ -736,11 +738,15 @@ impl ProcFs {
         //
         // Collection could not resume before the probe existed, which is why
         // this held: the ratchet only ever went off to on.
-        *prev_proc_io = if needs.io { seen_io } else { HashMap::new() };
+        *prev_proc_io = if needs.wants(Source::Io) {
+            seen_io
+        } else {
+            HashMap::new()
+        };
         // Same reasoning as the IO map one line up: a jiffy count from before
         // the view was turned off would be divided by one interval and render
         // a thread at hundreds of times its real share.
-        *prev_task_jiffies = if needs.threads {
+        *prev_task_jiffies = if needs.wants(Source::Threads) {
             seen_tasks
         } else {
             HashMap::new()
@@ -749,7 +755,7 @@ impl ProcFs {
         // multi-threaded process. The pair is the difference between "not
         // collected" and "none found", which is the distinction this codebase
         // does not collapse anywhere else either.
-        Ok((out, needs.threads.then_some(tasks)))
+        Ok((out, needs.wants(Source::Threads).then_some(tasks)))
     }
 }
 
@@ -960,10 +966,10 @@ fn nominal_clocks() -> Vec<(String, u64)> {
 
 /// How many samples between rescans of the frequency policy set.
 ///
-/// A minute at the default interval. The set changes only when a CPU is
-/// hotplugged or a driver loads, and both are rare enough that a minute of
-/// staleness costs nothing — while never rescanning costs a machine that gained
-/// a policy the figure entirely.
+/// The rule now lives with every other source's, in [`Source::every`]. This is
+/// the same number, kept so the test that proves the rescan happens does not
+/// have to hard-code it.
+#[cfg(test)]
 const CLOCK_RESCAN: u64 = 60;
 
 /// Where the kernel publishes each CPU's frequency policy.
@@ -1731,8 +1737,8 @@ impl Collector for ProcFs {
             uptime: self.read_uptime()?,
             forks: stat.forks,
             io_supported: self.io_supported,
-            clock_ceiling: self.read_clock_ceiling(),
-            io_collected: needs.io && self.io_supported,
+            clock_ceiling: self.read_clock_ceiling(needs),
+            io_collected: needs.wants(Source::Io) && self.io_supported,
             io_denied,
             disks,
             pressure: self.read_pressure(),
@@ -1875,8 +1881,13 @@ mod tests {
         // Poison it with a policy that does not exist. A rescan replaces the
         // vector wholesale, so its disappearance is the rescan happening.
         pf.nominal_khz = vec![("policy-that-is-not-there".to_string(), 3_600_000)];
-        for _ in 0..CLOCK_RESCAN + 1 {
-            pf.collect(Needs::default()).unwrap();
+        // Real ticks, because the cadence is a function of the tick the
+        // caller passes. `Needs::default()` is tick zero every time, which is
+        // due on every cadence and would let this pass without a rescan ever
+        // being scheduled.
+        for i in 0..CLOCK_RESCAN + 1 {
+            pf.collect(Needs::at(i).with(Source::ClockPolicies))
+                .unwrap();
         }
         assert!(
             !pf.nominal_khz
@@ -1893,7 +1904,10 @@ mod tests {
         // at full speed on the strength of not being able to look.
         let mut pf = ProcFs::new().unwrap();
         if pf.nominal_khz.is_empty() {
-            assert_eq!(pf.read_clock_ceiling(), None);
+            assert_eq!(
+                pf.read_clock_ceiling(Needs::at(0).with(Source::ClockPolicies)),
+                None
+            );
         }
         // One direction only. A ceiling implies a policy was found, but a
         // policy does not imply a ceiling: `cpuinfo_max_freq` and
@@ -2408,10 +2422,7 @@ mod tests {
         let mut denied = 0;
         pf.read_procs(
             Duration::from_secs(1),
-            Needs {
-                io: true,
-                threads: false,
-            },
+            Needs::NONE.with(Source::Io),
             &mut denied,
         )
         .unwrap();
@@ -2420,15 +2431,8 @@ mod tests {
             "collecting IO recorded no counters"
         );
 
-        pf.read_procs(
-            Duration::from_secs(1),
-            Needs {
-                io: false,
-                threads: false,
-            },
-            &mut denied,
-        )
-        .unwrap();
+        pf.read_procs(Duration::from_secs(1), Needs::NONE, &mut denied)
+            .unwrap();
         assert!(
             pf.prev_proc_io.is_empty(),
             "counters survived collection being switched off"

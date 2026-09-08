@@ -2535,6 +2535,22 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         n => format!(" · {n} kernel hidden"),
     };
 
+    // What poptop stopped measuring because it could not afford it. Ranked
+    // just under the withheld rows above: both are omissions, and an omission
+    // that does not state itself is the one thing this panel never does. A
+    // budget that silently dropped a figure would be the objection to having a
+    // budget at all.
+    let afford = match app.withheld() {
+        [] => String::new(),
+        w => format!(
+            " · {} withheld, sampling was over budget",
+            w.iter()
+                .map(|s| s.label())
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
+    };
+
     // Why the expansion is showing nothing. An expanded process with no rows
     // under it is indistinguishable from a process with one thread, and the
     // reader who pressed the key deserves to know which.
@@ -2573,6 +2589,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     //  20  `N kernel hidden`    — rows withheld; its absence is a lie by
     //                             omission, which is the one thing this panel
     //                             is careful never to do
+    //  22  `... withheld`       — poptop stopped measuring something; an
+    //                             omission, and the reason a budget is allowed
+    //                             to exist at all
     //  28  the thread note      — the message the `y` key looks broken without:
     //                             an expanded process with no rows under it
     //  30  the io status        — the message the `i` key looks broken without
@@ -2628,6 +2647,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         (7, bad_filter, app.theme.warning_style()),
         (10, all_one, plain),
         (20, hidden, plain),
+        (22, afford, app.theme.warning_style()),
         (28, threads, plain),
         (40, format!(" — sort: {}", app.sort.label()), plain),
         // Just under the sort it is about, and above the modes: a suggestion a

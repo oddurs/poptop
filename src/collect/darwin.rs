@@ -5,7 +5,7 @@
 //! laptop; the `/proc` backend is the one to read for how any of it works.
 
 use super::procinfo::{self, Kinfo};
-use super::{Collector, Needs};
+use super::{Collector, Needs, Source};
 use crate::sample::{IoRates, Link, MemStat, NetStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::io;
@@ -271,7 +271,7 @@ impl Collector for SysinfoCollector {
                     // refresh, so unlike the /proc backend there is no counter to
                     // diff here.
                     io: needs
-                        .io
+                        .wants(Source::Io)
                         .then(|| {
                             if !readable(p.user_id()) {
                                 io_denied += 1;
@@ -343,7 +343,7 @@ impl Collector for SysinfoCollector {
             // "does this platform keep the accounting" does not arise here —
             // only "can this user read it", which `io_denied` answers.
             io_supported: true,
-            io_collected: needs.io,
+            io_collected: needs.wants(Source::Io),
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.
             io_denied,
