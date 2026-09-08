@@ -2,7 +2,7 @@
 id: 50
 title: Twelve rows of the same program crowd out everything else
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -57,7 +57,7 @@ conveys nothing.
 
 ## Acceptance criteria
 
-- [ ] One row per program, with the count of processes folded into it
-- [ ] Figures that sum are summed; figures that do not are shown as absent
-- [ ] The group's history is not fabricated from changing membership
-- [ ] Tree mode and grouping cannot both be on, as in bottom
+- [x] One row per program, with the count of processes folded into it
+- [x] Figures that sum are summed; figures that do not are shown as absent
+- [x] The group's history is not fabricated from changing membership
+- [x] Tree mode and grouping cannot both be on, as in bottom
