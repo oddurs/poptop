@@ -57,6 +57,14 @@ pub enum Source {
     /// socket, so this is cheap — but it is a capability that can be refused,
     /// and everything that can be refused belongs in this list.
     Exited,
+    /// Proportional set size, from `smaps_rollup`.
+    ///
+    /// One extra read per process, and the only honest answer to "how much
+    /// memory is this actually costing": a shared page is divided among the
+    /// processes sharing it, so summing PSS across six Chrome renderers gives a
+    /// real total where summing RSS counts their shared pages six times. atop
+    /// gates its own behind a key for the same reason.
+    Pss,
     /// Per-cgroup utilisation and pressure, from the unified hierarchy.
     ///
     /// The expensive one, by an order of magnitude: six files per node, and a
@@ -72,8 +80,9 @@ pub enum Source {
 }
 
 impl Source {
-    pub const ALL: [Source; 5] = [
+    pub const ALL: [Source; 6] = [
         Source::Cgroups,
+        Source::Pss,
         Source::Io,
         Source::Threads,
         Source::ClockPolicies,
@@ -85,6 +94,7 @@ impl Source {
         match self {
             Source::Io => "per-process disk IO",
             Source::Threads => "threads",
+            Source::Pss => "proportional memory",
             Source::Cgroups => "cgroups",
             Source::Exited => "exited processes",
             Source::ClockPolicies => "clock policies",
@@ -109,6 +119,9 @@ impl Source {
             // exited process, which is what there are more of on the machine
             // this would matter on.
             // Six files a node, measured on a real hierarchy.
+            // One file read per process, like the IO probe beside it.
+            // Measured at 218 processes: 0.85ms a sample becomes 1.77ms.
+            Source::Pss => 4_200,
             Source::Cgroups => 30_000,
             Source::Exited => 500,
             Source::ClockPolicies => 200_000,
@@ -127,7 +140,7 @@ impl Source {
     /// minute — over per-process IO on four hundred processes.
     pub fn scales(self) -> bool {
         match self {
-            Source::Io | Source::Threads | Source::Exited | Source::Cgroups => true,
+            Source::Io | Source::Threads | Source::Exited | Source::Cgroups | Source::Pss => true,
             Source::ClockPolicies => false,
         }
     }
@@ -139,6 +152,7 @@ impl Source {
             Source::Threads => size.tasks,
             Source::Exited => size.exited,
             Source::Cgroups => size.cgroups,
+            Source::Pss => size.procs,
             Source::ClockPolicies => 1,
         };
         self.nanos_each().saturating_mul(units)
@@ -154,7 +168,7 @@ impl Source {
     /// they were never going to be the reason a sample ran long.
     pub fn restorable(self) -> bool {
         match self {
-            Source::Io | Source::Threads | Source::Cgroups => true,
+            Source::Io | Source::Threads | Source::Cgroups | Source::Pss => true,
             Source::Exited | Source::ClockPolicies => false,
         }
     }
@@ -170,7 +184,8 @@ impl Source {
             // because the cheap tick in between reset the strike count and the
             // odd tick reported no cgroups to charge for. The gate that makes
             // this affordable is the view being open, not the cadence.
-            Source::Io | Source::Threads | Source::Exited | Source::Cgroups => 1,
+            Source::Io | Source::Threads | Source::Exited | Source::Pss => 1,
+            Source::Cgroups => 1,
             Source::ClockPolicies => 60,
         }
     }
@@ -539,6 +554,11 @@ mod tests {
                     cmd: None,
                     io: None,
                     container: None,
+                    minflt: None,
+                    majflt: None,
+                    vsize: None,
+                    nice: None,
+                    pss: None,
                 })
                 .collect(),
             ..Sample::empty()

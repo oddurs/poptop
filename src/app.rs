@@ -475,6 +475,13 @@ impl App {
         if self.show_cgroups {
             n = n.with(Source::Cgroups);
         }
+        // Only while the memory view is open, for the same reason: one extra
+        // read per process is not a cost to pay for a column nobody is looking
+        // at. Unlike the thread ratchet there is nothing to keep continuous —
+        // a process's share of memory is its share whenever you ask.
+        if self.view == View::Memory {
+            n = n.with(Source::Pss);
+        }
         // Nothing this backend does not read. Otherwise `y` on macOS starts a
         // collection that will never produce a row, and the budget can spend
         // three strikes giving up a source that was costing nothing.
@@ -498,6 +505,45 @@ impl App {
         self.io_ratchet |= self.show_io;
         if self.show_io {
             self.insist(Source::Io);
+        }
+    }
+
+    /// How much a process's memory grew since the previous sample.
+    ///
+    /// Derived rather than stored: a growth figure in every retained sample is
+    /// a field poptop would carry forever to describe one interval, and it is
+    /// already implied by two adjacent samples.
+    ///
+    /// **Absent across a seam.** The previous sample is the one before the
+    /// cursor in the buffer, which is not the same as the one before this
+    /// moment in time: a laptop that slept leaves two samples twenty minutes
+    /// apart sitting next to each other. "Grew 400 MB since the last sample" is
+    /// a rate, and a rate over an unknown interval is not a figure — so it is
+    /// an em dash there rather than a number nobody can scale.
+    pub fn growth(&self, pid: i32, started: Option<u64>) -> Option<i64> {
+        let now = self.history.current()?;
+        let before = self.history.previous()?;
+        let gap = now.at.duration_since(before.at).ok()?;
+        // The timeline's definition of adjacent, not a second one. `gap_limit`
+        // is exposed for exactly this: two definitions would eventually
+        // disagree about the same pair of samples, and then the graph would
+        // draw a seam where the column showed a number.
+        if gap >= crate::history::gap_limit(self.interval) {
+            return None;
+        }
+        let key = |p: &&ProcSample| p.pid == pid && p.started == started;
+        let a = now.procs.iter().find(key)?.rss;
+        let b = before.procs.iter().find(key)?.rss;
+        Some(a as i64 - b as i64)
+    }
+
+    /// Ask again for whatever the current view needs collected.
+    ///
+    /// The budget names what it withholds until somebody asks for it by name,
+    /// and for a view's columns the key that asks is the one that opens it.
+    pub fn insist_for_view(&mut self) {
+        if self.view == View::Memory {
+            self.insist(Source::Pss);
         }
     }
 
@@ -816,6 +862,10 @@ impl App {
                     Source::Io => self.show_io = false,
                     Source::Threads => self.show_threads = false,
                     Source::Cgroups => self.show_cgroups = false,
+                    // Both views fall back to the generic one, so the state
+                    // stays consistent: a view whose defining column is no
+                    // longer collected would be a panel of em dashes.
+                    Source::Pss => self.view = View::Generic,
                     // Neither has a view to turn off: exit records go into the
                     // table beside live rows, and the clock ceiling is a header
                     // figure. The withheld clause is what says they stopped.
@@ -1261,6 +1311,22 @@ impl Watched {
     }
 }
 
+/// Sum a field across a group, or `None` if any member cannot answer.
+///
+/// Not a sum of what happens to be there: a total missing one member's
+/// contribution is a smaller number presented as a complete one, which is the
+/// shape of a wrong answer rather than an absent one.
+fn sum_of<T: std::iter::Sum<T> + Copy>(
+    members: &[&ProcSample],
+    f: impl Fn(&ProcSample) -> Option<T>,
+) -> Option<T> {
+    members
+        .iter()
+        .map(|p| f(p))
+        .collect::<Option<Vec<T>>>()
+        .map(|v| v.into_iter().sum())
+}
+
 /// Fold processes sharing a name into one row each.
 ///
 /// What sums and what does not is the whole design:
@@ -1358,9 +1424,13 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                     // pages once per member, so six workers reading 2.3GB is
                     // more than the kernel has committed for them. Summed
                     // anyway because the shape of the answer — this pool is
-                    // large — is what the six separate rows could not give, and
-                    // the alternative needs `smaps_rollup`, which costs a read
-                    // per process and exists only on Linux.
+                    // large — is what the six separate rows could not give.
+                    //
+                    // The `PSS` column beside it is the measurement: a shared
+                    // page divided among the processes sharing it, so the same
+                    // six workers sum to what they actually cost. It needs
+                    // `smaps_rollup`, a read per process and Linux only, which
+                    // is why it is the memory view's column and not this one.
                     rss: members.iter().map(|p| p.rss).sum(),
                     threads: members.iter().map(|p| p.threads).sum(),
                     state: '—',
@@ -1376,6 +1446,22 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                         Grouping::Container => Some(name.clone()),
                         _ => None,
                     },
+                    // Faults and virtual size sum across the group the way RSS
+                    // does; `nice` does not, because a group of processes with
+                    // different niceness has no one niceness — the same reason
+                    // `state` is an em dash here.
+                    minflt: sum_of(members, |p| p.minflt),
+                    majflt: sum_of(members, |p| p.majflt),
+                    vsize: sum_of(members, |p| p.vsize),
+                    nice: match members.iter().all(|p| p.nice == first.nice) {
+                        true => first.nice,
+                        false => None,
+                    },
+                    // Unlike RSS, this one sums *correctly*: a shared page is
+                    // divided among the processes sharing it, so six renderers
+                    // do not count it six times. It is the fix for the caveat
+                    // the grouped RSS carries.
+                    pss: sum_of(members, |p| p.pss),
                 }),
                 prefix: String::new(),
                 context_only: false,

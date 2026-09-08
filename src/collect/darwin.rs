@@ -280,6 +280,11 @@ impl Collector for SysinfoCollector {
                     // diff here.
                     // macOS has no cgroups, so no container id to read.
                     container: None,
+                    minflt: None,
+                    majflt: None,
+                    vsize: None,
+                    nice: None,
+                    pss: None,
                     io: needs
                         .wants(Source::Io)
                         .then(|| {

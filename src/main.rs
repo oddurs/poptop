@@ -148,7 +148,9 @@ KEYS:
                     has no single one of those, and says so with an em dash.
                     The summed memory is an upper bound: forked workers share
                     an interpreter heap copy-on-write and it is counted once
-                    per member. Not available with the tree.
+                    per member. The PSS column in the memory view (v) is the
+                    measurement, and sums correctly. Not available with the
+                    tree. Press again to fold by container instead.
     K               show kernel threads. Hidden by default on Linux: kworker,
                     ksoftirqd, irq and the rest outnumber the real processes
                     several times over on a many-core box, and none of them is
@@ -298,6 +300,7 @@ fn main() -> io::Result<()> {
                     .with(Source::Threads)
                     .with(Source::Exited)
                     .with(Source::Cgroups),
+                Needs::NONE.with(Source::Pss),
             ] {
                 collector.sample(needs)?;
                 let t0 = std::time::Instant::now();
@@ -318,6 +321,9 @@ fn main() -> io::Result<()> {
                     needs.asked(Source::Exited),
                     needs.asked(Source::Cgroups),
                 ) {
+                    (false, ..) if needs.asked(Source::Pss) => {
+                        "pss only (one extra read a process)      "
+                    }
                     (false, ..) => "io off, threads off, exits off, cgroups off",
                     (true, false, ..) => "io on,  threads off, exits off, cgroups off",
                     (true, true, false, _) => "io on,  threads on,  exits off, cgroups off",
@@ -804,6 +810,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         // free letters.
         KeyCode::Char('v') => {
             app.view = app.view.next();
+            // Asking for the view again is asking for its columns again, if the
+            // budget had taken them away.
+            app.insist_for_view();
             // A sort the new view cannot show would be an ordering with no
             // visible reason for it, so switching views brings the sort with
             // it when it has to.

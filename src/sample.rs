@@ -57,6 +57,11 @@ impl Default for ProcSample {
             cmd: None,
             io: None,
             container: None,
+            minflt: None,
+            majflt: None,
+            vsize: None,
+            nice: None,
+            pss: None,
         }
     }
 }
@@ -673,13 +678,40 @@ pub struct ProcSample {
     /// runtime with superuser, and an id is what poptop can know without asking
     /// anybody's permission.
     pub container: Option<Arc<str>>,
+    /// Minor faults in the interval — pages found in memory. Common and cheap.
+    pub minflt: Option<u32>,
+    /// **Major** faults in the interval: pages fetched from disk.
+    ///
+    /// The one that answers "why is this slow". A process taking major faults
+    /// is being paged in, and nothing else on screen says so — its CPU looks
+    /// low and its state looks ordinary.
+    ///
+    /// A rate over the interval like every other counter here, not the
+    /// lifetime total `/proc` publishes.
+    pub majflt: Option<u32>,
+    /// Virtual size. Against `rss` it is how much of what a process has
+    /// reserved it is actually touching.
+    pub vsize: Option<u64>,
+    /// Scheduling niceness, -20 to 19.
+    pub nice: Option<i32>,
+    /// Proportional set size: the process's share of the pages it holds, with
+    /// shared pages divided among the processes sharing them.
+    ///
+    /// The honest answer to "how much memory is this actually costing", and the
+    /// fix for the caveat grouped RSS carries — summing RSS across six Chrome
+    /// renderers counts their shared pages six times, so the total is an upper
+    /// bound and says so. PSS sums correctly.
+    ///
+    /// `None` unless asked for: it needs `smaps_rollup`, a second read per
+    /// process, which is why atop gates its own behind a key.
+    pub pss: Option<u64>,
 }
 
 crate::persist::codec! { ThreadSample { pid: i32, tid: i32, name: Arc<str>, state: char, cpu: f32 } }
 
 crate::persist::codec! { CgroupStat { path: Arc<str>, depth: u32, cpu: Option<f32>, cpu_max: Option<f32>, mem: Option<u64>, mem_max: Option<u64>, read: Option<u64>, write: Option<u64>, pressure: Option<Pressure>, procs: Option<u32> } }
 
-crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates>, container: Option<Arc<str>> } }
+crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates>, container: Option<Arc<str>>, minflt: Option<u32>, majflt: Option<u32>, vsize: Option<u64>, nice: Option<i32>, pss: Option<u64> } }
 
 /// A complete snapshot of the machine at one instant.
 #[derive(Debug, Clone)]
@@ -1009,6 +1041,11 @@ mod tests {
             io: None,
 
             container: None,
+            minflt: None,
+            majflt: None,
+            vsize: None,
+            nice: None,
+            pss: None,
         };
         assert_eq!(p.command(), "[kworker/3:1]");
         p.cmd = Some(Arc::from("node server.js"));

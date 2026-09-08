@@ -2129,6 +2129,20 @@ fn command_width(
         .max(MIN_COMMAND_W) as usize
 }
 
+/// A signed byte delta, with the sign carried rather than implied.
+///
+/// `+400M` and `-400M` are different facts about a process and a bare `400M`
+/// is neither. Zero is written as `·`, the same mark the IO columns use for a
+/// real nothing, so a row that did not move reads as flat rather than as a
+/// growth of nothing.
+fn fmt_growth(delta: i64) -> String {
+    match delta {
+        0 => "·".into(),
+        d if d > 0 => format!("+{}", fmt_bytes(d as u64)),
+        d => format!("-{}", fmt_bytes(d.unsigned_abs())),
+    }
+}
+
 /// A tree prefix trimmed so the name it indents still has room to be read.
 ///
 /// Returns the prefix to draw and the columns left for the name. Deep enough
@@ -2419,6 +2433,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // columns over one renderer, not a second renderer.
     let show_bars = app.view != crate::app::View::Disk;
     let show_thr = app.view == crate::app::View::Generic;
+    // The memory view's own columns: what a process's memory actually costs,
+    // what it has reserved, whether it is being paged in, and which way it is
+    // going.
+    let show_mem_cols = app.view == crate::app::View::Memory;
     // What the view has given back, in columns, for the command to use.
     let dropped = if show_bars { 0 } else { BAR_W as u16 * 2 + 3 } + if show_thr { 0 } else { 5 };
     // Dropped on a box running no containers, where it would be twelve columns
@@ -2555,6 +2573,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                     cells.push(num("—").style(app.theme.dim_style()));
                     cells.push(num("—").style(app.theme.dim_style()));
                 }
+                if show_mem_cols {
+                    // A thread has no memory of its own; it shares its
+                    // process's, one row up.
+                    for _ in 0..4 {
+                        cells.push(num("—").style(app.theme.dim_style()));
+                    }
+                }
                 // No sparkline. The retained history is per process, so the
                 // only series available here is the parent's — drawing it on
                 // every thread row would put the same shape beside forty
@@ -2609,6 +2634,32 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
+            }
+            if show_mem_cols {
+                // Never a zero for any of these: a share nobody measured, a
+                // size the platform does not publish and a fault count that was
+                // not collected are all "not known", and this table has one way
+                // of saying that.
+                cells.push(num(match p.pss {
+                    Some(b) => fmt_bytes(b),
+                    None => "—".into(),
+                }));
+                cells.push(num(match p.vsize {
+                    Some(b) => fmt_bytes(b),
+                    None => "—".into(),
+                }));
+                cells.push(match p.majflt {
+                    // Coloured, because a process taking major faults is being
+                    // paged in from disk and that is the answer to why it is
+                    // slow — the one figure here that is a symptom rather than
+                    // a size.
+                    Some(n) => num(n.to_string()).style(app.theme.heat_style(n as f32)),
+                    None => num("—").style(app.theme.dim_style()),
+                });
+                cells.push(match app.growth(p.pid, p.started) {
+                    Some(d) => num(fmt_growth(d)),
+                    None => num("—").style(app.theme.dim_style()),
+                });
             }
             // The sparkline closes the measurements, so the eye can run down a
             // column of shapes rather than hunting for it past ragged names —
@@ -2692,6 +2743,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     if show_io {
         header_cells.push(right("DISK R"));
         header_cells.push(right("DISK W"));
+    }
+    if show_mem_cols {
+        header_cells.push(right("PSS"));
+        header_cells.push(right("VSZ"));
+        header_cells.push(right("MAJF/s"));
+        header_cells.push(right("GROW"));
     }
     header_cells.push(left(&spark_header(spark_ceiling)));
     header_cells.push(right("PID"));
@@ -2918,6 +2975,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     if show_io {
         widths.push(Constraint::Length(9));
         widths.push(Constraint::Length(9));
+    }
+    if show_mem_cols {
+        widths.push(Constraint::Length(8));
+        widths.push(Constraint::Length(8));
+        widths.push(Constraint::Length(7));
+        widths.push(Constraint::Length(8));
     }
     widths.push(Constraint::Length(SPARK_W as u16));
     widths.push(Constraint::Length(7));

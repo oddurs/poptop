@@ -257,6 +257,50 @@ Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
 
+### What a process is costing you
+
+atop shows around seventy fields across its process views. The memory view (`v`)
+carries the ones that answer a question poptop could not:
+
+```text
+  CPU%      RSS  S      PSS      VSZ  MAJF/s     GROW      PID COMMAND
+  12.0   900.0M  S   300.0M     4.0G    1200  +40.0M     4001 chrome
+```
+
+**`PSS` is the honest answer to "how much memory is this costing".** A shared
+page is divided among the processes sharing it, so summing PSS across six Chrome
+renderers gives a real total where summing RSS counts their shared pages six
+times. That is the caveat the grouped RSS carries — `g` says its total is an
+upper bound — and this is the measurement that isn't.
+
+It needs `smaps_rollup`, one extra read per process, **measured at 4.2 µs each**
+— 0.85 ms a sample becomes 1.77 ms at 218 processes. So it is read only while
+the memory view is open, and atop gates its own behind a key for the same
+reason.
+
+**`MAJF/s` is the one that answers "why is this slow".** A process taking major
+faults is being paged in from disk while its CPU looks low and its state looks
+ordinary. It is a rate over the interval, not the lifetime total `/proc`
+publishes, and a process on its first sighting reads zero rather than its whole
+life divided by one second.
+
+**`GROW` is derived, not stored.** A growth figure in every retained sample is a
+field carried forever to describe one interval, and two adjacent samples already
+imply it. It is an em dash across a **seam** — a laptop that slept leaves two
+samples twenty minutes apart sitting next to each other, and "grew 400 MB since
+the last sample" is a rate that has no interval to be scaled by. It uses the
+timeline's own definition of adjacent, so the graph cannot draw a seam where the
+column shows a number.
+
+The cost of carrying these: a retained process goes from 70 to 103 bytes, and
+the store for 600 samples of 400 processes from 15.8 MB to 24.9 MB. The window
+is unchanged — the cap is 64 MB — but it is the largest single increase any of
+these fields has cost, and every optional pays its tag byte whether or not the
+platform answers it.
+
+Not on macOS: sysinfo publishes none of them, so the columns are em dashes
+rather than zeros.
+
 ### What the table shows
 
 atop spends seven keys on this — `g` generic, `m` memory, `d` disk, `n` network

@@ -234,6 +234,11 @@ mod tests {
             cmd: None,
             io: None,
             container: None,
+            minflt: None,
+            majflt: None,
+            vsize: None,
+            nice: None,
+            pss: None,
         }
     }
 
