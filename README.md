@@ -130,6 +130,7 @@ cargo build --release
 | `d` | show the selected process's own history instead of the machine's |
 | `K` | show kernel threads, which are hidden by default on Linux |
 | `i` | toggle per-process disk IO columns |
+| `y` | expand the selected process into its threads |
 | `/` | filter — a substring, or a small query language |
 
 `d` is the one worth trying first. The buffer already holds every retained
@@ -185,13 +186,14 @@ is already showing you and the table had no way to itemise:
 
 ```text
 state = D              stuck in uninterruptible sleep, which BLOCKED counts
+task = D               the process *holding* the blocked thread
 write > 1mb            who is causing the disk saturation just reported
 threads > 100          the thing leaking threads
 cpu > 5 and user = root
 ```
 
-Fields: `cpu`, `mem` (`rss`), `threads` (`thr`), `state`, `pid`, `read`,
-`write`, `user`, `name` (`command`). Operators `>` `>=` `<` `<=` `=` `!=`,
+Fields: `cpu`, `mem` (`rss`), `threads` (`thr`), `state`, `task`, `pid`,
+`read`, `write`, `user`, `name` (`command`). Operators `>` `>=` `<` `<=` `=` `!=`,
 joined by `and`. Sizes take `k`/`m`/`g`/`t` and are binary, like the column they
 filter: `1mb` is 1048576.
 
@@ -209,6 +211,50 @@ box the error message is the only place discovery can happen.
 It is evaluated **at the cursor**, so scrubbing answers *what was in D-state at
 the moment of the spike* — which is a question no live-only monitor can be
 asked.
+
+### Threads
+
+`y` expands the selected process into its threads: tid, the thread's own name,
+its state and its share of CPU. The columns a thread has no answer of its own
+for — memory, disk, thread count — are em dashes rather than the process's
+values, because forty rows each repeating one 900 MB figure would imply forty
+copies of it.
+
+The selected process only. A box has roughly eight times as many threads as
+processes, and a table that grew ninefold on a keypress would answer *which
+thread is spinning* by making the spinning one harder to find. Not in the tree
+or while grouped: both order rows by something other than "this process, then
+its threads", and the panel says so rather than letting the key do nothing.
+
+**It costs, so it is asked for.** Reading `/proc/<pid>/task/<tid>/stat` for
+every thread of every multi-threaded process measured at **3.1 µs per thread** —
+1005 threads took a 534 µs sample to 3.63 ms — and each retained thread is 17
+bytes of every buffered sample, against 65 for a process.
+
+Nothing is collected until you press `y`. Turning the view back off keeps
+collecting for another minute, so scrubbing back over what you were just looking
+at still has threads in it, and then it stops. The IO ratchet never lets go and
+that is right for it — one extra read per process — but holding this for the
+rest of a session because somebody once pressed a key is the worse bargain.
+
+An expansion showing nothing always says why: `threads: from the next sample` at
+the live edge, `threads: not collected this far back` when you have scrubbed
+past it. A process with no thread rows and no explanation would be
+indistinguishable from a single-threaded one.
+
+`task = D` is the other half. `BLOCKED` in the header counts *tasks*, so two
+blocked threads inside one healthy-looking process are a number the process
+table could not otherwise account for — this is how you get from the figure to
+the row, and then `y` to the thread. It finds single-threaded processes too,
+which are not collected but whose one thread's state *is* the process's; they
+are the commonest contributor to that figure, and a predicate that could not
+find them would be answering the wrong question. With no threads collected it
+matches nothing in **either** direction — `task != D` must not claim every
+process was inspected.
+
+Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
+mach's `task_threads` would, and poptop does not call it yet. The panel says
+`threads: not read on macOS` rather than showing one thread per process.
 
 `--glyphs=braille|block|ascii` picks how the timeline is drawn. Braille packs
 two samples into every character cell and stacks cells vertically for twelve

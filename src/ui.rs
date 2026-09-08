@@ -2225,6 +2225,24 @@ fn num<'a>(s: impl Into<std::borrow::Cow<'a, str>>) -> Cell<'a> {
     Cell::from(Line::from(Span::raw(s)).alignment(Alignment::Right))
 }
 
+// The selected row, plus anything spliced *below* it that belongs to it.
+//
+// The offset pins the selected row to the bottom visible line, so thread rows —
+// which are inserted immediately after their process — all landed off-screen
+// the moment the process list was longer than the panel. The feature worked
+// only on a table that fitted on one screen, which is every fixture and no real
+// machine.
+fn last_row_to_keep(rows: &[crate::tree::TreeRow<'_>], selected: usize) -> usize {
+    let mut last = selected;
+    while rows
+        .get(last + 1)
+        .is_some_and(crate::tree::TreeRow::is_thread)
+    {
+        last += 1;
+    }
+    last
+}
+
 fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
@@ -2255,7 +2273,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // position.
     let selected = app.row_of(&rows_data);
     let selected_row = selected.unwrap_or_else(|| app.resume_row());
-    let row_offset = selected_row.saturating_sub(visible_rows.saturating_sub(1));
+    let row_offset =
+        last_row_to_keep(&rows_data, selected_row).saturating_sub(visible_rows.saturating_sub(1));
     let keys: Vec<(i32, u64)> = rows_data
         .iter()
         .skip(row_offset)
@@ -2292,7 +2311,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     let rows_visible = area.height.saturating_sub(2) as usize;
 
     // Keep the selected row on screen while scrolling through a long list.
-    let offset = selected_row.saturating_sub(rows_visible.saturating_sub(1));
+    let offset =
+        last_row_to_keep(&rows_data, selected_row).saturating_sub(rows_visible.saturating_sub(1));
 
     // Measurements first, contiguous, scanned down the left where the eye
     // starts; the sparkline closing them; then identity — PID, USER, COMMAND —
@@ -2332,6 +2352,42 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 // Present only as an ancestor of a filter match: visible for
                 // parentage, but clearly not itself a hit.
                 style = style.add_modifier(Modifier::DIM);
+            }
+            // A thread row. Every column a thread does not have its own answer
+            // for is an em dash rather than the process's value: memory, disk
+            // and thread count belong to the process, and repeating them on
+            // each of forty rows would say the process's RSS forty times and
+            // imply forty copies of it.
+            if let Some(th) = &r.thread {
+                let mut cells = vec![
+                    num(format!("{:.1}", th.cpu)).style(app.theme.heat_style(th.cpu)),
+                    Cell::from(cpu_bar(th.cpu)).style(app.theme.dim_style()),
+                    num("—").style(app.theme.dim_style()),
+                    Cell::from(""),
+                    Cell::from(th.state.to_string()),
+                    num("—").style(app.theme.dim_style()),
+                ];
+                if show_io {
+                    cells.push(num("—").style(app.theme.dim_style()));
+                    cells.push(num("—").style(app.theme.dim_style()));
+                }
+                // No sparkline. The retained history is per process, so the
+                // only series available here is the parent's — drawing it on
+                // every thread row would put the same shape beside forty
+                // different numbers and invite reading it as each one's.
+                cells.push(Cell::from(""));
+                cells.push(num(th.tid.to_string()));
+                if show_user {
+                    // The process's, one row up. A thread does not have its
+                    // own.
+                    cells.push(Cell::from(""));
+                }
+                let (prefix, room) = fit_prefix(&r.prefix, cmd_w);
+                cells.push(Cell::from(Line::from(vec![
+                    Span::styled(prefix, app.theme.chrome_style()),
+                    Span::raw(elide_middle(&th.name, room)),
+                ])));
+                return Row::new(cells).style(style);
             }
             let mut cells = vec![
                 num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
@@ -2479,12 +2535,28 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         n => format!(" · {n} kernel hidden"),
     };
 
+    // Why the expansion is showing nothing. An expanded process with no rows
+    // under it is indistinguishable from a process with one thread, and the
+    // reader who pressed the key deserves to know which.
+    let threads = match app.thread_note() {
+        Some(why) => format!(" · {why}"),
+        None => String::new(),
+    };
+
     // Processes, not rows. They were the same thing until a row could stand
     // for six of them, and then the title said `processes (2)` above seven
     // running processes — the lie by omission this panel is careful never to
     // tell, and which the hidden-kernel-thread count exists to prevent one
     // line over.
-    let shown_procs: usize = rows_data.iter().map(|r| r.count()).sum();
+    // Thread rows excluded. They are rows and not processes, and counting them
+    // would make `processes (7)` appear above a table holding two processes and
+    // five threads of one of them — the same lie by omission the hidden-kernel
+    // count exists to prevent, four lines up.
+    let shown_procs: usize = rows_data
+        .iter()
+        .filter(|r| !r.is_thread())
+        .map(|r| r.count())
+        .sum();
 
     // What the column said, said once.
     let all_one = one_user
@@ -2501,6 +2573,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     //  20  `N kernel hidden`    — rows withheld; its absence is a lie by
     //                             omission, which is the one thing this panel
     //                             is careful never to do
+    //  28  the thread note      — the message the `y` key looks broken without:
+    //                             an expanded process with no rows under it
     //  30  the io status        — the message the `i` key looks broken without
     //  40  the sort column      — not otherwise stated anywhere
     //  50  `tree`               — visible in the rows themselves
@@ -2554,6 +2628,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         (7, bad_filter, app.theme.warning_style()),
         (10, all_one, plain),
         (20, hidden, plain),
+        (28, threads, plain),
         (40, format!(" — sort: {}", app.sort.label()), plain),
         // Just under the sort it is about, and above the modes: a suggestion a
         // narrow terminal drops is one nobody can act on, but it is still
@@ -2802,6 +2877,7 @@ pub const KEY_HINTS: &[&str] = &[
     "/ filter",
     "t tree",
     "i io",
+    "y threads",
     "K kernel",
     "g group",
     "d detail",

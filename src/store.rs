@@ -443,6 +443,7 @@ mod tests {
                 swap_used: 1 << 30,
             },
             load: [1.5, 2.5, 3.5],
+            tasks: None,
             procs: (0..procs).map(|i| proc_of(i as i32, "postgres")).collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(4242),
@@ -978,6 +979,67 @@ mod tests {
     }
 
     #[test]
+    fn threads_survive_a_round_trip_and_cost_seventeen_bytes_each() {
+        use crate::sample::ThreadSample;
+        let mut s = sample_of(5.0, 2);
+        s.tasks = Some(vec![
+            ThreadSample {
+                pid: 1,
+                tid: 1,
+                name: Arc::from("postgres"),
+                state: 'S',
+                cpu: 1.5,
+            },
+            ThreadSample {
+                pid: 1,
+                tid: 4098,
+                name: Arc::from("bgwriter"),
+                state: 'D',
+                cpu: 0.0,
+            },
+        ]);
+        let bytes = encode(&[&s]);
+        let back = decode(&bytes).expect("did not decode");
+        let got = back[0]
+            .tasks
+            .as_ref()
+            .expect("the threads were not retained");
+        assert_eq!(got.len(), 2, "a thread was lost");
+        assert_eq!(got[1].tid, 4098);
+        assert_eq!(&*got[1].name, "bgwriter", "a thread's own name was lost");
+        assert_eq!(
+            got[1].state, 'D',
+            "a blocked thread came back as something else"
+        );
+
+        // `None` and an empty list are different answers: nobody asked, versus
+        // asked and the box has no multi-threaded process.
+        let mut none = sample_of(5.0, 2);
+        none.tasks = None;
+        assert!(
+            decode(&encode(&[&none])).expect("did not decode")[0]
+                .tasks
+                .is_none(),
+            "an uncollected thread list came back as an empty one"
+        );
+
+        // The retention cost, pinned rather than described: pid 4, tid 4,
+        // an interned name 4, state 1, cpu 4. At four thousand threads that is
+        // 68 KB a sample, which is why collecting them is a decision and not a
+        // default.
+        let mut wider = s.clone();
+        let more: Vec<ThreadSample> = (0..10)
+            .map(|i| ThreadSample {
+                tid: 5000 + i,
+                ..got[1].clone()
+            })
+            .collect();
+        wider.tasks.as_mut().unwrap().extend(more);
+        let per_thread = (encode(&[&wider]).len() - bytes.len()) / 10;
+        assert_eq!(per_thread, 17, "a retained thread changed size");
+    }
+
+    #[test]
     fn a_process_state_survives_a_round_trip_and_costs_one_byte() {
         // Written as a byte rather than a full `char` scalar, which is worth a
         // test because the saving is the point: three bytes per process per
@@ -1167,6 +1229,7 @@ mod tests_support {
             blocked: None,
             mem: MemStat::default(),
             load: [1.0, 2.0, 3.0],
+            tasks: None,
             procs: (0..procs)
                 .map(|i| ProcSample {
                     pid: i as i32,

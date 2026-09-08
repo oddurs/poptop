@@ -38,6 +38,8 @@ pub enum Field {
     Rss,
     Threads,
     State,
+    /// The state of any *task* of this process — see `matches_in`.
+    Thread,
     Pid,
     Read,
     Write,
@@ -56,6 +58,11 @@ const FIELDS: &[(&str, Field)] = &[
     ("threads", Field::Threads),
     ("thr", Field::Threads),
     ("state", Field::State),
+    // `task`, not `thread`: `threads` is already the *count* of them, and two
+    // fields one letter apart with different meanings is a filter box that
+    // punishes typing. The kernel calls them tasks, and so does the header the
+    // predicate exists to itemise.
+    ("task", Field::Thread),
     ("pid", Field::Pid),
     ("read", Field::Read),
     ("write", Field::Write),
@@ -76,7 +83,10 @@ impl Field {
 
     /// Whether it is compared as text rather than as a number.
     fn is_text(self) -> bool {
-        matches!(self, Field::State | Field::User | Field::Name)
+        matches!(
+            self,
+            Field::State | Field::Thread | Field::User | Field::Name
+        )
     }
 }
 
@@ -130,6 +140,27 @@ impl Query {
     /// not answer a question about its IO in either direction. That is the same
     /// refusal the `—` in the column is making, one layer up.
     pub fn matches(&self, p: &ProcSample) -> bool {
+        self.matches_in(p, None)
+    }
+
+    /// The same, with the sample's threads available.
+    ///
+    /// `task = D` asks whether *any* thread of this process is in that state,
+    /// which is what makes the header's task-level figures findable: `BLOCKED`
+    /// counts tasks, so a box with two blocked threads inside one
+    /// healthy-looking process reports a number the process table cannot
+    /// itemise. This is how you get from the number to the row.
+    ///
+    /// With no threads collected the predicate matches nothing rather than
+    /// everything. It is a question about data that was not gathered, and the
+    /// panel title says so — inventing a `false` for every process would be
+    /// indistinguishable from an honest empty result, but inventing a `true`
+    /// would claim every process has such a thread.
+    pub fn matches_in(
+        &self,
+        p: &ProcSample,
+        tasks: Option<&[crate::sample::ThreadSample]>,
+    ) -> bool {
         self.terms.iter().all(|t| match t {
             Term::Substring(needle) => {
                 p.name.to_lowercase().contains(needle)
@@ -144,6 +175,16 @@ impl Query {
                 None => false,
             },
             Term::Text { field, op, value } => {
+                // A question about data that was not gathered, refused in both
+                // directions. `!hit` below would otherwise turn "no threads
+                // were collected" into `task != R` matching every process, as
+                // if all their threads had been inspected and none was
+                // running. The numeric path refuses both directions for an
+                // unreadable figure for exactly this reason; the em dash in the
+                // column is making the same refusal.
+                if *field == Field::Thread && tasks.is_none() {
+                    return false;
+                }
                 let hit = match field {
                     // Identity, so `=` means equality. `user = root` matching
                     // `rootless` and `root-ci` is not what anyone typing it
@@ -158,6 +199,31 @@ impl Query {
                         value.chars().count() == 1
                             && p.state
                                 .eq_ignore_ascii_case(&value.chars().next().unwrap_or(' '))
+                    }
+                    // Any thread, not every thread. The question this answers
+                    // is "which process is the blocked task inside", and a
+                    // process with thirty-nine idle threads and one in `D` is
+                    // the answer to it.
+                    Field::Thread => {
+                        value.chars().count() == 1 && {
+                            let want = value.chars().next().unwrap_or(' ');
+                            let mut mine = tasks
+                                .unwrap_or(&[])
+                                .iter()
+                                .filter(|t| t.pid == p.pid)
+                                .peekable();
+                            if mine.peek().is_none() && p.threads == Some(1) {
+                                // A single-threaded process is not collected —
+                                // it *is* its only thread, so a row for it
+                                // would repeat the process one column narrower.
+                                // Its state is that thread's state, and without
+                                // this the commonest contributor to `BLOCKED`
+                                // is the one process `task = D` can never find.
+                                p.state.eq_ignore_ascii_case(&want)
+                            } else {
+                                mine.any(|t| t.state.eq_ignore_ascii_case(&want))
+                            }
+                        }
                     }
                     // Containment, because `name = node` should find
                     // `node /srv/api/server.js` — which is what anyone typing
@@ -192,7 +258,7 @@ fn number_of(p: &ProcSample, f: Field) -> Option<f64> {
         Field::Pid => p.pid as f64,
         Field::Read => p.io?.read as f64,
         Field::Write => p.io?.write as f64,
-        Field::State | Field::User | Field::Name => return None,
+        Field::State | Field::Thread | Field::User | Field::Name => return None,
     })
 }
 

@@ -68,11 +68,35 @@ impl Default for Sample {
     }
 }
 
+/// One thread of a process.
+///
+/// Deliberately not a `ProcSample`. A thread shares its process's memory, user,
+/// command line and parent, so repeating them per thread would multiply the
+/// retained table by the fields that are identical across it. What differs —
+/// and what the reader came to find out — is which thread is running, which is
+/// blocked, and how much of the process's CPU each one accounts for.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ThreadSample {
+    /// The process this thread belongs to, so a row can be filed under it.
+    pub pid: i32,
+    /// The kernel's task id. Equal to `pid` for a process's main thread.
+    pub tid: i32,
+    /// A thread's own name, which is frequently the useful part: a pool of
+    /// forty threads called `tokio-runtime-w` with one called `blocking-1` is a
+    /// different picture than forty anonymous ones.
+    pub name: Arc<str>,
+    pub state: char,
+    /// Percent of one core over the interval, on the same scale as
+    /// [`ProcSample::cpu`], so the threads of a process sum to about its total.
+    pub cpu: f32,
+}
+
 // Every record whose schema the file carries. A record reachable from `Sample`
 // but missing here has no schema in the file and cannot be read back, which
 // `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
-    MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ProcSample, Sample
+    MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ThreadSample,
+    ProcSample, Sample
 }
 
 // The wire order for each retained struct, listed beside it. The list cannot
@@ -613,6 +637,8 @@ pub struct ProcSample {
     pub io: Option<IoRates>,
 }
 
+crate::persist::codec! { ThreadSample { pid: i32, tid: i32, name: Arc<str>, state: char, cpu: f32 } }
+
 crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates> } }
 
 /// A complete snapshot of the machine at one instant.
@@ -731,6 +757,14 @@ pub struct Sample {
     /// name, because a full `tmpfs` is a memory problem the header already
     /// reports and counting it here would say the same bytes twice.
     pub filesystems: Option<Vec<FsStat>>,
+    /// Every thread of every multi-threaded process, flat, when the thread view
+    /// asked for them.
+    ///
+    /// `None` means nobody asked — not that the box is single-threaded. Flat
+    /// rather than nested under each `ProcSample` so a sample carries one
+    /// optional list instead of four hundred, and so the task-level figures in
+    /// the header can be itemised without walking the process table.
+    pub tasks: Option<Vec<ThreadSample>>,
 }
 
 impl Sample {
@@ -781,11 +815,12 @@ impl Sample {
             clock_ceiling: None,
             net: None,
             filesystems: None,
+            tasks: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from

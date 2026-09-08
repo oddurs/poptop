@@ -285,15 +285,38 @@ fn main() -> io::Result<()> {
             // Measure with extended collection both off and on, so the cost
             // of gating a column is a number rather than a claim.
             let n = 20;
-            for needs in [Needs { io: false }, Needs { io: true }] {
+            for needs in [
+                Needs {
+                    io: false,
+                    threads: false,
+                },
+                Needs {
+                    io: true,
+                    threads: false,
+                },
+                Needs {
+                    io: true,
+                    threads: true,
+                },
+            ] {
                 collector.sample(needs)?;
                 let t0 = std::time::Instant::now();
                 let mut count = 0;
+                let mut tasks = 0;
                 for _ in 0..n {
-                    count = collector.sample(needs)?.procs.len();
+                    let s = collector.sample(needs)?;
+                    count = s.procs.len();
+                    tasks = s.tasks.as_ref().map_or(0, Vec::len);
                 }
-                let label = if needs.io { "io on " } else { "io off" };
-                outln!("{label}: {count} procs, {:?}/sample", t0.elapsed() / n);
+                let label = match (needs.io, needs.threads) {
+                    (false, _) => "io off, threads off",
+                    (true, false) => "io on,  threads off",
+                    (true, true) => "io on,  threads on ",
+                };
+                outln!(
+                    "{label}: {count} procs, {tasks} threads, {:?}/sample",
+                    t0.elapsed() / n
+                );
             }
             return Ok(());
         }
@@ -478,7 +501,10 @@ fn clock_line(s: &sample::Sample) -> Option<String> {
 }
 
 fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
-    let needs = Needs { io: true };
+    let needs = Needs {
+        io: true,
+        threads: false,
+    };
     collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
@@ -740,6 +766,8 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             }
         }
         KeyCode::Char('i') => app.toggle_io(),
+        // atop's key for the same thing.
+        KeyCode::Char('y') => app.toggle_threads(),
         KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
         KeyCode::Char('t') => {
             app.tree = !app.tree;
