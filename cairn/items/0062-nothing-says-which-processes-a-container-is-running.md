@@ -2,7 +2,7 @@
 id: 62
 title: Nothing says which processes a container is running
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 58
@@ -45,8 +45,39 @@ this item.
 
 ## Acceptance criteria
 
-- [ ] A process names the container it is in, where the platform says
-- [ ] Processes can be grouped and filtered by container
-- [ ] Parsed from fixtures covering docker, podman, containerd and plain cgroups
-- [ ] A process in no container says nothing rather than showing a blank column
-- [ ] Cost measured; cached per process like the command line
+- [x] A process names the container it is in, where the platform says
+- [x] Processes can be grouped and filtered by container
+- [x] Parsed from fixtures covering docker, podman, containerd and plain cgroups
+- [x] A process in no container says nothing rather than showing a blank column
+- [x] Cost measured; cached per process like the command line
+
+## How it was resolved
+
+PR #82. Twelve characters of the container id from `/proc/<pid>/cgroup` — what
+`docker ps` shows and what atop falls back to. The pod *name* is not in that
+path; atop reads it from the runtime with superuser, and an id is what poptop
+can know without asking anybody's permission.
+
+**A grouping choice, not a second mode.** `g` cycles: by name, by container,
+off. Folding by container is 0050's machinery with a different key, so it does
+not add a fifth exclusive layout. Processes in no container are dropped rather
+than folded into a heap called "none" — the question is what each container is
+doing.
+
+**Fixtures per runtime, because no machine has them all**: docker under systemd,
+cgroupfs and v1; podman; containerd under Kubernetes; cri-o; a login session; a
+plain service; and `0::/../..`, observed from inside a container here, which
+carries no id at all. Two are the traps — a pod's own `…-pod<uuid>.slice` is
+long enough to look like an id, and `session-3.scope` is hex-ish but short.
+
+**Cached for the life of the process**, since a process cannot change container;
+the start time stops a recycled pid inheriting the dead one's answer. Retained
+size 65 -> 70 bytes a process, which the record-size test caught by design.
+
+**Review found a leak the design invited**: every other per-pid map expires on a
+refresh slot, so stale entries go anyway — this one is deliberately valid for a
+process's whole life, so nothing removes an entry unless the prune does. Also
+that the column's width was missing from the elision arithmetic, that it was
+gated on the IO columns' minimum and so never appeared on a hundred-column
+terminal, and that a container holding one process was labelled with that
+process's name.

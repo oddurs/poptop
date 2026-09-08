@@ -37,13 +37,12 @@ The foundation for atop parity: a model that can carry two hundred metrics
 
 ## v2.1 — Everything the kernel says
 
-`#·········` 10% · 1 of 10 done · due 2027-07-01
+`##········` 20% · 2 of 10 done · due 2027-07-01
 
 Breadth and depth: the subsystems atop reports that poptop does not — NUMA,
 
 ### backlog
 
-- [ ] `0062` Nothing says which processes a container is running <sup>feature · p1</sup>
 - [ ] `0064` CPU accounting stops at busy and idle <sup>feature · p2</sup>
 - [ ] `0065` Memory is a percentage and a total, with no composition <sup>feature · p2</sup>
 - [ ] `0066` Paging, swapping and the OOM killer are invisible <sup>feature · p2</sup>
@@ -55,6 +54,7 @@ Breadth and depth: the subsystems atop reports that poptop does not — NUMA,
 
 ### done
 
+- [x] `0062` Nothing says which processes a container is running <sup>feature · p1</sup>
 - [x] `0063` cgroup v2 utilisation and pressure, per cgroup <sup>feature · p1</sup>
 
 ## v2.2 — An institution
