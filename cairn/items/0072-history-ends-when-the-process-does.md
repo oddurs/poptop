@@ -2,7 +2,7 @@
 id: 72
 title: History ends when the process does
 type: feature
-status: backlog
+status: done
 milestone: v2.2
 depends_on:
 - 59
@@ -56,8 +56,8 @@ upgrading is worse than no log.
 
 ## Acceptance criteria
 
-- [ ] History survives the process, addressable by date
-- [ ] Rotation and retention bounded by both age and bytes, measured
-- [ ] Nothing is written without the user having asked, once
-- [ ] A box that has never run poptop still gets its in-session buffer
-- [ ] Measured: bytes a day at 400 processes, at each interval offered
+- [x] History survives the process, addressable by date
+- [x] Rotation and retention bounded by both age and bytes, measured
+- [x] Nothing is written without the user having asked, once
+- [x] A box that has never run poptop still gets its in-session buffer
+- [x] Measured: bytes a day at 400 processes, at each interval offered

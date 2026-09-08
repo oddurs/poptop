@@ -56,7 +56,47 @@ pub struct Settings {
     /// beforehand; a tool that needs a recorder primed in advance is the tool
     /// atop already is, and better.
     pub store: bool,
+    /// Whether to write a daily log that outlives the process.
+    ///
+    /// Off unless asked for, once, for the same reason as [`Settings::store`]
+    /// and more so: this one writes while poptop runs. The rule is that poptop
+    /// **logs if it is left running and works if it was not** — nothing poptop
+    /// draws depends on the log existing, and a box that has never run it still
+    /// gets its in-session buffer.
+    pub log: bool,
+    /// How often a sample is written to the log.
+    ///
+    /// Not the sample interval. A one-second in-session buffer and a
+    /// ten-minute log are different products, and writing every sample would
+    /// fill a disk with a resolution nobody reads a day later. atop's defaults
+    /// make the same split — ten minutes logging, ten seconds interactive.
+    pub log_interval: Duration,
+    /// Days of log kept.
+    pub log_days: u32,
+    /// Bytes of log kept, across every day.
+    ///
+    /// The bound that actually holds. A sample carries a whole process table,
+    /// so a build box with four thousand processes writes twenty times what a
+    /// laptop does at the same settings — a rule in days alone is a different
+    /// rule on every machine.
+    pub log_bytes: u64,
 }
+
+/// How often a sample reaches the log, unless asked otherwise.
+///
+/// atop's logging default, and for the same reason: a day of ten-minute
+/// snapshots is what an incident review reads, and it is 144 samples rather
+/// than 86,400.
+pub const DEFAULT_LOG_INTERVAL: Duration = Duration::from_secs(600);
+/// Days of log kept, unless asked otherwise.
+///
+/// Shorter than atop's twenty-eight because poptop's file is not atop's: this
+/// keeps whole process tables. Seven days of that is measured in the README,
+/// and it is about as much of somebody's home directory as a monitor should
+/// take without being asked twice.
+pub const DEFAULT_LOG_DAYS: u32 = 7;
+/// Bytes of log kept, unless asked otherwise.
+pub const DEFAULT_LOG_BYTES: u64 = 512 << 20;
 
 impl Settings {
     /// The built-in defaults, which are partly a question about the terminal:
@@ -74,6 +114,10 @@ impl Settings {
             interval: crate::app::DEFAULT_INTERVAL,
             window: DEFAULT_WINDOW,
             store: false,
+            log: false,
+            log_interval: DEFAULT_LOG_INTERVAL,
+            log_days: DEFAULT_LOG_DAYS,
+            log_bytes: DEFAULT_LOG_BYTES,
         }
     }
 
@@ -119,6 +163,10 @@ impl Settings {
             interval: crate::app::DEFAULT_INTERVAL,
             window: DEFAULT_WINDOW,
             store: false,
+            log: false,
+            log_interval: DEFAULT_LOG_INTERVAL,
+            log_days: DEFAULT_LOG_DAYS,
+            log_bytes: DEFAULT_LOG_BYTES,
         }
     }
 }
@@ -204,6 +252,26 @@ pub const KEYS: &[(&str, Apply)] = &[
         };
         Ok(())
     }),
+    ("log", |s, v| {
+        s.log = match v {
+            "on" | "true" | "yes" => true,
+            "off" | "false" | "no" => false,
+            _ => return Err("on or off"),
+        };
+        Ok(())
+    }),
+    ("log-interval", |s, v| {
+        s.log_interval = duration(v)?;
+        Ok(())
+    }),
+    ("log-days", |s, v| {
+        s.log_days = v.parse().map_err(|_| "a whole number of days")?;
+        Ok(())
+    }),
+    ("log-bytes", |s, v| {
+        s.log_bytes = bytes(v)?;
+        Ok(())
+    }),
     ("theme", |s, v| {
         // Any name parses. It may name a file this table cannot see, and
         // rejecting unknown names here would make user themes impossible.
@@ -254,6 +322,29 @@ fn duration(v: &str) -> Result<Duration, &'static str> {
         }
         _ => Err(EXPECTED),
     }
+}
+
+/// A size, with the suffixes people actually write.
+///
+/// `512M` and `2G`, and a bare number is bytes. Powers of two, because that is
+/// what `fmt_bytes` prints back and a limit that disagrees with the figure
+/// reporting it is a limit nobody trusts.
+fn bytes(v: &str) -> Result<u64, &'static str> {
+    const EXPECTED: &str = "a size like `256M`, `2G` or a number of bytes";
+    let v = v.trim();
+    let (digits, scale) = match v.as_bytes().last() {
+        Some(b'K' | b'k') => (&v[..v.len() - 1], 1u64 << 10),
+        Some(b'M' | b'm') => (&v[..v.len() - 1], 1 << 20),
+        Some(b'G' | b'g') => (&v[..v.len() - 1], 1 << 30),
+        _ => (v, 1),
+    };
+    digits
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .and_then(|n| n.checked_mul(scale))
+        .ok_or(EXPECTED)
 }
 
 /// Why a setting could not be applied.

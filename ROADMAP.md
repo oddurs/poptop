@@ -56,18 +56,21 @@ Breadth and depth: the subsystems atop reports that poptop does not — NUMA,
 
 ## v2.2 — An institution
 
-`··········` 0% · 0 of 6 done · due 2027-10-01
+`##········` 17% · 1 of 6 done · due 2027-10-01
 
 What makes atop something a fleet depends on rather than something you run:
 
 ### backlog
 
-- [ ] `0072` History ends when the process does <sup>feature · p0</sup>
 - [ ] `0073` There is no way to open yesterday <sup>feature · p0</sup>
 - [ ] `0074` The only machine-readable output is one plain-text sample <sup>feature · p1</sup>
 - [ ] `0075` Nothing summarises a day <sup>feature · p2</sup>
 - [ ] `0076` Nothing can be done to a process, only watched <sup>feature · p3</sup>
 - [ ] `0077` The comparison table will be wrong the moment this lands <sup>docs · p2</sup>
+
+### done
+
+- [x] `0072` History ends when the process does <sup>feature · p0</sup>
 
 ## v0.2 — Cheap enough to run
 

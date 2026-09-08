@@ -572,6 +572,53 @@ fn a_running_server_is_named_and_an_absent_one_is_not() {
 }
 
 #[test]
+fn a_recorded_day_scrubs_like_the_live_buffer() {
+    // The claim `--read` rests on: the cursor, the process table that follows
+    // it and the timeline all work on a buffer and none of them cares where
+    // the buffer came from. Built the way `--read` builds it — capacity sized
+    // to the day, every sample pushed, the cursor left at the oldest — so a
+    // change that made replay a special case shows up here.
+    let day: Vec<Sample> = (0..40)
+        .map(|i| {
+            let mut s = sample_at((i as f32 * 2.5) % 100.0, 3600 - i * 60);
+            s.procs = vec![proc_named(4242, "postgres", i as f32, 1 << 20)];
+            s
+        })
+        .collect();
+
+    let mut app = App::new(day.len());
+    for s in day {
+        app.history.push(s);
+    }
+    app.history.goto_oldest();
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let oldest = rows(&app, 120, 30);
+    assert!(
+        oldest.iter().any(|r| r.contains("postgres")),
+        "a recorded day drew no process table:\n{}",
+        oldest.join("\n")
+    );
+    // Paused, not live: opening a day and being taken to the present would
+    // discard the thing that was asked for.
+    assert!(
+        oldest[0].contains("PAUSED"),
+        "a recorded day opened live: {}",
+        oldest[0]
+    );
+
+    // And the cursor moves through it, showing a different moment.
+    app.history.scrub(20);
+    let middle = rows(&app, 120, 30);
+    assert_ne!(
+        oldest[0], middle[0],
+        "scrubbing a recorded day changed nothing"
+    );
+    app.history.goto_oldest();
+    assert_eq!(rows(&app, 120, 30)[0], oldest[0]);
+}
+
+#[test]
 fn renders_without_panicking() {
     let mut app = App::new(60);
     app.push(sample(42.0));

@@ -14,6 +14,7 @@ mod config;
 mod cvd;
 mod glyphs;
 mod history;
+mod log;
 mod persist;
 mod query;
 mod sample;
@@ -37,6 +38,9 @@ poptop — a system monitor you can rewind
 USAGE:
     poptop            interactive mode
     poptop --once     print one plain-text sample and exit
+    poptop --read DATE
+                    open a recorded day (YYYY-MM-DD) instead of live
+    poptop --days     list the recorded days and their sizes
     poptop --bench    time 20 collection passes (development)
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
@@ -49,6 +53,17 @@ USAGE:
     --store=on|off  keep history across restarts (default off). Written on a
                     clean exit to $XDG_STATE_HOME/poptop/history and read at
                     startup. poptop needs nothing running beforehand either way.
+    --log=on|off    write a daily log that outlives the process (default off).
+                    One file a day in $XDG_STATE_HOME/poptop/log, opened with
+                    --read. poptop logs if it is left running and works if it
+                    was not: nothing it draws depends on the log existing.
+    --log-interval=SPAN
+                    how often a sample reaches the log (default 10m). Not the
+                    sample interval — the buffer stays at --interval.
+    --log-days=N    days of log kept (default 7)
+    --log-bytes=SIZE
+                    bytes of log kept across every day (default 512M). The
+                    bound that holds: a sample carries a whole process table.
     --warn=PCT      where 'getting busy' begins (default 50)
     --critical=PCT  where 'in trouble' begins (default 80). Must exceed --warn.
     --theme=NAME    a built-in (safe, classic, auto) or a file in
@@ -278,9 +293,38 @@ fn main() -> io::Result<()> {
         .with_overrides(&settings.overrides);
 
     match args.first().map(String::as_str) {
-        Some("--once") => {
+        Some("--days") => {
             flush(&warnings);
-            return once(&mut collector, settings.interval);
+            let Some(dir) = log::dir() else {
+                eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
+                std::process::exit(2);
+            };
+            let days = log::days(&dir);
+            if days.is_empty() {
+                outln!("no logs in {}", dir.display());
+            }
+            for d in days {
+                let size = std::fs::metadata(dir.join(log::file_name(d)))
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                outln!("{d}  {}", ui::fmt_bytes(size));
+            }
+            return Ok(());
+        }
+        Some("--once") => {
+            // `--once` logs too, where the user asked for a log. A monitor
+            // that can only record while somebody is watching it is not much
+            // of a recorder, and `poptop --once --log=on` from cron is a
+            // legitimate way to fill a day without leaving a terminal open.
+            let logging = settings.log.then(log::dir).flatten();
+            let r = once(
+                &mut collector,
+                settings.interval,
+                logging.as_deref(),
+                settings.log_bytes,
+            );
+            flush(&warnings);
+            return r;
         }
         Some("--bench") => {
             flush(&warnings);
@@ -351,6 +395,9 @@ fn main() -> io::Result<()> {
             };
             return check_theme(name);
         }
+        // Handled later, once the buffer can be sized for the day it opens —
+        // named here so it is not rejected as unrecognised on the way past.
+        Some("--read") => {}
         Some("--version" | "-V") => {
             flush(&warnings);
             outln!("poptop {}", env!("CARGO_PKG_VERSION"));
@@ -392,7 +439,45 @@ fn main() -> io::Result<()> {
         warnings.push(config::Warning(note));
     }
 
-    let mut app = App::new(settings.history_len());
+    // A recorded day, if one was asked for. Read before the buffer is sized,
+    // because a day holds as many samples as it holds and a buffer sized for
+    // the live window would throw away the morning to make room for the
+    // evening.
+    let opened = match args.first().map(String::as_str) {
+        Some("--read") => {
+            let Some(text) = args.get(1) else {
+                flush(&warnings);
+                eprintln!("poptop: --read needs a date, as YYYY-MM-DD. `poptop --days` lists them");
+                std::process::exit(2);
+            };
+            let Some(date) = log::Date::parse(text) else {
+                flush(&warnings);
+                eprintln!("poptop: `{text}` is not a date. Write it as YYYY-MM-DD");
+                std::process::exit(2);
+            };
+            let Some(dir) = log::dir() else {
+                flush(&warnings);
+                eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
+                std::process::exit(2);
+            };
+            let (samples, said) = match log::open_day(&dir, date) {
+                Ok(pair) => pair,
+                Err(why) => {
+                    flush(&warnings);
+                    eprintln!("poptop: {why}");
+                    std::process::exit(1);
+                }
+            };
+            warnings.extend(said.into_iter().map(config::Warning));
+            Some(samples)
+        }
+        _ => None,
+    };
+
+    let capacity = opened
+        .as_ref()
+        .map_or(settings.history_len(), |s| s.len().max(1));
+    let mut app = App::new(capacity);
     app.interval = settings.interval;
     app.theme = theme;
     app.glyphs = settings.glyphs;
@@ -443,11 +528,45 @@ fn main() -> io::Result<()> {
             app.history.push(s);
         }
     }
-    app.push(first);
+    if let Some(samples) = opened {
+        let n = samples.len();
+        for s in samples {
+            app.history.push(s);
+        }
+        // The cursor lands on the oldest recorded sample rather than on the
+        // live one. Somebody who opened a day meant to look at the day.
+        app.history.goto_oldest();
+        warnings.push(config::Warning(format!("opened {n} recorded samples")));
+    } else {
+        app.push(first);
+    }
+
+    // Nothing is written unless the user asked, once — the flag or the config
+    // key. A missing state directory is a reason to say so rather than to
+    // quietly not log: somebody who turned this on should hear that it is off.
+    let logging = settings.log.then(log::dir).flatten().map(|dir| Logging {
+        dir,
+        every: settings.log_interval,
+        days: settings.log_days,
+        bytes: settings.log_bytes,
+    });
+    if settings.log && logging.is_none() {
+        warnings.push(config::Warning(
+            "no state directory to log into — set HOME or XDG_STATE_HOME".into(),
+        ));
+    }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app, &mut collector);
+    let mut said = Vec::new();
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &mut collector,
+        logging.as_ref(),
+        &mut said,
+    );
     ratatui::restore();
+    warnings.extend(said.into_iter().map(config::Warning));
     // A source that is only opened when a view is — an exit listener, a cgroup
     // walk — finds out it is unavailable the first time somebody asks, which is
     // long after the startup warnings were printed. Drained here so the reason
@@ -523,7 +642,12 @@ fn clock_line(s: &sample::Sample) -> Option<String> {
     ))
 }
 
-fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
+fn once(
+    collector: &mut impl Collector,
+    interval: Duration,
+    logging: Option<&std::path::Path>,
+    cap: u64,
+) -> io::Result<()> {
     let needs = Needs::NONE
         .with(Source::Io)
         .with(Source::Exited)
@@ -531,6 +655,11 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
+    if let Some(dir) = logging
+        && !log::append(dir, s.at, &[&s], cap)?
+    {
+        eprintln!("poptop: today's log is at its size limit, so this sample was not written");
+    }
 
     outln!(
         "cpu     {:.1}%  ({} cores)",
@@ -806,12 +935,31 @@ fn human(b: u64) -> String {
     format!("{v:.1}{}", U[i])
 }
 
+/// Where and how often the log is written, when it is written at all.
+///
+/// `None` is the default and the whole point: poptop logs if it is left running
+/// and works if it was not, so the ordinary run writes nothing.
+pub struct Logging {
+    pub dir: std::path::PathBuf,
+    pub every: Duration,
+    pub days: u32,
+    pub bytes: u64,
+}
+
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     collector: &mut impl Collector,
+    logging: Option<&Logging>,
+    notes: &mut Vec<String>,
 ) -> io::Result<()> {
     let interval = app.interval;
+    // The first sample reaches the log immediately rather than one logging
+    // interval in. A poptop left running for nine minutes and killed would
+    // otherwise have recorded nothing at all, which is the case somebody who
+    // asked for a log is least willing to forgive.
+    let mut next_log = Instant::now();
+    let mut last_pruned: Option<log::Date> = None;
     // A fixed cadence, not "one interval after the last sample finished".
     //
     // Restarting the clock after collection adds the collect and draw time to
@@ -843,6 +991,42 @@ fn run(
             let t0 = Instant::now();
             let s = collector.sample(app.needs())?;
             app.spent(t0.elapsed(), interval);
+            // Logged before the buffer takes it, so what is written is one
+            // sample rather than however many the buffer happens to hold.
+            if let Some(cfg) = logging.filter(|_| Instant::now() >= next_log) {
+                let at = s.at;
+                match log::append(&cfg.dir, at, &[&s], cfg.bytes) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let said = "today's log is at its size limit and is no longer \
+                                    being written to"
+                            .to_string();
+                        if !notes.contains(&said) {
+                            notes.push(said);
+                        }
+                    }
+                    Err(e) => {
+                        // Once. A disk that filled would otherwise put one
+                        // line on the panel every logging interval until the
+                        // tool is closed, and the first one already said it.
+                        let said = format!("could not write the log: {e}");
+                        if !notes.contains(&said) {
+                            notes.push(said);
+                        }
+                    }
+                }
+                next_log = Instant::now() + cfg.every;
+                // Retention is applied when the date changes, not on a timer:
+                // the rule is about days, and a poptop left running over
+                // midnight is exactly the one that needs it applied.
+                let today = log::date_of(at);
+                if today.is_some() && today != last_pruned {
+                    last_pruned = today;
+                    if let Some(d) = today {
+                        notes.extend(log::prune(&cfg.dir, cfg.days, cfg.bytes, d));
+                    }
+                }
+            }
             app.push(s);
             next_sample += interval;
             // Falling a whole interval behind means the host cannot sustain
