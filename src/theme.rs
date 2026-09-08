@@ -484,6 +484,26 @@ impl Theme {
         }
     }
 
+    /// A warning in chrome: a message saying why something is *missing*, as
+    /// opposed to a legend saying what something means.
+    ///
+    /// Exists so the two can be told apart without being read. A section title
+    /// that carried a count, a setting, a scale and a warning behind identical
+    /// `·` marks read as one undifferentiated string of facts, and a reader
+    /// could not tell which of them they could change, which was telling them
+    /// something was wrong, and which was a legend for a column elsewhere.
+    ///
+    /// Bold at every tier, coloured where there is colour. A warning that
+    /// depends on colour to be a warning is not one on a mono terminal.
+    pub fn warning_style(&self) -> Style {
+        let base = Style::default().add_modifier(Modifier::BOLD);
+        if self.tier.has_color() {
+            base.fg(self.heat(self.warn_pct))
+        } else {
+            base
+        }
+    }
+
     /// The PAUSED badge. Loud on purpose in every tier: reading a stale process
     /// table as the current one is the worst thing this tool could allow.
     /// Reverse video rather than a colour pair: a white-on-something badge

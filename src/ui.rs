@@ -115,23 +115,24 @@ pub fn draw(f: &mut Frame, app: &App) {
 ///
 /// The rule takes the most recessive token and the name a readable but still
 /// recessive one, so neither competes with the figures beneath.
-/// Join what fits, dropping whole segments from the least important end.
+/// Join what fits, dropping whole clauses from the least important end.
 ///
 /// The same ladder the header figures and the key hints use. A title is not
 /// truncated: a clipped one reads as a message that does not exist, and the
 /// pieces here are each a separate claim rather than one sentence, so losing a
 /// whole claim is honest where losing the end of one is not.
 ///
-/// Segments are given in display order and carry the rank at which they are
-/// given up, highest first. An empty segment costs nothing and is skipped.
-fn fit_title(parts: &[(u8, String)], width: usize) -> String {
-    let mut keep: Vec<bool> = parts.iter().map(|(_, s)| !s.is_empty()).collect();
+/// Clauses are given in display order and carry the rank at which they are
+/// given up, highest first, and the style they are drawn in. An empty clause
+/// costs nothing and is skipped.
+fn fit_title(parts: &[(u8, String, Style)], width: usize) -> Vec<Span<'static>> {
+    let mut keep: Vec<bool> = parts.iter().map(|(_, s, _)| !s.is_empty()).collect();
     let len = |keep: &[bool]| -> usize {
         parts
             .iter()
             .zip(keep)
             .filter(|(_, k)| **k)
-            .map(|((_, s), _)| s.chars().count())
+            .map(|((_, s, _), _)| s.chars().count())
             .sum()
     };
     while len(&keep) > width {
@@ -140,7 +141,7 @@ fn fit_title(parts: &[(u8, String)], width: usize) -> String {
             .iter()
             .enumerate()
             .filter(|(i, _)| keep[*i])
-            .max_by_key(|(_, (rank, _))| *rank)
+            .max_by_key(|(_, (rank, _, _))| *rank)
             .map(|(i, _)| i)
         else {
             break;
@@ -156,20 +157,37 @@ fn fit_title(parts: &[(u8, String)], width: usize) -> String {
         .iter()
         .zip(&keep)
         .filter(|(_, k)| **k)
-        .map(|((_, s), _)| s.as_str())
+        .map(|((_, s, style), _)| Span::styled(s.clone(), *style))
         .collect()
 }
 
 fn divider(title: &str, width: u16, theme: &Theme) -> Line<'static> {
-    let name = format!(" {} ", title.trim());
+    divider_of(
+        // The space the clauses carry for themselves in `divider_of`.
+        vec![Span::styled(
+            format!(" {}", title.trim()),
+            theme.title_style(),
+        )],
+        width,
+        theme,
+    )
+}
+
+/// A section rule around a title made of separately styled clauses.
+///
+/// Split from [`divider`] so the process panel can draw a warning as a warning
+/// while the timeline keeps its one-sentence title.
+fn divider_of(parts: Vec<Span<'static>>, width: u16, theme: &Theme) -> Line<'static> {
     let lead = "─".repeat(2.min(width as usize));
-    let used = lead.chars().count() + name.chars().count();
+    let name: usize = parts.iter().map(|s| s.content.chars().count()).sum();
+    let used = lead.chars().count() + name + 1;
     let tail = "─".repeat((width as usize).saturating_sub(used));
-    Line::from(vec![
-        Span::styled(lead, theme.chrome_style()),
-        Span::styled(name, theme.title_style()),
-        Span::styled(tail, theme.chrome_style()),
-    ])
+    // The clauses carry their own leading space, so the rule does not add one.
+    let mut out = vec![Span::styled(lead, theme.chrome_style())];
+    out.extend(parts);
+    out.push(Span::raw(" "));
+    out.push(Span::styled(tail, theme.chrome_style()));
+    Line::from(out)
 }
 
 fn fmt_bytes(b: u64) -> String {
@@ -1652,9 +1670,45 @@ fn min_width_for_io(show_user: bool) -> u16 {
 /// actually drawn at.
 const MIN_COMMAND_W: u16 = 10;
 
-/// How much of the line is left for the command name.
+/// The header over the sparkline column, carrying its scale.
 ///
-/// The identity column is the one that takes what nothing else claimed, so it
+/// The scale used to be a clause in the section title, three metres from the
+/// column it described. A legend belongs with the thing it explains, and the
+/// column header is as close as it gets.
+///
+/// One ceiling is shared by every row so the shapes can be compared, which
+/// means the column *has* a scale — and an unlabelled scale that moves is the
+/// same trap as an unlabelled y-axis. It steps 10 / 25 / 50 / 100 below one
+/// core, a tenfold swing: a column read at 10% one second and 100% the next,
+/// because one process briefly touched 60%, has changed every shape in it with
+/// nothing said.
+///
+/// Named as well as scaled when both fit in [`SPARK_W`], and scaled alone when
+/// they do not — the scale is the part that cannot be guessed from a column of
+/// braille.
+#[cfg(test)]
+pub fn spark_header_for_test(ceiling: f32) -> String {
+    spark_header(ceiling)
+}
+
+fn spark_header(ceiling: f32) -> String {
+    let scale = format!("≤{ceiling:.0}%");
+    // Three tiers, because the ceiling doubles past one core and the name is
+    // the part that runs out of room first. On a sixteen-core box a busy
+    // process gives a ceiling of 1600, and `HIST ≤1600%` is eleven columns
+    // against ten — which used to leave the bare scale and nothing anywhere on
+    // screen saying that column was history, on exactly the machines where the
+    // sparkline matters most. `H` is a stub, but it is a stub of a name.
+    for candidate in [format!("HIST {scale}"), format!("H {scale}"), scale] {
+        if candidate.chars().count() <= SPARK_W {
+            return candidate;
+        }
+    }
+    // A ceiling wide enough to crowd out even `≤N%` would need a machine with
+    // hundreds of cores and a process using all of them.
+    format!("≤{:.0}", ceiling / 100.0)
+}
+
 /// Width of the `USER` column, and the width `COMMAND` gets back when it is
 /// folded into the title. See [`crate::app::App::one_user`].
 const USER_W: u16 = 10;
@@ -1813,6 +1867,30 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // Keep the selected row on screen while scrolling through a long list.
     let offset = app.selected.saturating_sub(rows_visible.saturating_sub(1));
 
+    // Measurements first, contiguous, scanned down the left where the eye
+    // starts; the sparkline closing them; then identity — PID, USER, COMMAND —
+    // together at the right edge, where the variable-width column belongs.
+    //
+    // The three columns that say *which process this is* used to sit at
+    // opposite ends of the row with eight columns of measurement between them
+    // and ten of braille immediately before the name, so reading a row meant
+    // starting at the left, jumping seventy columns right to find out what it
+    // was, and coming back.
+    //
+    // Three arrangements were rendered before choosing. The rejected two:
+    //
+    //   - COMMAND second, beside PID. Reads best for identification and fails
+    //     on any wide terminal: COMMAND is the column that absorbs the slack,
+    //     so the measurements end up against the right edge with a widening
+    //     gulf in front of them.
+    //   - Leave the order and move HISTORY off the boundary. Nearly free, and
+    //     it does not do the job — PID and COMMAND are still seventy columns
+    //     apart — and it puts a block of braille immediately after PID, which
+    //     interrupts the numeric scan it was meant to protect.
+    //
+    // The cost is the convention that PID comes first. It is paid because the
+    // order now matches what the tool is for: spot a row that is hot, then read
+    // what it is, with its pid beside the name rather than seventy columns away.
     let rows: Vec<Row> = rows_data
         .iter()
         .enumerate()
@@ -1828,13 +1906,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 // parentage, but clearly not itself a hit.
                 style = style.add_modifier(Modifier::DIM);
             }
-            let mut cells = vec![num(p.pid.to_string())];
-            // Dropped, not blanked: an empty cell still occupies its ten
-            // columns, and giving them to `COMMAND` is the whole point.
-            if show_user {
-                cells.push(Cell::from(p.user.to_string()));
-            }
-            cells.extend([
+            let mut cells = vec![
                 num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
                 // A bar beside the number turns a column that must be read
                 // into one that can be scanned. htop does the same, for the
@@ -1858,16 +1930,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                     Some(n) => n.to_string(),
                     None => "—".into(),
                 }),
-            ]);
+            ];
             if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
             }
-            // The spine is structural, not data: it takes the chrome token so
-            // it recedes the way a gridline should, while the name stays at
-            // full contrast.
-            // The sparkline sits before the command, so the eye can run down
-            // a column of shapes rather than hunting for it past ragged names.
+            // The sparkline closes the measurements, so the eye can run down a
+            // column of shapes rather than hunting for it past ragged names —
+            // and it makes the boundary between what a row *measures* and what
+            // a row *is*.
             cells.push(
                 Cell::from(sparkline(
                     p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
@@ -1877,6 +1948,16 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 ))
                 .style(app.theme.dim_style()),
             );
+            // Identity, all of it together — see the note above `rows`.
+            cells.push(num(p.pid.to_string()));
+            // Dropped, not blanked: an empty cell still occupies its ten
+            // columns, and giving them to `COMMAND` is the whole point.
+            if show_user {
+                cells.push(Cell::from(p.user.to_string()));
+            }
+            // The spine is structural, not data: it takes the chrome token so
+            // it recedes the way a gridline should, while the name stays at
+            // full contrast.
             // Elided here rather than clipped by the terminal, so the part
             // that identifies the process survives — see `elide_middle`.
             //
@@ -1897,31 +1978,27 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // A header aligned against its column is a header for a different column.
     // `right` marks the numeric ones; the bars and the text columns stay left.
     let right = |s| num(s).style(app.theme.table_header_style());
-    let left = |s| Cell::from(s).style(app.theme.table_header_style());
-    let mut header_cells = vec![right("PID")];
-    if show_user {
-        header_cells.push(left("USER"));
-    }
-    header_cells.extend([
+    let left = |s: &str| Cell::from(s.to_string()).style(app.theme.table_header_style());
+    // In the order the cells are pushed, which is what `Table` pairs them by.
+    // With the IO columns shown these had drifted a place: `HISTORY` sat over
+    // DISK R, `DISK R` over DISK W, and `DISK W` over the sparkline — every one
+    // of the three naming the column beside it.
+    let mut header_cells = vec![
         right("CPU%"),
         left(""),
         right("RSS"),
         left(""),
         left("S"),
         right("THR"),
-    ]);
-    // In the order the cells are pushed, which is what `Table` pairs them by.
-    // These were the other way round: with the IO columns shown, `HISTORY` sat
-    // over DISK R, `DISK R` over DISK W, and `DISK W` over the sparkline —
-    // every one of the three naming the column beside it.
+    ];
     if show_io {
         header_cells.push(right("DISK R"));
         header_cells.push(right("DISK W"));
     }
-    header_cells.push(left("HISTORY"));
-    if show_io {
-        header_cells.push(right("DISK R"));
-        header_cells.push(right("DISK W"));
+    header_cells.push(left(&spark_header(spark_ceiling)));
+    header_cells.push(right("PID"));
+    if show_user {
+        header_cells.push(left("USER"));
     }
     header_cells.push(left("COMMAND"));
     let header = Row::new(header_cells).style(app.theme.table_header_style());
@@ -1989,11 +2066,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // right as it appears on screen, and the rank beside each says when it
     // goes. The sort clause reads better before the io status and is given up
     // first of the two.
+    //
+    // Each clause carries its own style, because they are not all the same kind
+    // of statement. `N/M need root` is a warning — a reason a column is empty,
+    // and something someone can act on — and behind an identical `·` it read as
+    // one more fact in a string of facts.
+    let (io_text, io_is_warning) = io_status(show_io, app, collected);
+    let plain = app.theme.title_style();
     let parts = [
-        (0u8, format!(" processes ({})", rows_data.len())),
-        (10, all_one),
-        (20, hidden),
-        (40, format!(" — sort: {}", app.sort.label())),
+        (0u8, format!(" processes ({})", rows_data.len()), plain),
+        (10, all_one, plain),
+        (20, hidden, plain),
+        (40, format!(" — sort: {}", app.sort.label()), plain),
         (
             50,
             if app.tree {
@@ -2001,43 +2085,42 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 String::new()
             },
+            plain,
         ),
-        (60, churn),
-        (30, io_status(show_io, app, collected)),
-        // Always, not only above one core. The ceiling steps 10 / 25 / 50 / 100
-        // below that, which is a tenfold swing: a column read at 10% one second
-        // and 100% the next, because one process briefly touched 60%, has
-        // changed every shape in it with nothing said. One ceiling is shared by
-        // every row so the shapes can be compared, which means the column has a
-        // scale — and an unlabelled scale that moves is the same trap as an
-        // unlabelled y-axis.
-        (70, format!(" · history ≤{spark_ceiling:.0}%")),
+        (60, churn, plain),
+        (
+            30,
+            io_text,
+            if io_is_warning {
+                app.theme.warning_style()
+            } else {
+                plain
+            },
+        ),
     ];
-    // `divider` spends two columns on its lead and one space either side of the
-    // title, so that is what the ladder has to fit inside.
     let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
 
-    let mut widths = vec![Constraint::Length(7)];
-    if show_user {
-        widths.push(Constraint::Length(USER_W));
-    }
-    widths.extend([
+    let mut widths = vec![
         Constraint::Length(6),
         Constraint::Length(BAR_W as u16 + 1), // bar, plus room for the over-100 mark
         Constraint::Length(8),
         Constraint::Length(BAR_W as u16),
         Constraint::Length(2),
         Constraint::Length(4),
-    ]);
+    ];
     if show_io {
         widths.push(Constraint::Length(9));
         widths.push(Constraint::Length(9));
     }
     widths.push(Constraint::Length(SPARK_W as u16));
+    widths.push(Constraint::Length(7));
+    if show_user {
+        widths.push(Constraint::Length(USER_W));
+    }
     widths.push(Constraint::Min(MIN_COMMAND_W));
 
     f.render_widget(
-        Paragraph::new(divider(&title, area.width, &app.theme)),
+        Paragraph::new(divider_of(title, area.width, &app.theme)),
         Rect { height: 1, ..area },
     );
     let table = Table::new(rows, widths).header(header);
@@ -2052,7 +2135,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Width of the per-process history sparkline, in cells.
-const SPARK_W: usize = 10;
+pub const SPARK_W: usize = 10;
 
 /// One process's CPU history as a sparkline.
 ///
@@ -2135,38 +2218,62 @@ fn io_cell(collected: bool, io: Option<IoRates>, write: bool, theme: &Theme) -> 
 ///
 /// If most processes are unreadable the table would otherwise look broken; this
 /// says why, and implies the fix.
-fn io_status(show_io: bool, app: &App, collected: bool) -> String {
+/// What to say about the disk columns, and whether it is a warning.
+///
+/// Two kinds of statement wearing the same clothes was the problem: a reader
+/// could not tell which of the title's clauses was telling them something was
+/// wrong. `N/M need root` is a *reason a column is empty* — someone can act on
+/// it — while the rest explain why the columns are absent and need no action.
+/// The `bool` is what lets the two be drawn differently.
+fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
     if !app.show_io {
-        return String::new();
+        return (String::new(), false);
     }
     // Asked for but not drawn. Without this the key is a silent no-op on a
     // narrow panel: the columns do not appear, nothing says why, and the
     // obvious conclusion is that the feature is broken.
+    // A warning, not a legend: widening the terminal fixes it, which is the
+    // test the two are split on. It is also the one message this panel goes out
+    // of its way to guarantee — without it the `i` key is a silent no-op.
     if !show_io {
-        return " · io: panel too narrow".into();
+        return (" ! io: panel too narrow".into(), true);
     }
     // A kernel question rather than a permission one, and they want different
     // words: nothing the user does will make this appear.
     if app.history.current().is_some_and(|s| !s.io_supported) {
-        return " · io: this kernel keeps no per-process accounting".into();
+        return (
+            " · io: this kernel keeps no per-process accounting".into(),
+            false,
+        );
     }
     if !collected {
-        return " · io: not collected here".into();
+        return (" · io: not collected here".into(), false);
     }
     // Only unreadable processes are worth mentioning: a process awaiting its
     // second reading also shows a dash, but resolves on its own and needs no
     // action from anyone.
     let Some(s) = app.history.current() else {
-        return " · io".into();
+        return (String::new(), false);
     };
+    // Nothing to say: the columns are there and they are readable. The columns
+    // themselves are the legend.
     if s.io_denied == 0 {
-        return " · io".into();
+        return (String::new(), false);
     }
     // Against the processes IO was attempted for, not the rows on screen. The
     // two are different numbers the moment a filter is active, and `90/2 need
     // root` is not a ratio of anything.
     let eligible = s.procs.iter().filter(|p| !p.is_kernel_thread()).count();
-    format!(" · io: {}/{eligible} need root", s.io_denied)
+    // Says what needs root. Without the subject the clause read
+    // `processes (312) — sort: CPU ⚠ 41/298 need root` with nothing tying it to
+    // the disk columns it is about.
+    //
+    // `!` rather than `⚠`: the warning sign is given emoji presentation by
+    // several terminals and drawn two columns wide, while every width in this
+    // file is counted in `chars`. A rule that runs one column past its panel is
+    // the byte-versus-column mistake again, one layer up. The style carries the
+    // severity; the marker only has to be visible.
+    (format!(" ! io: {}/{eligible} need root", s.io_denied), true)
 }
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
