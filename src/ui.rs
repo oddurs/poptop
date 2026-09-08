@@ -962,6 +962,12 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let window_start = window_start(&app.history, shown);
     let window = &samples[window_start..window_start + shown];
 
+    // The selected process's own history, in place of the machine's. Same
+    // window, same zoom, same cursor: this is the timeline asking its question
+    // of one process rather than a second panel that would have to reimplement
+    // all three.
+    let subject = app.detail.then(|| app.watched_series(window)).flatten();
+
     // In the order they earn their place. `WAIT` is second because a machine
     // that is stalled rather than busy is the case a monitor is opened to
     // diagnose, and memory over ten minutes is a flat line or a slow ramp that
@@ -1030,6 +1036,15 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // The header figure carries the number until the timeline can draw a series
     // with a scale of its own — cairn 0032.
 
+    // Swapped wholesale rather than merged: a panel showing one process's CPU
+    // beside the machine's memory would be two subjects in one graph. Before
+    // the split, because the split is derived from how many series there are.
+    let mut absent: Vec<bool> = Vec::new();
+    if let Some(series) = &subject {
+        candidates = series.rows.clone();
+        absent = series.absent.clone();
+    }
+
     let row_split = sections(graph_rows, candidates.len(), gutter);
     candidates.truncate(row_split.len());
 
@@ -1038,7 +1053,20 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // has no predecessor to be discontinuous with.
     let all_times: Vec<std::time::SystemTime> = samples.iter().map(|s| s.at).collect();
     let all_gaps = history::gaps_in(&all_times, app.interval);
-    let gap_slots = history::any_slots(&all_gaps[window_start..window_start + shown], zoom, slots);
+    let mut gap_slots =
+        history::any_slots(&all_gaps[window_start..window_start + shown], zoom, slots);
+    // Where the process was not running, drawn as a gap rather than as zero.
+    // A process that did not exist did not use no CPU — it used none of
+    // anything because it was not there, and a flat line at the bottom says
+    // the opposite. The moments it started and went are often the whole
+    // answer, so they are the one thing this panel must not smooth over.
+    if !absent.is_empty() {
+        for (slot, gap) in history::any_slots(&absent, zoom, slots).iter().enumerate() {
+            if let Some(g) = gap_slots.get_mut(slot) {
+                *g |= *gap;
+            }
+        }
+    }
 
     // The threshold rule. Its whole point is that the boundary is readable
     // without colour — until now the 50/80 thresholds existed *only* as a hue
@@ -1149,7 +1177,17 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // a dotted line, and a permanent legend entry for something you may
         // never see is clutter charged against every other frame.
         let gap_note = if gap_slots.iter().any(|&g| g) {
-            format!(", {} time missing", app.glyphs.gap_glyph())
+            // What the mark means depends on whose graph this is. On the
+            // machine's, a seam is time the tool was not looking. On one
+            // process's, it is overwhelmingly the process not being there —
+            // which is not a hole in the record but a fact about the process,
+            // and often the fact the panel was opened for.
+            let why = if subject.is_some() {
+                "not running"
+            } else {
+                "time missing"
+            };
+            format!(", {} {why}", app.glyphs.gap_glyph())
         } else {
             String::new()
         };
@@ -1210,14 +1248,27 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Retained is what the clock says; capacity is what the buffer will hold at
     // the nominal rate, which is a claim about the future and so is nominal by
     // nature. Mixing a measured figure with a projected one is deliberate.
-    let title = format!(
-        " timeline — {} of {} buffered ",
-        fmt_lag(app.history.span()),
-        // `capacity - 1`, for the same reason `history_len` adds one: a buffer
-        // of n samples spans n - 1 intervals. `capacity * interval` overstated
-        // the span it can hold by exactly one interval.
-        fmt_lag(app.interval * app.history.capacity().saturating_sub(1) as u32),
-    );
+    // Whose history this is. A panel that has changed subject and kept its old
+    // name is worse than one that never changed: the graphs look like the
+    // machine's and are not.
+    let title = match &subject {
+        Some(_) => format!(
+            " {} — {} of {} buffered ",
+            app.selected
+                .as_ref()
+                .map_or_else(String::new, |w| elide_middle(w.name(), 48)),
+            fmt_lag(app.history.span()),
+            fmt_lag(app.interval * app.history.capacity().saturating_sub(1) as u32),
+        ),
+        None => format!(
+            " timeline — {} of {} buffered ",
+            fmt_lag(app.history.span()),
+            // `capacity - 1`, for the same reason `history_len` adds one: a buffer
+            // of n samples spans n - 1 intervals. `capacity * interval` overstated
+            // the span it can hold by exactly one interval.
+            fmt_lag(app.interval * app.history.capacity().saturating_sub(1) as u32),
+        ),
+    };
 
     let mut all = vec![divider(&title, area.width, &app.theme)];
     all.extend(lines);
@@ -2477,6 +2528,7 @@ pub const KEY_HINTS: &[&str] = &[
     "i io",
     "K kernel",
     "g group",
+    "d detail",
     "S constraint",
 ];
 

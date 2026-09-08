@@ -175,6 +175,20 @@ pub struct App {
     /// makes the same two choices. Grouping destroys parentage by construction,
     /// so a grouped tree would be a tree of things that are not processes.
     pub group: bool,
+    /// Show the selected process's own history in place of the machine's.
+    ///
+    /// The buffer already holds every retained sample's whole process table, so
+    /// "what has *this* process been doing" is a question the data can answer
+    /// and the interface could not: it was a ten-column sparkline in a table
+    /// row, about one percent of the screen for the thing the tool is built
+    /// around.
+    ///
+    /// It replaces the timeline rather than crowding beside it. The timeline is
+    /// the panel about time; this is the same question asked of one process, so
+    /// it is the same panel with a different subject — and it inherits
+    /// scrubbing, zoom, the cursor and the caption by being that rather than by
+    /// reimplementing them.
+    pub detail: bool,
     /// Whether IO is being collected. Deliberately a ratchet: hiding the
     /// columns does not stop collection, because resuming later would punch a
     /// hole in the middle of history. One clean boundary between "not collected
@@ -209,6 +223,7 @@ impl App {
             show_io: true,
             show_kernel: false,
             group: false,
+            detail: false,
             io_ratchet: true,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
@@ -368,6 +383,79 @@ impl App {
                 .filter(|p| p.is_kernel_thread() && query.matches(p))
                 .count()
         })
+    }
+
+    /// The watched process's own history over a window of samples.
+    ///
+    /// `None` when nothing is selected, or when the process appears nowhere in
+    /// the window — a panel about a process that was never here has nothing to
+    /// draw, and an empty graph would say it was idle.
+    ///
+    /// Every row scales to its own peak, which the graph already does per row,
+    /// so a thread count and a percentage sit in the same panel without either
+    /// pretending to be the other. Disk is in MB/s for the same reason: the
+    /// axis prints its ceiling as a bare number, and `4` is a scale a reader
+    /// can hold where `4194304` is not.
+    pub fn watched_series(&self, window: &[&Sample]) -> Option<WatchedSeries> {
+        let w = self.selected.as_ref()?;
+        let total_mem = window.last()?.mem.total.max(1) as f32;
+
+        let find = |s: &Sample| -> Option<ProcSample> {
+            match w {
+                Watched::Process { pid, started, .. } => s
+                    .procs
+                    .iter()
+                    .find(|p| p.pid == *pid && p.started == *started)
+                    .cloned(),
+                // A group is the sum of whatever carries its name in that
+                // sample, which is what the table shows for it.
+                Watched::Group { name } => {
+                    let members: Vec<&ProcSample> =
+                        s.procs.iter().filter(|p| *p.name == **name).collect();
+                    (!members.is_empty()).then(|| {
+                        let refs: Vec<&ProcSample> = members;
+                        grouped(&refs)
+                            .into_iter()
+                            .next()
+                            .map(|r| r.proc.into_owned())
+                            .expect("a non-empty group produced no row")
+                    })
+                }
+            }
+        };
+
+        let seen: Vec<Option<ProcSample>> = window.iter().map(|s| find(s)).collect();
+        if seen.iter().all(Option::is_none) {
+            return None;
+        }
+        let absent: Vec<bool> = seen.iter().map(Option::is_none).collect();
+        let at = |f: &dyn Fn(&ProcSample) -> f32| -> Vec<f32> {
+            seen.iter().map(|p| p.as_ref().map_or(0.0, f)).collect()
+        };
+
+        let mut rows: Vec<(&'static str, Vec<f32>)> = vec![
+            ("CPU", at(&|p: &ProcSample| p.cpu)),
+            (
+                "MEM",
+                at(&|p: &ProcSample| p.rss as f32 / total_mem * 100.0),
+            ),
+        ];
+        // Only where the platform says. A flat zero would read as "no threads",
+        // which is not a thing a process can have.
+        if seen.iter().flatten().any(|p| p.threads.is_some()) {
+            rows.push(("THR", at(&|p: &ProcSample| p.threads.unwrap_or(0) as f32)));
+        }
+        // Megabytes a second, read plus write. Present only where the figures
+        // are: an empty row is worse than a shorter panel.
+        if seen.iter().flatten().any(|p| p.io.is_some()) {
+            rows.push((
+                "DISK",
+                at(&|p: &ProcSample| {
+                    p.io.map_or(0.0, |io| (io.read + io.write) as f32 / (1024.0 * 1024.0))
+                }),
+            ));
+        }
+        Some(WatchedSeries { rows, absent })
     }
 
     /// What is wrong with the filter, if anything.
@@ -730,6 +818,14 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
             }
         })
         .collect()
+}
+
+/// One process's history across a window of samples.
+pub struct WatchedSeries {
+    /// Named series, each scaled to its own peak by the graph.
+    pub rows: Vec<(&'static str, Vec<f32>)>,
+    /// Which samples the process was not in. Drawn as a gap, never as zero.
+    pub absent: Vec<bool>,
 }
 
 /// A resource that is stopping work.

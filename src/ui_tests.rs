@@ -7556,3 +7556,256 @@ fn the_scripted_output_says_when_the_machine_is_capped() {
     s.clock_ceiling = None;
     assert_eq!(crate::clock_line(&s), None);
 }
+
+/// A buffer in which `cargo` runs for part of the window and `postgres` throughout.
+fn a_build_that_starts_and_finishes(app: &mut App) {
+    for i in 0..40 {
+        let mut s = sample_at(50.0, 39 - i);
+        s.io_collected = true;
+        s.procs = vec![proc_named(101, "postgres", 4.0, 200 << 20)];
+        if (12..36).contains(&i) {
+            s.procs.push(ProcSample {
+                cpu: 20.0 + (i - 12) as f32 * 2.5,
+                rss: (300 + (i - 12) * 40) << 20,
+                threads: Some(4 + (i as u32 - 12) / 3),
+                io: Some(crate::sample::IoRates {
+                    read: (i - 12) << 19,
+                    write: 1 << 18,
+                }),
+                started: Some(2),
+                cmd: Some(std::sync::Arc::from("cargo build --release")),
+                ..proc_named(102, "cargo", 0.0, 0)
+            });
+        }
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    // Selected from a moment it was running; the view is then asked about the
+    // whole buffer, including the moments it was not.
+    app.history.scrub(-10);
+    select_until(app, "cargo", |n| n.contains("cargo"));
+    app.history.goto_live();
+}
+
+#[test]
+fn a_key_opens_the_selected_process_history_at_full_width() {
+    // The buffer already holds it. It was a ten-column sparkline in a table
+    // row: about one percent of the screen for the thing the tool is built
+    // around.
+    let mut app = App::new(600);
+    a_build_that_starts_and_finishes(&mut app);
+
+    let machine = rows(&app, 110, 24);
+    assert!(
+        machine.iter().any(|l| l.contains("── timeline")),
+        "the timeline is not drawn before the key is pressed"
+    );
+
+    app.detail = true;
+    let detail = rows(&app, 110, 24);
+    let title = detail
+        .iter()
+        .find(|l| l.starts_with("── "))
+        .expect("no panel title");
+    assert!(
+        title.contains("cargo build --release"),
+        "the panel does not say whose history it is: {title:?}"
+    );
+    assert!(
+        !title.contains("timeline"),
+        "the panel changed subject and kept its old name: {title:?}"
+    );
+    // Full width, not ten columns. Scoped to the timeline block: the machine
+    // header also says `CPU`, and a frame-wide search finds that instead — a
+    // line with no braille on it at all, which then reads as "zero columns
+    // wide" and fails for the wrong reason.
+    let r = ui::timeline_rows_range(24);
+    let graph = detail[r.start as usize..r.end as usize]
+        .iter()
+        .find(|l| l.contains("CPU"))
+        .expect("no cpu row in the timeline block");
+    let drawn = graph.chars().filter(|c| ('⠀'..='⣿').contains(c)).count();
+    assert!(
+        drawn > 60,
+        "the history is {drawn} columns wide, not full width"
+    );
+}
+
+#[test]
+fn the_detail_view_draws_from_the_buffer_with_no_new_collection() {
+    // Entirely a rendering question, which is what makes it cheap for its
+    // value: the same `Needs` before and after, so nothing extra is read.
+    let mut app = App::new(600);
+    a_build_that_starts_and_finishes(&mut app);
+    let before = app.needs();
+    app.detail = true;
+    let after = app.needs();
+    assert_eq!(
+        before.io, after.io,
+        "opening the detail view asked the collector for something new"
+    );
+}
+
+#[test]
+fn where_the_process_was_absent_is_marked_rather_than_drawn_as_zero() {
+    // A process that did not exist did not use no CPU — it used none of
+    // anything because it was not there, and a flat line at the bottom says the
+    // opposite. When it started and when it went are often the whole answer.
+    let mut app = App::new(600);
+    a_build_that_starts_and_finishes(&mut app);
+    app.detail = true;
+
+    let frame = rows(&app, 110, 24);
+    let caption = frame
+        .iter()
+        .find(|l| l.contains("shown,"))
+        .expect("no caption");
+    assert!(
+        caption.contains("not running"),
+        "the absence is not named: {caption:?}"
+    );
+    // …and it is called that rather than `time missing`, which is what a seam
+    // in the machine's own graph means and is a different claim.
+    assert!(!caption.contains("time missing"), "{caption:?}");
+
+    // Scoped to the timeline block, or the machine header's own `CPU` is
+    // found instead — a line with no graph on it.
+    let gap = app.glyphs.gap_glyph();
+    let r = ui::timeline_rows_range(24);
+    let cpu = frame[r.start as usize..r.end as usize]
+        .iter()
+        .find(|l| l.contains("CPU"))
+        .expect("no cpu row in the timeline block");
+    assert!(
+        cpu.contains(gap),
+        "the moments it was not running are not marked: {cpu:?}"
+    );
+
+    // The machine's own graph over the same buffer has no gaps at all, so the
+    // marks really are about the process.
+    app.detail = false;
+    let machine = rows(&app, 110, 24);
+    assert!(
+        !machine[r.start as usize..r.end as usize]
+            .iter()
+            .any(|l| l.contains(gap)),
+        "the buffer itself has seams, so this proves nothing"
+    );
+}
+
+#[test]
+fn the_detail_view_shares_the_timeline_cursor() {
+    // The cursor is the same one, so scrubbing moves both — and the process
+    // table below is the real one from the moment under it.
+    let mut app = App::new(600);
+    a_build_that_starts_and_finishes(&mut app);
+    app.detail = true;
+
+    let at = |app: &App| cursor_column(app, 110, 24);
+    assert_eq!(at(&app), None, "live, and a cursor is drawn");
+    app.history.scrub(-10);
+    let first = at(&app).expect("no cursor after scrubbing");
+    app.history.scrub(-10);
+    let second = at(&app).expect("no cursor after scrubbing further");
+    assert!(
+        second < first,
+        "the cursor did not move: {first} then {second}"
+    );
+}
+
+#[test]
+fn a_process_that_is_nowhere_in_the_window_has_no_detail_to_draw() {
+    // An empty graph would say it was idle. Asked of `watched_series` directly,
+    // because at every terminal size this fixture fits in, the window is the
+    // whole buffer — so there is no cursor position that excludes the build,
+    // and a rendered test would assert nothing.
+    let mut app = App::new(600);
+    a_build_that_starts_and_finishes(&mut app);
+    let all: Vec<&crate::sample::Sample> = app.history.iter().collect();
+    assert!(
+        app.watched_series(&all).is_some(),
+        "the fixture does not contain the process at all"
+    );
+
+    // The first ten samples, which are before it started.
+    let before = &all[..10];
+    assert!(
+        app.watched_series(before).is_none(),
+        "a process that was never in the window still produced a series"
+    );
+}
+
+#[test]
+fn the_detail_rows_are_the_processs_own_figures() {
+    let mut app = App::new(600);
+    a_build_that_starts_and_finishes(&mut app);
+    let window: Vec<&crate::sample::Sample> = app.history.iter().collect();
+    let series = app
+        .watched_series(&window)
+        .expect("no series for the selected process");
+
+    let names: Vec<&str> = series.rows.iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, vec!["CPU", "MEM", "THR", "DISK"]);
+    // Its own CPU, which peaks at 20 + 23*2.5 = 77.5, not the machine's 50.
+    let cpu = &series.rows[0].1;
+    let peak = cpu.iter().copied().fold(0.0_f32, f32::max);
+    assert!(
+        (peak - 77.5).abs() < 0.01,
+        "cpu peaks at {peak}, not the process's"
+    );
+    // Absent at both ends, present in the middle.
+    assert!(series.absent[0], "the first sample is not marked absent");
+    assert!(series.absent[39], "the last sample is not marked absent");
+    assert!(
+        !series.absent[20],
+        "a sample it was running in is marked absent"
+    );
+}
+
+#[test]
+fn the_graph_draws_the_processs_figures_not_the_machines() {
+    // The panel can be retitled, sized and gap-marked correctly and still be
+    // drawing the machine's series underneath — every other assertion here
+    // passes in that case, because the title, the width and the absence marks
+    // are all computed separately from the series themselves.
+    //
+    // Told apart by shape: the machine sits flat at 50% throughout this
+    // fixture, and the build ramps from 20% to 77.5%.
+    let mut app = App::new(600);
+    a_build_that_starts_and_finishes(&mut app);
+    let r = ui::timeline_rows_range(24);
+    let cpu_of = |app: &App| {
+        rows(app, 110, 24)[r.start as usize..r.end as usize]
+            .iter()
+            .find(|l| l.contains("CPU"))
+            .expect("no cpu row")
+            .clone()
+    };
+
+    let machine = cpu_of(&app);
+    app.detail = true;
+    let process = cpu_of(&app);
+    assert_ne!(
+        machine, process,
+        "the detail panel is drawing the machine's own series"
+    );
+
+    // And it is the *process's* shape. Not "reaches higher": every row scales
+    // to its own peak, so the machine's flat 50% fills its row completely and
+    // the ramp does not — the first version of this assertion compared fill
+    // and had it exactly backwards. A ramp is told from a flat line by
+    // *variety*: many levels against one.
+    let levels = |l: &str| {
+        l.chars()
+            .filter(|c| ('⠀'..='⣿').contains(c))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    };
+    assert!(
+        levels(&process) > levels(&machine),
+        "the process ramps and the machine is flat, and their graphs do not \
+         differ in shape: {} levels against {}",
+        levels(&process),
+        levels(&machine)
+    );
+}
