@@ -798,7 +798,19 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         // The selection is of a process, so re-sorting moves the row under it
         // and keeps it selected. Resetting to the top here was the same bug as
         // the one scrubbing had.
-        KeyCode::Char('s') => app.sort = app.sort.next(app.io_collected()),
+        KeyCode::Char('s') => app.sort = app.sort.next(app.io_collected(), app.view),
+        // Column sets, over the same rows and the same renderer. `v` because
+        // atop spends seven keys on this and poptop has three views and few
+        // free letters.
+        KeyCode::Char('v') => {
+            app.view = app.view.next();
+            // A sort the new view cannot show would be an ordering with no
+            // visible reason for it, so switching views brings the sort with
+            // it when it has to.
+            if !app.view.sorts().contains(&app.sort) {
+                app.sort = app.view.default_sort();
+            }
+        }
         // Accept the suggestion. Never applied on its own: a table that
         // reorders itself under the reader is worse than one that does not, so
         // the constraint is named and this is the one key that acts on it.

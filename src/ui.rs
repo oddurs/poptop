@@ -2022,7 +2022,7 @@ const FIXED_COLUMNS: u16 =
 /// than they needed to be.
 #[cfg(test)]
 pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
-    command_width(width, show_io, show_user, false)
+    command_width(width, show_io, show_user, false, 0)
 }
 
 #[cfg(test)]
@@ -2092,7 +2092,13 @@ const USER_W: u16 = 10;
 /// nineteen, one more than the two disk-rate columns together. Knowing the
 /// figure is what lets the name be elided deliberately rather than clipped by
 /// the terminal.
-fn command_width(width: u16, show_io: bool, show_user: bool, show_cid: bool) -> usize {
+fn command_width(
+    width: u16,
+    show_io: bool,
+    show_user: bool,
+    show_cid: bool,
+    dropped: u16,
+) -> usize {
     let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
     // The container column and its gap. Left out, the elision arithmetic is
     // thirteen columns too generous and the command is elided in the middle
@@ -2113,8 +2119,13 @@ fn command_width(width: u16, show_io: bool, show_user: bool, show_cid: bool) -> 
     // command cell is *wider* than this arithmetic says — and eliding against
     // the arithmetic rendered `Google Chrome Helper (Renderer)` as the single
     // letter `G` on an eighty-column terminal.
+    // `dropped` is the width a view has given back: the bars and the thread
+    // count are not always drawn, and the command gets what they were using.
+    // Left out, the elision is more cautious than it needs to be — a milder
+    // failure than the other direction, but still a name cut for no reason.
     width
         .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + (columns - 1))
+        .saturating_add(dropped)
         .max(MIN_COMMAND_W) as usize
 }
 
@@ -2397,7 +2408,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // fact belongs in a sentence. See `App::one_user`.
     let one_user = app.one_user();
     let show_user = one_user.is_none();
-    let show_io = app.show_io && area.width >= min_width_for_io(show_user);
+    // In the disk view the throughput columns are the point, so they are not
+    // subject to the width test that hides them elsewhere — which is the
+    // concrete thing views fix: today those figures vanish on a narrow terminal
+    // with nothing to bring them back, and this key is what brings them back.
+    let show_io = app.show_io
+        && app.view.wants_io()
+        && (app.view == crate::app::View::Disk || area.width >= min_width_for_io(show_user));
+    // What the disk columns are given room by. A view is a named list of
+    // columns over one renderer, not a second renderer.
+    let show_bars = app.view != crate::app::View::Disk;
+    let show_thr = app.view == crate::app::View::Generic;
+    // What the view has given back, in columns, for the command to use.
+    let dropped = if show_bars { 0 } else { BAR_W as u16 * 2 + 3 } + if show_thr { 0 } else { 5 };
     // Dropped on a box running no containers, where it would be twelve columns
     // of nothing. The same rule as the user column, and why a process in no
     // container shows a blank rather than an em dash.
@@ -2408,8 +2431,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // the column at every width a hundred-column terminal has — on exactly the
     // container host this exists for.
     let show_cid = app.any_container()
-        && command_width(area.width, show_io, show_user, true) as u16 > MIN_COMMAND_W;
-    let cmd_w = command_width(area.width, show_io, show_user, show_cid);
+        && command_width(area.width, show_io, show_user, true, dropped) as u16 > MIN_COMMAND_W;
+    let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -2515,14 +2538,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             // each of forty rows would say the process's RSS forty times and
             // imply forty copies of it.
             if let Some(th) = &r.thread {
-                let mut cells = vec![
-                    num(format!("{:.1}", th.cpu)).style(app.theme.heat_style(th.cpu)),
-                    Cell::from(cpu_bar(th.cpu)).style(app.theme.dim_style()),
-                    num("—").style(app.theme.dim_style()),
-                    Cell::from(""),
-                    Cell::from(th.state.to_string()),
-                    num("—").style(app.theme.dim_style()),
-                ];
+                let mut cells =
+                    vec![num(format!("{:.1}", th.cpu)).style(app.theme.heat_style(th.cpu))];
+                if show_bars {
+                    cells.push(Cell::from(cpu_bar(th.cpu)).style(app.theme.dim_style()));
+                }
+                cells.push(num("—").style(app.theme.dim_style()));
+                if show_bars {
+                    cells.push(Cell::from(""));
+                }
+                cells.push(Cell::from(th.state.to_string()));
+                if show_thr {
+                    cells.push(num("—").style(app.theme.dim_style()));
+                }
                 if show_io {
                     cells.push(num("—").style(app.theme.dim_style()));
                     cells.push(num("—").style(app.theme.dim_style()));
@@ -2557,19 +2585,27 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 // on the same fact. Using a series hue here was worse still:
                 // that is an identity token, and a share of memory is not an
                 // identity. The C6 test caught it.
-                Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style()),
-                num(fmt_bytes(p.rss)),
-                Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
-                    .style(app.theme.dim_style()),
-                Cell::from(p.state.to_string()),
+            ];
+            if show_bars {
+                cells.push(Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style()));
+            }
+            cells.push(num(fmt_bytes(p.rss)));
+            if show_bars {
+                cells.push(
+                    Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
+                        .style(app.theme.dim_style()),
+                );
+            }
+            cells.push(Cell::from(p.state.to_string()));
+            if show_thr {
                 // An em dash, never a number we do not have. See
                 // `ProcSample::threads`: a fabricated `1` sits next to a CPU
                 // percentage that can openly contradict it.
-                num(match p.threads {
+                cells.push(num(match p.threads {
                     Some(n) => n.to_string(),
                     None => "—".into(),
-                }),
-            ];
+                }));
+            }
             if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
@@ -2641,14 +2677,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // With the IO columns shown these had drifted a place: `HISTORY` sat over
     // DISK R, `DISK R` over DISK W, and `DISK W` over the sparkline — every one
     // of the three naming the column beside it.
-    let mut header_cells = vec![
-        right("CPU%"),
-        left(""),
-        right("RSS"),
-        left(""),
-        left("S"),
-        right("THR"),
-    ];
+    let mut header_cells = vec![right("CPU%")];
+    if show_bars {
+        header_cells.push(left(""));
+    }
+    header_cells.push(right("RSS"));
+    if show_bars {
+        header_cells.push(left(""));
+    }
+    header_cells.push(left("S"));
+    if show_thr {
+        header_cells.push(right("THR"));
+    }
     if show_io {
         header_cells.push(right("DISK R"));
         header_cells.push(right("DISK W"));
@@ -2822,7 +2862,17 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         (20, hidden, plain),
         (22, afford, app.theme.warning_style()),
         (28, threads, plain),
-        (40, format!(" — sort: {}", app.sort.label()), plain),
+        (
+            40,
+            // Both named, because `s` now cycles within the view and the two
+            // can no longer disagree — so saying one without the other leaves
+            // the reader guessing which columns the ordering is over.
+            match app.view {
+                crate::app::View::Generic => format!(" — sort: {}", app.sort.label()),
+                v => format!(" — {} view, sort: {}", v.label(), app.sort.label()),
+            },
+            plain,
+        ),
         // Just under the sort it is about, and above the modes: a suggestion a
         // narrow terminal drops is one nobody can act on, but it is still
         // advice rather than a fact about the data.
@@ -2852,14 +2902,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     ];
     let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
 
-    let mut widths = vec![
-        Constraint::Length(6),
-        Constraint::Length(BAR_W as u16 + 1), // bar, plus room for the over-100 mark
-        Constraint::Length(8),
-        Constraint::Length(BAR_W as u16),
-        Constraint::Length(2),
-        Constraint::Length(4),
-    ];
+    let mut widths = vec![Constraint::Length(6)];
+    if show_bars {
+        // The bar, plus room for the over-100 mark.
+        widths.push(Constraint::Length(BAR_W as u16 + 1));
+    }
+    widths.push(Constraint::Length(8));
+    if show_bars {
+        widths.push(Constraint::Length(BAR_W as u16));
+    }
+    widths.push(Constraint::Length(2));
+    if show_thr {
+        widths.push(Constraint::Length(4));
+    }
     if show_io {
         widths.push(Constraint::Length(9));
         widths.push(Constraint::Length(9));
@@ -3077,6 +3132,7 @@ pub const KEY_HINTS: &[&str] = &[
     "/ filter",
     "t tree",
     "i io",
+    "v view",
     "y threads",
     "C cgroups",
     "K kernel",

@@ -6425,7 +6425,7 @@ fn sorting_does_not_move_the_selection_to_a_different_process() {
 
     let mut seen = Vec::new();
     for _ in 0..4 {
-        app.sort = app.sort.next(false);
+        app.sort = app.sort.next(false, crate::app::View::Generic);
         let rows = app.visible_rows();
         let i = app.row_of(&rows).expect("the sort lost the selection");
         assert_eq!(&*rows[i].proc.name, "redis", "the sort moved the selection");
@@ -6968,12 +6968,12 @@ fn the_sort_cycle_skips_disk_when_there_are_no_disk_figures() {
     let mut seen = vec![Sort::Cpu];
     let mut s = Sort::Cpu;
     for _ in 0..6 {
-        s = s.next(false);
+        s = s.next(false, crate::app::View::Generic);
         seen.push(s);
     }
     assert!(!seen.contains(&Sort::Disk), "cycled onto an empty column");
     // …and reaches it when the figures exist.
-    assert_eq!(Sort::Mem.next(true), Sort::Disk);
+    assert_eq!(Sort::Mem.next(true, crate::app::View::Generic), Sort::Disk);
 }
 
 #[test]
@@ -9320,4 +9320,103 @@ fn processes_can_be_filtered_by_container_and_by_the_absence_of_one() {
     // And a process in a container is not matched by a different one.
     app.filter = "cid = deadbeef".into();
     assert!(app.visible_rows().is_empty(), "an unrelated id matched");
+}
+
+#[test]
+fn the_disk_columns_are_reachable_on_a_narrow_terminal() {
+    // The concrete thing views fix. `DISK R`/`DISK W` are shown only when there
+    // is room, so on a narrow terminal the figures vanish with nothing to bring
+    // them back — and a disk view is that key.
+    use crate::app::View;
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = vec![ProcSample {
+        io: Some(crate::sample::IoRates {
+            read: 5 << 20,
+            write: 1 << 20,
+        }),
+        ..proc_named(4001, "postgres", 12.0, 64 << 20)
+    }];
+    app.push(s);
+
+    let narrow = rows(&app, 90, 10).join("\n");
+    assert!(
+        !narrow.contains("DISK R"),
+        "the fixture is not narrow enough to test this:\n{narrow}"
+    );
+
+    app.view = View::Disk;
+    let shown = rows(&app, 90, 10).join("\n");
+    assert!(
+        shown.contains("DISK R") && shown.contains("DISK W"),
+        "the disk view did not bring the columns back:\n{shown}"
+    );
+    // It made room by dropping what the view does not need, rather than by
+    // pushing the command off the edge.
+    assert!(
+        !shown.contains("THR"),
+        "the disk view kept the thread count"
+    );
+    assert!(
+        shown.contains("postgres"),
+        "the command was pushed off:\n{shown}"
+    );
+}
+
+#[test]
+fn the_sort_and_the_view_cannot_disagree() {
+    use crate::app::{Sort, View};
+    // atop allows sorting by a column the view does not show, which is an
+    // ordering the reader cannot see the reason for.
+    let mut app = App::new(600);
+    app.view = View::Memory;
+    app.sort = Sort::Cpu;
+    for _ in 0..8 {
+        app.sort = app.sort.next(true, app.view);
+        assert!(
+            app.view.sorts().contains(&app.sort),
+            "`s` reached {:?}, which the {} view does not show",
+            app.sort,
+            app.view.label()
+        );
+    }
+}
+
+#[test]
+fn switching_views_brings_an_unreachable_sort_with_it() {
+    use crate::app::{Sort, View};
+    let mut app = App::new(600);
+    app.view = View::Generic;
+    app.sort = Sort::Disk;
+    // Memory does not show disk, so the sort has to move.
+    app.view = View::Memory;
+    if !app.view.sorts().contains(&app.sort) {
+        app.sort = app.view.default_sort();
+    }
+    assert_eq!(app.sort, Sort::Mem, "the sort was left pointing at nothing");
+}
+
+#[test]
+fn the_panel_names_the_view_when_it_is_not_the_default() {
+    use crate::app::View;
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let generic = rows(&app, 140, 10).join("\n");
+    assert!(generic.contains("sort: CPU"));
+    // Not "does the word appear" — the key hints carry `v view`. The default
+    // view is the one that needs no announcing, so it is the *clause* that must
+    // be absent.
+    assert!(
+        !generic.contains("generic view"),
+        "the default view is named for no reason:\n{generic}"
+    );
+
+    app.view = View::Memory;
+    app.sort = app.view.default_sort();
+    let mem = rows(&app, 140, 10).join("\n");
+    assert!(
+        mem.contains("memory view, sort: MEM"),
+        "the panel does not say which columns the ordering is over:\n{mem}"
+    );
 }
