@@ -107,6 +107,20 @@ fn parse_cpu_max(text: &str) -> Option<f32> {
     (period > 0.0).then_some((quota / period * 100.0) as f32)
 }
 
+/// How stalled a cgroup is, for the ordering the view exists to provide.
+///
+/// The worst of the three, not two. Leaving memory out sorts a cgroup thrashing
+/// on reclaim with quiet CPU and IO to the bottom — and since the table shows
+/// what fits and does not scroll, the bottom means off screen, in the one view
+/// whose entire purpose is finding what is stalled.
+///
+/// A node with no pressure reading sorts last. It is not stalled as far as
+/// anyone can tell, and the `—` in its column is what says nobody can tell.
+pub fn pressure_key(c: &CgroupStat) -> f32 {
+    c.pressure
+        .map_or(0.0, |p| p.cpu.some.max(p.io.some).max(p.memory.some))
+}
+
 /// Walk the tree and read every node's figures.
 ///
 /// `elapsed_secs` turns the cumulative counters into rates. Depth is counted
@@ -203,8 +217,9 @@ pub fn read(prev: &mut Prev, elapsed_secs: f64, depth: u32) -> Vec<CgroupStat> {
     // Deepest pressure first: the reason to open this view is to find what is
     // stalled, and a parent's pressure is its children's.
     out.sort_by(|a, b| {
-        let key = |c: &CgroupStat| c.pressure.map_or(0.0, |p| p.io.some.max(p.cpu.some));
-        key(b).total_cmp(&key(a)).then(a.path.cmp(&b.path))
+        pressure_key(b)
+            .total_cmp(&pressure_key(a))
+            .then(a.path.cmp(&b.path))
     });
     out
 }
@@ -251,6 +266,35 @@ mod tests {
              254:1 rbytes=1000 wbytes=7 rios=1 wios=1\n",
         );
         assert_eq!((r, w), (136_168, 107));
+    }
+
+    fn stalled(cpu: f32, io: f32, memory: f32) -> CgroupStat {
+        let s = |some| Stall { some, full: 0.0 };
+        CgroupStat {
+            pressure: Some(Pressure {
+                cpu: s(cpu),
+                io: s(io),
+                memory: s(memory),
+            }),
+            ..CgroupStat::default()
+        }
+    }
+
+    #[test]
+    fn memory_pressure_counts_towards_being_the_most_stalled() {
+        // A cgroup thrashing on reclaim with quiet CPU and IO is exactly the
+        // one somebody opened this view to find, and the table shows what fits
+        // and does not scroll — so sorting it below the quiet ones puts it off
+        // screen.
+        assert!(
+            pressure_key(&stalled(0.0, 0.0, 61.5)) > pressure_key(&stalled(1.0, 2.0, 0.0)),
+            "memory pressure does not count towards the ordering"
+        );
+        // …and each of the other two on its own still does.
+        assert_eq!(pressure_key(&stalled(9.0, 1.0, 2.0)), 9.0);
+        assert_eq!(pressure_key(&stalled(1.0, 9.0, 2.0)), 9.0);
+        // A node nobody is measuring sorts last rather than first.
+        assert_eq!(pressure_key(&CgroupStat::default()), 0.0);
     }
 
     #[test]

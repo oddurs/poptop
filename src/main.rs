@@ -242,7 +242,7 @@ fn main() -> io::Result<()> {
     // the config warnings, rather than folded into every figure that rests on
     // it — an assumption nobody is told about is the same shape as a wrong
     // number.
-    warnings.extend(collector.notes().into_iter().map(config::Warning));
+    warnings.extend(collector.take_notes().into_iter().map(config::Warning));
     let file = config::read(&mut warnings);
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let (settings, positional, file_warnings) = config::resolve(
@@ -442,6 +442,11 @@ fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app, &mut collector);
     ratatui::restore();
+    // A source that is only opened when a view is — an exit listener, a cgroup
+    // walk — finds out it is unavailable the first time somebody asks, which is
+    // long after the startup warnings were printed. Drained here so the reason
+    // reaches the reader instead of a channel nobody is listening to.
+    warnings.extend(collector.take_notes().into_iter().map(config::Warning));
     // After the screen is restored, so a write error is a line the user can
     // actually read. Written on a clean exit only: a periodic flush is what
     // turns a live tool into a recorder, which is the thing this deliberately

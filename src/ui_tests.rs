@@ -9118,17 +9118,25 @@ fn the_cgroup_walk_is_only_paid_for_while_the_view_is_open() {
     use crate::collect::Source;
     // Six files a node against a thousand nodes, measured at 7.3ms a sample —
     // not something to collect for a panel nobody is looking at.
-    // Nothing to walk on a backend without a unified hierarchy; the Linux leg
-    // of CI is what exercises this.
-    if !crate::collect::SUPPORTED.contains(&Source::Cgroups) {
-        return;
-    }
+    // Neither platform skips silently. An early `return` here is how the source
+    // being missing from the Linux backend's `SUPPORTED` list went unnoticed:
+    // `needs()` strips anything not in that list, so the key set a bit that was
+    // cleared on every tick and the whole view was dead — while this test
+    // passed by not running.
+    let supported = crate::collect::SUPPORTED.contains(&Source::Cgroups);
+    assert_eq!(
+        supported,
+        cfg!(target_os = "linux"),
+        "the backend with a unified hierarchy is the one that should declare it"
+    );
+
     let mut app = App::new(600);
     assert!(!app.needs().asked(Source::Cgroups), "walked unasked");
     app.toggle_cgroups();
-    assert!(
+    assert_eq!(
         app.needs().asked(Source::Cgroups),
-        "the key did not ask for it"
+        supported,
+        "the key and the backend disagree about whether cgroups can be read"
     );
     app.toggle_cgroups();
     assert!(

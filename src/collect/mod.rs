@@ -162,11 +162,15 @@ impl Source {
     /// How many samples apart this is worth reading. One means every sample.
     pub fn every(self) -> u64 {
         match self {
-            Source::Io | Source::Threads | Source::Exited => 1,
-            // Every other sample. A cgroup tree changes when a container starts,
-            // not between two ticks, and this is the most expensive thing here
-            // by a factor of sixty.
-            Source::Cgroups => 2,
+            // Cgroups are read every sample too, and were not always. A
+            // cadence of two halved the update rate of a view somebody had just
+            // opened, made every rate wrong by a factor of two — the deltas
+            // spanned two intervals and were divided by one — and left the
+            // budget unable to give up the source it calls most expensive,
+            // because the cheap tick in between reset the strike count and the
+            // odd tick reported no cgroups to charge for. The gate that makes
+            // this affordable is the view being open, not the cadence.
+            Source::Io | Source::Threads | Source::Exited | Source::Cgroups => 1,
             Source::ClockPolicies => 60,
         }
     }
@@ -459,14 +463,23 @@ pub trait Collector {
         Ok(s)
     }
 
-    /// What the backend could not determine about this machine, said once at
-    /// startup rather than folded into every figure that depends on it.
+    /// What the backend could not determine about this machine, said once
+    /// rather than folded into every figure that depends on it.
     ///
     /// A backend that has to assume something is still usable — the assumption
     /// is almost always right — but an assumption nobody is told about is the
     /// same shape as a wrong number, and that is the one thing this tool is
     /// not allowed to produce.
-    fn notes(&self) -> Vec<String> {
+    ///
+    /// **Drained, not read.** Some of these cannot exist at startup: a source
+    /// that is only opened when a view is — an exit listener, a cgroup walk —
+    /// discovers it is unavailable the first time somebody asks, which is long
+    /// after the startup warnings have been printed. Anything pushed later has
+    /// to be collected later, or it is written to a channel nobody is
+    /// listening to. There is deliberately no non-draining form: one existed,
+    /// both call sites moved to this, and it sat unused — a second way to read
+    /// the same channel is a second way to read it twice.
+    fn take_notes(&mut self) -> Vec<String> {
         Vec::new()
     }
 }

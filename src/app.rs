@@ -350,13 +350,13 @@ impl App {
         }
     }
 
-    /// Expand the selected process into its threads, or stop.
-    ///
-    /// Starts collection the first time and never stops it, for the same reason
-    /// as [`App::toggle_io`]: a reader who turns the view off, scrubs back, and
-    /// turns it on again should find the threads that were there, not a gap
-    /// shaped like the moment they lost interest.
     /// Show cgroups instead of processes, or stop.
+    ///
+    /// No ratchet, unlike [`App::toggle_threads`]: this genuinely stops
+    /// collecting. Six files a node against a thousand nodes is not a cost to
+    /// keep paying for a view nobody is looking at, and a cgroup's figures are
+    /// the cgroup's whenever you ask — there is no per-row history to keep
+    /// continuous.
     pub fn toggle_cgroups(&mut self) {
         self.show_cgroups = !self.show_cgroups;
         if self.show_cgroups {
@@ -364,6 +364,12 @@ impl App {
         }
     }
 
+    /// Expand the selected process into its threads, or stop.
+    ///
+    /// Starts collection the first time and keeps it for [`THREAD_GRACE`] more
+    /// samples, for the same reason as [`App::toggle_io`]: a reader who turns
+    /// the view off, scrubs back, and turns it on again should find the threads
+    /// that were there, not a gap shaped like the moment they lost interest.
     pub fn toggle_threads(&mut self) {
         self.show_threads = !self.show_threads;
         self.thread_ratchet |= self.show_threads;
