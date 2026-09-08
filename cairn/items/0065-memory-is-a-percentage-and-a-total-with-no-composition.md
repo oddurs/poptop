@@ -2,7 +2,7 @@
 id: 65
 title: Memory is a percentage and a total, with no composition
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 58
@@ -44,8 +44,35 @@ and `available` overlap there. That doc is the right shape for all of these.
 
 ## Acceptance criteria
 
-- [ ] dirty, slab, reclaimable slab, shmem, page tables and hugepages, where
+- [x] dirty, slab, reclaimable slab, shmem, page tables and hugepages, where
       the platform publishes them
-- [ ] Anything macOS cannot partition stays absent rather than being derived
-- [ ] The composition bar is honest about what it does not account for
-- [ ] Measured: `/proc/meminfo` is already read, so no additional reads
+- [x] Anything macOS cannot partition stays absent rather than being derived
+- [x] The composition bar is honest about what it does not account for
+- [x] Measured: `/proc/meminfo` is already read, so no additional reads
+
+## How it was resolved
+
+PR #86. All seven figures, from a file already read and parsed, so this costs
+nothing.
+
+**One earns header space:** `DIRTY`, above 5% of memory. A box with a fifth of
+its memory awaiting writeback is about to stall and every other figure looks
+fine until it does; a few megabytes is what an ordinary machine always carries.
+Coloured on its own scale, the third figure now following `stall_heat`'s
+argument. The rest go to `--once`.
+
+**The composition-bar honesty** is answered by naming what `used` contains
+rather than by adding segments: `used` is `total - available` and already holds
+every one of these, which is why a kernel memory leak appears there as used
+memory belonging to no process — the exact case where the process table cannot
+explain the header.
+
+**Absence is preserved**: an absent line is an em dash, which needed a second
+helper because the existing one reports a missing figure as zero. Huge pages are
+the trap — counted in *pages of `Hugepagesize`*, not kilobytes, so the shared
+helper would report a two-megabyte page as two kilobytes.
+
+**Review caught a ladder bug worth more than the figure**: `DIRTY` was ranked
+*above* the `MEM` it qualifies, so a narrow header dropped memory and kept its
+component. There is now a test asserting no qualifier outlives its parent at any
+width, which covers `CLK` and `STL` too.
