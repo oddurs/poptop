@@ -110,6 +110,13 @@ KEYS:
                     names one. Never applied on its own — a table that reorders
                     itself under the reader is worse than one that does not.
     t               toggle the process tree
+    g               fold processes sharing a name into one row, with the count
+                    in the PID column. CPU, memory and threads are summed;
+                    state, user, history and the command line are not — a group
+                    has no single one of those, and says so with an em dash.
+                    The summed memory is an upper bound: forked workers share
+                    an interpreter heap copy-on-write and it is counted once
+                    per member. Not available with the tree.
     K               show kernel threads. Hidden by default on Linux: kworker,
                     ksoftirqd, irq and the rest outnumber the real processes
                     several times over on a many-core box, and none of them is
@@ -648,7 +655,21 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         }
         KeyCode::Char('i') => app.toggle_io(),
         KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
-        KeyCode::Char('t') => app.tree = !app.tree,
+        KeyCode::Char('t') => {
+            app.tree = !app.tree;
+            // Grouping destroys parentage by construction, so a grouped tree
+            // would be a tree of things that are not processes. bottom makes
+            // the same two exclusive.
+            if app.tree {
+                app.group = false;
+            }
+        }
+        KeyCode::Char('g') => {
+            app.group = !app.group;
+            if app.group {
+                app.tree = false;
+            }
+        }
         KeyCode::Char('/') => {
             app.editing_filter = true;
             app.filter.clear();

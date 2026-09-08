@@ -15,12 +15,45 @@ use std::collections::{HashMap, HashSet};
 
 /// One rendered line of the tree.
 pub struct TreeRow<'a> {
-    pub proc: &'a ProcSample,
+    /// Borrowed for an ordinary row; owned for a group, whose figures are a sum
+    /// that exists in no sample.
+    pub proc: std::borrow::Cow<'a, ProcSample>,
     /// Box-drawing prefix, e.g. `"│  ├─ "`. Empty for roots.
     pub prefix: String,
     /// True when this row survives only because it is an ancestor of a filter
     /// match, not because it matched itself.
     pub context_only: bool,
+    /// How many processes this row stands for, when it stands for a *name*
+    /// rather than a process. `None` for an ordinary row.
+    ///
+    /// `Some(1)` is a real state and not the same as `None`: while grouping,
+    /// every row is keyed on the name it folds, even a name with one process
+    /// under it. Deriving group-ness from a count instead made the selection
+    /// vanish the moment a pool shrank to one — the row stopped being a group,
+    /// and a group selection stopped matching it.
+    pub members: Option<usize>,
+}
+
+impl<'a> TreeRow<'a> {
+    /// An ordinary row: one process, no indent, matched on its own account.
+    pub fn of(p: &'a ProcSample) -> Self {
+        Self {
+            proc: std::borrow::Cow::Borrowed(p),
+            prefix: String::new(),
+            context_only: false,
+            members: None,
+        }
+    }
+
+    /// Whether this row stands for a name rather than for one process.
+    pub fn is_group(&self) -> bool {
+        self.members.is_some()
+    }
+
+    /// How many processes it folds. One for an ordinary row.
+    pub fn count(&self) -> usize {
+        self.members.unwrap_or(1)
+    }
 }
 
 /// Build the tree for one sample.
@@ -86,11 +119,7 @@ pub fn build<'a>(
         .filter(|p| keep(p.pid) && !visited.contains(&p.pid))
         .collect();
     for p in stranded {
-        out.push(TreeRow {
-            proc: p,
-            prefix: String::new(),
-            context_only: false,
-        });
+        out.push(TreeRow::of(p));
     }
 
     if let Some(m) = matched {
@@ -152,9 +181,8 @@ fn walk<'a>(
     };
 
     out.push(TreeRow {
-        proc: node,
         prefix,
-        context_only: false,
+        ..TreeRow::of(node)
     });
 
     if let Some(kids) = children.get(&node.pid) {
