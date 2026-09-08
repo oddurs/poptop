@@ -1092,7 +1092,11 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                     s.net
                         .as_ref()
                         .and_then(|n| n.busiest())
-                        .map_or(0.0, |l| (l.rx + l.tx) as f32)
+                        // `Link::bytes`, not `rx + tx`: that function is what
+                        // `busiest` selects on, so re-deriving it here would
+                        // keep the "matches the header figure" claim true in
+                        // two places instead of one.
+                        .map_or(0.0, |l| l.bytes() as f32)
                 })
                 .collect(),
             Unit::Rate,
@@ -1510,7 +1514,7 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
 /// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
 /// silently rendered as `STAL` for exactly as long as the width was a hand-
 /// maintained number with a comment claiming `WAIT` was the longest.
-const SERIES_NAMES: [&str; 5] = ["CPU", "WAIT", "MEM", "DISK", "STALL"];
+pub const SERIES_NAMES: [&str; 7] = ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "THR"];
 
 const fn widest(names: &[&str]) -> usize {
     let (mut max, mut i) = (0, 0);
@@ -1618,7 +1622,7 @@ impl Unit {
     fn axis(self, ceiling: f32) -> String {
         match self {
             Unit::Percent | Unit::Count => format!("{ceiling:.0}"),
-            Unit::Rate => fmt_bytes(ceiling as u64),
+            Unit::Rate => axis_bytes(ceiling as u64),
         }
     }
 
@@ -1634,14 +1638,48 @@ impl Unit {
             // Powers of two from a kilobyte. A byte rate has no natural
             // hundred, and a ladder in its own base is what makes `4.0M`
             // readable where `3.7M` is arithmetic.
+            // Strictly above the peak, not merely at it. `while c < peak`
+            // returns the peak exactly whenever the peak is a power of two, and
+            // the row is then drawn solid to the top — the busiest sample being
+            // 100 by construction, which is the failure that kept this row out
+            // of the panel to begin with.
+            //
+            // Counts start at eight rather than one, or a single-threaded
+            // process gets a ceiling of one and a permanently saturated row.
             Unit::Rate | Unit::Count => {
-                let mut c = if self == Unit::Rate { 1024.0 } else { 1.0 };
-                while c < peak {
+                let mut c = if self == Unit::Rate { 1024.0 } else { 8.0 };
+                while c <= peak {
                     c *= 2.0;
                 }
                 c
             }
         }
+    }
+}
+
+/// A byte figure for the axis gutter, in at most five columns.
+///
+/// `fmt_bytes` writes one decimal always, so `128.0K` is six characters and the
+/// gutter's hard truncation left `128.0` — a byte rate drawn as what looks
+/// exactly like a percentage, which is the confusion this row was excluded to
+/// avoid. Three of every ten rungs on the power-of-two ladder land there.
+///
+/// The decimal is dropped once the mantissa has three digits, where it was
+/// never carrying information anyway: the ladder only ever produces 1, 2, 4 …
+/// 512, so the choice is between `512.0K` and `512K` and never between `512.0K`
+/// and `512.4K`.
+fn axis_bytes(b: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 || v >= 100.0 {
+        format!("{v:.0}{}", UNITS[i])
+    } else {
+        format!("{v:.1}{}", UNITS[i])
     }
 }
 

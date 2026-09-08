@@ -3231,13 +3231,15 @@ fn the_network_row_is_drawn_on_an_axis_of_its_own_units() {
         timeline.join("\n")
     );
     // Its axis is in bytes, not a bare percentage. 2 MiB a second at the peak,
-    // so the ceiling is a byte figure and never `100`.
+    // and the ceiling sits strictly above it, so `4.0M` — never `100`, and
+    // never the peak itself, which would draw the busiest sample as full scale
+    // by construction.
     let axis = timeline
         .iter()
         .find(|l| l.contains('M') && !l.contains("MEM"))
         .unwrap_or_else(|| panic!("no byte axis:\n{}", timeline.join("\n")));
     assert!(
-        axis.contains("2.0M"),
+        axis.contains("4.0M"),
         "the axis is not in the series' own units: {axis:?}"
     );
 
@@ -8221,5 +8223,84 @@ fn a_wide_mount_keeps_the_end_that_identifies_it() {
                 "{mount:?} lost the component that names it: {out:?}"
             );
         }
+    }
+}
+
+#[test]
+fn a_byte_axis_never_loses_its_unit_to_the_gutter() {
+    // `fmt_bytes` writes one decimal always, so `128.0K` is six characters
+    // against a five-column gutter and the truncation left `128.0` — a byte
+    // rate drawn as what looks exactly like a percentage, which is the
+    // confusion this row was excluded to avoid. Three of every ten rungs on the
+    // power-of-two ladder land there.
+    let mut c = 1024.0f32;
+    let mut checked = 0;
+    while c <= 8.0 * 1024.0 * 1024.0 * 1024.0 {
+        let axis = ui::Unit::Rate.axis_for_test(c);
+        assert!(
+            ui::cols(&axis) < ui::GUTTER_W,
+            "the axis {axis:?} for {c} is {} columns, against a gutter of {}",
+            ui::cols(&axis),
+            ui::GUTTER_W
+        );
+        assert!(
+            axis.ends_with(['B', 'K', 'M', 'G', 'T']),
+            "the axis {axis:?} lost its unit and reads as a percentage"
+        );
+        checked += 1;
+        c *= 2.0;
+    }
+    assert!(
+        checked > 20,
+        "only {checked} rungs of the ladder were checked"
+    );
+
+    // …and the drawn gutter agrees, which is where the truncation happened.
+    for ceiling in [1024.0, 131_072.0, 524_288.0, 536_870_912.0] {
+        let axis = ui::Unit::Rate.axis_for_test(ceiling);
+        assert!(
+            ui::cols(&axis) < ui::GUTTER_W,
+            "{axis:?} would be cut by the gutter"
+        );
+    }
+}
+
+#[test]
+fn a_ceiling_sits_above_its_peak_so_a_steady_series_is_not_full_scale() {
+    // `while c < peak` returns the peak exactly whenever the peak is a power of
+    // two, and the row is then solid to the top: the busiest sample being 100
+    // by construction, which is the failure that kept the network row out of
+    // the panel in the first place.
+    for (unit, peak) in [
+        (ui::Unit::Rate, 1024.0f32),
+        (ui::Unit::Rate, 1024.0 * 1024.0),
+        (ui::Unit::Count, 8.0),
+        (ui::Unit::Count, 64.0),
+    ] {
+        let c = unit.ceiling_for_test(peak);
+        assert!(
+            c > peak,
+            "a peak of {peak} got a ceiling of {c}, drawing it at full scale"
+        );
+    }
+
+    // A count starts at eight, or a single-threaded process gets a ceiling of
+    // one and a permanently saturated row.
+    assert_eq!(ui::Unit::Count.ceiling_for_test(1.0), 8.0);
+    assert_eq!(ui::Unit::Count.ceiling_for_test(4.0), 8.0);
+    assert_eq!(ui::Unit::Count.ceiling_for_test(200.0), 256.0);
+}
+
+#[test]
+fn every_series_the_panel_draws_is_in_the_list_the_gutter_is_sized_from() {
+    // `SERIES_NAMES` is the sole input to `GUTTER_W` and is documented as every
+    // name the gutter may hold. `NET` and `THR` were drawn without being in it,
+    // so the derivation guaranteed nothing about them and the test that
+    // enforces the guarantee skipped them.
+    for name in ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "THR"] {
+        assert!(
+            ui::SERIES_NAMES.contains(&name),
+            "{name} is drawn in the gutter and is not in the list it is sized from"
+        );
     }
 }
