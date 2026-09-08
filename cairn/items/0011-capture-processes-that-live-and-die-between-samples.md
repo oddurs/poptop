@@ -73,16 +73,37 @@ rows before and 2 after.
 **Outstanding: approach 1, and with it criterion 1.** Capturing the processes
 themselves still needs taskstats over netlink.
 
-While prototyping it, the listener registration
-(`TASKSTATS_CMD_ATTR_REGISTER_CPUMASK`) was refused with `EINVAL` on every
-kernel available here — including with `--privileged`, and for every cpumask
-form from `0` upward. A plain per-pid `TASKSTATS_CMD_ATTR_PID` query on the
-same socket works and returns a 724-byte record, so the family is alive and the
-refusal is specific to registering as an exit listener. `0-4095` returns
-`ERANGE` rather than `EINVAL`, so the mask is parsed before being rejected —
-the refusal is after parsing, not in it.
+The listener registration (`TASKSTATS_CMD_ATTR_REGISTER_CPUMASK`) is refused
+with `EINVAL` on every kernel available here, including with `--privileged`. A
+plain per-pid `TASKSTATS_CMD_ATTR_PID` query on the same socket works and
+returns a record, so the family is alive and the refusal is specific to
+registering as an exit listener.
+
+**Diagnosed, on a second pass.** The refusal is *not* the prototype's fault, and
+two plausible causes are ruled out:
+
+- **Not a missing NUL terminator.** The kernel copies the cpumask with
+  `nla_strscpy`, which reserves a byte for the terminator, so an attribute sized
+  `strlen` loses its last character — and that would have explained the
+  asymmetry below exactly. It does not: sending the mask with and without the
+  trailing NUL gives byte-identical results.
+- **Not a parse failure.** The `ERANGE`/`EINVAL` boundary sits exactly at
+  `nr_cpu_ids`. On a fourteen-CPU box, `0-13` and `13` are refused with `EINVAL`
+  while `0-14` and `14` are refused with `ERANGE`. So `cpulist_parse` runs, the
+  mask is valid, and the refusal happens *after* it.
+
+What is left is `add_del_listener`, and the `EINVAL` it can return for a
+well-formed mask is the namespace gate: the kernel refuses exit-listener
+registration from anything but the initial PID and user namespaces. **Every
+Linux available here is a container**, which is by definition not that — so this
+is not a kernel that lacks the feature, it is an environment that cannot reach
+it. `--pid=host` would test the hypothesis directly and hangs on Docker Desktop
+without producing output.
+
+So the requirement is sharper than "a kernel where this can be exercised": it
+needs a Linux host where poptop runs in the **initial** PID namespace — bare
+metal, or a VM, but not a container.
 
 Not implemented rather than implemented blind: it is several hundred lines of
 unsafe FFI whose entire value is accuracy, and shipping it unverified would be
-worse than the gap it closes. Needs a kernel where the exit-record path can
-actually be exercised.
+worse than the gap it closes.

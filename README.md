@@ -1130,9 +1130,13 @@ across restarts (`store`), themes with colour-vision validation, and `--once`.
 Not there yet: per-process network attribution, which needs `/proc/net` inode
 matching or eBPF and is its own project; killing or renicing processes; mouse
 support; and capturing processes that live and die entirely between two samples,
-where the `taskstats` exit-record path is written but cannot be verified on any
-kernel available here — listener registration returns `EINVAL` while per-pid
-queries work.
+where the `taskstats` exit-record path cannot be verified in the environment
+available here. Registering as an exit listener returns `EINVAL` while per-pid
+queries on the same socket work; the mask parses (the `ERANGE` boundary sits
+exactly at `nr_cpu_ids`) and is refused after parsing, which is the kernel
+declining exit-listener registration from anything but the initial PID
+namespace. Every Linux here is a container, which is by definition not that. It
+needs a host, not a better kernel.
 
 ## Attribution
 
