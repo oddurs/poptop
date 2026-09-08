@@ -1,0 +1,75 @@
+name: site
+
+# The website is its own crate with its own lockfile, so it gets its own
+# workflow. A change to the tool must not be able to fail on the site's
+# dependencies, and vice versa.
+
+on:
+  push:
+    branches: [master]
+    paths: ['web/**', 'README.md', 'ROADMAP.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'docs/**', '.github/workflows/site.yml']
+  pull_request:
+    paths: ['web/**', 'README.md', 'ROADMAP.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'docs/**', '.github/workflows/site.yml']
+
+env:
+  CARGO_TERM_COLOR: always
+  # Canonical URLs and the sitemap. The check job builds with this because its
+  # artifact is exactly what the deploy job publishes — a pull request builds
+  # the same bytes but never uploads them.
+  SITE_URL: https://poptop.dev
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Renders every page, checks every internal link, and asserts that each
+      # documentation page still resolves to a heading that exists in the
+      # README. A renamed heading fails here rather than shipping a blank page.
+      - run: cargo test
+      - name: the export produces every route
+        run: |
+          cargo run --release -- build --out dist --base-url "$SITE_URL"
+          missing=0
+          while read -r route; do
+            case "$route" in
+              *.*) file="dist${route}" ;;
+              /)   file="dist/index.html" ;;
+              *)   file="dist${route}/index.html" ;;
+            esac
+            [ -f "$file" ] || { echo "missing: $route -> $file"; missing=1; }
+          done < <(cargo run --release -q -- routes)
+          exit $missing
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/master'
+        with:
+          path: web/dist
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

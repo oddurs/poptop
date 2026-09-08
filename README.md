@@ -1191,6 +1191,24 @@ UI tests render through ratatui's `TestBackend` and assert on the resulting
 buffer, including a 1×1 terminal — a monitor that panics on a small window is
 worse than no monitor, and it never shows up in normal use.
 
+## Website
+
+[`web/`](web/) is the source of the project's website: the landing page, the
+documentation, and the community pages, as a single Rust binary.
+
+It holds no prose of its own. Every documentation page is a section of a file
+already in this repository — this README, [`ROADMAP.md`](ROADMAP.md),
+[`CONTRIBUTING.md`](CONTRIBUTING.md), or one of the notes under
+[`docs/roadmaps/`](docs/roadmaps/) — cut at a named heading and rendered. A
+renamed heading fails the site's tests rather than silently publishing a blank
+page, which is the only way a documentation site and its README stay in step.
+
+```sh
+cd web
+cargo dev      # serve on http://127.0.0.1:3000
+cargo freeze   # render every route to ./dist
+```
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

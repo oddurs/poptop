@@ -1,0 +1,192 @@
+/* Layout.
+   ---------------------------------------------------------------------------
+   The page borrows poptop's own geometry. In the terminal, a gutter down the
+   left names each graph and anchors its scale, and every panel opens with a
+   rule that carries its title:
+
+       ── timeline — 4m59s of 9m59s buffered ──────────────────────────
+
+   `.section` is that: a named gutter column, a titled rule, content flush
+   left. It is the only structural device on the site, which is why there are
+   no cards stacked inside cards anywhere below. */
+@layer layout {
+  .wrap {
+    width: 100%;
+    max-width: var(--page);
+    margin-inline: auto;
+    padding-inline: var(--gutter);
+  }
+
+  .wrap--tight {
+    max-width: 60rem;
+  }
+
+  main {
+    flex: 1;
+  }
+
+  /* ── the titled rule ────────────────────────────────────────────────── */
+  .rule {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    font: var(--type-label);
+    font-weight: 500;
+    letter-spacing: var(--track-label);
+    color: var(--ink-dim);
+  }
+
+  .rule::before {
+    content: "";
+    width: var(--s-6);
+    flex: none;
+    border-top: var(--rule-strong);
+  }
+
+  .rule::after {
+    content: "";
+    flex: 1;
+    border-top: var(--rule);
+  }
+
+  .rule__note {
+    color: var(--ink-faint);
+    font-weight: 400;
+  }
+
+  /* ── the gutter section ─────────────────────────────────────────────── */
+  .section {
+    padding-block: var(--s-7);
+    border-top: var(--rule);
+  }
+
+  .section:first-of-type {
+    border-top: 0;
+  }
+
+  .section__grid {
+    display: grid;
+    grid-template-columns: var(--gutter-col) minmax(0, 1fr);
+    gap: var(--s-5) var(--s-6);
+    align-items: start;
+  }
+
+  /* The gutter label. Right-aligned against the content edge, the way the
+     graph gutter's `CPU` and `WAIT` sit against their plots. */
+  .section__label {
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+    text-align: right;
+    padding-top: 0.35em;
+    position: sticky;
+    top: 5rem;
+  }
+
+  .section__body > * + * {
+    margin-top: var(--s-5);
+  }
+
+  @media (max-width: 60rem) {
+    /* Air that reads as generous on a wide screen reads as a missing section
+       on a phone, where it is most of the viewport. */
+    .section {
+      padding-block: var(--s-7);
+    }
+
+    .section__grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s-4);
+    }
+
+    .section__label {
+      text-align: left;
+      position: static;
+      padding-top: 0;
+    }
+  }
+
+  /* ── stacks and rows ────────────────────────────────────────────────── */
+  .stack > * + * {
+    margin-top: var(--s-4);
+  }
+
+  .stack-lg > * + * {
+    margin-top: var(--s-6);
+  }
+
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-3);
+  }
+
+  .cols {
+    display: grid;
+    gap: var(--s-5) var(--s-6);
+    grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  }
+
+  .measure {
+    max-width: var(--measure);
+  }
+
+  /* ── docs shell ─────────────────────────────────────────────────────── */
+  .docs {
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 1fr) 13rem;
+    gap: var(--s-6);
+    align-items: start;
+    padding-block: var(--s-6) var(--s-9);
+  }
+
+  .docs__toc {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100dvh - 6rem);
+    overflow-y: auto;
+  }
+
+  @media (max-width: 78rem) {
+    .docs {
+      grid-template-columns: 14rem minmax(0, 1fr);
+    }
+
+    .docs__toc {
+      display: none;
+    }
+  }
+
+  .docs__aside {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100dvh - 6rem);
+    overflow-y: auto;
+    padding-bottom: var(--s-4);
+  }
+
+  @media (max-width: 60rem) {
+    .docs {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s-5);
+    }
+
+    /* Content first. Stacked, the sidebar is twenty-nine links standing
+       between the reader and the page they asked for, so it moves below the
+       article — where a reader who has finished the page goes looking for the
+       next one anyway. */
+    .docs > article,
+    .docs > div {
+      order: 1;
+    }
+
+    .docs__aside {
+      order: 2;
+      position: static;
+      max-height: none;
+      border-top: var(--rule);
+      padding-top: var(--s-6);
+    }
+  }
+}

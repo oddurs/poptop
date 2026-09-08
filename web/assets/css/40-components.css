@@ -1,0 +1,727 @@
+/* Components.
+   ---------------------------------------------------------------------------
+   Every component here is documented, live, on /design. If you add one, add it
+   there — a design system nobody can see the whole of is a folder of CSS. */
+@layer components {
+  /* ── masthead ───────────────────────────────────────────────────────── */
+  .masthead {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    border-bottom: var(--rule);
+    background: color-mix(in srgb, var(--canvas) 88%, transparent);
+    backdrop-filter: blur(10px);
+  }
+
+  .masthead__inner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-5);
+    min-height: 3.25rem;
+  }
+
+  @media (max-width: 30rem) {
+    .masthead__inner {
+      gap: var(--s-3);
+    }
+  }
+
+  /* The one place mono survives outside the machine voice, because it is not
+     a wordmark — it is a shell prompt, and poptop is a thing you type. */
+  .masthead__mark {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    text-decoration: none;
+    margin-inline-end: auto;
+  }
+
+  /* The prompt caret is the only decoration on the masthead, and it is the
+     product's own: poptop is a thing you type. */
+  .masthead__mark::before {
+    content: "$ ";
+    color: var(--ink-faint);
+    font-weight: 400;
+  }
+
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: var(--s-5);
+    font: var(--type-ui);
+    min-width: 0;
+  }
+
+  @media (max-width: 30rem) {
+    .nav {
+      gap: var(--s-3);
+    }
+  }
+
+  .nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 26px;
+    color: var(--ink-dim);
+    text-decoration: none;
+    padding-block: var(--s-2);
+    border-bottom: 1px solid transparent;
+  }
+
+  .nav a:hover {
+    color: var(--ink);
+  }
+
+  /* Weight as well as colour and rule, so the current page still reads on a
+     monochrome display. */
+  .nav a[aria-current="page"] {
+    color: var(--ink);
+    font-weight: 500;
+    border-bottom-color: var(--ink);
+  }
+
+  @media (max-width: 40rem) {
+    .nav--overflow {
+      display: none;
+    }
+  }
+
+  /* ── theme toggle ───────────────────────────────────────────────────── */
+  .theme-toggle {
+    display: grid;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    border: var(--rule);
+    border-radius: var(--radius);
+    color: var(--ink-dim);
+    font: var(--type-label);
+    line-height: 1;
+  }
+
+  .theme-toggle:hover {
+    color: var(--ink);
+    border-color: var(--line-strong);
+  }
+
+  /* ── headings ───────────────────────────────────────────────────────── */
+  .display {
+    font: var(--type-display);
+    letter-spacing: var(--track-display);
+    word-spacing: var(--word-tight);
+    text-wrap: balance;
+  }
+
+  .h1 {
+    font: var(--type-title);
+    letter-spacing: var(--track-title);
+    word-spacing: var(--word-tight);
+    text-wrap: balance;
+  }
+
+  .h2 {
+    font: var(--type-heading);
+    letter-spacing: var(--track-heading);
+    word-spacing: var(--word-tight);
+  }
+
+  .h3 {
+    font: var(--type-subhead);
+    letter-spacing: var(--track-subhead);
+  }
+
+  .lede {
+    font: var(--type-lede);
+    color: var(--ink-dim);
+    max-width: var(--measure-tight);
+    text-wrap: pretty;
+  }
+
+  .dim {
+    color: var(--ink-dim);
+  }
+
+  /* The machine voice, for a run of text that is not a whole code block. */
+  .mono {
+    font: var(--type-code);
+    font-size: 0.8125rem;
+  }
+
+  /* ── buttons ────────────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-4);
+    border: var(--rule-strong);
+    border-radius: var(--radius);
+    font: var(--type-ui);
+    font-weight: 500;
+    text-decoration: none;
+    color: var(--ink);
+    background: transparent;
+    transition:
+      border-color var(--dur) var(--ease),
+      background-color var(--dur) var(--ease);
+  }
+
+  .btn:hover {
+    border-color: var(--ink-dim);
+    background: var(--surface);
+  }
+
+  .btn--primary {
+    background: var(--ink);
+    color: var(--canvas);
+    border-color: var(--ink);
+  }
+
+  .btn--primary:hover {
+    background: var(--ink-dim);
+    border-color: var(--ink-dim);
+  }
+
+  .btn--quiet {
+    border-color: transparent;
+    color: var(--ink-dim);
+    padding-inline: var(--s-2);
+  }
+
+  .btn--quiet:hover {
+    color: var(--ink);
+    background: transparent;
+    border-color: var(--line);
+  }
+
+  /* ── the install command ────────────────────────────────────────────── */
+  .cmd {
+    display: flex;
+    align-items: stretch;
+    border: var(--rule-strong);
+    border-radius: var(--radius);
+    background: var(--surface-sunk);
+    font: var(--type-code);
+    overflow: hidden;
+    max-width: 28rem;
+  }
+
+  .cmd__text {
+    padding: var(--s-3) var(--s-4);
+    overflow-x: auto;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .cmd__text::before {
+    content: "$";
+    color: var(--ink-faint);
+    margin-inline-end: 0.6em;
+  }
+
+  .cmd__copy {
+    padding-inline: var(--s-4);
+    border-inline-start: var(--rule);
+    color: var(--ink-dim);
+    font: var(--type-label);
+    flex: none;
+  }
+
+  .cmd__copy:hover {
+    color: var(--ink);
+    background: var(--surface);
+  }
+
+  .cmd__copy[data-copied="true"] {
+    color: var(--ok);
+  }
+
+  /* ── keycaps ────────────────────────────────────────────────────────── */
+  kbd,
+  .kbd {
+    display: inline-block;
+    min-width: 1.75em;
+    padding: 0.15em 0.45em;
+    border: var(--rule-strong);
+    border-bottom-width: 2px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 0.8125em;
+    line-height: 1.4;
+    text-align: center;
+    color: var(--ink);
+  }
+
+  .keymap {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(19rem, 100%), 1fr));
+    gap: 0;
+    border-top: var(--rule);
+  }
+
+  .keymap__row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-3);
+    padding-block: var(--s-3);
+    border-bottom: var(--rule);
+  }
+
+  .keymap__keys {
+    flex: none;
+    width: 6.5rem;
+    display: flex;
+    gap: var(--s-1);
+    flex-wrap: wrap;
+  }
+
+  .keymap__what {
+    font: var(--type-ui);
+    color: var(--ink-dim);
+  }
+
+  /* ── status badge ───────────────────────────────────────────────────── */
+  /* Hue plus glyph, never hue alone. Turn the page monochrome and every badge
+     still reads. */
+  .badge {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4em;
+    font: var(--type-label);
+    letter-spacing: var(--track-label);
+    color: var(--ink-dim);
+  }
+
+  .badge::before {
+    font-size: 0.9em;
+  }
+
+  .badge--ok {
+    color: var(--ok);
+  }
+
+  .badge--ok::before {
+    content: var(--glyph-ok);
+  }
+
+  .badge--warn {
+    color: var(--warn);
+  }
+
+  .badge--warn::before {
+    content: var(--glyph-warn);
+  }
+
+  .badge--critical {
+    color: var(--critical);
+  }
+
+  .badge--critical::before {
+    content: var(--glyph-critical);
+  }
+
+  /* ── panel ──────────────────────────────────────────────────────────── */
+  /* One border, one radius, no shadow. Panels do not nest. */
+  .panel {
+    border: var(--rule);
+    border-radius: var(--radius);
+    background: var(--surface);
+    padding: var(--s-5);
+  }
+
+  .panel--sunk {
+    background: var(--surface-sunk);
+  }
+
+  .panel__title {
+    font: var(--type-label);
+    letter-spacing: var(--track-label);
+    color: var(--ink-faint);
+    margin-bottom: var(--s-2);
+  }
+
+  /* ── caption: the site's own voice, about the thing above it ────────── */
+  .caption {
+    font: var(--type-label);
+    letter-spacing: var(--track-label);
+    color: var(--ink-faint);
+    max-width: var(--measure);
+  }
+
+  .caption a {
+    color: var(--ink-dim);
+  }
+
+  /* Inline code inside a 13px caption lands at 11.4px, which is below the
+     floor this site sets for anything a person is expected to read. */
+  .caption code,
+  .caption kbd {
+    font-size: 0.9375em;
+  }
+
+  /* ── stat: one measured figure and what it measures ─────────────────── */
+  .stat__value {
+    font: var(--type-stat);
+    letter-spacing: var(--track-title);
+    font-variant-numeric: tabular-nums lining-nums;
+    margin-block: var(--s-2);
+  }
+
+  /* ── claim: a heading and its evidence, no box ──────────────────────── */
+  .claim__head {
+    font: var(--type-subhead);
+    letter-spacing: var(--track-subhead);
+    word-spacing: var(--word-tight);
+    margin-bottom: var(--s-2);
+    text-wrap: balance;
+  }
+
+  .claim__body {
+    color: var(--ink-dim);
+    max-width: min(40ch, 100%);
+  }
+
+  /* ── callout ────────────────────────────────────────────────────────── */
+  .callout {
+    border-inline-start: 2px solid var(--line-strong);
+    padding: var(--s-1) 0 var(--s-1) var(--s-4);
+    color: var(--ink-dim);
+    max-width: var(--measure);
+  }
+
+  .callout--warn {
+    border-inline-start-color: var(--warn);
+  }
+
+  .callout__label {
+    font-weight: 600;
+    color: var(--ink);
+    margin-inline-end: 0.4em;
+  }
+
+  /* ── comparison table ───────────────────────────────────────────────── */
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  .table {
+    width: 100%;
+    font: var(--type-ui);
+    text-align: left;
+  }
+
+  .table th,
+  .table td {
+    padding: var(--s-3) var(--s-4) var(--s-3) 0;
+    border-bottom: var(--rule);
+    vertical-align: top;
+    line-height: 1.5;
+  }
+
+  .table thead th {
+    font: var(--type-label);
+    letter-spacing: var(--track-label);
+    color: var(--ink-faint);
+    border-bottom: var(--rule-strong);
+    white-space: nowrap;
+  }
+
+  .table tbody th {
+    font-weight: 500;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  .table td {
+    color: var(--ink-dim);
+  }
+
+  /* ── link list ──────────────────────────────────────────────────────── */
+  .links {
+    list-style: none;
+    padding: 0;
+    border-top: var(--rule);
+  }
+
+  .links li {
+    border-bottom: var(--rule);
+  }
+
+  .links a {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-4);
+    padding-block: var(--s-3);
+    min-height: 24px;
+    text-decoration: none;
+  }
+
+  .links a:hover .links__name {
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+
+  .links__name {
+    font-size: 1.0625rem;
+    font-weight: 500;
+    letter-spacing: var(--track-subhead);
+    flex: none;
+    min-width: min(11rem, 100%);
+  }
+
+  .links__what {
+    color: var(--ink-dim);
+    font: var(--type-ui);
+  }
+
+  @media (max-width: 40rem) {
+    .links a {
+      flex-direction: column;
+      gap: var(--s-1);
+    }
+  }
+
+  /* ── docs navigation ────────────────────────────────────────────────── */
+  .sidenav {
+    font: var(--type-ui);
+  }
+
+  .sidenav__group + .sidenav__group {
+    margin-top: var(--s-5);
+  }
+
+  .sidenav__title {
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+    padding-bottom: var(--s-2);
+    border-bottom: var(--rule);
+    margin-bottom: var(--s-2);
+  }
+
+  .sidenav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .sidenav a {
+    display: block;
+    min-height: 24px;
+    padding: 0.35rem 0 0.35rem var(--s-3);
+    color: var(--ink-dim);
+    text-decoration: none;
+    border-inline-start: 2px solid var(--line);
+  }
+
+  .sidenav a:hover {
+    color: var(--ink);
+    border-inline-start-color: var(--line-strong);
+  }
+
+  .sidenav a[aria-current="page"] {
+    color: var(--ink);
+    font-weight: 500;
+    border-inline-start-color: var(--ok);
+  }
+
+  /* ── on-page contents ───────────────────────────────────────────────── */
+  .toc {
+    font: var(--type-label);
+    border-inline-start: var(--rule);
+    padding-inline-start: var(--s-4);
+  }
+
+  .toc ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .toc li[data-depth="3"] {
+    padding-inline-start: var(--s-4);
+  }
+
+  .toc a {
+    display: block;
+    min-height: 24px;
+    padding-block: 0.25rem;
+    color: var(--ink-dim);
+    text-decoration: none;
+  }
+
+  .toc a:hover {
+    color: var(--ink);
+  }
+
+  /* Weight, not just hue: the reading marker survives a monochrome page. */
+  .toc a[data-reading] {
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  /* ── pager ──────────────────────────────────────────────────────────── */
+  .pager {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--s-4);
+    border-top: var(--rule);
+    padding-top: var(--s-5);
+    margin-top: var(--s-7);
+    font: var(--type-ui);
+  }
+
+  .pager a {
+    text-decoration: none;
+    color: var(--ink-dim);
+    max-width: 20rem;
+  }
+
+  .pager a:hover {
+    color: var(--ink);
+  }
+
+  .pager__dir {
+    display: block;
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+  }
+
+  /* ── footer ─────────────────────────────────────────────────────────── */
+  .footer {
+    border-top: var(--rule);
+    padding-block: var(--s-6) var(--s-7);
+    font: var(--type-ui);
+    color: var(--ink-faint);
+  }
+
+  .footer__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+    gap: var(--s-5);
+  }
+
+  .footer h2 {
+    font: var(--type-micro);
+    font-weight: 500;
+    letter-spacing: var(--track-micro);
+    color: var(--ink-dim);
+    margin-bottom: var(--s-3);
+  }
+
+  .footer ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  /* 24px of height, which is the WCAG 2.2 minimum for a pointer target. The
+     line-height alone gave 19, and a list of links is exactly where a thumb
+     lands on the wrong one. */
+  .footer a {
+    display: inline-block;
+    color: var(--ink-dim);
+    text-decoration: none;
+    line-height: 1.6;
+    padding-block: 0.2rem;
+    min-height: 24px;
+  }
+
+  .footer a:hover {
+    color: var(--ink);
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+
+  .footer__legal {
+    margin-top: var(--s-6);
+    padding-top: var(--s-4);
+    border-top: var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-4);
+    justify-content: space-between;
+  }
+
+  /* ── swatches, for /design ──────────────────────────────────────────── */
+  .swatches {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(11rem, 100%), 1fr));
+    gap: var(--s-4);
+  }
+
+  .swatch {
+    border: var(--rule);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .swatch__chip {
+    height: 3.5rem;
+    border-bottom: var(--rule);
+  }
+
+  .swatch__meta {
+    padding: var(--s-3);
+    font: var(--type-label);
+  }
+
+  .swatch__job {
+    color: var(--ink-faint);
+    text-wrap: pretty;
+  }
+
+  .swatch__meta .mono {
+    color: var(--ink-dim);
+    display: block;
+  }
+
+  .scale-row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-4);
+    padding-block: var(--s-3);
+    border-bottom: var(--rule);
+  }
+
+  /* A token name is code. */
+  .scale-row__name {
+    font: var(--type-code);
+    font-size: 0.8125rem;
+    color: var(--ink-dim);
+    flex: none;
+    width: min(9rem, 34%);
+  }
+
+  .scale-row__box {
+    background: var(--line-strong);
+    height: 0.75rem;
+    border-radius: var(--radius-sm);
+  }
+}
+
+@layer components {
+  /* Someone who has turned contrast up is telling the interface that its
+     hairlines are not landing. Answer with the structure, not with a different
+     palette — the hues are already measured. */
+  @media (prefers-contrast: more) {
+    :root {
+      --line: var(--line-strong);
+      --ink-dim: var(--ink);
+      --ink-faint: var(--ink-dim);
+    }
+
+    .btn,
+    .panel,
+    .cmd,
+    .term {
+      border-width: 2px;
+    }
+
+    a {
+      text-decoration-color: currentColor;
+    }
+  }
+}

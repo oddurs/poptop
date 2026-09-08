@@ -5,6 +5,9 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 description = "A system monitor you can rewind"
 readme = "README.md"
+# The website is its own crate with its own lockfile, and has no business in a
+# `cargo publish` of the tool. See `web/README.md`.
+exclude = ["web", "cairn", "docs", "check", ".githooks"]
 
 [dependencies]
 crossterm = "0.29.0"

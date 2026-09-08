@@ -1,0 +1,204 @@
+/* Prose — the shape rendered markdown takes.
+   ---------------------------------------------------------------------------
+   Headings are mono, body is serif. The split is not decorative: it marks
+   where the writing stops describing the machine and starts arguing with you,
+   which is most of what poptop's documentation does. */
+@layer prose {
+  .prose {
+    max-width: var(--measure);
+    font: var(--type-body);
+    letter-spacing: var(--track-body);
+    /* Prose runs a step larger than interface text. It is read, not scanned. */
+    font-size: 1.125rem;
+    line-height: 1.62;
+  }
+
+  .prose > * + * {
+    margin-top: var(--s-4);
+  }
+
+  .prose :is(h1, h2, h3, h4) {
+    scroll-margin-top: 5rem;
+    /* Handed back to the word space, which the negative tracking below would
+       otherwise close up. The roadmap's headings carry a `· S · DONE` suffix
+       that reads as one word without it. */
+    word-spacing: var(--word-tight);
+  }
+
+  .prose h1 {
+    font: var(--type-title);
+    letter-spacing: var(--track-title);
+  }
+
+  .prose h2 {
+    font: var(--type-heading);
+    letter-spacing: var(--track-heading);
+    margin-top: var(--s-8);
+    padding-top: var(--s-4);
+    border-top: var(--rule);
+  }
+
+  .prose h3 {
+    font: var(--type-subhead);
+    letter-spacing: var(--track-subhead);
+    margin-top: var(--s-6);
+  }
+
+  .prose h4 {
+    font: var(--type-subhead);
+    font-size: 1rem;
+    letter-spacing: var(--track-subhead);
+    margin-top: var(--s-5);
+    color: var(--ink-dim);
+  }
+
+  /* The heading's own anchor, which comrak emits empty after the text. It sits
+     in the margin so it never shifts the line, and it is a real focusable link
+     rather than a hover-only affordance nobody on a touchscreen can reach. */
+  .prose :is(h1, h2, h3, h4) {
+    position: relative;
+  }
+
+  .prose .anchor {
+    position: absolute;
+    inset-inline-start: -1.1em;
+    top: 0;
+    width: 1.1em;
+    color: var(--ink-faint);
+    text-decoration: none;
+    opacity: 0;
+    font-weight: 400;
+  }
+
+  .prose .anchor::before {
+    content: "#";
+  }
+
+  .prose :is(h1, h2, h3, h4):hover .anchor,
+  .prose .anchor:focus-visible {
+    opacity: 1;
+  }
+
+  @media (max-width: 60rem) {
+    /* No margin to hang it in. */
+    .prose .anchor {
+      display: none;
+    }
+  }
+
+  .prose a {
+    color: var(--ink);
+    text-decoration-color: var(--ink-faint);
+  }
+
+  .prose strong {
+    font-weight: 700;
+  }
+
+  .prose ul,
+  .prose ol {
+    padding-inline-start: var(--s-5);
+  }
+
+  .prose li + li {
+    margin-top: var(--s-2);
+  }
+
+  .prose li::marker {
+    color: var(--ink-faint);
+  }
+
+  .prose blockquote {
+    border-inline-start: 2px solid var(--line-strong);
+    padding-inline-start: var(--s-4);
+    color: var(--ink-dim);
+  }
+
+  .prose code {
+    background: var(--surface);
+    border: var(--rule);
+    border-radius: var(--radius-sm);
+    padding: 0.1em 0.35em;
+    font-size: 0.85em;
+    /* A long path must break rather than push the column sideways; prose has
+       no scroll container to escape into the way a table does. */
+    overflow-wrap: break-word;
+  }
+
+  /* A chip inside a heading is too much furniture — at heading size the border
+     and fill read as a button. The face alone is enough to mark it as code. */
+  .prose :is(h1, h2, h3, h4) code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: 0.9em;
+    font-weight: inherit;
+  }
+
+  /* Code blocks hold terminal output as often as they hold code — including
+     braille art that is exactly 79 cells wide and must not be wrapped or
+     shrunk to fit. It scrolls instead. */
+  .prose pre {
+    background: var(--surface-sunk);
+    border: var(--rule);
+    border-radius: var(--radius);
+    padding: var(--s-4);
+    overflow-x: auto;
+    font: var(--type-code);
+    /* Braille plots need the rows to touch to read as a plot. */
+    line-height: 1.45;
+    max-width: none;
+    tab-size: 4;
+  }
+
+  .prose pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-size: inherit;
+    white-space: pre;
+  }
+
+  /* Wide tables scroll inside themselves rather than pushing the page
+     sideways. `display: block` is what makes a table an overflow container. */
+  .prose table {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+    font: var(--type-ui);
+    text-align: left;
+  }
+
+  .prose th,
+  .prose td {
+    padding: var(--s-2) var(--s-4) var(--s-2) 0;
+    border-bottom: var(--rule);
+    vertical-align: top;
+    line-height: 1.5;
+  }
+
+  .prose thead th {
+    color: var(--ink-faint);
+    font-weight: 400;
+    border-bottom: var(--rule-strong);
+  }
+
+  .prose img {
+    border: var(--rule);
+    border-radius: var(--radius);
+  }
+
+  .prose hr {
+    margin-block: var(--s-7);
+  }
+
+  /* Footnotes, which the roadmap documents use heavily. */
+  .prose .footnotes {
+    margin-top: var(--s-8);
+    padding-top: var(--s-4);
+    border-top: var(--rule);
+    font-size: 1rem;
+    color: var(--ink-dim);
+  }
+}

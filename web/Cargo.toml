@@ -1,0 +1,44 @@
+# The poptop website: landing page, documentation, and the community pages.
+#
+# Its own workspace on purpose. The site must never widen the dependency tree
+# of the thing it is documenting — `cargo install poptop` should not resolve
+# axum — and keeping the lockfiles apart is the only way to guarantee that.
+#
+#   cargo dev      serve on :3000 with live reload
+#   cargo freeze   render every route to ./dist as static files
+#
+# The whole site is one binary. Content is `include_str!`d at compile time, so
+# there is no content directory to deploy alongside it and no path to get
+# wrong — the same property that lets poptop itself run with nothing set up.
+
+[workspace]
+
+[package]
+name = "poptop-web"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "The poptop website"
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query"] }
+comrak = { version = "0.55", default-features = false }
+maud = { version = "0.27", features = ["axum"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "set-header", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Browser-side reload for `cargo dev`. Off by default so a release build of the
+# site carries none of it.
+tower-livereload = { version = "0.10", optional = true }
+
+[features]
+live = ["dep:tower-livereload"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -21,6 +21,47 @@ Timeline, scrubbing, process tree, colour that survives a colourblind reader and
 - [x] `0017` The process table header is too heavy <sup>bug · p2</sup>
 - [x] `0018` Piping --once into head panics <sup>bug · p2</sup>
 
+## web — The landing page tells the story
+
+`##########` 100% · 11 of 11 done · due 2026-10-15
+
+The landing page works and is honest, but it lists features where it should
+
+### done
+
+- [x] `0056` Extract the frame renderer so a section can draw a still <sup>chore · p0</sup>
+- [x] `0057` The hero opens on the wrong moment, then rewinds itself <sup>feature · p0</sup>
+- [x] `0058` The page never states the problem it solves <sup>feature · p0</sup>
+- [x] `0059` Make the colour-vision work something you can operate <sup>feature · p0</sup>
+- [x] `0060` Draw peak versus mean instead of asserting it <sup>feature · p1</sup>
+- [x] `0061` Show the buffer starting empty, because that is the trade <sup>feature · p1</sup>
+- [x] `0062` Prove the process table rewinds, do not claim it <sup>feature · p1</sup>
+- [x] `0063` State where poptop loses rather than tabling it <sup>feature · p2</sup>
+- [x] `0064` The keymap should drive the frame it documents <sup>feature · p2</sup>
+- [x] `0065` Close on the empty buffer the page opened by filling <sup>feature · p2</sup>
+- [x] `0066` The audit should cover the sections this milestone adds <sup>chore · p1</sup>
+
+## web.1 — The site holds up under cross-examination
+
+`####······` 33% · 3 of 9 done · due 2026-10-22
+
+Findings from an adversarial review of `web/`. Thirteen charges, seven upheld,
+
+### backlog
+
+- [ ] `0068` Nothing enforces the browser audit <sup>chore · p0</sup>
+- [ ] `0069` The colour-vision drift check only runs one way <sup>chore · p0</sup>
+- [ ] `0072` Nothing compares the site's braille to the terminal's <sup>chore · p1</sup>
+- [ ] `0074` Page furniture is filed under the components layer <sup>chore · p2</sup>
+- [ ] `0076` The site has no rule governing its own simulation <sup>docs · p1</sup>
+- [ ] `0077` The single-binary claim borrows the tool's rhetoric <sup>docs · p2</sup>
+
+### done
+
+- [x] `0070` The 404 page exists twice, verbatim <sup>chore · p1</sup>
+- [x] `0071` One number, written three times <sup>chore · p1</sup>
+- [x] `0075` ui::section takes five positional arguments <sup>chore · p2</sup>
+
 ## v2.0 — Nothing escapes
 
 `##········` 20% · 1 of 5 done · due 2027-04-01
@@ -94,9 +135,13 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`##########` 100% · 27 of 27 done · due 2027-01-01
+`##########` 96% · 27 of 28 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
+
+### backlog
+
+- [ ] `0078` Save a buffer and replay it <sup>feature · p1</sup>
 
 ### done
 
@@ -130,9 +175,13 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`##########` 100% · 3 of 3 done
+`########··` 75% · 3 of 4 done
 
 Good ideas without a date yet.
+
+### backlog
+
+- [ ] `0073` Draw the landing page's frame with the real renderer, via wasm <sup>feature · p3</sup>
 
 ### done
 

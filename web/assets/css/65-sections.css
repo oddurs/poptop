@@ -1,0 +1,410 @@
+/* The landing page's own furniture.
+   ---------------------------------------------------------------------------
+   Everything here exists because a section of the landing page argues with a
+   picture. Nothing in this file is used anywhere else, which is why it is its
+   own layer rather than more weight in `40-components.css`. */
+@layer components {
+  .section--hero {
+    padding-block: var(--s-8) var(--s-7);
+    border-top: 0;
+  }
+
+  /* ── figures ────────────────────────────────────────────────────────── */
+  .figure {
+    margin: 0;
+  }
+
+  .figure > .caption {
+    margin-top: var(--s-3);
+  }
+
+  /* A still is a frame nobody can touch. It says so by not offering a cursor
+     and by not taking focus — see `Still` in `views/ui.rs`. */
+  .term--still {
+    cursor: default;
+  }
+
+  .term--still .term__screen {
+    cursor: default;
+  }
+
+  /* ── two moments, side by side ──────────────────────────────────────── */
+  .twin {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: var(--s-4);
+    align-items: start;
+  }
+
+  /* Two frames with nothing between them. Without this the second lands in the
+     `auto` column meant for the interval label and sizes itself to its content,
+     which leaves the first one a sliver. */
+  .twin--pair {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  /* A frame's screen is `min-width: max-content` so the plot can scroll rather
+     than shrink. Inside a grid column that would make the column as wide as the
+     plot wants, which is how the right-hand frame ended up off the page. */
+  .twin > * {
+    min-width: 0;
+  }
+
+  /* The gap carries the interval, the way the timeline gutter carries a
+     scale. It is the whole point of the pairing, so it is drawn rather than
+     left as whitespace. */
+  .twin__gap {
+    align-self: stretch;
+    display: grid;
+    place-items: center;
+    position: relative;
+    padding-inline: var(--s-2);
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+  }
+
+  .twin__gap::before {
+    content: "";
+    position: absolute;
+    inset-block: var(--s-5) var(--s-6);
+    inset-inline-start: 50%;
+    border-inline-start: var(--rule);
+  }
+
+  .twin__gap span {
+    position: relative;
+    background: var(--canvas);
+    padding-block: var(--s-2);
+  }
+
+  /* The quiet moment is the one you arrive to: correct, and useless. It is
+     drawn back rather than greyed out, so it still reads as data. */
+  .term--quiet {
+    opacity: 0.62;
+  }
+
+  .term--quiet:hover {
+    opacity: 1;
+  }
+
+  /* The mistake, in the peak-versus-mean pair. */
+  .term--wrong .term__plot {
+    color: var(--ink-dim);
+  }
+
+  @media (max-width: 52rem) {
+    .twin,
+    .twin--pair {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .twin__gap {
+      justify-self: start;
+      padding-block: var(--s-2);
+    }
+
+    .twin__gap::before {
+      inset: auto;
+      inset-inline: 0 auto;
+      border-inline-start: 0;
+    }
+  }
+
+  /* ── the buffer starting empty ──────────────────────────────────────── */
+  /* The region before the buffer starts is not zero — it is *absent*, and it
+     has to read that way or the picture says poptop recorded an idle machine.
+     Hatched, and cut off by a rule at the moment you started it. */
+  .term--band .term__graph {
+    position: relative;
+  }
+
+  /* Offset past the gutter: the scale labels are chrome, and hatching over
+     them would say poptop did not know its own axis either. */
+  .term--band .term__graph::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: calc(3ch + 0.75em);
+    inline-size: 28%;
+    background: repeating-linear-gradient(
+      -45deg,
+      transparent 0 5px,
+      var(--line) 5px 6px
+    );
+    border-inline-end: var(--rule-strong);
+    pointer-events: none;
+  }
+
+  .band-key {
+    display: grid;
+    grid-template-columns: 30% auto 1fr;
+    gap: var(--s-3);
+    align-items: baseline;
+    margin-top: var(--s-3);
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+  }
+
+  .band-key__mark {
+    color: var(--ink-dim);
+    white-space: nowrap;
+    border-inline-start: var(--rule-strong);
+    padding-inline-start: var(--s-2);
+  }
+
+  @media (max-width: 40rem) {
+    .band-key {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s-1);
+    }
+  }
+
+  /* ── the hero's two captions ────────────────────────────────────────── */
+  /* Both sentences are in the markup so the page still says something with no
+     script at all; the intro swaps which one is showing. */
+  .caption--moment .caption__then {
+    display: none;
+  }
+
+  .caption--moment[data-moment="then"] .caption__now {
+    display: none;
+  }
+
+  .caption--moment[data-moment="then"] .caption__then {
+    display: inline;
+  }
+
+  /* Where the data came from, shown in both states. It is not a disclaimer to
+     be revealed at the end of the animation. */
+  .caption__source {
+    color: var(--ink-faint);
+  }
+
+  /* While the frame is travelling backwards, its own chrome should not look
+     like something the reader did. */
+  .term[data-intro] .term__footer {
+    opacity: 0.5;
+  }
+
+  /* ── a row that moved since the last sample ─────────────────────────── */
+  .term__table tbody tr[data-moved] td:first-child::before {
+    content: "▲";
+    color: var(--ink-faint);
+    margin-inline-end: 0.35em;
+    font-size: 0.8em;
+  }
+
+  .term__table tbody tr[data-moved="down"] td:first-child::before {
+    content: "▼";
+  }
+
+  /* ── keycaps that drive the frame above ─────────────────────────────── */
+  .kbd--live {
+    cursor: pointer;
+    transition: border-color var(--dur) var(--ease);
+  }
+
+  .kbd--live:hover {
+    border-color: var(--ink-dim);
+    background: var(--surface-sunk);
+  }
+
+  /* ── the full comparison, folded away ───────────────────────────────── */
+  .disclose {
+    border-top: var(--rule);
+    padding-top: var(--s-4);
+  }
+
+  .disclose summary {
+    cursor: pointer;
+    font: var(--type-ui);
+    color: var(--ink-dim);
+    list-style: none;
+    padding-block: var(--s-1);
+    min-height: 24px;
+  }
+
+  .disclose summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .disclose summary::before {
+    content: "+";
+    display: inline-block;
+    width: 1.2em;
+    color: var(--ink-faint);
+  }
+
+  .disclose[open] summary::before {
+    content: "−";
+  }
+
+  .disclose summary:hover {
+    color: var(--ink);
+  }
+
+  .disclose > *:not(summary) {
+    margin-top: var(--s-4);
+  }
+
+  /* A link alone in a paragraph is not "in a sentence", so WCAG's inline
+     exception does not cover it. */
+  .disclose p a {
+    display: inline-block;
+    padding-block: var(--s-1);
+    min-height: 24px;
+  }
+
+  /* ── colour vision ──────────────────────────────────────────────────── */
+  .cvd {
+    border: var(--rule);
+    border-radius: var(--radius);
+    padding: var(--s-5);
+    background: var(--surface);
+  }
+
+  .cvd__controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+  }
+
+  .cvd__option {
+    padding: var(--s-2) var(--s-4);
+    border: var(--rule-strong);
+    border-radius: var(--radius);
+    font: var(--type-ui);
+    color: var(--ink-dim);
+    min-height: 34px;
+  }
+
+  .cvd__option:hover {
+    color: var(--ink);
+    border-color: var(--ink-faint);
+  }
+
+  /* The current state is marked by fill and weight, not by hue — in a section
+     about not trusting hue, that is not a detail. */
+  .cvd__option[aria-checked="true"] {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--canvas);
+    font-weight: 500;
+  }
+
+  .cvd__note {
+    margin-top: var(--s-4);
+    font: var(--type-ui);
+    color: var(--ink-dim);
+    max-width: var(--measure);
+    min-height: 3em;
+  }
+
+  .cvd__rows {
+    display: grid;
+    gap: var(--s-4);
+    margin-top: var(--s-2);
+  }
+
+  .cvd__row {
+    display: grid;
+    grid-template-columns: 11rem minmax(0, 1fr) auto;
+    gap: var(--s-4);
+    align-items: center;
+    padding-top: var(--s-4);
+    border-top: var(--rule);
+  }
+
+  .cvd__title {
+    font-weight: 500;
+  }
+
+  .cvd__tag {
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+  }
+
+  .cvd__chips {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s-2);
+  }
+
+  .cvd__chip {
+    /* Set per chip from the markup, which carries the server-simulated hex.
+       Declared here so the chip is still a chip if that never arrives. */
+    --chip: var(--surface-sunk);
+    --chip-ink: var(--ink);
+    background: var(--chip);
+    border-radius: var(--radius-sm);
+    padding: var(--s-3);
+    min-height: 4.5rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    /* The label sits on the chip, so it has to hold up on every simulated
+       colour — including a monochrome mid-grey. Chosen per chip by luminance
+       in `crate::cvd::ink_on`, with a test asserting 4.5:1 in every state. */
+    color: var(--chip-ink);
+    transition: background-color var(--dur) var(--ease);
+  }
+
+  .cvd__glyph {
+    font-size: 1.1rem;
+    line-height: 1;
+  }
+
+  .cvd__name {
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    font-weight: 500;
+  }
+
+  .cvd__delta {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cvd__delta-value {
+    display: block;
+    font: var(--type-heading);
+    letter-spacing: var(--track-heading);
+  }
+
+  .cvd__delta-label {
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+  }
+
+  /* Under the floor, said twice: the number and the word. */
+  .cvd__delta[data-under="true"]::after {
+    content: "under the floor";
+    display: block;
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--critical);
+  }
+
+  .cvd__frame {
+    margin-top: var(--s-5);
+  }
+
+  @media (max-width: 52rem) {
+    .cvd {
+      padding: var(--s-4);
+    }
+
+    .cvd__row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s-3);
+    }
+
+    .cvd__delta {
+      text-align: left;
+    }
+  }
+}

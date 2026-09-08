@@ -1,0 +1,236 @@
+/* Design tokens.
+   ---------------------------------------------------------------------------
+   Nothing outside this file names a colour, a size or a duration. Call sites
+   ask for the job a value does, exactly as `src/theme.rs` does for the
+   terminal UI — and for the same reason: so a reviewer can tell at a glance
+   whether a colour is carrying meaning or decoration.
+
+   The four jobs, and the rule that costs most to break:
+
+     Status    --ok --warn --critical      a state: is this bad right now?
+     Identity  --series-cpu --series-mem   which series this is; no judgement
+     Chrome    --line --ink --ink-dim      structure, not data
+     Cursor    (no hue — reversed)         where you are
+
+   A status hue reused as an identity hue destroys the meaning of that status
+   hue everywhere else, because the reader can no longer tell whether red means
+   "this is bad" or merely "this is the third thing". The status hues below
+   appear in exactly three places on this site: the status badges, the design
+   page's swatches, and the demo's threshold rules. If you find one behind a
+   button, that is a bug.
+
+   Status is never carried by hue alone. Every status token has a glyph partner
+   (`--glyph-ok` and friends), because a reader with deuteranopia and a reader
+   on a monochrome printer are the same reader as far as this site is
+   concerned. That is the web equivalent of poptop's monochrome tier, which is
+   not a courtesy but the proof that no meaning rests on colour.
+
+   The hues themselves come from `themes/safe.theme` and `themes/classic.theme`
+   in the repository root. Dark uses `safe`, whose ok/critical pair is the one
+   chosen to survive colour-vision deficiency; light uses hand-darkened
+   equivalents, because #5ccfe6 on white is 1.9:1 and unreadable. */
+
+@layer tokens {
+  :root {
+    color-scheme: dark;
+
+    /* ── status ─────────────────────────────────────────────── themes/safe */
+    --ok: #5ccfe6;
+    --warn: #ffd580;
+    --critical: #ff6666;
+
+    /* ── identity ───────────────────────────────────────────────────────── */
+    --series-cpu: #7a7ae6;
+    --series-mem: #b48ead;
+
+    /* ── chrome ─────────────────────────────────────────────────────────── */
+    --canvas: #101317;
+    --surface: #161a20;
+    --surface-sunk: #0c0e12;
+    --line: #242a33;
+    --line-strong: #37404c;
+    --ink: #ccd2d9;
+    --ink-dim: #8b939d;
+    /* 4.59:1 against the lightest surface it is drawn on. It was #5e6873,
+       which measured 3.08 — under the 4.5 floor for text this size, and this
+       token carries real text: section labels, table headings, captions.
+       Raising it compresses the three-step lightness ramp, so the hierarchy
+       leans on size and weight as well. One channel should not be carrying it
+       alone, which is the same argument the palette makes in the terminal. */
+    --ink-faint: #7a848f;
+
+    /* ── cursor ─────────────────────────────────────────────────────────── */
+    --cursor-bg: #ccd2d9;
+    --cursor-ink: #101317;
+    /* The selected row's background, which every figure in the process table
+       is then drawn on. It was #2a313a — lighter than the canvas, which pushed
+       the dim chrome to 3.46:1 and the critical hue to 4.59. Selecting a row
+       must not make it harder to read than the rows around it, so the mark is
+       now a *darker* plane rather than a lighter one. */
+    --selection-bg: #171a1f;
+
+    /* ── glyph partners: meaning without hue ────────────────────────────── */
+    --glyph-ok: "\2713"; /* ✓ */
+    --glyph-warn: "\25B3"; /* △ */
+    --glyph-critical: "\2716"; /* ✖ */
+
+    /* ── type ───────────────────────────────────────────────────────────
+       One rule decides which face a piece of text gets, and it is not about
+       size or importance:
+
+           Sans is the human voice. Mono is the machine voice.
+
+       If a person wrote it, it is Instrument Sans — headings, prose, buttons,
+       navigation, captions, table headers. If the machine printed it, or you
+       would type it, it is monospace — the terminal frame, code, commands,
+       file paths, keycaps, token names. That rule is why `$ poptop` in the
+       masthead stays mono: it is a shell prompt, not a wordmark.
+
+       The mono is a system stack rather than a webfont, on purpose. The
+       terminal frame draws braille (U+2800–28FF), which almost no webfont
+       covers, and a plot whose glyphs fall back to a different face than the
+       text around it loses cell alignment — the graph stops lining up with its
+       own gutter. The reader's own terminal font is both the safe choice and
+       the honest one. DejaVu is named for the same reason: braille coverage.
+       ─────────────────────────────────────────────────────────────────────── */
+    /* `Instrument Sans Fallback` is a metric-matched alias for whichever system
+       sans is present — see `src/fonts.rs`. It stands in during the swap so the
+       text does not move when the real face arrives. */
+    --font-sans:
+      "Instrument Sans", "Instrument Sans Fallback", ui-sans-serif, system-ui,
+      -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif,
+      "Apple Symbols", "Segoe UI Symbol";
+    --font-mono:
+      ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono",
+      "Cascadia Mono", Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace,
+      "Apple Symbols", "Segoe UI Symbol";
+
+    /* Roles, not steps. Each token is a `font` shorthand, so a size can never
+       be used without the line height it was drawn for — the single most
+       common way a type scale comes apart in practice. Tracking rides
+       alongside, because the shorthand cannot carry it.
+
+       Weights: 400 sets text, 500 marks a thing as interactive or current,
+       600 is every heading. There is no 700 in the interface; bold inside
+       prose is the one exception, and it is the writer's, not the layout's. */
+    --type-display: 600 clamp(2.5rem, 1.6rem + 3.6vw, 4.25rem) / 1 var(--font-sans);
+    --type-title: 600 clamp(1.875rem, 1.5rem + 1.5vw, 2.5rem) / 1.1 var(--font-sans);
+    --type-heading: 600 1.4375rem / 1.25 var(--font-sans);
+    --type-subhead: 600 1.125rem / 1.4 var(--font-sans);
+    --type-lede: 400 clamp(1.125rem, 1.05rem + 0.35vw, 1.3125rem) / 1.5 var(--font-sans);
+    --type-body: 400 1.0625rem / 1.65 var(--font-sans);
+    --type-ui: 400 0.9375rem / 1.5 var(--font-sans);
+    --type-label: 400 0.8125rem / 1.5 var(--font-sans);
+    --type-micro: 400 0.75rem / 1.45 var(--font-sans);
+    --type-code: 400 0.875rem / 1.55 var(--font-mono);
+    /* A measured figure quoted on its own — a ΔE, a percentage, a count. */
+    --type-stat: 600 clamp(2.25rem, 1.9rem + 1.4vw, 2.875rem) / 1 var(--font-sans);
+
+    /* Optical tracking. Large type is set tight because the counters do the
+       spacing work at that size; small type is opened up because they cannot.
+
+       Negative tracking shrinks the word space along with everything else,
+       which is not what tightening a headline is for — it is meant to close
+       the gaps *between letters*. So anything with negative tracking gets the
+       word space handed back. Without it a heading like
+       "…default palette · S · DONE" closes up into one run. */
+    --track-display: -0.035em;
+    --track-title: -0.025em;
+    --track-heading: -0.015em;
+    --track-subhead: -0.008em;
+    --track-body: 0em;
+    --track-label: 0.005em;
+    --track-micro: 0.015em;
+
+    /* Paid back to the word space wherever tracking is negative. */
+    --word-tight: 0.07em;
+
+    /* Ragged-right prose, under 80 characters. Capped against the container as
+       well: a bare `ch` max-width does not shrink below the viewport, so on a
+       phone it is the thing that pushes the whole document sideways. */
+    --measure: min(66ch, 100%);
+    --measure-tight: min(54ch, 100%);
+
+    /* ── space ──────────────────────────────────────────────────────────── */
+    --s-1: 0.25rem;
+    --s-2: 0.5rem;
+    --s-3: 0.75rem;
+    --s-4: 1rem;
+    --s-5: 1.5rem;
+    --s-6: 2rem;
+    --s-7: 3rem;
+    --s-8: 4.5rem;
+    --s-9: 7rem;
+
+    --gutter: clamp(1rem, 4vw, 3rem);
+    --page: 72rem;
+    --gutter-col: 7.5rem;
+
+    /* ── surface treatment ──────────────────────────────────────────────── */
+    /* Near-zero radii and no shadows. A terminal has neither, and a drop
+       shadow under every panel is the fastest way to make a tool for people
+       who read htop look like a pricing page. */
+    --radius: 3px;
+    --radius-sm: 2px;
+    --rule: 1px solid var(--line);
+    --rule-strong: 1px solid var(--line-strong);
+
+    /* ── motion ─────────────────────────────────────────────────────────── */
+    /* One duration, one curve. The site has a single moving part. */
+    --dur: 120ms;
+    --ease: cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  /* Light. The status hues are re-chosen rather than re-tinted: poptop ships
+     two palettes for the same reason, and the contrast floor here is 4.5:1
+     against --canvas for text uses, 3:1 for the graph fills. */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+
+      --ok: #0e7490;
+      --warn: #8a5a00;
+      --critical: #c22626;
+
+      --series-cpu: #4b4bc4;
+      --series-mem: #8a5f7c;
+
+      --canvas: #fbfbf9;
+      --surface: #f3f3f0;
+      --surface-sunk: #ececea;
+      --line: #dcdcd6;
+      --line-strong: #b9b9b1;
+      --ink: #1b1f24;
+      --ink-dim: #5b6570;
+      --ink-faint: #616b76;
+
+      --cursor-bg: #1b1f24;
+      --cursor-ink: #fbfbf9;
+      --selection-bg: #edede7;
+    }
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+
+    --ok: #0e7490;
+    --warn: #8a5a00;
+    --critical: #c22626;
+
+    --series-cpu: #4b4bc4;
+    --series-mem: #8a5f7c;
+
+    --canvas: #fbfbf9;
+    --surface: #f3f3f0;
+    --surface-sunk: #ececea;
+    --line: #dcdcd6;
+    --line-strong: #b9b9b1;
+    --ink: #1b1f24;
+    --ink-dim: #5b6570;
+    --ink-faint: #616b76;
+
+    --cursor-bg: #1b1f24;
+    --cursor-ink: #fbfbf9;
+    --selection-bg: #edede7;
+  }
+}

@@ -1,0 +1,265 @@
+/* The hero.
+   ---------------------------------------------------------------------------
+   A real poptop frame, drawn in braille, that you can actually scrub. It is
+   the only moving thing on the site and the only place any boldness is spent,
+   because it is the one thing a screenshot cannot show: the product is an
+   interaction, not a picture.
+
+   Everything inside is monospace and cell-aligned. The frame never reflows —
+   it scrolls, like the terminal it is. */
+@layer components {
+  .term {
+    /* How many braille rows each plot is. Overridden per frame from the markup;
+       declared here so the space below can be reserved either way. */
+    --rows: 5;
+    border: var(--rule-strong);
+    border-radius: var(--radius);
+    background: var(--surface-sunk);
+    font-family: var(--font-mono);
+    font-size: clamp(0.66rem, 0.45rem + 0.66vw, 0.875rem);
+    line-height: 1.35;
+    color: var(--ink);
+    overflow: hidden;
+  }
+
+  .term:focus-visible {
+    outline-offset: 3px;
+  }
+
+  /* The window chrome is the site talking *about* the frame; everything
+     inside `.term__screen` is the frame talking, and stays monospace. */
+  .term__chrome {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    border-bottom: var(--rule);
+    background: var(--surface);
+    color: var(--ink-faint);
+    font: var(--type-label);
+  }
+
+  .term__chrome .term__state,
+  .term__chrome [data-offset] {
+    font-family: var(--font-mono);
+  }
+
+  .term__title {
+    margin-inline-end: auto;
+  }
+
+  /* PAUSED and LIVE are the cursor job: reversed, no hue. Except LIVE, which
+     is a state — so it takes the status hue, exactly as the terminal does. */
+  .term__state {
+    padding: 0 0.5em;
+    background: var(--cursor-bg);
+    color: var(--cursor-ink);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .term__state[data-live="true"] {
+    background: var(--ok);
+    color: var(--canvas);
+  }
+
+  .term__screen {
+    padding: var(--s-3) var(--s-4) var(--s-4);
+    overflow-x: auto;
+    cursor: ew-resize;
+    touch-action: pan-y;
+  }
+
+  .term__screen > * {
+    min-width: max-content;
+  }
+
+  .term pre {
+    margin: 0;
+    font: inherit;
+    white-space: pre;
+  }
+
+  .term__head {
+    display: flex;
+    gap: 1.5em;
+    flex-wrap: nowrap;
+    padding-bottom: var(--s-2);
+  }
+
+  .term__stat {
+    white-space: nowrap;
+  }
+
+  .term__stat b {
+    font-weight: 600;
+  }
+
+  .term__rule {
+    display: flex;
+    align-items: center;
+    gap: 0.75em;
+    color: var(--ink-faint);
+    margin-block: var(--s-2);
+  }
+
+  .term__rule::before {
+    content: "──";
+  }
+
+  .term__rule::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--line);
+  }
+
+  .term__graph {
+    display: flex;
+    gap: 0.75em;
+  }
+
+  /* Braille cells stack into a plot only if the rows touch. At the frame's
+     normal 1.35 the three rows of a graph separate into three bands and the
+     shape disappears, so the plot and its gutter drop to a terminal's own
+     line height. */
+  .term__graph pre {
+    line-height: 1.02;
+    /* Every plot is empty until the script fills it, and an empty `pre` is zero
+       high. Reserving the space is the difference between a frame appearing and
+       the page under it jumping — which is most of what a layout-shift score
+       measures. */
+    min-height: calc(var(--rows) * 1.02em);
+  }
+
+  .term__gutter {
+    color: var(--ink-faint);
+    text-align: right;
+    flex: none;
+  }
+
+  .term__plot--cpu {
+    color: var(--series-cpu);
+  }
+
+  .term__plot--mem {
+    color: var(--series-mem);
+  }
+
+  /* The scrub cursor: reversed, no hue, exactly like the terminal's `▐`. */
+  .term__cursor {
+    background: var(--cursor-bg);
+    color: var(--cursor-ink);
+  }
+
+  .term__table {
+    width: 100%;
+    border-collapse: collapse;
+    font: inherit;
+  }
+
+  .term__table th {
+    text-align: left;
+    font-weight: 400;
+    color: var(--ink-faint);
+    padding-bottom: 0.2em;
+    padding-right: 1.5em;
+  }
+
+  .term__table th:last-child {
+    padding-right: 0;
+  }
+
+  /* Numeric headings sit over numeric columns. `th` alone outranks the
+     alignment utility, so the pairing has to be spelled out. */
+  .term__table th.term__num {
+    text-align: right;
+  }
+
+  .term__table td {
+    padding-right: 1.5em;
+    white-space: nowrap;
+  }
+
+  .term__table td:last-child {
+    padding-right: 0;
+  }
+
+  .term__table tbody tr[aria-selected="true"] {
+    background: var(--selection-bg);
+  }
+
+  /* A terminal's columns are fixed by definition. Letting these size to their
+     contents meant the header cells moved every time a value changed width —
+     `9.9` to `74.2`, `32.0M` to `793.6M` — which during the hero's opening was
+     a redraw every frame, and all of the page's layout shift. Bounded in `ch`,
+     which is exact in a monospace column. */
+  .term__num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    min-width: 7ch;
+  }
+
+  .term__bar {
+    color: var(--ink-faint);
+    min-width: 10ch;
+  }
+
+  .is-ok {
+    color: var(--ok);
+  }
+
+  .is-warn {
+    color: var(--warn);
+  }
+
+  .is-critical {
+    color: var(--critical);
+  }
+
+  .term__footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2) var(--s-4);
+    align-items: center;
+    padding: var(--s-2) var(--s-4);
+    border-top: var(--rule);
+    background: var(--surface);
+    color: var(--ink-faint);
+    font: var(--type-label);
+  }
+
+  .term__footer kbd {
+    border-bottom-width: 1px;
+    padding: 0 0.35em;
+    min-width: 0;
+  }
+
+  .term__hint {
+    margin-inline-start: auto;
+  }
+
+  @media (max-width: 40rem) {
+    .term__hint {
+      display: none;
+    }
+  }
+}
+
+@layer components {
+  /* Shown in place of the screen when the frame cannot start. */
+  .term__failed {
+    font: var(--type-ui);
+    color: var(--ink-dim);
+    padding: var(--s-4) 0;
+    margin: 0;
+  }
+
+  .term[data-demo-failed] {
+    cursor: default;
+  }
+
+  .term[data-demo-failed] .term__footer,
+  .term[data-demo-failed] .term__state {
+    display: none;
+  }
+}

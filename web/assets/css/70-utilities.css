@@ -1,0 +1,91 @@
+/* Utilities. Deliberately few: a utility that exists gets used instead of a
+   component, and then the component stops being the single place to change. */
+@layer utilities {
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .flow-tight > * + * {
+    margin-top: var(--s-2);
+  }
+
+  .nowrap {
+    white-space: nowrap;
+  }
+
+  .full-bleed {
+    max-width: none;
+  }
+}
+
+/* Print. The documentation is long-form technical writing and people do print
+   it. What survives is the words: no navigation, no sticky chrome, no dark
+   canvas, and every link's destination spelled out because paper cannot be
+   clicked. */
+@layer utilities {
+  @media print {
+    :root {
+      --canvas: #fff;
+      --surface: #fff;
+      --surface-sunk: #fff;
+      --ink: #000;
+      --ink-dim: #333;
+      --ink-faint: #555;
+      --line: #bbb;
+      --line-strong: #888;
+    }
+
+    .masthead,
+    .footer,
+    .docs__aside,
+    .docs__toc,
+    .pager,
+    .skip,
+    .theme-toggle,
+    .cmd__copy,
+    .term__footer {
+      display: none !important;
+    }
+
+    body {
+      background: #fff;
+      color: #000;
+    }
+
+    .docs {
+      display: block;
+      padding: 0;
+    }
+
+    .prose {
+      max-width: none;
+      font-size: 11pt;
+    }
+
+    .prose a[href^="http"]::after {
+      content: " (" attr(href) ")";
+      font-size: 0.85em;
+      color: #555;
+      word-break: break-all;
+    }
+
+    .prose :is(h1, h2, h3) {
+      break-after: avoid;
+    }
+
+    .prose pre,
+    .prose table,
+    .term {
+      break-inside: avoid;
+      border-color: #bbb;
+    }
+  }
+}

@@ -1,0 +1,4 @@
+# Two verbs, because a website only has two.
+[alias]
+dev = ["run", "--features", "live", "--", "serve", "--live"]
+freeze = ["run", "--release", "--", "build", "--out", "dist"]

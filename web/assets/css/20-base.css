@@ -1,0 +1,91 @@
+/* Base. Element defaults only — anything reusable is a component. */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font: var(--type-body);
+    letter-spacing: var(--track-body);
+    /* Instrument Sans is drawn a touch heavy for a dark background; grayscale
+       antialiasing takes back the weight it gains there. */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Tabular figures wherever numbers sit in a column — the comparison table,
+       the type scale, every measurement in the docs. Proportional digits in a
+       column of numbers is a misalignment the reader can see but not name. */
+    font-variant-numeric: tabular-nums;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Flex items refuse to shrink below their content's intrinsic width unless
+     told to. The terminal frame on the landing page is 40 cells wide at its
+     narrowest, and without this the whole document inherits that width and the
+     page scrolls sideways on a phone. */
+  body > * {
+    min-width: 0;
+  }
+
+  ::selection {
+    background: var(--selection-bg);
+    color: var(--ink);
+  }
+
+  /* One focus ring, everywhere, always visible. The site is for people whose
+     hands do not leave the keyboard. */
+  :focus-visible {
+    outline: 2px solid var(--ok);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  a {
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 0.18em;
+    text-decoration-thickness: 1px;
+    transition: text-decoration-color var(--dur) var(--ease);
+  }
+
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  /* The machine voice. Monospace runs a little large next to a sans at the
+     same nominal size, so it is set down to match its x-height. */
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+  }
+
+  hr {
+    border: 0;
+    border-top: var(--rule);
+    margin-block: var(--s-6);
+  }
+
+  /* Skip link: present, out of the way, real. */
+  .skip {
+    position: absolute;
+    inset-inline-start: var(--s-4);
+    inset-block-start: var(--s-4);
+    z-index: 100;
+    padding: var(--s-2) var(--s-4);
+    background: var(--surface);
+    border: var(--rule-strong);
+    border-radius: var(--radius);
+    font: var(--type-label);
+    transform: translateY(-200%);
+  }
+
+  .skip:focus {
+    transform: none;
+  }
+}
