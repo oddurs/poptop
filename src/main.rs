@@ -808,7 +808,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             // visible reason for it, so switching views brings the sort with
             // it when it has to.
             if !app.view.sorts().contains(&app.sort) {
-                app.sort = app.view.default_sort();
+                app.sort = app.view.default_sort_for(app.io_collected());
             }
         }
         // Accept the suggestion. Never applied on its own: a table that

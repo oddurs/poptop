@@ -214,8 +214,23 @@ impl View {
 
     /// The sort to fall back to when switching into this view leaves the
     /// current one unreachable.
-    pub fn default_sort(self) -> Sort {
-        self.sorts()[0]
+    ///
+    /// `io` is whether the per-process disk figures are being collected. The
+    /// disk view's first choice is `Sort::Disk`, and without those figures every
+    /// row answers `None` to it — "not an ordering, a shuffle", which is why
+    /// [`Sort::next`] already refuses to cycle onto it. Switching views must
+    /// not walk in the back door.
+    pub fn default_sort_for(self, io: bool) -> Sort {
+        let first = self.sorts()[0];
+        if first == Sort::Disk && !io {
+            return self
+                .sorts()
+                .iter()
+                .copied()
+                .find(|s| *s != Sort::Disk)
+                .unwrap_or(Sort::Cpu);
+        }
+        first
     }
 }
 
