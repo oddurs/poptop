@@ -3,9 +3,9 @@ id: 11
 title: Capture processes that live and die between samples
 type: feature
 status: backlog
-milestone: v0.2
+milestone: v2.0
 created: 2026-09-05
-updated: 2026-09-05
+updated: 2026-09-08
 priority: p0
 effort: l
 area: collect
@@ -107,3 +107,7 @@ metal, or a VM, but not a container.
 Not implemented rather than implemented blind: it is several hundred lines of
 unsafe FFI whose entire value is accuracy, and shipping it unverified would be
 worse than the gap it closes.
+
+## 2026-09-08
+
+Refiled from v0.2 to v2.0. v0.2 asked for the data-fidelity gaps against atop to be "closed or disclosed", and the diagnosis above discloses this one thoroughly — it is an environment that cannot reach the kernel path, not an unknown. Closing it belongs with the milestone named for the guarantee it is: nothing escapes.
