@@ -373,6 +373,40 @@ mod tests {
         Sample {
             at: UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789),
             cpu_total: cpu,
+            // Two mounts, one of them retransmitting, and a running server:
+            // with one mount a misaligned read has nothing to run into, and
+            // with every optional field the same on both sides a codec that
+            // dropped one round-trips green.
+            nfs: Some(crate::sample::NfsStat {
+                mounts: vec![
+                    crate::sample::NfsMount {
+                        mount: Arc::from("/mnt/data"),
+                        server: Arc::from("10.0.0.1:/export"),
+                        read: 4096,
+                        write: 8192,
+                        ops: 110,
+                        retrans: 4,
+                        rtt_ms: Some(3.5),
+                    },
+                    crate::sample::NfsMount {
+                        mount: Arc::from("/mnt/other"),
+                        server: Arc::from("10.0.0.2:/other"),
+                        read: 0,
+                        write: 0,
+                        ops: 0,
+                        retrans: 0,
+                        rtt_ms: None,
+                    },
+                ],
+                client_calls: 512,
+                client_retrans: 7,
+                server_calls: Some(64),
+                server_read: Some(1024),
+                server_write: Some(2048),
+                server_hits: Some(60),
+                server_misses: Some(4),
+                server_badauth: None,
+            }),
             cpu_per_core: vec![1.0, 2.5, 99.0],
             // Distinct on purpose. Equal values would let a read that swapped
             // `running` and `blocked` round-trip cleanly, and the field a user
@@ -540,6 +574,7 @@ mod tests {
         assert_eq!(a.net, b.net);
         assert_eq!(a.filesystems, b.filesystems);
         assert_eq!(a.nodes, b.nodes);
+        assert_eq!(a.nfs, b.nfs);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
             assert_eq!(x.pid, y.pid);
@@ -1331,6 +1366,7 @@ mod tests_support {
             exited: None,
             cgroups: None,
             nodes: None,
+            nfs: None,
             procs: (0..procs)
                 .map(|i| ProcSample {
                     pid: i as i32,

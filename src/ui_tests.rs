@@ -80,6 +80,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         exited: None,
         cgroups: None,
         nodes: None,
+        nfs: None,
         pressure: None,
         net: None,
         filesystems: None,
@@ -400,6 +401,134 @@ fn show_node_row() {
         println!("--- eight nodes at width {w}");
         println!("|{}|", rows(&many, w, 14)[2]);
     }
+}
+
+/// A sample from a box whose storage is a remote filesystem: the local disk is
+/// idle, one mount is busy, and a share of its calls are being resent.
+fn nfs_sample(retrans: u64) -> Sample {
+    let mut s = sample(8.0);
+    s.nfs = Some(crate::sample::NfsStat {
+        mounts: vec![
+            crate::sample::NfsMount {
+                mount: std::sync::Arc::from("/mnt/quiet"),
+                server: std::sync::Arc::from("10.0.0.2:/quiet"),
+                ops: 3,
+                ..Default::default()
+            },
+            crate::sample::NfsMount {
+                mount: std::sync::Arc::from("/mnt/data"),
+                server: std::sync::Arc::from("10.0.0.1:/export"),
+                read: 4 << 20,
+                write: 1 << 20,
+                ops: 1200,
+                retrans,
+                rtt_ms: Some(3.5),
+            },
+        ],
+        client_calls: 1203,
+        client_retrans: retrans,
+        ..Default::default()
+    });
+    s
+}
+
+#[test]
+#[ignore]
+fn show_nfs_header() {
+    for retrans in [0u64, 96] {
+        let mut app = App::new(600);
+        let mut s = nfs_sample(retrans);
+        s.nfs.as_mut().unwrap().server_calls = Some(4800);
+        app.push(s);
+        for w in [180u16, 120, 90] {
+            println!("--- retrans {retrans}, width {w}");
+            println!("|{}|", rows(&app, w, 14)[0]);
+        }
+    }
+}
+
+#[test]
+fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
+    let mut app = App::new(600);
+    app.push(nfs_sample(0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let healthy = rows(&app, 160, 30)[0].clone();
+
+    // The busiest mount, by calls. `/mnt/quiet` made three.
+    assert!(
+        healthy.contains("/mnt/data"),
+        "the busy mount was not named: {healthy}"
+    );
+    assert!(
+        !healthy.contains("/mnt/quiet"),
+        "every mount was listed on a header with room for one: {healthy}"
+    );
+    assert!(healthy.contains("1.2k op/s"), "{healthy}");
+    // A mount resending nothing says nothing about it. `0.0% re` on every
+    // frame is the figure nobody reads by the second day.
+    assert!(
+        !healthy.contains("% re"),
+        "a healthy mount announced its retransmissions: {healthy}"
+    );
+
+    let mut sick = App::new(600);
+    sick.push(nfs_sample(96));
+    sick.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let bad = rows(&sick, 160, 30)[0].clone();
+    assert!(bad.contains("8.0% re"), "{bad}");
+
+    // And a machine with no NFS at all spends nothing on it.
+    let mut plain = App::new(600);
+    plain.push(sample(8.0));
+    let none = rows(&plain, 160, 30)[0].clone();
+    assert!(!none.contains("op/s"), "{none}");
+}
+
+#[test]
+fn a_failing_mount_is_louder_than_a_busy_one() {
+    // A percent of calls resent is a mount worth looking at; five percent is
+    // one that is failing. Read off the machine's own ramp, five percent would
+    // be painted as calm as an idle CPU.
+    let theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let heat = |v| ui::retrans_heat_for_test(v, &theme);
+    assert!(heat(0.0) < theme.warn_pct, "a clean mount was not quiet");
+    assert!(heat(0.9) < theme.warn_pct);
+    assert!(
+        (theme.warn_pct..theme.critical_pct).contains(&heat(2.0)),
+        "two percent resent was not a warning: {}",
+        heat(2.0)
+    );
+    assert!(
+        heat(6.0) >= theme.critical_pct,
+        "six percent resent was not critical: {}",
+        heat(6.0)
+    );
+    // Monotonic, or the colour stops meaning worse.
+    let mut last = -1.0;
+    for i in 0..200 {
+        let v = heat(i as f32 / 10.0);
+        assert!(v >= last, "heat fell at {}", i as f32 / 10.0);
+        last = v;
+    }
+}
+
+#[test]
+fn a_running_server_is_named_and_an_absent_one_is_not() {
+    let mut app = App::new(600);
+    let mut s = nfs_sample(0);
+    s.nfs.as_mut().unwrap().server_calls = Some(4800);
+    app.push(s);
+    let with = rows(&app, 200, 30)[0].clone();
+    assert!(with.contains("NFSD 4.8k op/s"), "{with}");
+
+    // A machine that mounts NFS but serves none says nothing about serving.
+    let mut client = App::new(600);
+    client.push(nfs_sample(0));
+    let without = rows(&client, 200, 30)[0].clone();
+    assert!(
+        !without.contains("NFSD"),
+        "a machine with no nfsd threads was reported as a server: {without}"
+    );
 }
 
 #[test]

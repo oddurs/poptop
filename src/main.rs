@@ -573,6 +573,42 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     if let Some((what, n)) = s.net.as_ref().and_then(sample::NetStat::trouble) {
         outln!("net     {n}  {what} in the last interval");
     }
+    // NFS, where the machine mounts or serves it. On a box whose storage is
+    // remote the `disk` line above describes a local disk doing nothing while
+    // the machine waits on the network, and nothing else here would say so.
+    // Counts over the interval, like `net` above, rather than rates: `--once`
+    // has one interval and naming it is what makes the figures comparable.
+    if let Some(nfs) = s.nfs.as_ref().filter(|n| n.in_use()) {
+        for m in &nfs.mounts {
+            let rtt = m.rtt_ms.map_or("—".to_string(), |v| format!("{v:.1}ms"));
+            outln!(
+                "nfs     {}  {}, {} calls, {} resent, {rtt} mean, {} read, {} written",
+                m.mount,
+                m.server,
+                m.ops,
+                m.retrans,
+                human(m.read),
+                human(m.write)
+            );
+        }
+        outln!(
+            "nfsc    {} calls, {} resent  client, across every mount",
+            nfs.client_calls,
+            nfs.client_retrans
+        );
+        if let Some(calls) = nfs.server_calls {
+            let part = |v: Option<u64>| v.map_or("—".to_string(), |n| n.to_string());
+            let bytes = |v: Option<u64>| v.map_or("—".to_string(), human);
+            outln!(
+                "nfsd    {calls} calls, {} read, {} written, {} cache hits, {} misses, {} refused",
+                bytes(nfs.server_read),
+                bytes(nfs.server_write),
+                part(nfs.server_hits),
+                part(nfs.server_misses),
+                part(nfs.server_badauth)
+            );
+        }
+    }
     // The only line here that describes a hard failure rather than a slowdown,
     // and the one a script most wants: a machine out of disk does not get
     // slower, it stops. Printed whatever the fullness, because a script has no

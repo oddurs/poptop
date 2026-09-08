@@ -531,6 +531,17 @@ alone is over budget — so poptop says `sampling takes longer than a quarter of
 the interval` and leaves your columns alone, rather than dismantling itself one
 at a time chasing a target it cannot reach. `--interval` is what acts on that.
 
+**NFS is not one of the candidates, and that is a decision rather than an
+oversight.** Its cost is proportional to the number of NFS mounts —
+`/proc/self/mountstats` is 5.3 µs a sample on a machine with one, measured, and
+about 5.4 µs for each one after that, so a hundred mounts is half a
+millisecond. That is real, and it is spent on a machine whose entire purpose is
+those mounts: giving the figure up there would give up the one thing worth
+watching to save time on a box that is waiting for the network anyway. The
+per-op statistics are scanned rather than collected for the same reason —
+NFSv4.2 writes seventy-odd lines a mount and three numbers are wanted, and a
+vector per line was most of the cost.
+
 `--glyphs=braille|block|ascii` picks how the timeline is drawn. Braille packs
 two samples into every character cell and stacks cells vertically for twelve
 distinct heights; `block` needs less font support; `ascii` needs none. A Linux
@@ -1043,6 +1054,86 @@ network on a machine that cannot see one.
 
 Per-process network attribution is still out of scope — it needs `/proc/net`
 inode matching or eBPF and is its own project.
+
+### When the storage is somebody else's machine
+
+```text
+…/mnt/data  1.2k op/s  3.4% re    NFSD 480 op/s
+```
+
+On a box whose working set lives on NFS, every disk figure poptop draws
+describes a local disk that is doing nothing while the machine waits on the
+network. `WAIT` says the CPU is idle with I/O outstanding and then strands you;
+this names the mount.
+
+**Retransmissions, not throughput.** An NFS mount in trouble is usually one
+whose calls are being sent twice — a server under load, a path dropping
+packets, a firewall eating idle connections — and its byte rates look perfectly
+ordinary throughout. The figure is heated on the share of calls that had to be
+resent, on its own thresholds: one percent is worth looking at and five percent
+is a mount that is failing, where five percent of a CPU is nothing at all.
+Reading the machine's heat ramp straight would paint a dying mount calm.
+
+The share is shown only when something is being resent. A healthy mount
+retransmits nothing for weeks, and a permanent `0.0% re` is a figure nobody
+reads by the second day — the rule `CLK` and `STL` follow.
+
+`NFSD` appears only where this machine is *serving*. `/proc/net/rpc/nfsd` exists
+on any kernel with the module loaded and reads as zeroes, so presence is not the
+test: the count of running `nfsd` threads is. A box that does not serve NFS and
+a box whose server is quiet are different machines, and only one of them is
+worth a figure.
+
+`--once` prints a line per mount — calls, retransmissions, mean round trip,
+bytes actually read and written — plus the client's totals across every mount
+and, where one is running, the server's reply-cache hits and misses and the
+calls it refused. Bytes are what crossed the wire, not what the application
+asked for; the difference between those two is the page cache, which is not a
+fact about the mount.
+
+**This does not block on an unresponsive server, and that is why it is here.**
+Filesystem capacity skips network mounts for exactly that reason — `statfs` on
+a hung NFS mount waits for the server, and a monitor that freezes when the
+fileserver does is worse than one that never mentions it. `/proc/self/mountstats`
+is the client's own counters: no RPC, no round trip, and the mount that has
+stopped answering is the one this reports on most loudly.
+
+### What poptop will read, and what it will not
+
+atop reports four subsystems poptop does not: NFS, GPU, Infiniband and
+last-level cache. NFS is the one above. The other three are declined, and the
+reason is a rule rather than a shrug — poptop's whole position is that it starts
+on a machine you have just connected to, so anything it needs to be installed
+first is a thing it cannot rely on.
+
+**poptop reads what the kernel publishes to an ordinary reader.** A file under
+`/proc` or `/sys`, a netlink socket, a syscall. Anything that needs a daemon
+running beforehand, a vendor library present, or a privileged helper is an
+*optional* source: it may enrich the picture and it is never required for the
+tool to work, and its absence shows as `—` rather than as a failure to start.
+
+By that rule:
+
+- **NFS** is in. Three world-readable files, no daemon, no library.
+- **GPU** is declined for now. Per-GPU and per-process utilisation needs NVML —
+  a vendor library, versioned against the driver, absent on the machines poptop
+  is for — or a daemon, which is what atop uses. There is no kernel interface
+  that reports it: `/sys/class/drm` publishes a `gpu_busy_percent` for AMD cards
+  and nothing comparable for NVIDIA, so building on it would report GPU load on
+  one vendor and silence on the other, which is worse than an honest gap. If it
+  is built it will be an optional source behind the rule above.
+- **Infiniband** is declined. `/sys/class/infiniband` does publish port counters
+  without the verbs stack, so this one is *possible* within the rule — it is out
+  on scope rather than on principle, and the machines that have it are the
+  machines that already have their own fabric monitoring.
+- **Last-level cache** is declined. It needs `perf_event_open` with RDT/CMT
+  support, which is a privileged interface on most kernels, and a figure that
+  works only under `sudo` on some processors is not a figure this tool can put
+  on a header.
+
+The rule is written down because it is the answer to every future "should poptop
+shell out to X", and answering it four separate times would eventually produce
+four different answers.
 
 ### Throttling
 

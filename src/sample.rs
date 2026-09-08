@@ -177,7 +177,7 @@ pub struct NodeStat {
 // `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
     MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ThreadSample,
-    CgroupStat, NodeStat, ProcSample, Sample
+    CgroupStat, NodeStat, NfsMount, NfsStat, ProcSample, Sample
 }
 
 // The wire order for each retained struct, listed beside it. The list cannot
@@ -434,6 +434,93 @@ pub struct NetStat {
 }
 
 crate::persist::codec! { NetStat { links: Vec<Link>, errors: Option<u64>, drops: Option<u64>, retrans: Option<u64>, listen_drops: Option<u64> } }
+
+/// One NFS mount over the last interval.
+///
+/// On a box whose storage is a remote filesystem, every disk figure poptop
+/// draws describes the local disk that is doing nothing while the machine
+/// waits on the network. This is where the waiting actually is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NfsMount {
+    /// Where it is mounted — `/mnt/data`.
+    pub mount: Arc<str>,
+    /// What is mounted — `10.0.0.1:/export`.
+    pub server: Arc<str>,
+    /// Bytes the client actually read from and wrote to the server over the
+    /// interval, rather than what the application asked for: the difference is
+    /// the page cache, and the whole question about an NFS mount is how much
+    /// went over the wire.
+    pub read: u64,
+    pub write: u64,
+    /// RPC calls over the interval.
+    pub ops: u64,
+    /// Calls that had to be sent again.
+    ///
+    /// The single best "this mount is unhealthy" number, and the one no other
+    /// figure on the header would show: a mount retransmitting steadily is one
+    /// whose server or path is failing, while its byte rates look ordinary.
+    pub retrans: u64,
+    /// Mean round trip over the interval, in milliseconds.
+    ///
+    /// `None` where no call completed — a mount that did nothing has no
+    /// latency, and zero would say it was instant.
+    pub rtt_ms: Option<f32>,
+}
+
+crate::persist::codec! { NfsMount { mount: Arc<str>, server: Arc<str>, read: u64, write: u64, ops: u64, retrans: u64, rtt_ms: Option<f32> } }
+
+/// What this machine's NFS client and server did over the interval.
+///
+/// Every field is a count over the interval, not since boot, so a restored
+/// sample means the same thing as a live one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NfsStat {
+    /// One per mount, in the order the kernel lists them.
+    pub mounts: Vec<NfsMount>,
+    /// Client RPC calls over the interval, across every mount.
+    pub client_calls: u64,
+    /// Client calls retransmitted.
+    pub client_retrans: u64,
+    /// Server RPC calls, or `None` where this machine runs no `nfsd` threads.
+    ///
+    /// `None` rather than zero: a box that does not serve NFS and a box whose
+    /// server is idle are different machines, and only one of them is worth a
+    /// figure on the header.
+    pub server_calls: Option<u64>,
+    /// Bytes the server read and wrote for its clients.
+    pub server_read: Option<u64>,
+    pub server_write: Option<u64>,
+    /// Reply-cache hits and misses. A miss is work the server had to do again
+    /// for a client that asked twice.
+    pub server_hits: Option<u64>,
+    pub server_misses: Option<u64>,
+    /// Calls the server refused. Not a performance figure — a configuration
+    /// one, and the sort that is otherwise found by reading logs.
+    pub server_badauth: Option<u64>,
+}
+
+crate::persist::codec! { NfsStat { mounts: Vec<NfsMount>, client_calls: u64, client_retrans: u64, server_calls: Option<u64>, server_read: Option<u64>, server_write: Option<u64>, server_hits: Option<u64>, server_misses: Option<u64>, server_badauth: Option<u64> } }
+
+impl NfsStat {
+    /// The mount doing the most work, if any is.
+    ///
+    /// By calls rather than by bytes, and for the reason the header figure
+    /// exists: an NFS mount that is a problem is usually one making thousands
+    /// of small calls, not one moving a lot of data. Ties go to the earlier,
+    /// as [`NetStat::busiest`] does.
+    pub fn busiest(&self) -> Option<&NfsMount> {
+        self.mounts.iter().max_by_key(|m| (m.ops, m.read + m.write))
+    }
+
+    /// Whether this machine has anything to say about NFS at all.
+    ///
+    /// A kernel with the `nfs` module loaded publishes `/proc/net/rpc/nfs` and
+    /// `/proc/net/rpc/nfsd` whether or not anything uses them, so presence is
+    /// not the test — a mount, or a running server, is.
+    pub fn in_use(&self) -> bool {
+        !self.mounts.is_empty() || self.server_calls.is_some()
+    }
+}
 
 impl NetStat {
     /// The interface carrying the most traffic, if any is known.
@@ -885,6 +972,9 @@ pub struct Sample {
     pub clock_ceiling: Option<f32>,
     /// Network traffic and health, or `None` where the platform will not say.
     pub net: Option<NetStat>,
+    /// NFS, client and server, or `None` on a machine that neither mounts nor
+    /// serves it — and on a platform that will not say.
+    pub nfs: Option<NfsStat>,
     /// Mounted filesystems worth watching, or `None` where the platform will
     /// not say.
     ///
@@ -1012,11 +1102,12 @@ impl Sample {
             exited: None,
             cgroups: None,
             nodes: None,
+            nfs: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
@@ -1035,6 +1126,36 @@ impl Sample {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_busiest_mount_is_the_one_making_the_most_calls() {
+        // By calls, not by bytes: an NFS mount that is a problem is usually
+        // one making thousands of small calls rather than one moving data.
+        let m = |mount: &str, ops: u64, read: u64| NfsMount {
+            mount: Arc::from(mount),
+            server: Arc::from("s"),
+            ops,
+            read,
+            ..NfsMount::default()
+        };
+        let s = NfsStat {
+            mounts: vec![m("/a", 10, 1 << 30), m("/b", 900, 4096)],
+            ..NfsStat::default()
+        };
+        assert_eq!(&*s.busiest().unwrap().mount, "/b");
+        assert!(s.in_use());
+
+        // A machine that neither mounts nor serves it has nothing to say.
+        assert!(!NfsStat::default().in_use());
+        assert!(NfsStat::default().busiest().is_none());
+        assert!(
+            NfsStat {
+                server_calls: Some(0),
+                ..NfsStat::default()
+            }
+            .in_use(),
+            "a running server with an idle interval was reported as no server"
+        );
+    }
 
     use super::*;
 

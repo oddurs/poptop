@@ -532,6 +532,42 @@ fn dirty_heat(share: f32, theme: &Theme) -> f32 {
     }
 }
 
+/// How loudly to colour a share of calls that had to be sent again.
+///
+/// Its own thresholds mapped onto the theme's, like [`stall_heat`] and
+/// [`steal_heat`]: a percent of retransmissions is a mount worth looking at and
+/// five percent is one that is failing, where five percent of a *CPU* is
+/// nothing at all. Reading the ramp straight would paint a dying mount calm.
+fn retrans_heat(share: f32, theme: &Theme) -> f32 {
+    const WARN: f32 = 1.0;
+    const CRIT: f32 = 5.0;
+    if share >= CRIT {
+        theme.critical_pct + (share - CRIT).min(10.0)
+    } else if share >= WARN {
+        theme.warn_pct + (share - WARN) / (CRIT - WARN) * (theme.critical_pct - theme.warn_pct)
+    } else {
+        share / WARN * theme.warn_pct
+    }
+}
+
+#[cfg(test)]
+pub fn retrans_heat_for_test(share: f32, theme: &Theme) -> f32 {
+    retrans_heat(share, theme)
+}
+
+/// A count as a figure narrow enough for the header — `1.2k`, `48`.
+///
+/// Calls a second run to five and six digits on a busy server, and a header
+/// figure that grows by three columns under load is one that pushes another
+/// figure off the row exactly when the machine is interesting.
+pub fn fmt_count(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.1}k", n as f32 / 1_000.0),
+        _ => format!("{:.1}M", n as f32 / 1_000_000.0),
+    }
+}
+
 /// A mount point short enough to sit in a header figure.
 ///
 /// Kept from the right, because that is the end that identifies it: the last
@@ -670,6 +706,60 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             rank: 20,
             spans,
         });
+    }
+
+    // The mount, when the storage is not a disk on this machine.
+    //
+    // Ranked immediately after the disk figure and above the filesystem one,
+    // because on a box whose working set lives on NFS the disk figure above is
+    // describing a local disk that is doing nothing while the machine waits on
+    // the network — and this is the only figure that would say so.
+    //
+    // Retransmissions rather than throughput. An NFS mount in trouble is
+    // usually one whose calls are being sent twice, and its byte rates look
+    // ordinary throughout; `NET` already carries the interface.
+    if let Some(nfs) = s.nfs.as_ref().filter(|n| n.in_use()) {
+        if let Some(m) = nfs.busiest().filter(|m| m.ops > 0 || m.retrans > 0) {
+            let lost = m.retrans as f32 / m.ops.max(1) as f32 * 100.0;
+            let mut spans = vec![
+                Span::styled(format!("{} ", short_mount(&m.mount)), dim),
+                Span::styled(
+                    format!("{} op/s", fmt_count(m.ops)),
+                    app.theme.figure_style(retrans_heat(lost, &app.theme)),
+                ),
+            ];
+            // Only when something is going wrong. A healthy mount retransmits
+            // nothing for weeks, and `0.0% re` on every frame is a figure
+            // nobody reads by the second day — the rule `CLK` and `STL` follow.
+            if m.retrans > 0 {
+                spans.push(Span::styled(
+                    format!(" {lost:.1}% re"),
+                    app.theme.figure_style(retrans_heat(lost, &app.theme)),
+                ));
+            }
+            figures.push(Figure {
+                group: Group::Storage,
+                rank: 22,
+                spans,
+            });
+        }
+        // The server, which is a different machine's problem arriving here.
+        // Only where one is running: `nfsd` publishes zeroes on any kernel
+        // with the module loaded.
+        //
+        // Ranked well below the mount above, and below memory: what this box
+        // is *serving* explains somebody else's slowness, not its own. At rank
+        // 45 a ninety-column header dropped `MEM` to keep it.
+        if let Some(calls) = nfs.server_calls {
+            figures.push(Figure {
+                group: Group::Storage,
+                rank: 65,
+                spans: vec![
+                    Span::styled("NFSD ", dim),
+                    Span::styled(format!("{} op/s", fmt_count(calls)), dim),
+                ],
+            });
+        }
     }
 
     // What stopped, rather than what was busy. Ranked beside the storage
