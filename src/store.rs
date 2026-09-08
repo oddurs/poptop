@@ -444,6 +444,7 @@ mod tests {
             },
             load: [1.5, 2.5, 3.5],
             tasks: None,
+            exited: None,
             procs: (0..procs).map(|i| proc_of(i as i32, "postgres")).collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(4242),
@@ -1230,6 +1231,7 @@ mod tests_support {
             mem: MemStat::default(),
             load: [1.0, 2.0, 3.0],
             tasks: None,
+            exited: None,
             procs: (0..procs)
                 .map(|i| ProcSample {
                     pid: i as i32,

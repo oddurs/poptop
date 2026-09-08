@@ -41,6 +41,7 @@ pub struct Needs {
 pub struct Size {
     pub procs: u64,
     pub tasks: u64,
+    pub exited: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -49,6 +50,12 @@ pub enum Source {
     Io,
     /// Per-thread rows, from `/proc/<pid>/task/<tid>/stat`.
     Threads,
+    /// Processes that lived and died between two samples, over taskstats.
+    ///
+    /// The registration is one-time and the per-sample cost is draining a
+    /// socket, so this is cheap — but it is a capability that can be refused,
+    /// and everything that can be refused belongs in this list.
+    Exited,
     /// The set of cpufreq policies, which is not the ceiling itself — that is
     /// read every sample — but the hardware maximum each policy is measured
     /// against. CPU hotplug is routine on cloud instances and a driver can load
@@ -59,13 +66,19 @@ pub enum Source {
 }
 
 impl Source {
-    pub const ALL: [Source; 3] = [Source::Io, Source::Threads, Source::ClockPolicies];
+    pub const ALL: [Source; 4] = [
+        Source::Io,
+        Source::Threads,
+        Source::ClockPolicies,
+        Source::Exited,
+    ];
 
     /// What to call it when poptop has to say it stopped reading it.
     pub fn label(self) -> &'static str {
         match self {
             Source::Io => "per-process disk IO",
             Source::Threads => "threads",
+            Source::Exited => "exited processes",
             Source::ClockPolicies => "clock policies",
         }
     }
@@ -84,6 +97,10 @@ impl Source {
             // A directory walk of `/sys/devices/system/cpu`, once a minute.
             // Counted per sample rather than per unit because there is one of
             // it.
+            // Draining a socket that already holds the records. Charged per
+            // exited process, which is what there are more of on the machine
+            // this would matter on.
+            Source::Exited => 500,
             Source::ClockPolicies => 200_000,
         }
     }
@@ -100,7 +117,7 @@ impl Source {
     /// minute — over per-process IO on four hundred processes.
     pub fn scales(self) -> bool {
         match self {
-            Source::Io | Source::Threads => true,
+            Source::Io | Source::Threads | Source::Exited => true,
             Source::ClockPolicies => false,
         }
     }
@@ -110,15 +127,31 @@ impl Source {
         let units = match self {
             Source::Io => size.procs,
             Source::Threads => size.tasks,
+            Source::Exited => size.exited,
             Source::ClockPolicies => 1,
         };
         self.nanos_each().saturating_mul(units)
     }
 
+    /// Whether a reader can ask for it back after the budget gives it up.
+    ///
+    /// The budget's contract is that everything it withholds is named until
+    /// somebody asks for it again — which needs a key to ask with. Exit records
+    /// have no view and no key, so giving them up would be permanent and
+    /// silent-by-omission, which is the objection to having a budget at all.
+    /// They are also the cheapest thing here by two orders of magnitude, so
+    /// they were never going to be the reason a sample ran long.
+    pub fn restorable(self) -> bool {
+        match self {
+            Source::Io | Source::Threads => true,
+            Source::Exited | Source::ClockPolicies => false,
+        }
+    }
+
     /// How many samples apart this is worth reading. One means every sample.
     pub fn every(self) -> u64 {
         match self {
-            Source::Io | Source::Threads => 1,
+            Source::Io | Source::Threads | Source::Exited => 1,
             Source::ClockPolicies => 60,
         }
     }
@@ -187,7 +220,7 @@ impl Needs {
     pub fn costliest(self, size: Size) -> Option<Source> {
         Source::ALL
             .into_iter()
-            .filter(|s| self.asked(*s) && s.scales())
+            .filter(|s| self.asked(*s) && s.scales() && s.restorable())
             .max_by_key(|s| s.total_nanos(size))
     }
 }
@@ -379,7 +412,11 @@ pub trait Collector {
     fn sample(&mut self, needs: Needs) -> std::io::Result<Sample> {
         let mut s = self.collect(needs)?;
         if let Some(ceiling) = s.cpu_ceiling() {
-            for p in &mut s.procs {
+            // Exited rows too. They are process rows in the same table and the
+            // same graph scaling, and a row that skips the clamp is exactly the
+            // one that would set the scale for everything else.
+            let exited = s.exited.iter_mut().flatten();
+            for p in s.procs.iter_mut().chain(exited) {
                 p.cpu = p.cpu.min(ceiling);
             }
         }
@@ -400,6 +437,8 @@ pub trait Collector {
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+pub mod taskstats;
 #[cfg(target_os = "linux")]
 use linux as backend;
 #[cfg(target_os = "linux")]

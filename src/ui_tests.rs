@@ -66,6 +66,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         disks: None,
         clock_ceiling: None,
         tasks: None,
+        exited: None,
         pressure: None,
         net: None,
         filesystems: None,
@@ -8732,6 +8733,7 @@ fn the_budget_gives_up_what_costs_most_on_this_machine() {
     let real = Size {
         procs: 400,
         tasks: 3200,
+        exited: 0,
     };
     assert_eq!(
         Needs::NONE
@@ -8747,6 +8749,7 @@ fn the_budget_gives_up_what_costs_most_on_this_machine() {
     let odd = Size {
         procs: 400,
         tasks: 10,
+        exited: 0,
     };
     assert_eq!(
         Needs::NONE
@@ -8899,4 +8902,127 @@ fn asking_for_a_withheld_source_again_gets_it_back_in_one_press() {
     );
     assert!(app.needs().asked(Source::Io));
     assert!(app.show_io);
+}
+
+/// A process that lived and died inside the interval.
+///
+/// `started` is explicit because it is the half of the identity key that
+/// matters here: an exit record carries `ac_btime` in epoch seconds while a
+/// live row carries ticks since boot, and storing one as the other made the two
+/// impossible to match. A fixture that gives both rows the same default hides
+/// exactly that, which is how it went unnoticed.
+fn exited_proc(pid: i32, name: &str, cpu: f32, started: u64) -> ProcSample {
+    ProcSample {
+        state: 'X',
+        threads: None,
+        started: Some(started),
+        ..proc_named(pid, name, cpu, 4 << 20)
+    }
+}
+
+#[test]
+fn a_process_that_lived_and_died_between_samples_is_a_row_in_that_interval() {
+    // The gap this closes. poptop reads `/proc` at an instant, so a process
+    // that lived 200ms never existed — and a burst of them is one of the
+    // commonest causes of exactly the spike somebody opens poptop to explain.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(4200, "sshd", 0.5, 8 << 20)];
+    s.exited = Some(vec![exited_proc(9001, "backup.sh", 40.0, 63007)]);
+    app.push(s);
+
+    let rows = app.visible_rows();
+    let names: Vec<&str> = rows.iter().map(|r| r.proc.name.as_ref()).collect();
+    assert_eq!(
+        names,
+        vec!["backup.sh", "sshd"],
+        "the exited process is not in the table, sorted with the rest"
+    );
+    assert_eq!(rows[0].proc.state, 'X', "it is not marked as gone");
+
+    // Filtered and searched like any other row, because it is one.
+    app.filter = "state = X".into();
+    assert_eq!(app.visible_rows().len(), 1, "an exited row cannot be found");
+    app.filter = "backup".into();
+    assert_eq!(
+        app.visible_rows().len(),
+        1,
+        "an exited row cannot be searched"
+    );
+}
+
+#[test]
+fn a_caught_exit_stops_being_counted_as_one_that_got_away() {
+    use crate::history::churn;
+    // Before exit records existed this figure *was* the measure of what poptop
+    // could not show. Now they are rows, so counting them as missing would be
+    // the same lie in the other direction.
+    let mut before = sample(1.0);
+    before.forks = Some(1_000);
+    before.procs = vec![proc_named(4200, "sshd", 0.0, 1 << 20)];
+
+    let mut after = sample(1.0);
+    after.forks = Some(1_010); // ten tasks created
+    after.procs = vec![proc_named(4200, "sshd", 0.0, 1 << 20)];
+
+    let blind = churn(&before, &after).expect("no churn");
+    assert_eq!(blind.unseen(), 10, "the fixture does not test the case");
+
+    after.exited = Some(
+        (0..7)
+            .map(|i| exited_proc(9000 + i, "true", 0.0, 90_000 + i as u64))
+            .collect(),
+    );
+    let caught = churn(&before, &after).expect("no churn");
+    assert_eq!(caught.caught, 7);
+    assert_eq!(
+        caught.unseen(),
+        3,
+        "the processes poptop caught are still being reported as invisible"
+    );
+}
+
+#[test]
+fn a_process_that_was_already_running_is_not_credited_to_this_intervals_churn() {
+    use crate::history::churn;
+    // It exited here but it was not *created* here. Counting it would credit
+    // the wrong side and drive the figure to zero on a box with ordinary
+    // turnover — which is every box.
+    let mut before = sample(1.0);
+    before.forks = Some(1_000);
+    // A start time from long before this interval, and one the exited row has
+    // to match exactly for the reconciliation to recognise it.
+    before.procs = vec![ProcSample {
+        started: Some(12_345),
+        ..proc_named(4200, "sshd", 0.0, 1 << 20)
+    }];
+
+    let mut after = sample(1.0);
+    after.forks = Some(1_002);
+    after.procs = vec![];
+    after.exited = Some(vec![
+        // The same process, by pid *and* start time, that was alive a moment
+        // ago.
+        exited_proc(4200, "sshd", 0.0, 12_345),
+    ]);
+
+    let c = churn(&before, &after).expect("no churn");
+    assert_eq!(c.caught, 0, "a long-lived process was counted as churn");
+    assert_eq!(
+        c.unseen(),
+        2,
+        "the two tasks that really did vanish are gone"
+    );
+
+    // …and one that genuinely was born here still counts.
+    after.exited = Some(vec![
+        exited_proc(4200, "sshd", 0.0, 12_345),
+        exited_proc(9001, "true", 0.0, 99_999),
+    ]);
+    let c = churn(&before, &after).expect("no churn");
+    assert_eq!(
+        c.caught, 1,
+        "a process born and gone in this interval was missed"
+    );
+    assert_eq!(c.unseen(), 1);
 }
