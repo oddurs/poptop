@@ -31,14 +31,20 @@ const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 /// table cannot show.
 pub const HEADER_H: u16 = 2;
 
-/// The header's height for a given sample.
+/// The header's height on this machine.
 ///
 /// [`HEADER_H`] plus a row for the NUMA nodes, on a machine that has more than
 /// one. A box with a single node spends nothing here: its per-node figures are
 /// the figures on the two rows above, and a permanent row restating them is a
 /// row the process table does not get.
-pub fn header_height(s: &Sample) -> u16 {
-    HEADER_H + u16::from(s.nodes.is_some())
+///
+/// Taken from the machine and not from the sample under the cursor. Per-sample
+/// it made the header grow and shrink as history was scrubbed across a
+/// boundary where the field appeared — restored history from a build before
+/// this one, or a moment when `/sys` could not be read — which moves the
+/// timeline and the whole table by a row on every keypress.
+pub fn header_height(app: &App) -> u16 {
+    HEADER_H + u16::from(app.numa)
 }
 /// The height the timeline had when it was fixed.
 ///
@@ -96,9 +102,9 @@ pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
-    // Measured from the sample rather than assumed, so the node row is a row
-    // the layout knows about instead of one drawn over the timeline.
-    let header = app.history.current().map_or(HEADER_H, header_height);
+    // Measured rather than assumed, so the node row is a row the layout knows
+    // about instead of one drawn over the timeline.
+    let header = header_height(app);
     let chunks = Layout::vertical([
         Constraint::Length(header),
         Constraint::Length(timeline_height(f.area().height, header)),
@@ -965,7 +971,17 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     }
 
     let mut rows = vec![Line::from(line), core_meters(s, area.width, &app.theme)];
-    rows.extend(node_meters(s, area.width, &app.theme));
+    if app.numa {
+        // The row is the machine's, so it is drawn for every sample once the
+        // machine has one — and a sample collected before poptop read nodes
+        // says so rather than leaving the reserved row blank.
+        rows.push(node_meters(s, area.width, &app.theme).unwrap_or_else(|| {
+            Line::from(Span::styled(
+                "  nodes not recorded in this sample",
+                app.theme.dim_style(),
+            ))
+        }));
+    }
     f.render_widget(Paragraph::new(rows), area);
 }
 
@@ -999,11 +1015,16 @@ fn node_meters(s: &Sample, width: u16, theme: &Theme) -> Option<Line<'static>> {
             // node that is idle.
             None => Span::styled("    —".to_string(), theme.dim_style()),
         };
-        let used = node
+        // Free is printed because on a NUMA box that is the number deciding
+        // whether the next allocation stays local. The *colour* is what is not
+        // coming back: page cache on a node is reclaimable, and heating on
+        // free alone would paint a healthy box critical for holding cache —
+        // the exact misreading `MemStat::free` warns about, one row down.
+        let gone = node
             .total
-            .checked_sub(node.free)
-            .map(|u| u as f32 / node.total.max(1) as f32 * 100.0)
-            .unwrap_or(0.0);
+            .saturating_sub(node.free)
+            .saturating_sub(node.file.unwrap_or(0));
+        let used = gone as f32 / node.total.max(1) as f32 * 100.0;
         vec![
             Span::styled(format!("n{} ", node.id), theme.dim_style()),
             cpu,

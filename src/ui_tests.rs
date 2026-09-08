@@ -186,8 +186,8 @@ fn one_node_costs_no_row_and_two_get_one() {
     let mut numa = App::new(600);
     numa.push(two_node_sample());
 
-    assert_eq!(ui::header_height(plain.history.current().unwrap()), 2);
-    assert_eq!(ui::header_height(numa.history.current().unwrap()), 3);
+    assert_eq!(ui::header_height(&plain), 2);
+    assert_eq!(ui::header_height(&numa), 3);
 
     let flat = rows(&plain, 100, 30);
     let numa_rows = rows(&numa, 100, 30);
@@ -216,6 +216,97 @@ fn one_node_costs_no_row_and_two_get_one() {
     assert!(
         !below.contains("nodes"),
         "the node row was drawn twice, or over the timeline: {below}"
+    );
+
+    // The row belongs to the machine, not to the sample under the cursor.
+    // History restored from a build that did not read nodes has `None` in it,
+    // and a header that shrank there moved the timeline and the whole table by
+    // a row on every keypress across the boundary.
+    let mut mixed = App::new(600);
+    mixed.push(sample(40.0));
+    mixed.push(two_node_sample());
+    mixed.history.scrub(-1);
+    let scrubbed = rows(&mixed, 100, 30);
+    assert_eq!(
+        ui::header_height(&mixed),
+        3,
+        "the header shrank while scrubbing"
+    );
+    assert!(
+        scrubbed[2].contains("nodes"),
+        "the reserved row went blank instead of saying why: {:?}",
+        scrubbed[2]
+    );
+    assert!(
+        scrubbed[2].contains("not recorded"),
+        "a sample with no nodes drew somebody else's figures: {:?}",
+        scrubbed[2]
+    );
+
+    // And it never lets go. A single sample where `/sys` could not be read
+    // must not take the row away from the machine it belongs to — that is the
+    // same jitter, arriving from the live end instead of the scrubbed one.
+    mixed.history.goto_live();
+    mixed.push(sample(40.0));
+    assert_eq!(
+        ui::header_height(&mixed),
+        3,
+        "one unreadable sample took the row off a NUMA machine"
+    );
+}
+
+#[test]
+fn a_nodes_colour_does_not_call_page_cache_lost_memory() {
+    // The rule `MemStat::free` states, applied a row down: a node holding
+    // twenty gigabytes of reclaimable page cache and one gigabyte genuinely
+    // free is not a node in trouble, and heating on free alone paints it
+    // critical while the `MEM` figure two rows up reads a comfortable third.
+    let mut app = App::new(600);
+    let mut s = sample(40.0);
+    let node = |free: u64, file: Option<u64>| crate::sample::NodeStat {
+        id: 0,
+        total: 64 << 30,
+        free,
+        file,
+        dirty: None,
+        shmem: None,
+        cpu: Some(10.0),
+    };
+    let mut cached = node(1 << 30, Some(40 << 30));
+    let mut full = node(1 << 30, Some(0));
+    cached.id = 0;
+    full.id = 1;
+    s.nodes = Some(vec![cached, full]);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let row: Vec<_> = (0..100u16).map(|x| buf[(x, 2)].clone()).collect();
+    let text: String = row.iter().map(|c| c.symbol()).collect();
+    assert!(text.contains("n0") && text.contains("n1"), "{text}");
+
+    // Both print the same free figure; only the colour separates them, so the
+    // figures themselves are what has to be sampled — the `n0` label beside
+    // them is dim on every node by design.
+    let figures: Vec<_> = text
+        .match_indices("G free")
+        .map(|(b, _)| row[text[..b].chars().count()].fg)
+        .collect();
+    assert_eq!(figures.len(), 2, "expected one free figure a node: {text}");
+    let (cached_fg, full_fg) = (figures[0], figures[1]);
+    assert_ne!(
+        cached_fg, full_fg,
+        "a node holding cache and a node genuinely full were coloured alike"
+    );
+    assert_ne!(
+        cached_fg, app.theme.critical,
+        "reclaimable page cache was coloured as memory that is gone"
+    );
+    assert_eq!(
+        full_fg, app.theme.critical,
+        "a node with one gigabyte left and no cache to reclaim was not loud"
     );
 }
 

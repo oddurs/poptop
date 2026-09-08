@@ -686,7 +686,7 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
                 );
             }
         }
-        None => outln!("nodes   —  one node, or not published here"),
+        None => outln!("nodes   —  one node, or nothing readable here"),
     }
     outln!("procs   {}", s.procs.len());
     // The processes that lived and died inside the interval — the ones a
