@@ -104,6 +104,15 @@ pub struct App {
     /// following one — it moves a highlight, where the same mistake in
     /// `ProcSample::key` would splice two processes' history into one line.
     pub selected: Option<Watched>,
+    /// Where the highlight was last seen, as a hint for scrolling and for the
+    /// next keypress. Never the selection — that is `selected`, and this is
+    /// only ever a fallback for when the watched process is not on screen.
+    ///
+    /// Without it the viewport snapped home every time the process was
+    /// momentarily absent: scrubbing back past the moment it started made the
+    /// list jump to the top and back on every arrow key, and a process exiting
+    /// cost the reader their place sixty rows down.
+    last_row: std::cell::Cell<usize>,
     pub filter: String,
     pub editing_filter: bool,
     pub should_quit: bool,
@@ -141,6 +150,7 @@ impl App {
             history: History::new(history_len),
             sort: Sort::Cpu,
             selected: None,
+            last_row: std::cell::Cell::new(0),
             filter: String::new(),
             editing_filter: false,
             should_quit: false,
@@ -365,14 +375,26 @@ impl App {
 
     pub fn select_delta(&mut self, delta: isize) {
         let rows = self.visible_rows();
+        // A filter matching nothing says nothing about the watched process —
+        // it is still running. Clearing the selection here meant one reflexive
+        // arrow key during a mistyped filter destroyed it, and clearing the
+        // filter came back with nothing selected.
         if rows.is_empty() {
-            self.selected = None;
             return;
         }
         // From where the watched process is *now*. If it is not in this sample
         // there is no row to move relative to, so a keypress starts at the top
         // rather than jumping to wherever the highlight was last seen.
-        let from = self.row_of(&rows).map_or(0, |i| i as isize + delta);
+        // With something selected, move relative to where it is. With nothing
+        // selected, the first keypress lands on a row rather than one step past
+        // it — otherwise a walk down the list can never reach row zero, and a
+        // loop looking for the process there never terminates.
+        let from = match self.row_of(&rows) {
+            Some(i) => i as isize + delta,
+            None if self.selected.is_none() => 0,
+            // Selected but off screen: resume from where it was last seen.
+            None => self.resume_row() as isize + delta,
+        };
         let i = from.clamp(0, rows.len() as isize - 1) as usize;
         self.selected = Some(Watched::of(rows[i].proc));
     }
@@ -380,7 +402,17 @@ impl App {
     /// Where the watched process is in these rows, if it is in them at all.
     pub fn row_of(&self, rows: &[TreeRow<'_>]) -> Option<usize> {
         let w = self.selected.as_ref()?;
-        rows.iter().position(|r| w.is(r.proc))
+        let i = rows.iter().position(|r| w.is(r.proc))?;
+        self.last_row.set(i);
+        Some(i)
+    }
+
+    /// Where to look when the watched process is not on screen.
+    ///
+    /// A scroll position, not a selection: nothing is highlighted at this row,
+    /// and moving from it re-keys onto whatever process is actually there.
+    pub fn resume_row(&self) -> usize {
+        self.last_row.get()
     }
 
     /// The watched process, when it is not in the rows on screen.
@@ -391,7 +423,17 @@ impl App {
     /// through the buffer is what the reader scrubbed back to find out about.
     pub fn watched_but_absent(&self, rows: &[TreeRow<'_>]) -> Option<&Watched> {
         let w = self.selected.as_ref()?;
-        rows.iter().all(|r| !w.is(r.proc)).then_some(w)
+        if rows.iter().any(|r| w.is(r.proc)) {
+            return None;
+        }
+        // Not in the rows is not the same as not in the sample. A filter or the
+        // kernel-thread toggle takes rows away too, and `nginx not running
+        // here` above a running nginx is the panel making a claim that is false
+        // about the machine — the one thing it is careful never to do. Those
+        // cases need no message anyway: the reader typed the filter, and it is
+        // on screen.
+        let sample = self.history.current()?;
+        sample.procs.iter().all(|p| !w.is(p)).then_some(w)
     }
 }
 
@@ -400,8 +442,15 @@ impl App {
 pub struct Watched {
     pid: i32,
     started: Option<u64>,
-    /// The name it had when it was chosen, so the panel can say who is missing
-    /// when it is missing.
+    /// What the table called it when it was chosen, so the panel can say who is
+    /// missing when it is missing.
+    ///
+    /// [`ProcSample::command`], not `name`: on Linux `name` is the kernel's
+    /// fifteen-character `comm`, so a reader who selected the row
+    /// `node /srv/api/server.js` was told `node not running here` — which on a
+    /// box with four node services identifies nothing. That is exactly the
+    /// failure the command-line column was added to fix, reintroduced one line
+    /// over.
     pub name: Arc<str>,
 }
 
@@ -410,7 +459,7 @@ impl Watched {
         Self {
             pid: p.pid,
             started: p.started,
-            name: p.name.clone(),
+            name: Arc::from(p.command()),
         }
     }
 

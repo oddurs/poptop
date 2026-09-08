@@ -11,6 +11,25 @@ use crate::ui;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
+/// Walk the selection down the table until `want` matches, or fail.
+///
+/// Bounded on purpose. The first version of these tests used
+/// `while ... { app.select_delta(1) }`, which turns a wrong answer into an
+/// infinite loop — under one mutation the whole suite hung instead of
+/// reporting a failure, which is strictly worse than a red test.
+fn select_until(app: &mut App, what: &str, want: impl Fn(&str) -> bool) {
+    for _ in 0..500 {
+        if app.selected.as_ref().is_some_and(|w| want(&w.name)) {
+            return;
+        }
+        app.select_delta(1);
+    }
+    panic!(
+        "walked the whole table without finding {what}; last selection was {:?}",
+        app.selected.as_ref().map(|w| w.name.to_string())
+    );
+}
+
 /// A process for a fixture.
 ///
 /// Keep pids and ppids away from 2: on Linux that is `kthreadd`, so a fixture
@@ -173,10 +192,12 @@ fn sort_by_mem_puts_the_biggest_process_first() {
 }
 
 #[test]
-fn a_filter_that_hides_the_watched_process_says_so() {
-    // The selection is of a process, so there is no index to strand: the row
-    // simply is not there, and the panel says which process is missing rather
-    // than highlighting whatever landed at that position.
+fn a_filter_that_hides_the_watched_process_does_not_claim_it_stopped() {
+    // Not in the rows is not the same as not in the sample. This test used to
+    // assert the opposite — that a filtered-out process was announced as `nginx
+    // not running here` — which is the panel making a claim that is false about
+    // the machine, above a row the reader can see by clearing the filter.
+    // Nothing needs saying: they typed the filter, and it is on screen.
     let mut app = App::new(60);
     app.push(sample(10.0));
     app.select_delta(2);
@@ -190,13 +211,26 @@ fn a_filter_that_hides_the_watched_process_says_so() {
         "the filter moved the selection to a different process"
     );
     assert!(
-        app.watched_but_absent(&rows).is_some(),
-        "the watched process is filtered out and the panel does not know"
+        app.row_of(&rows).is_none(),
+        "the watched process is filtered out and still highlighted"
     );
     assert!(
-        render(&app, 100, 30).contains(&format!("{} not running here", watched.name)),
-        "the absence is not stated"
+        app.watched_but_absent(&rows).is_none(),
+        "a filtered process was reported as not running"
     );
+    let frame = render(&app, 100, 30);
+    assert!(
+        !frame.contains("not running here"),
+        "the panel says a running process stopped"
+    );
+
+    // Clearing the filter brings it back, still selected.
+    app.filter.clear();
+    let rows = app.visible_rows();
+    let i = app
+        .row_of(&rows)
+        .expect("the selection did not survive the filter");
+    assert_eq!(rows[i].proc.command(), &*watched.name);
 }
 
 #[test]
@@ -5507,10 +5541,7 @@ fn hiding_kernel_threads_does_not_silently_select_another_process() {
     app.show_kernel = true;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // Walk to a kworker.
-    for _ in 0..20 {
-        app.select_delta(1);
-    }
+    select_until(&mut app, "a kworker", |n| n.starts_with("kworker"));
     let watched = app.selected.clone().expect("nothing selected");
     assert!(watched.name.starts_with("kworker"), "{watched:?}");
 
@@ -5525,10 +5556,24 @@ fn hiding_kernel_threads_does_not_silently_select_another_process() {
         app.row_of(&rows).is_none(),
         "a hidden process is still being highlighted"
     );
+    // Hidden is not gone. The kworker is still in the sample and still running,
+    // so announcing `kworker/3:1 not running here` would be a claim that is
+    // false about the machine — and the reader pressed `K`, so nothing needs
+    // saying.
     assert!(
-        app.watched_but_absent(&rows).is_some(),
-        "the panel does not know its selection is gone"
+        app.watched_but_absent(&rows).is_none(),
+        "a hidden but running process was reported as stopped"
     );
+    assert!(
+        !render(&app, 120, 30).contains("not running here"),
+        "the panel says a running process stopped"
+    );
+
+    // …and showing them again brings the selection back.
+    app.show_kernel = true;
+    let rows = app.visible_rows();
+    let i = app.row_of(&rows).expect("the selection did not come back");
+    assert_eq!(rows[i].proc.command(), &*watched.name);
 }
 
 // macOS only: this asserts the *absence* of the Linux rule, which on Linux is
@@ -6273,9 +6318,7 @@ fn scrubbing_keeps_the_same_process_selected_while_the_table_reorders() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     // Pick redis, which is neither top nor bottom at the live sample.
-    while app.selected.as_ref().is_none_or(|w| &*w.name != "redis") {
-        app.select_delta(1);
-    }
+    select_until(&mut app, "redis", |n| n == "redis");
 
     let mut positions = Vec::new();
     for _ in 0..9 {
@@ -6303,9 +6346,7 @@ fn sorting_does_not_move_the_selection_to_a_different_process() {
     let mut app = App::new(60);
     shuffling_history(&mut app);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    while app.selected.as_ref().is_none_or(|w| &*w.name != "redis") {
-        app.select_delta(1);
-    }
+    select_until(&mut app, "redis", |n| n == "redis");
 
     let mut seen = Vec::new();
     for _ in 0..4 {
@@ -6343,9 +6384,7 @@ fn a_process_absent_at_the_cursor_is_stated_rather_than_swapped() {
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    while app.selected.as_ref().is_none_or(|w| &*w.name != "cargo") {
-        app.select_delta(1);
-    }
+    select_until(&mut app, "cargo", |n| n == "cargo");
 
     // Back before it started.
     app.history.goto_oldest();
@@ -6449,4 +6488,148 @@ fn the_cursor_row_keeps_its_anchors_when_there_is_no_room_for_a_caption() {
         checked > 0,
         "no width exercised the caption-less branch, so this test asserted nothing"
     );
+}
+
+#[test]
+fn the_viewport_holds_its_place_while_the_watched_process_is_absent() {
+    // Absence suppresses the highlight; it must not also snap the list home.
+    // Scrubbing back past the moment a process started made the table jump to
+    // the top and back on every arrow key.
+    let mut app = App::new(60);
+    for i in 0..6 {
+        let mut s = sample_at(50.0, 5 - i);
+        s.procs = (0..40)
+            .map(|n| ProcSample {
+                started: Some(n as u64 + 1),
+                ..proc_named(200 + n, &format!("worker{n:02}"), 40.0 - n as f32, 1 << 20)
+            })
+            .collect();
+        // The one being watched only exists in the newest three samples.
+        if i >= 3 {
+            s.procs.push(ProcSample {
+                started: Some(999),
+                ..proc_named(999, "latecomer", 0.5, 1 << 20)
+            });
+        }
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    select_until(&mut app, "latecomer", |n| n == "latecomer");
+    let at_live = app.resume_row();
+    assert!(at_live > 20, "the fixture does not scroll: row {at_live}");
+
+    app.history.goto_oldest();
+    let visible = app.visible_rows();
+    assert!(
+        app.row_of(&visible).is_none(),
+        "highlighted a process that had not started"
+    );
+    assert_eq!(
+        app.resume_row(),
+        at_live,
+        "the viewport snapped home when the process went missing"
+    );
+    // The frame is still scrolled there: the row it was on is on screen.
+    let frame = rows(&app, 120, 20).join("\n");
+    assert!(
+        frame.contains("worker2") || frame.contains("worker3"),
+        "the list scrolled back to the top:\n{frame}"
+    );
+}
+
+#[test]
+fn an_empty_filter_result_does_not_destroy_the_selection() {
+    // A filter matching nothing says nothing about the watched process — it is
+    // still running. One reflexive arrow key used to clear it, and clearing the
+    // filter came back with nothing selected.
+    let mut app = App::new(60);
+    app.push(sample(10.0));
+    app.select_delta(1);
+    let watched = app.selected.clone().expect("nothing selected");
+
+    app.filter = "no-such-process".into();
+    assert!(
+        app.visible_rows().is_empty(),
+        "the fixture matched something"
+    );
+    app.select_delta(1);
+    app.select_delta(-1);
+    assert_eq!(
+        app.selected.as_ref(),
+        Some(&watched),
+        "an arrow key during an empty filter destroyed the selection"
+    );
+
+    app.filter.clear();
+    assert!(
+        app.row_of(&app.visible_rows()).is_some(),
+        "the selection did not come back with the rows"
+    );
+}
+
+#[test]
+fn the_absence_message_names_the_process_the_way_the_table_did() {
+    // `name` is the kernel's fifteen-character `comm`, so a reader who selected
+    // `node /srv/api/server.js` was told `node not running here` — which on a
+    // box with four node services identifies nothing. That is the failure the
+    // command-line column exists to fix.
+    let mut app = App::new(60);
+    for i in 0..4 {
+        let mut s = sample_at(50.0, 3 - i);
+        s.procs = vec![ProcSample {
+            started: Some(1),
+            ..proc_named(101, "postgres", 20.0, 1 << 20)
+        }];
+        if i >= 2 {
+            s.procs.push(ProcSample {
+                started: Some(2),
+                cmd: Some(std::sync::Arc::from("node /srv/api/server.js --port 3000")),
+                ..proc_named(102, "node", 30.0, 1 << 20)
+            });
+        }
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    select_until(&mut app, "the node service", |n| n.contains("server.js"));
+    app.history.goto_oldest();
+    let frame = render(&app, 140, 20);
+    assert!(
+        frame.contains("node /srv/api/server.js --port 3000 not running here"),
+        "the absence message does not name what the table showed"
+    );
+}
+
+#[test]
+fn the_now_anchor_survives_a_cursor_near_but_not_on_it() {
+    // The guard was `cell + 3 <= width - 3`, which drops `now` two columns
+    // early — and just shy of the live edge is one of the commonest scrub
+    // positions. `now` occupies the last three columns, so it is only in the
+    // way when the marker is actually in them.
+    let mut app = App::new(600);
+    for i in (0..200).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let (w, h) = (100u16, 14u16);
+    let mut checked = 0;
+    for back in 1..12 {
+        app.history.goto_live();
+        app.history.scrub(-back);
+        let Some(col) = cursor_column(&app, w, h) else {
+            continue;
+        };
+        let r = ui::timeline_rows_range(h);
+        let row = render_lines(&app, w, h)[r.end as usize - 1].clone();
+        if col + 3 < w {
+            checked += 1;
+            assert!(
+                row.contains("now"),
+                "the now anchor was dropped with the marker at {col} of {w}: {row:?}"
+            );
+        }
+    }
+    assert!(checked > 0, "no cursor position exercised this");
 }

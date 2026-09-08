@@ -1535,9 +1535,9 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     if app.history.is_live() || n_values == 0 {
         return Line::from(Span::styled(
             format!(
-                "{pad}{:<width$}now",
+                "{:<width$}now",
                 "past",
-                width = graph_w.saturating_sub(3)
+                width = (gutter + graph_w).saturating_sub(3)
             ),
             app.theme.dim_style(),
         ));
@@ -1661,7 +1661,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
                 if cell >= ANCHOR_L {
                     put(&mut row, 0, "past");
                 }
-                if cell + ANCHOR_R <= width.saturating_sub(ANCHOR_R) {
+                if cell < width.saturating_sub(ANCHOR_R) {
                     put(&mut row, width.saturating_sub(ANCHOR_R), "now");
                 }
             }
@@ -1672,7 +1672,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
             if cell >= ANCHOR_L {
                 put(&mut row, 0, "past");
             }
-            if cell + ANCHOR_R <= width.saturating_sub(ANCHOR_R) {
+            if cell < width.saturating_sub(ANCHOR_R) {
                 put(&mut row, width.saturating_sub(ANCHOR_R), "now");
             }
         }
@@ -1889,7 +1889,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // whole intervals from a logfile rather than putting a trend beside a row.
     let visible_rows = area.height.saturating_sub(2) as usize;
     // Resolved from the watched process each frame, not carried as an index.
-    let selected_row = app.row_of(&rows_data).unwrap_or(0);
+    // When it is not on screen the viewport holds where it was rather than
+    // snapping home — absence should suppress the highlight, not the scroll
+    // position.
+    let selected = app.row_of(&rows_data);
+    let selected_row = selected.unwrap_or_else(|| app.resume_row());
     let row_offset = selected_row.saturating_sub(visible_rows.saturating_sub(1));
     let keys: Vec<(i32, u64)> = rows_data
         .iter()
@@ -1961,7 +1965,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .map(|(i, r)| {
             let p = r.proc;
             let mut style = Style::default();
-            if Some(i) == app.row_of(&rows_data) {
+            if Some(i) == selected {
                 style = app.theme.selection_style();
             } else if r.context_only {
                 // Present only as an ancestor of a filter match: visible for
