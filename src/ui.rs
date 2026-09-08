@@ -2146,6 +2146,17 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .watched_but_absent(&rows_data)
         .map_or(String::new(), |w| format!(" · {} not running here", w.name));
 
+    // Named, never imposed. A table that reorders itself under the reader is
+    // worse than one that does not, so this says what is in the way and `S`
+    // acts on it. Silent when nothing is constrained, and silent when the table
+    // is already sorted that way — there would be nothing to accept.
+    let constraint = app
+        .constraint()
+        .filter(|c| c.sort() != app.sort)
+        .map_or(String::new(), |c| {
+            format!(" · {} is the constraint (S)", c.name())
+        });
+
     let (io_text, io_is_warning) = io_status(show_io, app, collected);
     let plain = app.theme.title_style();
     let parts = [
@@ -2154,6 +2165,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         (10, all_one, plain),
         (20, hidden, plain),
         (40, format!(" — sort: {}", app.sort.label()), plain),
+        // Just under the sort it is about, and above the modes: a suggestion a
+        // narrow terminal drops is one nobody can act on, but it is still
+        // advice rather than a fact about the data.
+        (45, constraint, plain),
         (
             50,
             if app.tree {
@@ -2392,6 +2407,7 @@ pub const KEY_HINTS: &[&str] = &[
     "t tree",
     "i io",
     "K kernel",
+    "S constraint",
 ];
 
 /// As many hints as fit, joined, never cut mid-hint.

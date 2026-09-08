@@ -117,6 +117,23 @@ impl History {
         self.samples.range(start..end).rev()
     }
 
+    /// `n` samples containing the cursor, oldest first.
+    ///
+    /// Like [`Self::window`] but it does not return a short window near the
+    /// start of the buffer: with fewer than `n` samples behind the cursor it
+    /// extends forwards instead. A hold that silently shrinks to one sample is
+    /// not a hold — it agrees with itself trivially, which is exactly the case
+    /// a hysteresis window exists to rule out.
+    ///
+    /// Still anchored at the cursor: at the oldest sample this is that sample
+    /// and its neighbours, which is the moment being asked about.
+    pub fn around(&self, n: usize) -> impl Iterator<Item = &Sample> {
+        let len = self.samples.len();
+        let end = (self.cursor_index() + 1).min(len);
+        let start = end.saturating_sub(n);
+        self.samples.range(start..(start + n).min(len))
+    }
+
     /// Move the cursor back (negative) or forward (positive) in time.
     ///
     /// Scrubbing forward past the newest sample returns to live tailing rather
