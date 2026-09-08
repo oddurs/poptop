@@ -3,6 +3,7 @@ const { chromium } = require("playwright-core");
 // playwright-core drives a browser rather than shipping one. `channel` finds
 // the installed Chrome on any platform; CHROME overrides it where the binary is
 // somewhere unusual, which is how this runs on a CI image.
+const BASE = process.env.BASE || BASE;
 const LAUNCH = process.env.CHROME
   ? { executablePath: process.env.CHROME }
   : { channel: "chrome" };
@@ -12,7 +13,7 @@ let bad = 0;
   const b = await chromium.launch(LAUNCH);
   const p = await (await b.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
   for (const path of PAGES) {
-    await p.goto("http://127.0.0.1:3000" + path, { waitUntil: "networkidle" });
+    await p.goto(BASE + path, { waitUntil: "networkidle" });
     const rows = await p.evaluate(() => {
       const body = parseFloat(getComputedStyle(document.body).fontSize);
       return [...document.querySelectorAll("h1,h2,h3,h4")]

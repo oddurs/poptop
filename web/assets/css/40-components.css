@@ -321,6 +321,142 @@
     content: var(--glyph-critical);
   }
 
+  /* ── stamp ──────────────────────────────────────────────────────────── */
+  /* A verdict, a state, a classification. Reversed rather than coloured, which
+     is poptop's own convention for the cursor: swapping foreground and
+     background is legible on any palette, in either theme, and on a monochrome
+     display, and it leaves the status hues free to go on meaning a status.
+     `.term__state` in the frame is the same device; this is it as a component.
+
+     Not for anything that means good or bad — that is `.badge`, which carries a
+     glyph as well as a hue. A stamp classifies; a badge judges. */
+  .stamp {
+    display: inline-block;
+    font: var(--type-micro);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 0.2em 0.5em;
+    border: 1px solid var(--ink);
+    border-radius: var(--radius-sm);
+    background: var(--ink);
+    color: var(--canvas);
+    white-space: nowrap;
+  }
+
+  /* The same classification, said quietly — for the row that is not the point. */
+  .stamp--quiet {
+    background: transparent;
+    border-color: var(--line-strong);
+    color: var(--ink-dim);
+    font-weight: 500;
+  }
+
+  /* ── attributed block ───────────────────────────────────────────────── */
+  /* A passage with a label in the margin naming whose it is: a rule and its
+     name, a position and whose position it is, a step and its actor. The label
+     sits in its own column rather than inline so a run of them scans as a
+     column of names — which is the whole reason to reach for this over a
+     `.callout`, whose label is part of the sentence. */
+  .attributed {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    gap: 0.25rem 1.1rem;
+    padding-left: var(--s-4);
+    border-left: 2px solid var(--line);
+  }
+
+  .attributed + .attributed {
+    margin-top: var(--s-4);
+  }
+
+  .attributed--strong {
+    border-left-color: var(--line-strong);
+  }
+
+  .attributed__label {
+    font: var(--type-micro);
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+    padding-top: 0.3em;
+  }
+
+  .attributed__body {
+    color: var(--ink-dim);
+    max-width: var(--measure);
+  }
+
+  /* The label column already narrows the body; without this the run of rules
+     sets longer lines than the prose beside it. */
+  .attributed--strong .attributed__body {
+    max-width: var(--measure-tight);
+  }
+
+  .attributed__body > * + * {
+    margin-top: var(--s-3);
+  }
+
+  .attributed__body strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  @media (max-width: 34rem) {
+    .attributed {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.15rem;
+    }
+
+    .attributed__label {
+      padding-top: 0;
+    }
+  }
+
+  /* ── ledger ─────────────────────────────────────────────────────────── */
+  /* A dense index: many rows, few words each, read by scanning down one column
+     rather than across. Column heads are the label role and the row head
+     carries the weight, so the eye lands on the name first and the qualifiers
+     stay quiet. Figures are tabular because a column of numbers that does not
+     line up is a column you cannot compare. */
+  .ledger {
+    width: 100%;
+    border-collapse: collapse;
+    font: var(--type-ui);
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+  }
+
+  .ledger th {
+    font: var(--type-micro);
+    font-weight: 500;
+    letter-spacing: var(--track-micro);
+    color: var(--ink-faint);
+    padding: 0 var(--s-4) var(--s-2) 0;
+    border-bottom: var(--rule-strong);
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+
+  .ledger td {
+    padding: var(--s-3) var(--s-4) var(--s-3) 0;
+    border-bottom: var(--rule);
+    color: var(--ink-dim);
+    vertical-align: baseline;
+  }
+
+  .ledger tbody th {
+    font: var(--type-ui);
+    font-weight: 500;
+    color: var(--ink);
+    padding: var(--s-3) var(--s-4) var(--s-3) 0;
+    border-bottom: var(--rule);
+    vertical-align: baseline;
+  }
+
+  .ledger th:last-child,
+  .ledger td:last-child {
+    padding-right: 0;
+  }
+
   /* ── panel ──────────────────────────────────────────────────────────── */
   /* One border, one radius, no shadow. Panels do not nest. */
   .panel {
@@ -379,7 +515,7 @@
 
   .claim__body {
     color: var(--ink-dim);
-    max-width: min(40ch, 100%);
+    max-width: var(--measure-tight);
   }
 
   /* ── callout ────────────────────────────────────────────────────────── */

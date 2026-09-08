@@ -451,7 +451,7 @@ fn versus() -> Markup {
         title: "atop is the better tool",
         note: Some("and here is exactly when"),
         body: html! {
-            p class="lede" style="max-width: min(46ch, 100%)" {
+            p class="lede" {
                 "atop captures processes that started " em { "and finished" }
                 " between two samples. poptop can only tell you they happened."
             }
@@ -469,47 +469,36 @@ fn versus() -> Markup {
 
             details class="disclose" {
                 summary { "The full comparison" }
-                div class="table-scroll" {
-                    table class="table" {
-                        caption class="sr-only" {
-                            "How poptop compares with atop, zenith and htop on history"
+                (ui::ledger(
+                    "How poptop compares with atop, zenith and htop on history",
+                    &["", "History of the process table", "Needs setting up first", "Short-lived processes"],
+                    html! {
+                        tr {
+                            th scope="row" { "poptop" }
+                            td { "Back to when you started it" }
+                            td { (ui::stamp_quiet("NO")) }
+                            td { (ui::stamp("COUNTED")) }
                         }
-                        thead {
-                            tr {
-                                th scope="col" { "" }
-                                th scope="col" { "History of the process table" }
-                                th scope="col" { "Needs setting up first" }
-                                th scope="col" { "Short-lived processes" }
-                            }
+                        tr {
+                            th scope="row" { "atop" }
+                            td { "28 days by default" }
+                            td { (ui::stamp("DAEMON")) }
+                            td { (ui::stamp("NAMED")) }
                         }
-                        tbody {
-                            tr {
-                                th scope="row" { "poptop" }
-                                td { "Yes, back to when you started it" }
-                                td { "No" }
-                                td { "Counted, not named" }
-                            }
-                            tr {
-                                th scope="row" { "atop" }
-                                td { "Yes, 28 days by default" }
-                                td { "Yes — a daemon writing daily logs" }
-                                td { "Named" }
-                            }
-                            tr {
-                                th scope="row" { "zenith" }
-                                td { "Aggregate series only" }
-                                td { "No" }
-                                td { "No" }
-                            }
-                            tr {
-                                th scope="row" { "htop, btop, bottom" }
-                                td { "None" }
-                                td { "No" }
-                                td { "No" }
-                            }
+                        tr {
+                            th scope="row" { "zenith" }
+                            td { "Aggregate series only" }
+                            td { (ui::stamp_quiet("NO")) }
+                            td { (ui::stamp_quiet("NO")) }
                         }
-                    }
-                }
+                        tr {
+                            th scope="row" { "htop, btop, bottom" }
+                            td { "None" }
+                            td { (ui::stamp_quiet("NO")) }
+                            td { (ui::stamp_quiet("NO")) }
+                        }
+                    },
+                ))
                 p { a href="/docs/prior-art" { "The long version" } }
             }
         },

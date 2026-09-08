@@ -136,31 +136,58 @@ fn rules() -> Markup {
     ui::section(ui::Section {
         id: "rules",
         gutter: "rules",
-        title: "four rules, in the order they cost to break",
-        note: None,
+        title: "five rules",
+        note: Some("in the order they cost to break"),
         body: html! {
-            div class="stack" {
-                (ui::callout("Status hues mean status.", false, html! {
-                    "A status hue reused as an identity hue destroys the meaning of that
-                     hue everywhere else, because the reader can no longer tell whether
-                     red means “this is bad” or merely “this is the third thing”. There
-                     are no status hues on this site behind a button, a link or a border."
+            div {
+                (ui::attributed_strong("status", html! {
+                    p {
+                        strong { "Status hues mean status." }
+                        " A status hue reused as an identity hue destroys the meaning of
+                         that hue everywhere else, because the reader can no longer tell
+                         whether red means “this is bad” or merely “this is the third
+                         thing”. There are no status hues on this site behind a button, a
+                         link or a border."
+                    }
                 }))
-                (ui::callout("No meaning rests on hue.", false, html! {
-                    "Every status carries a glyph as well as a colour, every threshold is
-                     drawn as a rule as well as a change of shade, and the current page in
-                     a navigation list is marked by weight as well as colour. Turn the
-                     page monochrome and nothing stops working."
+                (ui::attributed_strong("channels", html! {
+                    p {
+                        strong { "No meaning rests on hue." }
+                        " Every status carries a glyph as well as a colour, every
+                         threshold is drawn as a rule as well as a change of shade, and
+                         the current page in a navigation list is marked by weight as
+                         well as colour. Turn the page monochrome and nothing stops
+                         working."
+                    }
                 }))
-                (ui::callout("Panels do not nest.", false, html! {
-                    "One border, one radius of 3px, no shadows. A terminal has none of
-                     them, and a soft grey shadow under every panel is the fastest way to
-                     make a tool for people who read htop look like a pricing page."
+                (ui::attributed_strong("surfaces", html! {
+                    p {
+                        strong { "Panels do not nest." }
+                        " One border, one radius of 3px, no shadows. A terminal has none
+                         of them, and a soft grey shadow under every panel is the fastest
+                         way to make a tool for people who read htop look like a pricing
+                         page."
+                    }
                 }))
-                (ui::callout("One thing moves.", false, html! {
-                    "The scrubbable frame on the landing page, and nothing else. No
-                     entrance animations, no hover lifts. Motion answers an action or it
-                     does not happen."
+                (ui::attributed_strong("motion", html! {
+                    p {
+                        strong { "One thing moves." }
+                        " The scrubbable frame on the landing page, and nothing else. No
+                         entrance animations, no hover lifts. Motion answers an action or
+                         it does not happen."
+                    }
+                }))
+                (ui::attributed_strong("provenance", html! {
+                    p {
+                        strong { "A picture of poptop says where it came from." }
+                        " The landing page shows a simulation — generated data, drawn by
+                         a second renderer — and says so in the same breath as the claim
+                         it supports. This rule is the newest and was learnt: a rewrite
+                         once deleted that sentence and the page spent a working session
+                         calling seeded data a recording. "
+                        code { "the_landing_page_says_where_its_data_came_from" }
+                        " fails the build if it goes missing again."
+                    }
                 }))
             }
         },
@@ -331,7 +358,7 @@ fn typography() -> Markup {
             }
 
             h3 class="h3" style="margin-top: var(--s-7)" { "Roles" }
-            p class="keymap__what" style="max-width: min(56ch, 100%); margin-bottom: var(--s-4)" {
+            p class="keymap__what" style="max-width: var(--measure); margin-bottom: var(--s-4)" {
                 "Each token is a "
                 code { "font" }
                 " shorthand, so a size cannot be used without the line height it was drawn
@@ -443,6 +470,65 @@ fn components() -> Markup {
                 happened, then goes back to saying what it does.",
                 ui::command("cargo install poptop")))
 
+            (specimen("Stamp", "A verdict, a state, a classification — reversed rather \
+                than coloured. That is the frame's own convention for the cursor: it \
+                reads on any palette, in either theme, and on a monochrome display, and \
+                it leaves the status hues free to go on meaning a status. A stamp \
+                classifies; the badge below judges.", html! {
+                div class="row" {
+                    (ui::stamp("NAMED"))
+                    (ui::stamp("COUNTED"))
+                    (ui::stamp_quiet("NO"))
+                    (ui::stamp_quiet("AGGREGATE ONLY"))
+                }
+            }))
+
+            (specimen("Attributed block", "A passage with a label in the margin naming \
+                whose it is. A run of them scans as a column of names, which is the \
+                reason to reach for this over a callout, whose label is part of the \
+                sentence.", html! {
+                div {
+                    (ui::attributed("peak", html! {
+                        p { "A slot reports the highest sample in it, so an event cannot
+                             be lost to a zoom level." }
+                    }))
+                    (ui::attributed("mean", html! {
+                        p { "What poptop refuses to do, drawn once on the landing page so
+                             the reader can see why." }
+                    }))
+                }
+            }))
+
+            (specimen("Ledger", "A dense index: many rows, few words each, read by \
+                scanning one column rather than across. Column heads take the label \
+                role, row heads take the weight, and figures are tabular.",
+                ui::ledger(
+                    "An example ledger",
+                    &["Tier", "Colours", "Meaning survives"],
+                    html! {
+                        tr {
+                            th scope="row" { "true colour" }
+                            td { "16.7M" }
+                            td { (ui::stamp("FULL")) }
+                        }
+                        tr {
+                            th scope="row" { "256" }
+                            td { "216 cube, 24 greys" }
+                            td { (ui::stamp("FULL")) }
+                        }
+                        tr {
+                            th scope="row" { "ansi 16" }
+                            td { "slots, not colours" }
+                            td { (ui::stamp_quiet("READABLE")) }
+                        }
+                        tr {
+                            th scope="row" { "mono" }
+                            td { "none" }
+                            td { (ui::stamp("PROOF")) }
+                        }
+                    },
+                )))
+
             (specimen("Status badge", "Hue and glyph together. Never hue alone.", html! {
                 div class="row" {
                     (ui::badge(Status::Ok, "live"))
@@ -510,7 +596,7 @@ fn specimen(name: &str, what: &str, body: Markup) -> Markup {
     html! {
         div style="margin-top: var(--s-7)" {
             h3 class="h3" { (name) }
-            p class="keymap__what" style="max-width: min(52ch, 100%); margin-bottom: var(--s-4)" { (what) }
+            p class="keymap__what" style="max-width: var(--measure); margin-bottom: var(--s-4)" { (what) }
             div class="panel panel--sunk" { (body) }
         }
     }

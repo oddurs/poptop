@@ -145,11 +145,19 @@
     /* Paid back to the word space wherever tracking is negative. */
     --word-tight: 0.07em;
 
-    /* Ragged-right prose, under 80 characters. Capped against the container as
-       well: a bare `ch` max-width does not shrink below the viewport, so on a
-       phone it is the thing that pushes the whole document sideways. */
-    --measure: min(66ch, 100%);
-    --measure-tight: min(54ch, 100%);
+    /* Ragged-right prose, under 80 characters — in ems, not `ch`.
+       `ch` is the advance of the digit zero, and Instrument Sans sets digits
+       50–75% wider than its average letter, so a `66ch` column holds about 103
+       characters. The site claimed a measure of 66 and was setting well over
+       100 everywhere prose was not otherwise constrained.
+       0.42em is this face's measured average advance in running text, so 28em
+       is roughly 67 characters at any size the scale uses. Checked by
+       `audit/audit.js`, which fails over 80.
+       Capped against the container as well: a bare max-width does not shrink
+       below the viewport, and on a phone that is what pushes the document
+       sideways. */
+    --measure: min(28em, 100%);
+    --measure-tight: min(23em, 100%);
 
     /* ── space ──────────────────────────────────────────────────────────── */
     --s-1: 0.25rem;

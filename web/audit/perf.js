@@ -6,7 +6,7 @@ const { chromium } = require("playwright-core");
 const LAUNCH = process.env.CHROME
   ? { executablePath: process.env.CHROME }
   : { channel: "chrome" };
-const BASE = "http://127.0.0.1:3000";
+const BASE = BASE;
 
 (async () => {
   const browser = await chromium.launch(LAUNCH);

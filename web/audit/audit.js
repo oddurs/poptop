@@ -171,7 +171,45 @@ const AUDIT = () => {
     });
   }
 
-  // 6. text that is clipped by its own box
+  // 6. line length. The design system targets under 80 characters and states
+  //    the measure in ems, because `ch` is the advance of "0" and this face
+  //    sets digits far wider than its average letter — a `66ch` column here
+  //    held 103 characters.
+  //
+  //    Measured off the widest *line box*, via a Range, rather than the
+  //    element's width: a row laid out in two columns is not one long line, and
+  //    an earlier version of this check reported every link list as a
+  //    violation.
+  document.querySelectorAll("p, li, dd").forEach((el) => {
+    if (el.closest("[data-demo], [data-frame], pre, .caption, figcaption")) return;
+    const cs = getComputedStyle(el);
+    if (cs.display === "none") return;
+    const text = el.textContent.trim();
+    if (text.length < 90) return;
+    // Skip anything that lays its own children out in columns: a two-column row
+    // is not one long line, and a range spanning both reports their union.
+    const laidOut = [...el.children].some((child) => {
+      const d = getComputedStyle(child).display;
+      return d === "flex" || d === "grid" || d === "block" || d === "table";
+    });
+    if (laidOut) return;
+
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const rects = [...range.getClientRects()].filter((r) => r.width > 20 && r.height > 4);
+    if (!rects.length) return;
+    const widest = Math.max(...rects.map((r) => r.width));
+
+    const c = document.createElement("canvas").getContext("2d");
+    c.font = `${cs.fontStyle} ${cs.fontWeight} ${parseFloat(cs.fontSize)}px ${cs.fontFamily}`;
+    const avg = c.measureText(text.slice(0, 500)).width / Math.min(text.length, 500);
+    if (!avg) return;
+
+    const chars = Math.round(widest / avg);
+    if (chars > 80) add("line-length", `${chars} characters a line`, el);
+  });
+
+  // 7. text that is clipped by its own box
   document.querySelectorAll("*").forEach((el) => {
     if (el.children.length) return;
     const cs = getComputedStyle(el);

@@ -23,7 +23,10 @@ laptop while being quoted as a property of the repository, which is the failure
 
 `playwright-core` drives whatever Chrome is installed rather than downloading
 one. Set `CHROME` if the binary is somewhere unusual; otherwise the scripts find
-it by channel.
+it by channel. Set `BASE` to point them somewhere other than
+`http://127.0.0.1:3000` — worth doing habitually, because port 3000 is the
+first thing every other dev server takes, and a suite that silently audits
+somebody else's application reports nonsense with total confidence.
 
 `playwright-core` is the browserless package: it drives the Chrome on the
 machine rather than downloading its own, so this adds one small dev dependency
@@ -35,9 +38,15 @@ in this repository should imply a node toolchain is required to build the site.
 **`audit.js`** walks every page at four widths in both themes and reports:
 horizontal overflow, colour contrast against the actual computed background,
 heading order, accessible names, tap-target size, and clipped text. It knows
-the two exceptions that matter — WCAG 2.2's inline exception for targets sitting
-in a sentence, and that the terminal frame's own palette is measured by the
-tool's own CI rather than here.
+the exceptions that matter — WCAG 2.2's inline exception for targets sitting in a
+sentence, that the terminal frame's own palette is measured by the tool's own CI
+rather than here, and that a row laid out in two columns is not one long line.
+
+The line-length check measures the widest *line box* through a `Range` and
+divides by the average advance of the text actually set. Not by `ch`: that unit
+is the width of the digit zero, and Instrument Sans sets digits 50–75% wider
+than its average letter, so the site's `66ch` measure was setting 103 characters
+a line. Reverting that token to `ch` raises 318 findings.
 
 It found the things a person does not: `--ink-faint` sitting at 3.08:1 against
 the surface it was drawn on, and every section rule looking like a heading

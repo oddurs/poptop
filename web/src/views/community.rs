@@ -83,31 +83,35 @@ pub fn index() -> Markup {
 
             section class="section" {
                 (ui::rule_heading("what to expect from review", None))
-                div class="stack" style="margin-top: var(--s-4)" {
-                    (ui::callout("One command.", false, html! {
+                div style="margin-top: var(--s-4)" {
+                    (ui::attributed("checks", html! {
+                        p { strong { "One command." } " "
                         code { "./check" }
                         " runs everything CI runs, in the order CI runs it. On a Mac, "
                         code { "./check --linux" }
                         " is the only thing that compiles the "
                         code { "/proc" }
-                        " backend at all."
+                        " backend at all." }
                     }))
-                    (ui::callout("Claims carry tests.", false, html! {
+                    (ui::attributed("evidence", html! {
+                        p { strong { "Claims carry tests." } " "
                         "If a change makes a claim — that two colours are far enough
                          apart, that a panel degrades gracefully — the preferred form of
-                         that claim is a test that fails when it stops being true."
+                         that claim is a test that fails when it stops being true." }
                     }))
-                    (ui::callout("Comments explain why.", false, html! {
+                    (ui::attributed("comments", html! {
+                        p { strong { "Comments explain why." } " "
                         "A comment earns its place by recording something a future reader
                          could not recover from the code: a measurement, a rejected
-                         alternative, or the bug a line prevents from coming back."
+                         alternative, or the bug a line prevents from coming back." }
                     }))
-                    (ui::callout("No tool attribution.", true, html! {
+                    (ui::attributed_strong("authorship", html! {
+                        p { strong { "No tool attribution." } " "
                         "Commit messages, file contents and pull request text all end up
                          in public history, and none of them is the place for a note
                          about what wrote them. A hook, "
                         code { "./check" }
-                        ", and CI all enforce it, so they cannot disagree."
+                        ", and CI all enforce it, so they cannot disagree." }
                     }))
                 }
             }

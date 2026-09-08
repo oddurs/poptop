@@ -188,7 +188,10 @@
     background: var(--selection-bg);
   }
 
-  /* A terminal's columns are fixed by definition. Letting these size to their
+  /* A terminal's columns are fixed by definition. `ch` is the correct unit
+     here and nowhere else on the site: in a monospace column the digit advance
+     *is* every character's advance, which is the assumption that made `ch`
+     wrong for prose. Letting these size to their
      contents meant the header cells moved every time a value changed width —
      `9.9` to `74.2`, `32.0M` to `793.6M` — which during the hero's opening was
      a redraw every frame, and all of the page's layout shift. Bounded in `ch`,

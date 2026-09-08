@@ -12,7 +12,7 @@ const LAUNCH = process.env.CHROME
   ? { executablePath: process.env.CHROME }
   : { channel: "chrome" };
 
-const BASE = process.env.BASE || "http://127.0.0.1:3000";
+const BASE = process.env.BASE || BASE;
 
 let failures = 0;
 const ok = (label, cond, extra = "") => {

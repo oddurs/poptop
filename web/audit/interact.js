@@ -3,10 +3,10 @@ const { chromium } = require("playwright-core");
 // playwright-core drives a browser rather than shipping one. `channel` finds
 // the installed Chrome on any platform; CHROME overrides it where the binary is
 // somewhere unusual, which is how this runs on a CI image.
+const BASE = process.env.BASE || "http://127.0.0.1:3000";
 const LAUNCH = process.env.CHROME
   ? { executablePath: process.env.CHROME }
   : { channel: "chrome" };
-const BASE = "http://127.0.0.1:3000";
 
 let failures = 0;
 const ok = (label, cond, extra = "") => {

@@ -90,6 +90,70 @@ pub fn command(text: &str) -> Markup {
     }
 }
 
+/// A verdict, a state, a classification — reversed rather than coloured.
+///
+/// Swapping foreground and background is poptop's own convention for the
+/// cursor: it reads on any palette, in either theme, and on a monochrome
+/// display, and it leaves the status hues free to go on meaning a status.
+///
+/// Use [`badge`] instead for anything that means *good* or *bad*. A stamp
+/// classifies; a badge judges, and carries a glyph so the judgement survives
+/// without hue.
+pub fn stamp(label: &str) -> Markup {
+    html! { span class="stamp" { (label) } }
+}
+
+/// The same classification, for the row that is not the point.
+pub fn stamp_quiet(label: &str) -> Markup {
+    html! { span class="stamp stamp--quiet" { (label) } }
+}
+
+/// A passage with a label in the margin naming whose it is.
+///
+/// A run of these scans as a column of names, which is the reason to reach for
+/// it over [`callout`], whose label is part of the sentence.
+pub fn attributed(label: &str, body: Markup) -> Markup {
+    html! {
+        div class="attributed" {
+            p class="attributed__label" { (label) }
+            div class="attributed__body" { (body) }
+        }
+    }
+}
+
+/// The same, given the weight of a rule rather than an aside.
+pub fn attributed_strong(label: &str, body: Markup) -> Markup {
+    html! {
+        div class="attributed attributed--strong" {
+            p class="attributed__label" { (label) }
+            div class="attributed__body" { (body) }
+        }
+    }
+}
+
+/// A dense index: many rows, few words each, read by scanning one column.
+///
+/// `caption` is for a screen reader — the visible framing is the section around
+/// it. Rows are written by the caller so a cell can hold whatever it needs,
+/// usually a [`stamp`] or a [`badge`].
+pub fn ledger(caption: &str, columns: &[&str], rows: Markup) -> Markup {
+    html! {
+        div class="table-scroll" {
+            table class="ledger" {
+                caption class="sr-only" { (caption) }
+                thead {
+                    tr {
+                        @for column in columns {
+                            th scope="col" { (column) }
+                        }
+                    }
+                }
+                tbody { (rows) }
+            }
+        }
+    }
+}
+
 pub enum Status {
     Ok,
     Warn,
