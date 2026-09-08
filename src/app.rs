@@ -434,29 +434,42 @@ impl App {
         // own, and *every* process has no `io` in the first sample it appears
         // in — there is no previous counter to diff against — so plotting zero
         // would put a false floor under the leftmost cell of every panel.
-        let row = |name: &'static str, f: &dyn Fn(&Member) -> Option<f32>| DetailRow {
-            name,
-            values: seen
-                .iter()
-                .map(|m| m.as_ref().and_then(f).unwrap_or(0.0))
-                .collect(),
-            unknown: seen
-                .iter()
-                .map(|m| m.as_ref().is_some_and(|m| f(m).is_none()))
-                .collect(),
+        let row = |name: &'static str,
+                   unit: crate::ui::Unit,
+                   f: &dyn Fn(&Member) -> Option<f32>|
+         -> DetailRow {
+            DetailRow {
+                name,
+                unit,
+                values: seen
+                    .iter()
+                    .map(|m| m.as_ref().and_then(f).unwrap_or(0.0))
+                    .collect(),
+                unknown: seen
+                    .iter()
+                    .map(|m| m.as_ref().is_some_and(|m| f(m).is_none()))
+                    .collect(),
+            }
         };
 
+        use crate::ui::Unit;
         let mut rows = vec![
-            row("CPU", &|m| Some(m.cpu)),
-            row("MEM", &|m| Some(m.rss as f32 / total_mem * 100.0)),
+            row("CPU", Unit::Percent, &|m| Some(m.cpu)),
+            row("MEM", Unit::Percent, &|m| {
+                Some(m.rss as f32 / total_mem * 100.0)
+            }),
         ];
         // Only where some sample could answer at all. A row of pure gap is
         // worse than a shorter panel.
         if seen.iter().flatten().any(|m| m.threads.is_some()) {
-            rows.push(row("THR", &|m| m.threads.map(|n| n as f32)));
+            rows.push(row("THR", Unit::Count, &|m| m.threads.map(|n| n as f32)));
         }
         if seen.iter().flatten().any(|m| m.io.is_some()) {
-            rows.push(row("DISK", &|m| m.io.map(|b| b as f32 / (1024.0 * 1024.0))));
+            // Bytes a second, in its own unit. It used to be pre-divided into
+            // megabytes so that a bare ceiling would read as a scale a person
+            // could hold; a series that carries its unit does not need the
+            // trick.
+            rows.push(row("DISK", Unit::Rate, &|m| m.io.map(|b| b as f32)));
         }
         Some(WatchedSeries { rows, absent })
     }
@@ -827,6 +840,9 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
 pub struct DetailRow {
     pub name: &'static str,
     pub values: Vec<f32>,
+    /// What the figures are measured in, which decides the axis and whether the
+    /// machine's warn and critical percentages mean anything to them.
+    pub unit: crate::ui::Unit,
     /// Samples where the process was there and this figure was not readable.
     /// Drawn as a gap, never as a zero.
     pub unknown: Vec<bool>,

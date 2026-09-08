@@ -3204,32 +3204,87 @@ fn a_retransmitting_network_says_so_loudly() {
 }
 
 #[test]
-fn the_network_gets_no_timeline_row_because_it_has_no_denominator() {
-    // The timeline draws percentages of a fixed denominator: it prints `100` at
-    // the top, rules the warn and critical thresholds across the graph, and
-    // reads out `NET 100.0%` under the cursor. Bytes per second has no such
-    // denominator, and normalising to the window's own peak makes the busiest
-    // sample 100 by construction — an idle laptop moving 8 B/s of loopback
-    // painted a full-scale graph straight through the critical rule.
+fn the_network_row_is_drawn_on_an_axis_of_its_own_units() {
+    // It was left out while every series had to be a percentage of a fixed
+    // denominator. Bytes a second has no such denominator, and normalising to
+    // the window's own peak makes the busiest sample 100 by construction — an
+    // idle laptop moving 8 B/s of loopback painted a full-scale graph straight
+    // through the critical rule. With a unit of its own it carries a byte axis
+    // and no rules.
     let mut app = App::new(60);
     for _ in 0..20 {
         // Two orders of magnitude apart, so a peak-relative scale would put the
-        // larger one at the top of the graph whatever its absolute size.
+        // smaller one at the top of the graph whatever its absolute size.
         app.push(with_net(8, 8, Some(0), Some(0)));
-        app.push(with_net(1 << 30, 1 << 30, Some(0), Some(0)));
+        app.push(with_net(1 << 20, 1 << 20, Some(0), Some(0)));
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let drawn = rows(&app, 200, 48)
-        .iter()
+
+    let timeline: Vec<String> = rows(&app, 200, 48)
+        .into_iter()
         .skip_while(|l| !l.contains("── timeline"))
         .take_while(|l| !l.contains("shown,"))
-        .any(|l| l.contains("NET"));
+        .collect();
     assert!(
-        !drawn,
-        "a network row was drawn on an axis that cannot mean anything"
+        timeline.iter().any(|l| l.contains("NET")),
+        "the network row is still missing:\n{}",
+        timeline.join("\n")
     );
-    // The header still carries the figure, which is where the number lives.
+    // Its axis is in bytes, not a bare percentage. 2 MiB a second at the peak,
+    // and the ceiling sits strictly above it, so `4.0M` — never `100`, and
+    // never the peak itself, which would draw the busiest sample as full scale
+    // by construction.
+    let axis = timeline
+        .iter()
+        .find(|l| l.contains('M') && !l.contains("MEM"))
+        .unwrap_or_else(|| panic!("no byte axis:\n{}", timeline.join("\n")));
+    assert!(
+        axis.contains("4.0M"),
+        "the axis is not in the series' own units: {axis:?}"
+    );
+
+    // The header still carries the figure too, which is where the number lives.
     assert!(render(&app, 200, 30).contains("en0"));
+}
+
+#[test]
+fn a_series_that_is_not_a_percentage_carries_no_threshold_rules() {
+    // The warn and critical percentages are shares of a whole. There is no
+    // number of bytes a second at which a link is "critical", and ruling one
+    // across the row says there is.
+    //
+    // Asserted on the decision rather than on a rendered frame, and the reason
+    // is worth stating: a byte ceiling starts at a kilobyte, so fifty *bytes*
+    // maps to the bottom five percent of the row — where the data already is,
+    // and where the rule yields to it. The guard is there because the claim
+    // would be false, not because it currently moves a pixel, and a rendered
+    // test would pass with the guard removed and prove nothing. That is the
+    // honest coverage available.
+    assert!(
+        ui::Unit::Percent.takes_thresholds_for_test(),
+        "a share of a whole is exactly what warn and critical are about"
+    );
+    for unit in [ui::Unit::Rate, ui::Unit::Count] {
+        assert!(
+            !unit.takes_thresholds_for_test(),
+            "a percentage threshold was applied to a series that is not one"
+        );
+    }
+
+    // And the axes really do differ, which is the visible half.
+    assert_eq!(ui::Unit::Percent.axis_for_test(100.0), "100");
+    assert_eq!(ui::Unit::Count.axis_for_test(128.0), "128");
+    assert_eq!(ui::Unit::Rate.axis_for_test(4.0 * 1024.0 * 1024.0), "4.0M");
+
+    // A byte ceiling is a power of two from a kilobyte, so an idle link reads
+    // as idle rather than being normalised to its own peak — the failure that
+    // kept this row out of the panel.
+    assert_eq!(ui::Unit::Rate.ceiling_for_test(8.0), 1024.0);
+    assert_eq!(
+        ui::Unit::Rate.ceiling_for_test(1_500_000.0),
+        2.0 * 1024.0 * 1024.0
+    );
+    assert_eq!(ui::Unit::Count.ceiling_for_test(9.0), 16.0);
 }
 
 #[test]
@@ -8168,5 +8223,84 @@ fn a_wide_mount_keeps_the_end_that_identifies_it() {
                 "{mount:?} lost the component that names it: {out:?}"
             );
         }
+    }
+}
+
+#[test]
+fn a_byte_axis_never_loses_its_unit_to_the_gutter() {
+    // `fmt_bytes` writes one decimal always, so `128.0K` is six characters
+    // against a five-column gutter and the truncation left `128.0` — a byte
+    // rate drawn as what looks exactly like a percentage, which is the
+    // confusion this row was excluded to avoid. Three of every ten rungs on the
+    // power-of-two ladder land there.
+    let mut c = 1024.0f32;
+    let mut checked = 0;
+    while c <= 8.0 * 1024.0 * 1024.0 * 1024.0 {
+        let axis = ui::Unit::Rate.axis_for_test(c);
+        assert!(
+            ui::cols(&axis) < ui::GUTTER_W,
+            "the axis {axis:?} for {c} is {} columns, against a gutter of {}",
+            ui::cols(&axis),
+            ui::GUTTER_W
+        );
+        assert!(
+            axis.ends_with(['B', 'K', 'M', 'G', 'T']),
+            "the axis {axis:?} lost its unit and reads as a percentage"
+        );
+        checked += 1;
+        c *= 2.0;
+    }
+    assert!(
+        checked > 20,
+        "only {checked} rungs of the ladder were checked"
+    );
+
+    // …and the drawn gutter agrees, which is where the truncation happened.
+    for ceiling in [1024.0, 131_072.0, 524_288.0, 536_870_912.0] {
+        let axis = ui::Unit::Rate.axis_for_test(ceiling);
+        assert!(
+            ui::cols(&axis) < ui::GUTTER_W,
+            "{axis:?} would be cut by the gutter"
+        );
+    }
+}
+
+#[test]
+fn a_ceiling_sits_above_its_peak_so_a_steady_series_is_not_full_scale() {
+    // `while c < peak` returns the peak exactly whenever the peak is a power of
+    // two, and the row is then solid to the top: the busiest sample being 100
+    // by construction, which is the failure that kept the network row out of
+    // the panel in the first place.
+    for (unit, peak) in [
+        (ui::Unit::Rate, 1024.0f32),
+        (ui::Unit::Rate, 1024.0 * 1024.0),
+        (ui::Unit::Count, 8.0),
+        (ui::Unit::Count, 64.0),
+    ] {
+        let c = unit.ceiling_for_test(peak);
+        assert!(
+            c > peak,
+            "a peak of {peak} got a ceiling of {c}, drawing it at full scale"
+        );
+    }
+
+    // A count starts at eight, or a single-threaded process gets a ceiling of
+    // one and a permanently saturated row.
+    assert_eq!(ui::Unit::Count.ceiling_for_test(1.0), 8.0);
+    assert_eq!(ui::Unit::Count.ceiling_for_test(4.0), 8.0);
+    assert_eq!(ui::Unit::Count.ceiling_for_test(200.0), 256.0);
+}
+
+#[test]
+fn every_series_the_panel_draws_is_in_the_list_the_gutter_is_sized_from() {
+    // `SERIES_NAMES` is the sole input to `GUTTER_W` and is documented as every
+    // name the gutter may hold. `NET` and `THR` were drawn without being in it,
+    // so the derivation guaranteed nothing about them and the test that
+    // enforces the guarantee skipped them.
+    for name in ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "THR"] {
+        assert!(
+            ui::SERIES_NAMES.contains(&name),
+            "{name} is drawn in the gutter and is not in the list it is sized from"
+        );
     }
 }
