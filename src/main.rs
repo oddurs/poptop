@@ -14,6 +14,7 @@ mod config;
 mod cvd;
 mod glyphs;
 mod history;
+mod persist;
 mod query;
 mod sample;
 mod store;

@@ -39,6 +39,13 @@ pub struct MemStat {
     pub swap_used: u64,
 }
 
+// The wire order for each retained struct, listed beside it. The list cannot
+// fall behind the struct: both halves are generated from it, so a field added
+// above and left out here is a compile error naming the field — the reader
+// cannot build the struct, and the writer cannot destructure it. Neither is a
+// silent stop-retaining-this. See `crate::persist`.
+crate::persist::codec! { MemStat { total, used, available, free, swap_total, swap_used } }
+
 impl ProcSample {
     /// How this process is followed from one sample to the next.
     ///
@@ -163,6 +170,8 @@ pub struct Stall {
     pub full: f32,
 }
 
+crate::persist::codec! { Stall { some, full } }
+
 /// Pressure Stall Information, where the kernel publishes it.
 ///
 /// The most direct answer to "why is this slow" that Linux offers, and it says
@@ -179,6 +188,8 @@ pub struct Pressure {
     pub io: Stall,
     pub memory: Stall,
 }
+
+crate::persist::codec! { Pressure { cpu, io, memory } }
 
 impl Pressure {
     /// The resource that stopped the machine most, and by how much.
@@ -219,6 +230,8 @@ pub struct FsStat {
     pub avail: u64,
 }
 
+crate::persist::codec! { FsStat { mount, total, avail } }
+
 impl FsStat {
     pub fn used_pct(&self) -> f32 {
         if self.total == 0 {
@@ -241,6 +254,8 @@ pub struct Link {
     pub rx_packets: u64,
     pub tx_packets: u64,
 }
+
+crate::persist::codec! { Link { name, rx, tx, rx_packets, tx_packets } }
 
 impl Link {
     /// Bytes per second in both directions, which is what "busiest" means here.
@@ -276,6 +291,8 @@ pub struct NetStat {
     /// failing to keep up, which no other figure here would show.
     pub listen_drops: Option<u64>,
 }
+
+crate::persist::codec! { NetStat { links, errors, drops, retrans, listen_drops } }
 
 impl NetStat {
     /// The interface carrying the most traffic, if any is known.
@@ -364,6 +381,8 @@ pub struct DiskStat {
     /// Mean requests in flight across the interval.
     pub queue: f32,
 }
+
+crate::persist::codec! { DiskStat { name, read, write, reads, writes, util, await_ms, queue } }
 
 impl Sample {
     /// The filesystem closest to full, if any is known.
@@ -484,6 +503,8 @@ pub struct IoRates {
     pub write: u64,
 }
 
+crate::persist::codec! { IoRates { read, write } }
+
 /// One process as it appeared in a single sample.
 #[derive(Debug, Clone)]
 pub struct ProcSample {
@@ -555,6 +576,8 @@ pub struct ProcSample {
     /// genuinely idle process.
     pub io: Option<IoRates>,
 }
+
+crate::persist::codec! { ProcSample { pid, ppid, name, user, cpu, rss, threads, state, started, cmd, io } }
 
 /// A complete snapshot of the machine at one instant.
 #[derive(Debug, Clone)]
@@ -673,6 +696,54 @@ pub struct Sample {
     /// reports and counting it here would say the same bytes twice.
     pub filesystems: Option<Vec<FsStat>>,
 }
+
+impl Sample {
+    /// A sample that knows nothing, as the base for struct-update syntax.
+    ///
+    /// A collector states what its platform *can* answer and lets the rest
+    /// default:
+    ///
+    /// ```ignore
+    /// Sample { at, cpu_total, mem, procs, ..Sample::unknown() }
+    /// ```
+    ///
+    /// Adding a metric used to mean editing every collector, including the ones
+    /// whose only contribution was a `None` meaning "not on this platform".
+    /// That edit is now the default, so a new metric costs a line only where
+    /// somebody can actually read it.
+    ///
+    /// **The contract this rests on:** a metric a platform might not have must
+    /// be an `Option`. The non-optional fields below are placeholders, not
+    /// answers — a required metric is by definition one every backend supplies,
+    /// so overwriting them is not optional. Add a non-optional field that some
+    /// platform cannot fill and this base will hand it a fabricated zero, which
+    /// is the one thing this codebase does not do.
+    pub fn unknown() -> Self {
+        Self {
+            at: std::time::UNIX_EPOCH,
+            cpu_total: 0.0,
+            cpu_per_core: Vec::new(),
+            iowait: None,
+            running: None,
+            blocked: None,
+            mem: MemStat::default(),
+            load: [0.0; 3],
+            procs: Vec::new(),
+            uptime: std::time::Duration::ZERO,
+            forks: None,
+            io_supported: false,
+            io_collected: false,
+            io_denied: 0,
+            disks: None,
+            pressure: None,
+            clock_ceiling: None,
+            net: None,
+            filesystems: None,
+        }
+    }
+}
+
+crate::persist::codec! { Sample { at, cpu_total, cpu_per_core, iowait, running, blocked, mem, load, procs, uptime, forks, io_supported, io_collected, io_denied, disks, pressure, clock_ceiling, net, filesystems } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from

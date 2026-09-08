@@ -299,6 +299,27 @@ impl Collector for SysinfoCollector {
 
         let load = System::load_average();
 
+        // What macOS cannot answer, and why — each of these defaults to `None`
+        // through `Sample::unknown()` rather than being restated here:
+        //
+        // - `forks`: no equivalent of `/proc/stat`'s `processes` counter, so
+        //   poptop cannot say how many tasks were created in an interval.
+        // - `iowait`, `running`, `blocked`: no equivalent either. A fabricated
+        //   zero would say the box is never blocked on anything.
+        // - `disks`: `sysinfo::Disks::refresh` costs 12.5ms steady state,
+        //   measured, against a whole sample of about 4ms. An em dash until
+        //   there is a cheaper route to the same counters — see `notes`.
+        // - `pressure`: no equivalent. A machine that never stalls and a
+        //   machine that cannot say are opposite answers.
+        // - `clock_ceiling`: nothing reachable without shelling out, and
+        //   `pmset -g therm` — the documented route — reports nothing at all on
+        //   Apple Silicon: "No CPU power status has been recorded". An em dash
+        //   rather than 100%, which would claim the machine is running at full
+        //   speed on the strength of not being able to look.
+        //
+        // All of them `None`, never zero: "I cannot see this" and "there is
+        // none of it" are opposite answers, and a fabricated zero would quietly
+        // promise the table is complete.
         Ok(Sample {
             at: SystemTime::now(),
             cpu_total,
@@ -318,19 +339,6 @@ impl Collector for SysinfoCollector {
             load: [load.one, load.five, load.fifteen],
             procs,
             uptime: Duration::from_secs(System::uptime()),
-            // macOS publishes no equivalent of `/proc/stat`'s `processes`
-            // counter, so poptop cannot say how many tasks were created in an
-            // interval here. `None`, not zero: "I do not know" and "none
-            // happened" are opposite answers, and a fabricated zero would
-            // quietly promise the table is complete.
-            forks: None,
-            // macOS exposes no equivalent of these three either. `None`, not
-            // zero: "I cannot see this" and "there is none of it" are opposite
-            // answers, and a fabricated zero would say the box is never
-            // blocked on anything.
-            iowait: None,
-            running: None,
-            blocked: None,
             // sysinfo reports disk usage for every process it can see, so
             // "does this platform keep the accounting" does not arise here —
             // only "can this user read it", which `io_denied` answers.
@@ -339,21 +347,9 @@ impl Collector for SysinfoCollector {
             // sysinfo reports per-refresh deltas directly, so there is no
             // permission-denied path to count here.
             io_denied,
-            // `sysinfo::Disks::refresh` costs 12.5ms steady state, measured,
-            // against a whole sample of about 4ms. An em dash until there is a
-            // cheaper route to the same counters — see `notes`.
-            disks: None,
-            // No equivalent on this platform. Not zero: a machine that never
-            // stalls and a machine that cannot say are opposite answers.
-            pressure: None,
-            // macOS publishes no clock ceiling reachable without shelling out,
-            // and `pmset -g therm` — the documented route — reports nothing at
-            // all on Apple Silicon: "No CPU power status has been recorded".
-            // An em dash rather than 100%, which would claim the machine is
-            // running at full speed on the strength of not being able to look.
-            clock_ceiling: None,
             net: Some(net),
             filesystems: procinfo::filesystems(),
+            ..Sample::unknown()
         })
     }
 }
