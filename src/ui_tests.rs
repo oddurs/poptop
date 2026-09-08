@@ -8024,6 +8024,15 @@ fn elision_never_exceeds_its_budget_in_columns() {
         "node /srv/api/サーバー.js --port", // mixed
         "🔥🔥🔥🔥🔥🔥🔥🔥",                 // emoji, two columns each
         "e\u{301}e\u{301}e\u{301}e\u{301}", // combining marks: zero columns
+        // The cases where per-character widths and per-string width disagree,
+        // which is what makes summing the characters wrong. A text symbol plus
+        // a variation selector measures two as a string and one as a sum, so a
+        // budget filled by summing takes twice what it was given; a family
+        // emoji joined by zero-width joiners measures two and sums to six, so
+        // the same code throws away columns it was allowed.
+        "☂\u{FE0F}☂\u{FE0F}☂\u{FE0F}☂\u{FE0F}☂\u{FE0F}",
+        "👨\u{200D}👩\u{200D}👧abcdefgh",
+        "⚠\u{FE0F} warning ⚠\u{FE0F}",
         "a",
         "",
     ];
@@ -8038,6 +8047,20 @@ fn elision_never_exceeds_its_budget_in_columns() {
             // And it does not throw away room it was given.
             if ui::cols(name) <= w {
                 assert_eq!(out, name, "an already-short name was elided at {w}");
+            }
+            // A zero-width mark left at the front of the tail renders on the
+            // elision mark instead — and a variation selector there makes `…`
+            // itself take emoji presentation and two columns, which is the
+            // budget overrun arriving by the back door.
+            if let Some(i) = out.find('…') {
+                let after = &out[i + '…'.len_utf8()..];
+                assert!(
+                    after
+                        .chars()
+                        .next()
+                        .is_none_or(|c| ui::cols(&c.to_string()) > 0),
+                    "a mark from the dropped character was left on the ellipsis: {out:?}"
+                );
             }
         }
     }
@@ -8099,5 +8122,51 @@ fn the_header_measures_its_figures_in_columns() {
     for w in 1..=20usize {
         let out = ui::elide_middle(wide, w);
         assert!(ui::cols(&out) <= w, "{out:?} is wider than {w} columns");
+    }
+}
+
+#[test]
+fn a_wide_mount_keeps_the_end_that_identifies_it() {
+    // The measure was converted to columns and the cut was left as a character
+    // index, which for a wide mount overshoots by the difference:
+    // `/データベース/ストレージプール` is thirty columns and sixteen characters,
+    // and skipping thirty of them left three columns and none of the last path
+    // component — the end the doc comment says identifies it.
+    //
+    // This is also the test the elision one claimed to be: it said
+    // "`short_mount` is the header's own elider" and then called
+    // `elide_middle`, so `short_mount` had no coverage at all and this passed.
+    for mount in [
+        "/データベース/ストレージプール",
+        "/媒体/バックアップ",
+        "/var/lib/postgresql/17/main/base",
+        "/",
+        "/mnt/データ",
+    ] {
+        let out = ui::short_mount_for_test(mount);
+        assert!(
+            ui::cols(&out) <= 16,
+            "{mount:?} shortened to {out:?}, {} columns",
+            ui::cols(&out)
+        );
+        // It spends the budget it was given. Cutting on characters while
+        // measuring in columns overshoots by the difference and leaves `…ル` —
+        // three columns of sixteen — which passes a width check and is useless.
+        if ui::cols(mount) > 16 {
+            assert!(
+                ui::cols(&out) >= 15,
+                "{mount:?} shortened to {out:?}, using {} of 16 columns",
+                ui::cols(&out)
+            );
+        }
+        // The end is what identifies a mount, so the last component survives
+        // whenever there is room for it.
+        let last = mount.rsplit('/').next().unwrap_or("");
+        if ui::cols(last) <= 15 {
+            assert!(
+                out.ends_with(last),
+                "{mount:?} lost the component that names it: {out:?}"
+            );
+        }
     }
 }

@@ -460,14 +460,23 @@ fn stall_heat(pct: f32, theme: &Theme) -> f32 {
 /// component of `/var/snap/lxd/common/lxd/storage-pools/default` says more than
 /// the first. An elision mark says the middle is missing rather than letting it
 /// read as a path that exists.
+#[cfg(test)]
+pub fn short_mount_for_test(mount: &str) -> String {
+    short_mount(mount)
+}
+
 fn short_mount(mount: &str) -> String {
     const MAX: usize = 16;
-    let n = cols(mount);
-    if n <= MAX {
+    if cols(mount) <= MAX {
         return mount.to_string();
     }
-    let tail: String = mount.chars().skip(n - (MAX - 1)).collect();
-    format!("…{tail}")
+    // Columns on both sides. The measure was converted to columns and the cut
+    // was left as a character index, which for a wide mount overshoots by the
+    // difference: `/データベース/ストレージプール` is thirty columns and sixteen
+    // characters, and skipping thirty of them left `…ル` — three columns of the
+    // sixteen allowed, and none of the last path component, which is the end
+    // that identifies it.
+    format!("…{}", take_cols(mount, MAX - 1, true))
 }
 
 /// How close to nominal counts as not worth mentioning.
@@ -2014,38 +2023,53 @@ pub fn elide_middle(name: &str, w: usize) -> String {
 
 /// As much of `s` as fits in `w` columns, from the front or the back.
 ///
-/// A character is taken whole or not at all: half of a double-width glyph is
-/// not a character, so a budget it cannot fill exactly is left one column short
-/// rather than one column over. Under-filling is invisible; over-filling is the
-/// clipped row this is here to avoid.
+/// Measured with [`cols`] on the candidate itself rather than by summing
+/// per-character widths, because those two disagree and the disagreement is not
+/// small. `UnicodeWidthStr` applies the emoji-sequence rules and
+/// `UnicodeWidthChar` does not, so `☂\u{FE0F}` is two columns as a string and
+/// one as a sum, and a family emoji joined by zero-width joiners is two as a
+/// string and six as a sum. Summing overran the budget by a factor of two on
+/// the first — the exact clipped row this function exists to prevent — and
+/// threw away two columns of a name it had been given on the second.
+///
+/// Quadratic in the length of `s`, which is bounded: command lines are cut to
+/// `CMD_MAX` before they ever reach here, and a mount name is shorter still.
+/// Measuring the thing that will be drawn is worth more than an incremental
+/// count that can be wrong about it.
 fn take_cols(s: &str, w: usize, from_end: bool) -> String {
-    let mut used = 0;
-    let mut out: Vec<char> = Vec::new();
-    let take = |c: char, used: &mut usize| -> bool {
-        let cw = col_width(c);
-        if *used + cw > w {
-            return false;
-        }
-        *used += cw;
-        true
-    };
-    if from_end {
-        for c in s.chars().rev() {
-            if !take(c, &mut used) {
-                break;
-            }
-            out.push(c);
-        }
-        out.reverse();
-    } else {
-        for c in s.chars() {
-            if !take(c, &mut used) {
-                break;
-            }
-            out.push(c);
-        }
+    if cols(s) <= w {
+        return s.to_string();
     }
-    out.into_iter().collect()
+    if from_end {
+        // The longest suffix that fits.
+        let mut start = s.len();
+        for (i, _) in s.char_indices().rev() {
+            if cols(&s[i..]) > w {
+                break;
+            }
+            start = i;
+        }
+        // A zero-width mark at the front of the suffix belongs to the character
+        // that was dropped. Kept, it renders on the elision mark instead — and
+        // a variation selector there makes the `…` itself take emoji
+        // presentation and two columns, which is the budget overrun arriving by
+        // the back door.
+        let mut out = &s[start..];
+        while let Some(c) = out.chars().next().filter(|c| col_width(*c) == 0) {
+            out = &out[c.len_utf8()..];
+        }
+        out.to_string()
+    } else {
+        let mut end = 0;
+        for (i, c) in s.char_indices() {
+            let next = i + c.len_utf8();
+            if cols(&s[..next]) > w {
+                break;
+            }
+            end = next;
+        }
+        s[..end].to_string()
+    }
 }
 
 /// A numeric cell, right-aligned.
