@@ -40,10 +40,15 @@ pub fn effective_zoom(requested: usize, samples: usize, slots: usize) -> usize {
     requested.max(1).min(samples.div_ceil(slots).max(1))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sort {
     Cpu,
     Mem,
+    /// Per-process disk throughput, read plus write.
+    ///
+    /// Only reachable when those columns are being collected: a sort key every
+    /// row answers `None` to is not an ordering, it is a shuffle.
+    Disk,
     Pid,
     Name,
 }
@@ -53,6 +58,7 @@ impl Sort {
         match self {
             Sort::Cpu => "CPU",
             Sort::Mem => "MEM",
+            Sort::Disk => "DISK",
             Sort::Pid => "PID",
             Sort::Name => "NAME",
         }
@@ -65,6 +71,24 @@ impl Sort {
             // Descending for resource columns: the interesting rows go top.
             Sort::Cpu => b.cpu.total_cmp(&a.cpu),
             Sort::Mem => b.rss.cmp(&a.rss),
+            // Unreadable sorts last, not as zero. A process whose IO could not
+            // be read is not an idle one, and putting it among the idle ones
+            // would be the fabricated zero this codebase refuses everywhere
+            // else — here it would quietly hide the busiest process on the box
+            // from someone who had just asked to see it.
+            Sort::Disk => {
+                let rate = |p: &ProcSample| p.io.map(|io| io.read + io.write);
+                // Written as `a` against `b` throughout. The first version
+                // matched on `(rate(b), rate(a))` to get the descending order
+                // for free and then got the `None` arms backwards, sorting
+                // unreadable processes to the top.
+                match (rate(a), rate(b)) {
+                    (Some(x), Some(y)) => y.cmp(&x),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                }
+            }
             Sort::Pid => a.pid.cmp(&b.pid),
             // By what the column actually shows. Sorting on `name` while the
             // row renders `command()` produced a NAME column that looked
@@ -74,13 +98,21 @@ impl Sort {
         }
     }
 
-    pub fn next(self) -> Self {
-        match self {
+    /// The next sort in the cycle.
+    ///
+    /// `Disk` is skipped when its column is not being collected, because every
+    /// row would answer `None` and the key would order nothing. It is still
+    /// reachable there by accepting a suggestion, which only appears when the
+    /// figures exist.
+    pub fn next(self, io: bool) -> Self {
+        let n = match self {
             Sort::Cpu => Sort::Mem,
-            Sort::Mem => Sort::Pid,
+            Sort::Mem => Sort::Disk,
+            Sort::Disk => Sort::Pid,
             Sort::Pid => Sort::Name,
             Sort::Name => Sort::Cpu,
-        }
+        };
+        if n == Sort::Disk && !io { Sort::Pid } else { n }
     }
 }
 
@@ -323,6 +355,51 @@ impl App {
         })
     }
 
+    /// Whether the displayed sample carries per-process disk figures.
+    pub fn io_collected(&self) -> bool {
+        self.history.current().is_some_and(|s| s.io_collected)
+    }
+
+    /// The resource stopping work on the machine at the cursor, if one is.
+    ///
+    /// atop sorts its list by whichever resource is currently constrained —
+    /// "automatic sort on the most utilized resource" — so that when the disk
+    /// is the bottleneck the table is already sorted by disk. Saturation over
+    /// utilisation is already this tool's layout thesis; the header is ordered
+    /// by how much each figure answers "why is this slow", and this is the same
+    /// judgement applied one panel down.
+    ///
+    /// Read at the cursor, not live. Scrubbing back to a spike to find out what
+    /// was constrained *then* is the whole reason the buffer exists, and a
+    /// suggestion about the present moment would be answering a question nobody
+    /// asked.
+    ///
+    /// Stall pressure first where the kernel publishes it, because it is a
+    /// direct measure of *which* resource is stopping work rather than which is
+    /// merely busy — a disk at 100% utilisation that nothing is waiting on is
+    /// not a constraint. Utilisation is the fallback, and on macOS the only
+    /// thing available.
+    ///
+    /// Held over a window for the same reason the folded column is: a
+    /// constraint that flickers between two resources would flicker the
+    /// suggestion, and a panel that changes its advice twice a second is worse
+    /// than one that gives none.
+    pub fn constraint(&self) -> Option<Constraint> {
+        let mut agreed: Option<Constraint> = None;
+        let mut any = false;
+        for s in self.history.window(Self::CONSTANT_FOR) {
+            any = true;
+            match (constraint_of(s), agreed) {
+                (Some(c), None) => agreed = Some(c),
+                (Some(c), Some(prev)) if c == prev => {}
+                // Two samples in the window disagree, or one had no constraint
+                // at all. Either way there is nothing steady to suggest.
+                _ => return None,
+            }
+        }
+        any.then_some(agreed).flatten()
+    }
+
     /// The one user every process belongs to, if there is only one.
     ///
     /// `USER` was measured at ten columns — more than `CPU%` — to repeat the
@@ -467,6 +544,101 @@ impl Watched {
         self.pid == p.pid && self.started == p.started
     }
 }
+
+/// A resource that is stopping work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Constraint {
+    Cpu,
+    Memory,
+    Disk,
+}
+
+impl Constraint {
+    /// What to call it in a sentence.
+    pub fn name(self) -> &'static str {
+        match self {
+            Constraint::Cpu => "cpu",
+            Constraint::Memory => "memory",
+            Constraint::Disk => "disk",
+        }
+    }
+
+    /// The sort that answers it.
+    pub fn sort(self) -> Sort {
+        match self {
+            Constraint::Cpu => Sort::Cpu,
+            Constraint::Memory => Sort::Mem,
+            Constraint::Disk => Sort::Disk,
+        }
+    }
+}
+
+/// How much of the last ten seconds *every* runnable task spent stalled before
+/// a resource counts as the constraint.
+///
+/// `full`, not `some`: a busy machine has something waiting on something
+/// constantly and healthily, and `some` above zero is the normal state of a
+/// working box. `full` means nothing could proceed, which is the thing worth
+/// naming. Five percent is half a second in every ten — the same threshold the
+/// stall figures are coloured against.
+const STALL_CONSTRAINED: f32 = 5.0;
+
+/// The resource stopping work in one sample.
+///
+/// Split from the window so it can be tested against a fixture rather than
+/// against whatever this machine happens to be doing, the same split
+/// `parse_meminfo` and the rest have.
+pub fn constraint_of(s: &Sample) -> Option<Constraint> {
+    // Where the kernel publishes stall pressure, it answers the question
+    // directly and the utilisation figures are not consulted at all.
+    if let Some(p) = &s.pressure {
+        let worst = [
+            (p.io.full, Constraint::Disk),
+            (p.memory.full, Constraint::Memory),
+            (p.cpu.full, Constraint::Cpu),
+        ]
+        .into_iter()
+        .filter(|(v, _)| *v >= STALL_CONSTRAINED)
+        .max_by(|a, b| a.0.total_cmp(&b.0));
+        return worst.map(|(_, c)| c);
+    }
+
+    // No pressure figures: fall back to saturation. Ordered by how much each
+    // answers "why is this slow" rather than by size, which is why a disk with
+    // no idle time outranks a busy CPU — the CPU being busy is often the
+    // machine working, and the disk having nothing left is not.
+    if s.busiest_disk().is_some_and(|d| d.util >= DISK_CONSTRAINED) {
+        return Some(Constraint::Disk);
+    }
+    // What is left, not what is used. Swap in use looks like the obvious
+    // signal and is not one: macOS swaps routinely on a machine with gigabytes
+    // free, so `swap_used > 0` named memory as the constraint on every idle Mac
+    // — permanently, and while the disk was the thing actually in the way.
+    // Running out of headroom is the claim worth making.
+    if s.mem.total > 0 && s.mem.available * 100 < s.mem.total * MEM_HEADROOM_PCT {
+        return Some(Constraint::Memory);
+    }
+    if s.cpu_total >= CPU_CONSTRAINED {
+        return Some(Constraint::Cpu);
+    }
+    None
+}
+
+/// Utilisation at which a device has effectively no idle time left.
+const DISK_CONSTRAINED: f32 = 90.0;
+
+/// How little memory has to be left before memory is the constraint.
+///
+/// Ten percent of the machine. Below that every allocation is a reclaim and the
+/// box spends its time making room rather than working.
+const MEM_HEADROOM_PCT: u64 = 10;
+
+/// Aggregate CPU at which the processor is the thing in the way.
+///
+/// Higher than the header's `critical`, because "busy" and "constrained" are
+/// different claims: a box at 80% is working, and one at 95% has nothing left
+/// to give.
+const CPU_CONSTRAINED: f32 = 95.0;
 
 /// A process matches the filter by name, command line, or pid. An empty filter
 /// matches all.

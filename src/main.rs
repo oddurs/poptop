@@ -23,7 +23,7 @@ mod ui;
 #[cfg(test)]
 mod ui_tests;
 
-use app::{App, Sort};
+use app::App;
 use collect::{Collector, Needs, Platform};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::io;
@@ -106,6 +106,9 @@ KEYS:
     Home/End        jump to oldest / live
     Up/Down         select a process
     s               cycle sort column
+    S               sort by whichever resource is stopping work, when the panel
+                    names one. Never applied on its own — a table that reorders
+                    itself under the reader is worse than one that does not.
     t               toggle the process tree
     K               show kernel threads. Hidden by default on Linux: kworker,
                     ksoftirqd, irq and the rest outnumber the real processes
@@ -627,7 +630,15 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         // The selection is of a process, so re-sorting moves the row under it
         // and keeps it selected. Resetting to the top here was the same bug as
         // the one scrubbing had.
-        KeyCode::Char('s') => app.sort = app.sort.next(),
+        KeyCode::Char('s') => app.sort = app.sort.next(app.io_collected()),
+        // Accept the suggestion. Never applied on its own: a table that
+        // reorders itself under the reader is worse than one that does not, so
+        // the constraint is named and this is the one key that acts on it.
+        KeyCode::Char('S') => {
+            if let Some(c) = app.constraint() {
+                app.sort = c.sort();
+            }
+        }
         KeyCode::Char('i') => app.toggle_io(),
         KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
         KeyCode::Char('t') => app.tree = !app.tree,
@@ -637,10 +648,4 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         }
         _ => {}
     }
-}
-
-// Keep `Sort` reachable for tests and future keybindings without a warning.
-#[allow(dead_code)]
-fn _assert_sort_cycles() {
-    let _ = Sort::Cpu.next();
 }

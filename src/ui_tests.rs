@@ -6350,7 +6350,7 @@ fn sorting_does_not_move_the_selection_to_a_different_process() {
 
     let mut seen = Vec::new();
     for _ in 0..4 {
-        app.sort = app.sort.next();
+        app.sort = app.sort.next(false);
         let rows = app.visible_rows();
         let i = app.row_of(&rows).expect("the sort lost the selection");
         assert_eq!(&*rows[i].proc.name, "redis", "the sort moved the selection");
@@ -6632,4 +6632,249 @@ fn the_now_anchor_survives_a_cursor_near_but_not_on_it() {
         }
     }
     assert!(checked > 0, "no cursor position exercised this");
+}
+
+/// A sample with all three stall figures set independently.
+///
+/// Distinct from `with_pressure`, which pins `cpu.full` at zero — this one has
+/// to be able to make the CPU the worst of the three.
+fn stalling(cpu: f32, io: f32, memory: f32) -> Sample {
+    let mut s = sample(10.0);
+    s.pressure = Some(crate::sample::Pressure {
+        cpu: crate::sample::Stall {
+            some: cpu,
+            full: cpu,
+        },
+        io: crate::sample::Stall { some: io, full: io },
+        memory: crate::sample::Stall {
+            some: memory,
+            full: memory,
+        },
+    });
+    s
+}
+
+#[test]
+fn the_constrained_resource_is_the_one_stalling_work_not_the_one_that_is_busy() {
+    use crate::app::{Constraint, constraint_of};
+
+    // A disk at 100% utilisation that nothing is waiting on is not a
+    // constraint, which is why stall pressure is consulted first where the
+    // kernel publishes it.
+    assert_eq!(constraint_of(&stalling(0.0, 0.0, 0.0)), None);
+    assert_eq!(
+        constraint_of(&stalling(0.0, 30.0, 0.0)),
+        Some(Constraint::Disk)
+    );
+    assert_eq!(
+        constraint_of(&stalling(40.0, 6.0, 0.0)),
+        Some(Constraint::Cpu),
+        "the worst stall did not win"
+    );
+    // `full`, not `some`: a working machine has something waiting on something
+    // constantly, so a low figure is the normal state and names nothing.
+    assert_eq!(constraint_of(&stalling(4.9, 4.9, 4.9)), None);
+
+    // And the distinction itself, which `stalling` cannot express because it
+    // sets the two equal. `some` at 80% with `full` at zero is a busy, healthy
+    // machine: something was always waiting, and nothing was ever blocked.
+    // Reading `some` here would name a constraint on every working box.
+    let mut busy = sample(10.0);
+    busy.pressure = Some(crate::sample::Pressure {
+        cpu: crate::sample::Stall {
+            some: 80.0,
+            full: 0.0,
+        },
+        io: crate::sample::Stall {
+            some: 90.0,
+            full: 0.0,
+        },
+        memory: crate::sample::Stall {
+            some: 70.0,
+            full: 0.0,
+        },
+    });
+    assert_eq!(
+        constraint_of(&busy),
+        None,
+        "a busy machine with nothing blocked was called constrained"
+    );
+}
+
+#[test]
+fn swap_in_use_is_not_by_itself_a_memory_constraint() {
+    use crate::app::{Constraint, constraint_of};
+
+    // macOS swaps routinely on a machine with gigabytes free, so `swap_used >
+    // 0` named memory as the constraint on every idle Mac — permanently, and
+    // while the disk was the thing actually in the way.
+    let mut s = sample(10.0);
+    s.pressure = None;
+    s.mem.swap_total = 4 << 30;
+    s.mem.swap_used = 2 << 30;
+    s.mem.total = 24 << 30;
+    s.mem.available = 14 << 30;
+    assert_eq!(constraint_of(&s), None, "idle swap named a constraint");
+
+    // Out of headroom is the claim worth making.
+    s.mem.available = 1 << 30;
+    assert_eq!(constraint_of(&s), Some(Constraint::Memory));
+}
+
+#[test]
+fn the_panel_names_the_constraint_but_never_applies_it() {
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = stalling(0.0, 30.0, 0.0);
+        s.io_collected = true;
+        s.procs = (0..4)
+            .map(|i| ProcSample {
+                io: Some(crate::sample::IoRates {
+                    read: (4 - i as u64) << 20,
+                    write: 0,
+                }),
+                ..proc_named(101 + i, &format!("worker{i}"), 20.0 - i as f32, 1 << 20)
+            })
+            .collect();
+        app.push(s);
+    }
+    app.show_io = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let before = app.sort;
+    let title = rows(&app, 140, 20)
+        .into_iter()
+        .find(|l| l.contains("processes ("))
+        .unwrap();
+    assert!(
+        title.contains("disk is the constraint"),
+        "the panel does not name the constraint: {title:?}"
+    );
+    assert_eq!(app.sort, before, "the sort was applied without being asked");
+
+    // Accepting it is one key.
+    app.sort = app.constraint().expect("no constraint").sort();
+    assert_eq!(app.sort, crate::app::Sort::Disk);
+    let rows_now = app.visible_rows();
+    let names: Vec<&str> = rows_now.iter().map(|r| r.proc.command()).collect();
+    assert_eq!(names, vec!["worker0", "worker1", "worker2", "worker3"]);
+
+    // …and once accepted there is nothing left to suggest.
+    let title = rows(&app, 140, 20)
+        .into_iter()
+        .find(|l| l.contains("processes ("))
+        .unwrap();
+    assert!(
+        !title.contains("is the constraint"),
+        "still suggesting a sort the table is already using: {title:?}"
+    );
+}
+
+#[test]
+fn nothing_is_claimed_when_no_resource_is_constrained() {
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        app.push(stalling(0.0, 0.0, 0.0));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert_eq!(app.constraint(), None);
+    // Scoped to the title: the footer lists `S constraint` as a key on every
+    // frame, so searching the whole thing finds that instead.
+    let title = rows(&app, 140, 20)
+        .into_iter()
+        .find(|l| l.contains("processes ("))
+        .unwrap();
+    assert!(
+        !title.contains("constraint"),
+        "a quiet machine was told something was in the way: {title:?}"
+    );
+}
+
+#[test]
+fn a_constraint_that_flickers_is_not_suggested() {
+    // A panel that changes its advice twice a second is worse than one that
+    // gives none.
+    let mut app = App::new(60);
+    for i in 0..App::CONSTANT_FOR {
+        app.push(if i % 2 == 0 {
+            stalling(0.0, 30.0, 0.0)
+        } else {
+            stalling(30.0, 0.0, 0.0)
+        });
+    }
+    assert_eq!(
+        app.constraint(),
+        None,
+        "a constraint that changed every sample was suggested anyway"
+    );
+}
+
+#[test]
+fn the_constraint_is_the_one_at_the_cursor() {
+    // Scrubbing back to a spike to find out what was constrained *then* is the
+    // whole reason the buffer exists.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        app.push(stalling(0.0, 30.0, 0.0)); // disk-bound, in the past
+    }
+    for _ in 0..App::CONSTANT_FOR {
+        app.push(stalling(0.0, 0.0, 0.0)); // quiet, now
+    }
+    assert_eq!(
+        app.constraint(),
+        None,
+        "live is quiet and it says otherwise"
+    );
+
+    app.history.goto_oldest();
+    assert_eq!(
+        app.constraint(),
+        Some(crate::app::Constraint::Disk),
+        "scrubbing back to the spike does not report what was in the way then"
+    );
+}
+
+#[test]
+fn the_disk_sort_puts_unreadable_processes_last_not_among_the_idle() {
+    // A process whose IO could not be read is not an idle one. Ordering it as
+    // zero would be the fabricated zero this codebase refuses everywhere else,
+    // and here it would hide the busiest process on the box from someone who
+    // had just asked to see it.
+    use crate::app::Sort;
+    let mut procs = [
+        ProcSample {
+            io: None,
+            ..proc_named(101, "unreadable", 1.0, 0)
+        },
+        ProcSample {
+            io: Some(crate::sample::IoRates { read: 0, write: 0 }),
+            ..proc_named(102, "idle", 1.0, 0)
+        },
+        ProcSample {
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 0,
+            }),
+            ..proc_named(103, "busy", 1.0, 0)
+        },
+    ];
+    procs.sort_by(|a, b| Sort::Disk.compare(a, b));
+    let names: Vec<&str> = procs.iter().map(|p| p.command()).collect();
+    assert_eq!(names, vec!["busy", "idle", "unreadable"]);
+}
+
+#[test]
+fn the_sort_cycle_skips_disk_when_there_are_no_disk_figures() {
+    // A sort key every row answers `None` to is not an ordering, it is a
+    // shuffle.
+    use crate::app::Sort;
+    let mut seen = vec![Sort::Cpu];
+    let mut s = Sort::Cpu;
+    for _ in 0..6 {
+        s = s.next(false);
+        seen.push(s);
+    }
+    assert!(!seen.contains(&Sort::Disk), "cycled onto an empty column");
+    // …and reaches it when the figures exist.
+    assert_eq!(Sort::Mem.next(true), Sort::Disk);
 }
