@@ -899,6 +899,13 @@ an empty interval:
 off, and **+26 µs to capture 145 records** during a burst — the kernel has
 already written them, and poptop is only draining a socket.
 
+The CPU on an exited row is this interval's, not the process's whole life:
+`taskstats` reports a lifetime total, so a process that ran for three hours at
+50% and exits here would otherwise read 540,000,000%. What it had already used
+at the last sample is subtracted, which is the same arithmetic every live row
+uses — so the number beside an exited process means what the one above it
+means.
+
 A burst big enough to overrun the socket buffer is reported, not swallowed:
 20,000 exits in one second overran a 4 MB buffer and the kernel dropped every
 record of it. poptop asks for 16 MB, and the `N came and went` figure in the

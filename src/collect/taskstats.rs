@@ -54,7 +54,10 @@ const EAGAIN: i32 = 11;
 const ENOBUFS: i32 = 105;
 const MSG_DONTWAIT: i32 = 0x40;
 const AGGR_PID: u16 = 4;
+const AGGR_TGID: u16 = 5;
+const NLMSG_DONE: u16 = 3;
 const TYPE_PID: u16 = 1;
+const TYPE_TGID: u16 = 2;
 const TYPE_STATS: u16 = 3;
 
 /// Our own sequence number for the registration, so its acknowledgement is not
@@ -232,8 +235,14 @@ impl Listener {
 
     /// Ask for every CPU's exits.
     fn register(&mut self, family: u16) -> Result<(), Unavailable> {
-        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let mut mask = format!("0-{}", cpus - 1).into_bytes();
+        // `/sys/devices/system/cpu/possible`, not `available_parallelism`. The
+        // latter reports the CPUs *this process* may run on — an affinity mask
+        // or a cgroup quota narrows it — while the kernel registers listeners
+        // per CPU of the machine. Under a quota of two on a sixty-four core
+        // box the mask would be `0-1`, and exits on the other sixty-two would
+        // never be delivered: a table showing a fraction of what happened,
+        // with nothing saying so.
+        let mut mask = possible_cpus().into_bytes();
         mask.push(0);
         let m = request(
             family,
@@ -296,7 +305,13 @@ impl Listener {
     ///
     /// Never blocks: whatever the kernel has queued is what this interval saw,
     /// and waiting for more would be waiting for the future.
-    pub fn drain(&mut self, elapsed_secs: f64, users: &mut UserCache) -> Vec<ProcSample> {
+    pub fn drain(
+        &mut self,
+        elapsed_secs: f64,
+        boot: Boot,
+        before: &std::collections::HashMap<i32, u64>,
+        users: &mut UserCache,
+    ) -> Vec<ProcSample> {
         let mut out = Vec::new();
         loop {
             let n = unsafe { recv(self.fd, self.buf.as_mut_ptr(), self.buf.len(), MSG_DONTWAIT) };
@@ -324,31 +339,61 @@ impl Listener {
                 break;
             }
             let n = n as usize;
-            if n < 20 || u16::from_ne_bytes([self.buf[4], self.buf[5]]) == NLMSG_ERROR {
-                continue;
-            }
-            // Copied out because `attrs` borrows the buffer while the closure
-            // needs the user cache, and the next read overwrites it anyway.
-            let body = self.buf[20..n].to_vec();
-            attrs(&body, |ty, v| {
-                if ty != AGGR_PID {
-                    return;
+            // A datagram can carry more than one netlink message. Bounding the
+            // body by the whole read treats the next message's header as
+            // attributes of this one, so each message is taken by its own
+            // `nlmsg_len`.
+            let mut at = 0;
+            while at + 20 <= n {
+                let len =
+                    u32::from_ne_bytes(self.buf[at..at + 4].try_into().unwrap_or([0; 4])) as usize;
+                if len < 20 || at + len > n {
+                    break;
                 }
-                let mut pid = 0i32;
-                let mut stats: Option<&[u8]> = None;
-                attrs(v, |ity, iv| match ity {
-                    TYPE_PID if iv.len() >= 4 => {
-                        pid = i32::from_ne_bytes(iv[0..4].try_into().unwrap_or([0; 4]));
+                let ty = u16::from_ne_bytes([self.buf[at + 4], self.buf[at + 5]]);
+                if ty == NLMSG_ERROR || ty == NLMSG_DONE {
+                    at += align(len);
+                    continue;
+                }
+                // Copied because `attrs` borrows the buffer while the closure
+                // needs the user cache, and the next read overwrites it anyway.
+                let body = self.buf[at + 20..at + len].to_vec();
+                at += align(len);
+
+                // A whole-group record when there is one, and the per-task
+                // record only otherwise. The kernel sends `AGGR_PID` for every
+                // *task* that exits and adds `AGGR_TGID` when the whole thread
+                // group is going — so taking `AGGR_PID` unconditionally put a
+                // dying process in the table twice, once as itself and once as
+                // its leader thread.
+                let mut best: Option<ProcSample> = None;
+                for want in [AGGR_TGID, AGGR_PID] {
+                    if best.is_some() {
+                        break;
                     }
-                    TYPE_STATS => stats = Some(iv),
-                    _ => {}
-                });
-                if let Some(s) = stats
-                    && let Some(p) = parse_exit(pid, s, elapsed_secs, users)
-                {
+                    attrs(&body, |ty, v| {
+                        if ty != want || best.is_some() {
+                            return;
+                        }
+                        let mut pid = 0i32;
+                        let mut stats: Option<&[u8]> = None;
+                        attrs(v, |ity, iv| match ity {
+                            TYPE_PID | TYPE_TGID if iv.len() >= 4 => {
+                                pid = i32::from_ne_bytes(iv[0..4].try_into().unwrap_or([0; 4]));
+                            }
+                            TYPE_STATS => stats = Some(iv),
+                            _ => {}
+                        });
+                        if let Some(s) = stats {
+                            let was = before.get(&pid).copied().unwrap_or(0);
+                            best = parse_exit(pid, s, elapsed_secs, boot, was, users);
+                        }
+                    });
+                }
+                if let Some(p) = best {
                     out.push(p);
                 }
-            });
+            }
         }
         out
     }
@@ -356,6 +401,33 @@ impl Listener {
 
 /// Resolve a uid to a name, reusing the collector's cache.
 pub type UserCache = std::collections::HashMap<u32, Arc<str>>;
+
+/// What is needed to put an exit record on the same clock as a live row.
+#[derive(Clone, Copy, Debug)]
+pub struct Boot {
+    /// `btime` from `/proc/stat`: the epoch second the machine booted.
+    pub epoch_secs: u64,
+    pub ticks_per_sec: f64,
+}
+
+impl Boot {
+    /// An epoch second, as clock ticks since boot.
+    fn ticks_since_boot(self, epoch_secs: u64) -> u64 {
+        let since = epoch_secs.saturating_sub(self.epoch_secs);
+        (since as f64 * self.ticks_per_sec) as u64
+    }
+}
+
+/// Every CPU the kernel knows about, as the string the cpumask parser wants.
+fn possible_cpus() -> String {
+    std::fs::read_to_string("/sys/devices/system/cpu/possible")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        // A machine that publishes no such file is old enough that one CPU is
+        // a safer guess than a range nobody can check.
+        .unwrap_or_else(|| "0".to_string())
+}
 
 fn u64at(s: &[u8], o: usize) -> Option<u64> {
     Some(u64::from_ne_bytes(s.get(o..o + 8)?.try_into().ok()?))
@@ -377,6 +449,11 @@ pub fn parse_exit(
     pid: i32,
     s: &[u8],
     elapsed_secs: f64,
+    boot: Boot,
+    // Clock ticks of CPU this pid had used at the previous sample, if it was
+    // alive then. Zero for one born inside this interval, which is the truth
+    // rather than a default.
+    before_ticks: u64,
     users: &mut UserCache,
 ) -> Option<ProcSample> {
     // Anything older than the version that fixed the field order is not worth
@@ -387,6 +464,7 @@ pub fn parse_exit(
     let uid = u32at(s, 120)?;
     let ppid = u32at(s, 132)? as i32;
     let btime = u32at(s, 136)? as u64;
+    let etime_us = u64at(s, 144)?;
     let utime = u64at(s, 152)?;
     let stime = u64at(s, 160)?;
     // Peak, not average. `coremem` is an MB-microsecond integral that reads
@@ -404,15 +482,32 @@ pub fn parse_exit(
         .or_insert_with(|| Arc::from(uid.to_string().as_str()))
         .clone();
 
-    // Microseconds of CPU over the interval, as a percentage of one core — the
-    // same scale as a live row, so the two can sit in one column. A process too
-    // short to accumulate a tick reads 0.0, which is true: it used no
-    // measurable CPU.
+    // CPU used *during this interval*, which is what every live row shows.
+    //
+    // `ac_utime`/`ac_stime` are the process's whole life, so dividing by the
+    // interval reports a process that ran for three hours at 50% and exited
+    // here as 540,000,000% — the same objection this file makes two fields down
+    // about the byte totals, and it applies just as much to CPU.
+    //
+    // Dividing by the process's own lifetime instead is a real quantity, and
+    // wrong here for a different reason: `ac_utime` is tick-quantised, so a
+    // process that lived 300us and was charged one 10ms tick reads 3,333%. A
+    // `/bin/true` came out of a live kernel at 367% that way.
+    //
+    // So: subtract what it had already used at the last sample, and divide by
+    // the interval. For a process born inside this interval there is nothing to
+    // subtract and all of its CPU belongs here; for one that was already
+    // running, the difference is exactly this interval's share. Both are the
+    // live-row formula, which is what makes the number comparable to the rows
+    // beside it.
+    let used_us = utime.saturating_add(stime);
+    let before_us = (before_ticks as f64 * 1e6 / boot.ticks_per_sec) as u64;
     let cpu = if elapsed_secs > 0.0 {
-        ((utime.saturating_add(stime) as f64 / 1e6) / elapsed_secs * 100.0) as f32
+        ((used_us.saturating_sub(before_us) as f64 / 1e6) / elapsed_secs * 100.0) as f32
     } else {
         0.0
     };
+    let _ = etime_us;
 
     Some(ProcSample {
         pid,
@@ -427,7 +522,14 @@ pub fn parse_exit(
         // `X` is what the kernel calls a dead task and what `ps` prints for
         // one. The table needs it to be visibly not a live row.
         state: 'X',
-        started: Some(btime),
+        // In clock ticks since boot, because that is what field 22 of
+        // `/proc/<pid>/stat` gives and what every live row carries. `ac_btime`
+        // is seconds since the epoch, so storing it directly made `(pid,
+        // started)` — the key that identifies a process across samples —
+        // impossible to match against the same process alive a moment earlier.
+        // Every exit then read as newly created, and the churn reconciliation
+        // saturated to zero on any box with ordinary turnover.
+        started: Some(boot.ticks_since_boot(btime)),
         // The command line lives in the process's memory, which is gone.
         cmd: None,
         // The record carries lifetime byte totals, not a rate over this
@@ -449,18 +551,31 @@ fn classify(e: io::Error) -> Unavailable {
 mod tests {
     use super::*;
 
+    const BOOT: Boot = Boot {
+        epoch_secs: 1_788_800_000,
+        ticks_per_sec: 100.0,
+    };
+
     /// One `struct taskstats`, built at the offsets a live kernel was observed
     /// to use — version 14, checked field by field against real exit records
     /// before any of this was written.
-    fn record(pid: i32, comm: &str, uid: u32, ppid: i32, utime_us: u64, rss_kb: u64) -> Vec<u8> {
+    fn record(
+        pid: i32,
+        comm: &str,
+        ppid: i32,
+        etime_us: u64,
+        utime_us: u64,
+        rss_kb: u64,
+        btime: u32,
+    ) -> Vec<u8> {
         let mut s = vec![0u8; 400];
         s[0..2].copy_from_slice(&14u16.to_ne_bytes()); // version
         s[80..80 + comm.len()].copy_from_slice(comm.as_bytes()); // ac_comm
-        s[120..124].copy_from_slice(&uid.to_ne_bytes());
+        s[120..124].copy_from_slice(&0u32.to_ne_bytes()); // ac_uid
         s[128..132].copy_from_slice(&(pid as u32).to_ne_bytes());
         s[132..136].copy_from_slice(&(ppid as u32).to_ne_bytes());
-        s[136..140].copy_from_slice(&1_788_858_843u32.to_ne_bytes()); // ac_btime
-        s[144..152].copy_from_slice(&460u64.to_ne_bytes()); // ac_etime
+        s[136..140].copy_from_slice(&btime.to_ne_bytes()); // ac_btime
+        s[144..152].copy_from_slice(&etime_us.to_ne_bytes());
         s[152..160].copy_from_slice(&utime_us.to_ne_bytes());
         s[160..168].copy_from_slice(&0u64.to_ne_bytes()); // ac_stime
         s[200..208].copy_from_slice(&rss_kb.to_ne_bytes()); // hiwater_rss
@@ -470,20 +585,24 @@ mod tests {
     #[test]
     fn an_exit_record_becomes_a_row_marked_as_gone() {
         let mut users = UserCache::new();
-        let p = parse_exit(
+        let r = record(
             4021,
-            &record(4021, "backup.sh", 0, 812, 500_000, 8_192),
-            1.0,
-            &mut users,
-        )
-        .expect("a well-formed record did not parse");
+            "backup.sh",
+            812,
+            1_000_000,
+            500_000,
+            8_192,
+            1_788_800_060,
+        );
+        let p = parse_exit(4021, &r, 1.0, BOOT, 0, &mut users)
+            .expect("a well-formed record did not parse");
         assert_eq!(p.pid, 4021);
         assert_eq!(p.ppid, 812);
         assert_eq!(&*p.name, "backup.sh", "the name was misread");
-        // Half a second of CPU in a one-second interval.
+        // Half a second of CPU across a one-second life.
         assert_eq!(
             p.cpu, 50.0,
-            "the CPU is not the time used over the interval"
+            "the CPU is not the time used over its lifetime"
         );
         assert_eq!(p.rss, 8 << 20, "hiwater_rss is in kilobytes");
         assert_eq!(p.state, 'X', "an exited row is not marked as one");
@@ -496,7 +615,61 @@ mod tests {
             p.io.is_none(),
             "the record's byte totals are a lifetime, not a rate for this interval"
         );
-        assert_eq!(p.started, Some(1_788_858_843));
+    }
+
+    #[test]
+    fn a_long_lived_process_does_not_exit_at_five_hundred_million_percent() {
+        // `ac_utime` is the process's whole life, so dividing it by the
+        // *interval* reports three hours of CPU as this second's. With the
+        // default sort on CPU that pins every exiting long-lived process to the
+        // top of the table, above everything actually running.
+        let mut users = UserCache::new();
+        let three_hours_us = 3 * 3600 * 1_000_000u64;
+        let r = record(
+            9,
+            "postgres",
+            1,
+            three_hours_us,
+            three_hours_us / 2,
+            4,
+            1_788_800_010,
+        );
+        // One-second interval, three-hour process, and no record of what it had
+        // used before — the worst case, where the whole lifetime lands in one
+        // interval. The cross-platform ceiling in `Collector::sample` is what
+        // stops that reaching the table; this pins the shape the clamp exists
+        // for, and the test above is the case that has a real answer.
+        let p = parse_exit(9, &r, 1.0, BOOT, 0, &mut users).expect("no parse");
+        assert!(
+            p.cpu > 100.0,
+            "the fixture no longer produces the value the clamp exists for"
+        );
+    }
+
+    #[test]
+    fn an_exit_records_start_time_is_on_the_same_clock_as_a_live_row() {
+        // `ac_btime` is seconds since the epoch; a live row's `started` is
+        // clock ticks since boot, from field 22 of `/proc/<pid>/stat`. Storing
+        // one as the other makes `(pid, started)` — the key that identifies a
+        // process across samples — impossible to match, so every exit reads as
+        // newly created and the churn reconciliation saturates to zero.
+        let mut users = UserCache::new();
+        let started_60s_after_boot = BOOT.epoch_secs + 60;
+        let r = record(4021, "x", 1, 1000, 0, 0, started_60s_after_boot as u32);
+        let p = parse_exit(4021, &r, 1.0, BOOT, 0, &mut users).expect("no parse");
+        assert_eq!(
+            p.started,
+            Some(6_000),
+            "60 seconds after boot at 100 ticks a second is 6000 ticks"
+        );
+
+        // The key a live row would have carried for the same process.
+        let live = ProcSample {
+            pid: 4021,
+            started: Some(6_000),
+            ..Default::default()
+        };
+        assert_eq!(p.key(), live.key(), "the same process has two identities");
     }
 
     #[test]
@@ -505,7 +678,15 @@ mod tests {
         // life and no measurable CPU. Zero is the true answer here — it used
         // none — and the row's value is that it *exists*.
         let mut users = UserCache::new();
-        let p = parse_exit(9, &record(9, "true", 0, 1, 0, 776), 1.0, &mut users).expect("no parse");
+        let p = parse_exit(
+            9,
+            &record(9, "true", 1, 460, 0, 776, 1_788_800_030),
+            1.0,
+            BOOT,
+            0,
+            &mut users,
+        )
+        .expect("no parse");
         assert_eq!(p.cpu, 0.0);
         assert_eq!(p.rss, 776 * 1024, "even a 460us process has a peak RSS");
     }
@@ -513,20 +694,28 @@ mod tests {
     #[test]
     fn a_record_from_before_the_stable_layout_is_refused_rather_than_guessed_at() {
         let mut users = UserCache::new();
-        let mut old = record(1, "x", 0, 0, 0, 0);
+        let mut old = record(1, "x", 0, 1, 0, 0, 1_788_800_000);
         old[0..2].copy_from_slice(&6u16.to_ne_bytes());
         assert!(
-            parse_exit(1, &old, 1.0, &mut users).is_none(),
+            parse_exit(1, &old, 1.0, BOOT, 0, &mut users).is_none(),
             "an ancient record was read at offsets it does not use"
         );
         // …and a truncated one, which is what a short read looks like.
-        assert!(parse_exit(1, &old[..40], 1.0, &mut users).is_none());
+        assert!(parse_exit(1, &old[..40], 1.0, BOOT, 0, &mut users).is_none());
     }
 
     #[test]
     fn a_name_shorter_than_its_field_does_not_carry_the_padding() {
         let mut users = UserCache::new();
-        let p = parse_exit(1, &record(1, "sh", 0, 0, 0, 0), 1.0, &mut users).expect("no parse");
+        let p = parse_exit(
+            1,
+            &record(1, "sh", 0, 1, 0, 0, 1_788_800_000),
+            1.0,
+            BOOT,
+            0,
+            &mut users,
+        )
+        .expect("no parse");
         assert_eq!(&*p.name, "sh", "the NUL padding came with the name");
     }
 }

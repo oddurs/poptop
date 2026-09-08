@@ -8905,10 +8905,17 @@ fn asking_for_a_withheld_source_again_gets_it_back_in_one_press() {
 }
 
 /// A process that lived and died inside the interval.
-fn exited_proc(pid: i32, name: &str, cpu: f32) -> ProcSample {
+///
+/// `started` is explicit because it is the half of the identity key that
+/// matters here: an exit record carries `ac_btime` in epoch seconds while a
+/// live row carries ticks since boot, and storing one as the other made the two
+/// impossible to match. A fixture that gives both rows the same default hides
+/// exactly that, which is how it went unnoticed.
+fn exited_proc(pid: i32, name: &str, cpu: f32, started: u64) -> ProcSample {
     ProcSample {
         state: 'X',
         threads: None,
+        started: Some(started),
         ..proc_named(pid, name, cpu, 4 << 20)
     }
 }
@@ -8921,7 +8928,7 @@ fn a_process_that_lived_and_died_between_samples_is_a_row_in_that_interval() {
     let mut app = App::new(600);
     let mut s = sample(10.0);
     s.procs = vec![proc_named(4200, "sshd", 0.5, 8 << 20)];
-    s.exited = Some(vec![exited_proc(9001, "backup.sh", 40.0)]);
+    s.exited = Some(vec![exited_proc(9001, "backup.sh", 40.0, 63007)]);
     app.push(s);
 
     let rows = app.visible_rows();
@@ -8961,7 +8968,11 @@ fn a_caught_exit_stops_being_counted_as_one_that_got_away() {
     let blind = churn(&before, &after).expect("no churn");
     assert_eq!(blind.unseen(), 10, "the fixture does not test the case");
 
-    after.exited = Some((0..7).map(|i| exited_proc(9000 + i, "true", 0.0)).collect());
+    after.exited = Some(
+        (0..7)
+            .map(|i| exited_proc(9000 + i, "true", 0.0, 90_000 + i as u64))
+            .collect(),
+    );
     let caught = churn(&before, &after).expect("no churn");
     assert_eq!(caught.caught, 7);
     assert_eq!(
@@ -8979,13 +8990,21 @@ fn a_process_that_was_already_running_is_not_credited_to_this_intervals_churn() 
     // turnover — which is every box.
     let mut before = sample(1.0);
     before.forks = Some(1_000);
-    before.procs = vec![proc_named(4200, "sshd", 0.0, 1 << 20)];
+    // A start time from long before this interval, and one the exited row has
+    // to match exactly for the reconciliation to recognise it.
+    before.procs = vec![ProcSample {
+        started: Some(12_345),
+        ..proc_named(4200, "sshd", 0.0, 1 << 20)
+    }];
 
     let mut after = sample(1.0);
     after.forks = Some(1_002);
     after.procs = vec![];
-    // The same process, by pid and start time, that was alive a moment ago.
-    after.exited = Some(vec![exited_proc(4200, "sshd", 0.0)]);
+    after.exited = Some(vec![
+        // The same process, by pid *and* start time, that was alive a moment
+        // ago.
+        exited_proc(4200, "sshd", 0.0, 12_345),
+    ]);
 
     let c = churn(&before, &after).expect("no churn");
     assert_eq!(c.caught, 0, "a long-lived process was counted as churn");
@@ -8994,4 +9013,16 @@ fn a_process_that_was_already_running_is_not_credited_to_this_intervals_churn() 
         2,
         "the two tasks that really did vanish are gone"
     );
+
+    // …and one that genuinely was born here still counts.
+    after.exited = Some(vec![
+        exited_proc(4200, "sshd", 0.0, 12_345),
+        exited_proc(9001, "true", 0.0, 99_999),
+    ]);
+    let c = churn(&before, &after).expect("no churn");
+    assert_eq!(
+        c.caught, 1,
+        "a process born and gone in this interval was missed"
+    );
+    assert_eq!(c.unseen(), 1);
 }

@@ -133,6 +133,21 @@ impl Source {
         self.nanos_each().saturating_mul(units)
     }
 
+    /// Whether a reader can ask for it back after the budget gives it up.
+    ///
+    /// The budget's contract is that everything it withholds is named until
+    /// somebody asks for it again — which needs a key to ask with. Exit records
+    /// have no view and no key, so giving them up would be permanent and
+    /// silent-by-omission, which is the objection to having a budget at all.
+    /// They are also the cheapest thing here by two orders of magnitude, so
+    /// they were never going to be the reason a sample ran long.
+    pub fn restorable(self) -> bool {
+        match self {
+            Source::Io | Source::Threads => true,
+            Source::Exited | Source::ClockPolicies => false,
+        }
+    }
+
     /// How many samples apart this is worth reading. One means every sample.
     pub fn every(self) -> u64 {
         match self {
@@ -205,7 +220,7 @@ impl Needs {
     pub fn costliest(self, size: Size) -> Option<Source> {
         Source::ALL
             .into_iter()
-            .filter(|s| self.asked(*s) && s.scales())
+            .filter(|s| self.asked(*s) && s.scales() && s.restorable())
             .max_by_key(|s| s.total_nanos(size))
     }
 }
@@ -397,7 +412,11 @@ pub trait Collector {
     fn sample(&mut self, needs: Needs) -> std::io::Result<Sample> {
         let mut s = self.collect(needs)?;
         if let Some(ceiling) = s.cpu_ceiling() {
-            for p in &mut s.procs {
+            // Exited rows too. They are process rows in the same table and the
+            // same graph scaling, and a row that skips the clamp is exactly the
+            // one that would set the scale for everything else.
+            let exited = s.exited.iter_mut().flatten();
+            for p in s.procs.iter_mut().chain(exited) {
                 p.cpu = p.cpu.min(ceiling);
             }
         }
