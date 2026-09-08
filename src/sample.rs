@@ -638,6 +638,30 @@ pub struct Sample {
     /// the default view is allowed to depend on it, and it renders as an em
     /// dash rather than a zero when it is missing.
     pub pressure: Option<Pressure>,
+    /// How much of the processor's nominal clock the kernel is currently
+    /// allowing, as a percentage. `None` where the platform will not say.
+    ///
+    /// Not a temperature. Temperature is a proxy and an inconsistent one: a
+    /// figure reading `84°C` makes the reader infer, and on hardware whose
+    /// nominal is 85°C it makes them infer wrongly. The machine knows whether
+    /// it is allowed to run at full speed and says so directly.
+    ///
+    /// This is the one cause of "why is this slow" that nothing else here can
+    /// show. A capped machine reports 100% busy and gets less work done than it
+    /// did an hour ago, while `STALL`, `WAIT` and disk saturation all read
+    /// normal — because nothing is *waiting*, the work is simply being done
+    /// more slowly.
+    ///
+    /// The *ceiling*, not the current frequency. Current frequency drops when a
+    /// core is idle, which is a healthy machine doing nothing and reads
+    /// identically to a throttled one; a ceiling is a statement about what the
+    /// machine is permitted to do, so an idle box reads 100%. That catches any
+    /// capping the driver reports by lowering its policy maximum — thermal,
+    /// power, or a limit somebody set by hand — and does not catch hardware
+    /// capping that leaves the policy ceiling alone and reports through
+    /// counters instead. Named after what is measured rather than after what is
+    /// suspected, which is the same choice `stall` makes.
+    pub clock_ceiling: Option<f32>,
     /// Network traffic and health, or `None` where the platform will not say.
     pub net: Option<NetStat>,
     /// Mounted filesystems worth watching, or `None` where the platform will
@@ -671,6 +695,7 @@ impl Sample {
             io_collected: false,
             io_denied: 0,
             disks: None,
+            clock_ceiling: None,
             pressure: None,
             net: None,
             filesystems: None,

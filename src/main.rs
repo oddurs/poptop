@@ -99,6 +99,27 @@ OPTIONS:
     -h, --help      show this help
     -V, --version   show version
 
+HEADER:
+    CLK             how much of the processor's nominal clock the kernel is
+                    currently allowing. Shown only when it is below nominal,
+                    because a machine at full speed has nothing to say — and
+                    because a figure present on every frame is one nobody reads.
+
+                    Not a temperature. A reading of `84°C` makes you infer, and
+                    on hardware whose nominal is 85°C it makes you infer
+                    wrongly; the machine knows whether it is allowed to run at
+                    full speed and says so. `CPU 100%` beside `CLK 62%` is a
+                    processor flat out and getting two thirds of the work done,
+                    which nothing else on the header can distinguish from a
+                    healthy busy machine — STALL, WAIT and disk saturation all
+                    read normal, because nothing is waiting.
+
+                    The policy ceiling, not the current frequency: an idle core
+                    clocks down and that is a healthy machine doing nothing.
+                    Catches whatever the driver reports by lowering its policy
+                    maximum — thermal, power, or a limit set by hand — and not
+                    hardware capping that reports through counters instead.
+
 KEYS:
     q               quit
     Left/Right      scrub through history (Shift for 10 at a time)
@@ -151,6 +172,12 @@ KEYS:
 
 ON MACOS:
     Some figures are Linux-only and simply do not appear:
+
+    clock ceiling      macOS publishes none reachable without shelling out,
+                       and `pmset -g therm` reports nothing at all on Apple
+                       Silicon. CLK is absent here rather than reading 100%,
+                       which would claim the machine is at full speed on the
+                       strength of not being able to look.
 
     state = D          macOS reports no uninterruptible-sleep state, so that
                        query finds nothing here even on a machine stuck on IO.
@@ -419,6 +446,21 @@ fn check_theme(name: &str) -> io::Result<()> {
 ///
 /// Two samples are taken, one interval apart: CPU figures are deltas between
 /// reads, so a single sample could only ever report zero.
+/// The scripted machine-is-capped line, or nothing.
+///
+/// A script reading only `cpu` sees 100% on a capped machine and on a healthy
+/// one — the same failure the `stall` line was added to prevent, and here there
+/// is nothing else in the output that could give it away.
+///
+/// Split from `once` so it can be tested: that function writes to stdout, and a
+/// figure this easy to forget wants an assertion rather than an eyeball.
+fn clock_line(s: &sample::Sample) -> Option<String> {
+    let clock = s.clock_ceiling.filter(|c| *c < ui::CLOCK_NOMINAL)?;
+    Some(format!(
+        "clock   {clock:.1}%  of nominal — the machine is capped"
+    ))
+}
+
 fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     let needs = Needs { io: true };
     collector.sample(needs)?;
@@ -502,6 +544,10 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
             s.io_denied,
             s.procs.len()
         );
+    }
+
+    if let Some(line) = clock_line(&s) {
+        outln!("{line}");
     }
 
     let mut top = s.procs.clone();

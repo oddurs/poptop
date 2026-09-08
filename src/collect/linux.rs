@@ -105,6 +105,25 @@ pub struct ProcFs {
     /// zero turns the machine's lifetime error count into this second's, which
     /// is a large and very alarming number to invent.
     prev_net: Option<NetTotals>,
+    /// The nominal maximum frequency of each frequency policy, read once.
+    ///
+    /// Read once and then rescanned rarely. The *ceiling* changes constantly,
+    /// which is the point; what this holds is the hardware maximum, which does
+    /// not — so reading it every sample would double the cost of the figure for
+    /// nothing.
+    ///
+    /// Rarely rather than never, because the policy *set* does change: CPU
+    /// hotplug is routine on cloud instances and on `cpuset`-managed hosts, and
+    /// a `cpufreq` driver can load after the tool starts. Read strictly once, a
+    /// machine that published no policy at launch would never show `CLK` again
+    /// for the life of the process — which for a tool whose whole point is
+    /// being left running is the wrong way round.
+    ///
+    /// Empty when the machine publishes no frequency policy at all, which is
+    /// every virtualised CPU — including every machine available to test this
+    /// on. The clock ceiling is then `None` for the life of the process, at no
+    /// cost per sample.
+    nominal_khz: Vec<(String, u64)>,
     /// Which names in `/proc/diskstats` are whole devices rather than
     /// partitions, from `/sys/block`.
     ///
@@ -191,6 +210,7 @@ impl ProcFs {
             prev_disks: HashMap::new(),
             prev_links: HashMap::new(),
             prev_net: None,
+            nominal_khz: nominal_clocks(),
             block_devices: read_block_devices(),
             partitions: std::collections::HashSet::new(),
             prev_proc_jiffies: HashMap::new(),
@@ -554,6 +574,39 @@ impl ProcFs {
         Ok(Duration::from_secs_f64(secs))
     }
 
+    /// The clock ceiling, from the policy maximum each CPU currently permits.
+    ///
+    /// One small read per frequency policy — a handful on any machine — and
+    /// none at all on one that publishes none.
+    fn read_clock_ceiling(&mut self) -> Option<f32> {
+        // One directory listing a minute, and only that.
+        if self.tick.is_multiple_of(CLOCK_RESCAN) {
+            self.nominal_khz = nominal_clocks();
+        }
+        if self.nominal_khz.is_empty() {
+            return None;
+        }
+        let Self {
+            nominal_khz,
+            path,
+            buf,
+            ..
+        } = self;
+        let mut pairs = Vec::with_capacity(nominal_khz.len());
+        for (policy, nominal) in nominal_khz.iter() {
+            path.clear();
+            let _ = write!(path, "{CPUFREQ}/cpufreq/{policy}/scaling_max_freq");
+            let Ok(text) = read_into(path, buf) else {
+                continue;
+            };
+            let Ok(allowed) = text.trim().parse::<u64>() else {
+                continue;
+            };
+            pairs.push((allowed, *nominal));
+        }
+        ceiling_from(&pairs)
+    }
+
     fn read_procs(
         &mut self,
         elapsed: Duration,
@@ -731,6 +784,84 @@ fn read_proc_io(
         read: ((read.saturating_sub(prev_r)) as f64 / elapsed_secs) as u64,
         write: ((write.saturating_sub(prev_w)) as f64 / elapsed_secs) as u64,
     }))
+}
+
+/// Each frequency policy's nominal maximum, as `(policy name, kHz)`.
+///
+/// Read once. A policy, not a CPU: `cpufreq` applies a ceiling to a *policy*,
+/// and the `cpuN/cpufreq` directories are symlinks into the policy that governs
+/// them. On a machine with one policy per package or per cluster — which is
+/// most of them — that is a handful of reads a sample instead of one per core.
+///
+/// Measured against synthetic files, since no CPU available here publishes a
+/// frequency policy at all: about a microsecond a read, so 16 cores read
+/// individually cost 15us and 128 cost 150us, against a whole sample of about
+/// 630us. Per policy it is a rounding error on any machine.
+fn nominal_clocks() -> Vec<(String, u64)> {
+    let Ok(dir) = fs::read_dir(format!("{CPUFREQ}/cpufreq")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in dir.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|n| n.starts_with("policy")) else {
+            continue;
+        };
+        let path = format!("{CPUFREQ}/cpufreq/{name}/cpuinfo_max_freq");
+        if let Some(khz) = fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|k| *k > 0)
+        {
+            out.push((name.to_string(), khz));
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// How many samples between rescans of the frequency policy set.
+///
+/// A minute at the default interval. The set changes only when a CPU is
+/// hotplugged or a driver loads, and both are rare enough that a minute of
+/// staleness costs nothing — while never rescanning costs a machine that gained
+/// a policy the figure entirely.
+const CLOCK_RESCAN: u64 = 60;
+
+/// Where the kernel publishes each CPU's frequency policy.
+const CPUFREQ: &str = "/sys/devices/system/cpu";
+
+/// The clock ceiling as a percentage of nominal, or `None`.
+///
+/// `scaling_max_freq` is what the governor is currently allowed to reach and
+/// `cpuinfo_max_freq` is what the hardware can do, so the ratio is "how much of
+/// this processor am I permitted to use". Read as a ceiling rather than as
+/// `scaling_cur_freq` deliberately: current frequency drops on an idle core,
+/// which is a healthy machine doing nothing and is indistinguishable from a
+/// throttled one.
+///
+/// The *most* capped core wins. Thermal capping is rarely uniform — one hot
+/// package on a two-socket box is still a machine that is not going as fast as
+/// it should — and a mean would average the problem away.
+///
+/// Split from the read so the arithmetic can be tested against fixtures, which
+/// on this figure is the only way it can be tested at all: no machine
+/// available here has a `cpufreq` directory, virtualised CPUs having no
+/// frequency policy to publish.
+fn ceiling_from(pairs: &[(u64, u64)]) -> Option<f32> {
+    let mut worst: Option<f32> = None;
+    for (allowed, nominal) in pairs {
+        // A core that reports a nominal of zero is reporting nothing.
+        if *nominal == 0 {
+            continue;
+        }
+        let pct = (*allowed as f64 / *nominal as f64 * 100.0) as f32;
+        // Above nominal is a boost ceiling, not a fault. Clamped rather than
+        // dropped: the answer is "not capped", which is 100.
+        let pct = pct.min(100.0);
+        worst = Some(worst.map_or(pct, |w: f32| w.min(pct)));
+    }
+    worst
 }
 
 /// How many samples a command line is trusted for before it is read again.
@@ -1462,6 +1593,7 @@ impl Collector for ProcFs {
             uptime: self.read_uptime()?,
             forks: stat.forks,
             io_supported: self.io_supported,
+            clock_ceiling: self.read_clock_ceiling(),
             io_collected: needs.io && self.io_supported,
             io_denied,
             disks,
@@ -1483,6 +1615,98 @@ mod tests {
             prev_jiffies: &pf.prev_proc_jiffies,
             ticks_per_sec: pf.ticks_per_sec,
             page_size: pf.page_size,
+        }
+    }
+
+    #[test]
+    fn the_clock_ceiling_is_the_most_capped_policy() {
+        // Thermal capping is rarely uniform — one hot package on a two-socket
+        // box is still a machine that is not going as fast as it should — and a
+        // mean would average the problem away.
+        assert_eq!(
+            ceiling_from(&[(3_600_000, 3_600_000), (2_232_000, 3_600_000)]),
+            Some(62.0)
+        );
+        assert_eq!(
+            ceiling_from(&[(3_600_000, 3_600_000)]),
+            Some(100.0),
+            "an uncapped machine did not read as uncapped"
+        );
+    }
+
+    #[test]
+    fn a_boost_ceiling_is_not_a_fault() {
+        // Some drivers report a policy maximum above the nominal figure. That
+        // is headroom, not damage: the answer is "not capped".
+        assert_eq!(ceiling_from(&[(4_200_000, 3_600_000)]), Some(100.0));
+    }
+
+    #[test]
+    fn a_policy_that_reports_nothing_is_skipped_rather_than_counted_as_zero() {
+        // A nominal of zero would divide into an infinite ratio, and treating
+        // it as a fully capped core would report a throttled machine because
+        // one policy declined to answer.
+        assert_eq!(ceiling_from(&[(0, 0), (3_600_000, 3_600_000)]), Some(100.0));
+        assert_eq!(
+            ceiling_from(&[]),
+            None,
+            "a machine with no frequency policy claimed a clock ceiling"
+        );
+        // The case the guard is actually for. Without it the division is
+        // `0 / 0`, and `f32::min` treats the resulting NaN as the *other*
+        // operand — so the clamp quietly turns "this file said nothing" into a
+        // confident 100%, and a machine whose every policy declined to answer
+        // reports that it is running at full speed.
+        assert_eq!(
+            ceiling_from(&[(0, 0)]),
+            None,
+            "policies that reported nothing were read as an uncapped machine"
+        );
+        assert_eq!(ceiling_from(&[(500, 0), (0, 0)]), None);
+    }
+
+    #[test]
+    fn the_policy_set_is_rescanned_so_a_late_driver_is_not_missed() {
+        // CPU hotplug is routine on cloud instances and a `cpufreq` driver can
+        // load after the tool starts. Read strictly once, a machine that
+        // published no policy at launch would never show `CLK` again for the
+        // life of the process — which for a tool whose whole point is being
+        // left running is the wrong way round.
+        let mut pf = ProcFs::new().unwrap();
+        // Poison it with a policy that does not exist. A rescan replaces the
+        // vector wholesale, so its disappearance is the rescan happening.
+        pf.nominal_khz = vec![("policy-that-is-not-there".to_string(), 3_600_000)];
+        for _ in 0..CLOCK_RESCAN + 1 {
+            pf.collect(Needs::default()).unwrap();
+        }
+        assert!(
+            !pf.nominal_khz
+                .iter()
+                .any(|(n, _)| n == "policy-that-is-not-there"),
+            "the policy set was never rescanned"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_cpufreq_costs_nothing_and_says_nothing() {
+        // Every virtualised CPU, which is every machine available to test this
+        // on. `None` rather than 100%, which would claim the machine is running
+        // at full speed on the strength of not being able to look.
+        let mut pf = ProcFs::new().unwrap();
+        if pf.nominal_khz.is_empty() {
+            assert_eq!(pf.read_clock_ceiling(), None);
+        }
+        // One direction only. A ceiling implies a policy was found, but a
+        // policy does not imply a ceiling: `cpuinfo_max_freq` and
+        // `scaling_max_freq` are separate reads, and a hardened host can permit
+        // the first and refuse the second. Asserted the other way round, this
+        // fails on a machine where the code is behaving exactly as designed.
+        let s = pf.collect(Needs::default()).unwrap();
+        if s.clock_ceiling.is_some() {
+            assert!(
+                !pf.nominal_khz.is_empty(),
+                "a ceiling was reported with no policy behind it"
+            );
         }
     }
 

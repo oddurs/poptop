@@ -346,6 +346,12 @@ impl Collector for SysinfoCollector {
             // No equivalent on this platform. Not zero: a machine that never
             // stalls and a machine that cannot say are opposite answers.
             pressure: None,
+            // macOS publishes no clock ceiling reachable without shelling out,
+            // and `pmset -g therm` — the documented route — reports nothing at
+            // all on Apple Silicon: "No CPU power status has been recorded".
+            // An em dash rather than 100%, which would claim the machine is
+            // running at full speed on the strength of not being able to look.
+            clock_ceiling: None,
             net: Some(net),
             filesystems: procinfo::filesystems(),
         })
