@@ -133,10 +133,14 @@ KEYS:
                     itself under the reader is worse than one that does not.
     t               toggle the process tree
     d               show the selected process's own history in place of the
-                    machine's: CPU, memory, threads and disk over the whole
-                    buffer, at full width, with the moments it was not running
-                    marked rather than interpolated. The cursor is the same one,
-                    so scrubbing moves both.
+                    machine's: CPU, memory, threads and disk over the window on
+                    screen, at full width, with the moments it was not running
+                    marked rather than interpolated. `+`/`-` widen that window
+                    the same way they do for the machine, and the cursor is the
+                    same one, so scrubbing moves both.
+
+                    Select a process with the arrow keys first — with nothing
+                    selected there is no history to show, and the panel says so.
     g               fold processes sharing a name into one row, with the count
                     in the PID column. CPU, memory and threads are summed;
                     state, user, history and the command line are not — a group

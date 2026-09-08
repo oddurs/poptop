@@ -1039,10 +1039,12 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Swapped wholesale rather than merged: a panel showing one process's CPU
     // beside the machine's memory would be two subjects in one graph. Before
     // the split, because the split is derived from how many series there are.
-    let mut absent: Vec<bool> = Vec::new();
     if let Some(series) = &subject {
-        candidates = series.rows.clone();
-        absent = series.absent.clone();
+        candidates = series
+            .rows
+            .iter()
+            .map(|r| (r.name, r.values.clone()))
+            .collect();
     }
 
     let row_split = sections(graph_rows, candidates.len(), gutter);
@@ -1053,20 +1055,28 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // has no predecessor to be discontinuous with.
     let all_times: Vec<std::time::SystemTime> = samples.iter().map(|s| s.at).collect();
     let all_gaps = history::gaps_in(&all_times, app.interval);
-    let mut gap_slots =
+    // Kept apart, not merged. A seam in the machine's own record and a process
+    // that was not running are different claims, and captioning both the same
+    // way tells the reader that postgres was absent for the ten minutes their
+    // laptop was asleep — when in fact the tool was not looking and postgres
+    // ran throughout.
+    let record_gaps =
         history::any_slots(&all_gaps[window_start..window_start + shown], zoom, slots);
-    // Where the process was not running, drawn as a gap rather than as zero.
-    // A process that did not exist did not use no CPU — it used none of
-    // anything because it was not there, and a flat line at the bottom says
-    // the opposite. The moments it started and went are often the whole
-    // answer, so they are the one thing this panel must not smooth over.
-    if !absent.is_empty() {
-        for (slot, gap) in history::any_slots(&absent, zoom, slots).iter().enumerate() {
-            if let Some(g) = gap_slots.get_mut(slot) {
-                *g |= *gap;
-            }
-        }
-    }
+    // Where the process was not running, drawn as a gap rather than as zero. A
+    // process that did not exist did not use no CPU — it used none of anything
+    // because it was not there, and a flat line at the bottom says the
+    // opposite. The moments it started and went are often the whole answer, so
+    // they are the one thing this panel must not smooth over.
+    let absent_slots = subject
+        .as_ref()
+        .map(|s| history::any_slots(&s.absent, zoom, slots))
+        .unwrap_or_default();
+    let or_into = |a: &[bool], b: &[bool]| -> Vec<bool> {
+        (0..slots)
+            .map(|i| a.get(i).copied().unwrap_or(false) || b.get(i).copied().unwrap_or(false))
+            .collect()
+    };
+    let gap_slots = or_into(&record_gaps, &absent_slots);
 
     // The threshold rule. Its whole point is that the boundary is readable
     // without colour — until now the 50/80 thresholds existed *only* as a hue
@@ -1100,10 +1110,26 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
-        let rules: Vec<(usize, usize)> = [app.theme.warn_pct, app.theme.critical_pct]
-            .iter()
-            .filter_map(|&pct| glyphs::rule_position_scaled(pct, rows, ceiling))
-            .collect();
+        // Not on a process's own rows. The warn and critical percentages are
+        // about a machine's saturation, and ruling them across a row measured
+        // in threads or megabytes a second invents a boundary that does not
+        // exist — a dashed line at 50 MB/s wearing the chrome that elsewhere
+        // means "half of everything there is". It is wrong for per-process CPU
+        // too: a process at 283% gets a ceiling of 400, and "critical" lands at
+        // 80% of one core.
+        let rules: Vec<(usize, usize)> = if subject.is_some() {
+            Vec::new()
+        } else {
+            [app.theme.warn_pct, app.theme.critical_pct]
+                .iter()
+                .filter_map(|&pct| glyphs::rule_position_scaled(pct, rows, ceiling))
+                .collect()
+        };
+        // A figure this row could not read joins the gaps, for this row only.
+        let row_gaps = match subject.as_ref().and_then(|s| s.rows.get(i)) {
+            Some(r) => or_into(&gap_slots, &history::any_slots(&r.unknown, zoom, slots)),
+            None => gap_slots.clone(),
+        };
         for row in 0..rows {
             let rule_level = rules.iter().find(|(r, _)| *r == row).map(|(_, l)| *l);
             let mut spans = axis_label(
@@ -1125,7 +1151,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                         rule_level,
                         series,
                         ceiling,
-                        gaps: &gap_slots,
+                        gaps: &row_gaps,
                     },
                     &app.theme,
                 )
@@ -1176,20 +1202,23 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // but "time is missing here" is not something a reader can deduce from
         // a dotted line, and a permanent legend entry for something you may
         // never see is clutter charged against every other frame.
-        let gap_note = if gap_slots.iter().any(|&g| g) {
-            // What the mark means depends on whose graph this is. On the
-            // machine's, a seam is time the tool was not looking. On one
-            // process's, it is overwhelmingly the process not being there —
-            // which is not a hole in the record but a fact about the process,
-            // and often the fact the panel was opened for.
-            let why = if subject.is_some() {
-                "not running"
-            } else {
-                "time missing"
-            };
-            format!(", {} {why}", app.glyphs.gap_glyph())
-        } else {
+        // Named from whichever mask produced the seams that are actually on
+        // screen, not from which panel this is. A hole in the record and a
+        // process that was not running are different claims, and a machine
+        // that was asleep for ten minutes with postgres selected must not be
+        // told postgres was absent — the tool was not looking, and postgres ran
+        // throughout. Both can be true at once, and then both are said.
+        let mut why: Vec<&str> = Vec::new();
+        if record_gaps.iter().any(|&g| g) {
+            why.push("time missing");
+        }
+        if absent_slots.iter().any(|&g| g) {
+            why.push("not running");
+        }
+        let gap_note = if why.is_empty() {
             String::new()
+        } else {
+            format!(", {} {}", app.glyphs.gap_glyph(), why.join(" / "))
         };
         // Drop the key hints before letting anything be cut mid-word. The
         // scale is a fact about what is on screen and the gap note is a
@@ -1251,23 +1280,42 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Whose history this is. A panel that has changed subject and kept its old
     // name is worse than one that never changed: the graphs look like the
     // machine's and are not.
+    //
+    // Sized against the panel, with a ladder. The name is a command line and
+    // can be any length, so a constant elide width truncated the clause after
+    // it — `39s of 9m59s` losing the word `buffered`, or the closing rule — and
+    // a title cut mid-phrase is the thing every other title here gives up whole
+    // clauses to avoid.
+    let span = fmt_lag(app.history.span());
+    let cap = fmt_lag(app.interval * app.history.capacity().saturating_sub(1) as u32);
     let title = match &subject {
-        Some(_) => format!(
-            " {} — {} of {} buffered ",
-            app.selected
+        Some(_) => {
+            let name = app
+                .selected
                 .as_ref()
-                .map_or_else(String::new, |w| elide_middle(w.name(), 48)),
-            fmt_lag(app.history.span()),
-            fmt_lag(app.interval * app.history.capacity().saturating_sub(1) as u32),
-        ),
-        None => format!(
-            " timeline — {} of {} buffered ",
-            fmt_lag(app.history.span()),
-            // `capacity - 1`, for the same reason `history_len` adds one: a buffer
-            // of n samples spans n - 1 intervals. `capacity * interval` overstated
-            // the span it can hold by exactly one interval.
-            fmt_lag(app.interval * app.history.capacity().saturating_sub(1) as u32),
-        ),
+                .map_or_else(String::new, |w| w.name().to_string());
+            let room = (area.width as usize).saturating_sub(6);
+            let fitted = [
+                format!("{name} — {span} of {cap} buffered"),
+                format!("{name} — {span} of {cap}"),
+                format!("{name} — {span}"),
+                name.clone(),
+            ]
+            .into_iter()
+            .find(|l| l.chars().count() <= room)
+            // Every rung too long: elide the name itself rather than let the
+            // terminal cut it, so what survives identifies the process.
+            .unwrap_or_else(|| elide_middle(&name, room));
+            format!(" {fitted} ")
+        }
+        // Asked for with nothing selected. The key is advertised in the
+        // footer, so pressing it and getting the panel you already had is the
+        // one outcome that reads as broken — and the fix is one arrow key,
+        // which nothing on screen would otherwise say.
+        None if app.detail && app.selected.is_none() => {
+            format!(" timeline — {span} of {cap} — ↑/↓ to pick a process first ")
+        }
+        None => format!(" timeline — {span} of {cap} buffered "),
     };
 
     let mut all = vec![divider(&title, area.width, &app.theme)];

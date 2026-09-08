@@ -7744,10 +7744,10 @@ fn the_detail_rows_are_the_processs_own_figures() {
         .watched_series(&window)
         .expect("no series for the selected process");
 
-    let names: Vec<&str> = series.rows.iter().map(|(n, _)| *n).collect();
+    let names: Vec<&str> = series.rows.iter().map(|r| r.name).collect();
     assert_eq!(names, vec!["CPU", "MEM", "THR", "DISK"]);
     // Its own CPU, which peaks at 20 + 23*2.5 = 77.5, not the machine's 50.
-    let cpu = &series.rows[0].1;
+    let cpu = &series.rows[0].values;
     let peak = cpu.iter().copied().fold(0.0_f32, f32::max);
     assert!(
         (peak - 77.5).abs() < 0.01,
@@ -7808,4 +7808,206 @@ fn the_graph_draws_the_processs_figures_not_the_machines() {
         levels(&process),
         levels(&machine)
     );
+}
+
+#[test]
+fn a_process_row_carries_no_machine_thresholds() {
+    // The warn and critical percentages are about a machine's saturation.
+    // Ruling them across a row measured in threads or megabytes a second
+    // invents a boundary that does not exist — a dashed line at 50 MB/s wearing
+    // the chrome that elsewhere means "half of everything there is".
+    //
+    // The machine's CPU has to *vary* for this to prove anything: a flat series
+    // fills its row to the ceiling, and the rule yields wherever data is
+    // present, so a constant 50% hides the rule everywhere and both panels
+    // would read as ruleless.
+    let mut app = App::new(600);
+    for i in 0..40 {
+        let mut s = sample_at(i as f32 * 2.0, 39 - i);
+        s.io_collected = true;
+        s.procs = vec![ProcSample {
+            threads: Some(9),
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 0,
+            }),
+            started: Some(1),
+            cmd: Some(std::sync::Arc::from("cargo build --release")),
+            ..proc_named(102, "cargo", 4.0 + i as f32, 200 << 20)
+        }];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    select_until(&mut app, "cargo", |n| n.contains("cargo"));
+
+    // By colour, not by glyph. The rule is a braille dot pattern that data can
+    // produce too — counting characters found four "rules" in a panel that
+    // draws none — so it is told apart the way `rule_rows` tells it apart:
+    // chrome-coloured cells in the graph.
+    let ruled = |app: &App| rule_rows(app, 110, 30).len();
+
+    assert!(
+        ruled(&app) > 0,
+        "the machine's own graph draws no threshold rule, so this proves nothing"
+    );
+    app.detail = true;
+    assert_eq!(
+        ruled(&app),
+        0,
+        "a process's history is ruled with the machine's thresholds"
+    );
+}
+
+#[test]
+fn a_sampling_gap_is_not_reported_as_the_process_being_absent() {
+    // Suspend the laptop with postgres selected and press `d`: the seam
+    // covering the sleep must not assert that postgres was gone. The tool was
+    // not looking, and postgres ran throughout.
+    let mut app = App::new(600);
+    for i in 0..20 {
+        // A ten-minute hole in the middle of the record.
+        let ago = if i < 10 { 620 - i * 2 } else { 20 - i };
+        let mut s = sample_at(50.0, ago as u64);
+        s.procs = vec![ProcSample {
+            started: Some(1),
+            ..proc_named(101, "postgres", 4.0, 200 << 20)
+        }];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    select_until(&mut app, "postgres", |n| n == "postgres");
+    app.detail = true;
+
+    let caption = rows(&app, 110, 24)
+        .into_iter()
+        .find(|l| l.contains("shown,"))
+        .expect("no caption");
+    assert!(
+        caption.contains("time missing"),
+        "the record has a hole and the caption does not say so: {caption:?}"
+    );
+    assert!(
+        !caption.contains("not running"),
+        "a sampling gap was reported as the process being absent: {caption:?}"
+    );
+}
+
+#[test]
+fn a_figure_the_platform_would_not_give_is_a_gap_not_a_zero() {
+    // `threads` is `None` on macOS for processes this user does not own, and
+    // *every* process has no `io` in the first sample it appears in — there is
+    // no previous counter to diff against. Plotting zero puts a false floor
+    // under the leftmost cell of every panel.
+    let mut app = App::new(600);
+    for i in 0..20 {
+        let mut s = sample_at(50.0, 19 - i);
+        s.io_collected = true;
+        s.procs = vec![ProcSample {
+            threads: (i > 0).then_some(8),
+            io: (i > 0).then_some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 0,
+            }),
+            started: Some(1),
+            ..proc_named(101, "postgres", 4.0, 200 << 20)
+        }];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    select_until(&mut app, "postgres", |n| n == "postgres");
+
+    let window: Vec<&crate::sample::Sample> = app.history.iter().collect();
+    let series = app.watched_series(&window).expect("no series");
+    for name in ["THR", "DISK"] {
+        let row = series
+            .rows
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("no {name} row"));
+        assert!(
+            row.unknown[0],
+            "{name} plots the unreadable first sample as a real figure"
+        );
+        assert!(!row.unknown[5], "{name} marks a readable sample unknown");
+    }
+    // The process itself was there throughout, so this is not the absence
+    // machinery answering for the figures.
+    assert!(!series.absent.iter().any(|&a| a));
+}
+
+#[test]
+fn the_detail_title_gives_up_clauses_rather_than_being_cut() {
+    // The name is a command line and can be any length, so a constant elide
+    // width truncated the clause after it — `39s of 9m59s` losing the word
+    // `buffered`, or the closing rule.
+    let mut app = App::new(600);
+    for i in 0..20 {
+        let mut s = sample_at(50.0, 19 - i);
+        s.procs = vec![ProcSample {
+            started: Some(1),
+            cmd: Some(std::sync::Arc::from(
+                "/usr/local/lib/node_modules/thing/bin/serve.js --with --flags --and --more",
+            )),
+            ..proc_named(101, "node", 4.0, 200 << 20)
+        }];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    select_until(&mut app, "the node service", |n| n.contains("serve.js"));
+    app.detail = true;
+
+    for w in 40..=140u16 {
+        let title = rows(&app, w, 24)
+            .into_iter()
+            .find(|l| l.starts_with("── "))
+            .unwrap_or_else(|| panic!("no title at {w}"));
+        let text = title.trim_end_matches(['─', ' ']);
+        // Never cut mid-word of a clause it chose to keep.
+        for tail in ["of 9m", "buffere", "—", "of"] {
+            assert!(
+                !text.ends_with(tail),
+                "the title was cut mid-clause at {w}: {text:?}"
+            );
+        }
+        assert!(
+            text.contains("serve.js") || text.contains('…'),
+            "the title stopped identifying the process at {w}: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn pressing_detail_with_nothing_selected_says_what_to_do() {
+    // The key is advertised in the footer, so pressing it and getting the panel
+    // you already had is the one outcome that reads as broken — and the fix is
+    // one arrow key, which nothing on screen would otherwise say.
+    let mut app = App::new(600);
+    for i in 0..20 {
+        app.push(sample_at(50.0, 19 - i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(app.selected.is_none(), "the fixture selected something");
+
+    let before = rows(&app, 110, 24)
+        .into_iter()
+        .find(|l| l.starts_with("── "))
+        .unwrap();
+    app.detail = true;
+    let after = rows(&app, 110, 24)
+        .into_iter()
+        .find(|l| l.starts_with("── "))
+        .unwrap();
+    assert_ne!(before, after, "pressing the key changed nothing at all");
+    assert!(
+        after.contains("pick a process"),
+        "the panel does not say why there is nothing to show: {after:?}"
+    );
+
+    // …and once something is selected it stops saying it.
+    app.select_delta(1);
+    let chosen = rows(&app, 110, 24)
+        .into_iter()
+        .find(|l| l.starts_with("── "))
+        .unwrap();
+    assert!(!chosen.contains("pick a process"), "{chosen:?}");
 }
