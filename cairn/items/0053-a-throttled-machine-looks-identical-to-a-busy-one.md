@@ -2,7 +2,7 @@
 id: 53
 title: A throttled machine looks identical to a busy one
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -55,7 +55,7 @@ temperature is 85°C it makes them do it wrongly.
 
 ## Acceptance criteria
 
-- [ ] A throttled machine says so, in units of lost clock rather than degrees
-- [ ] The figure is absent rather than zero where the platform will not say
-- [ ] Measured: the cost of reading it per sample
-- [ ] A machine running at nominal clock does not spend header space saying so
+- [x] A throttled machine says so, in units of lost clock rather than degrees
+- [x] The figure is absent rather than zero where the platform will not say
+- [x] Measured: the cost of reading it per sample
+- [x] A machine running at nominal clock does not spend header space saying so
