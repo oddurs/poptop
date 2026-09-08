@@ -2,7 +2,7 @@
 id: 59
 title: A store upgrade must not discard history
 type: bug
-status: backlog
+status: done
 milestone: v2.0
 created: 2026-09-08
 updated: 2026-09-08
@@ -47,11 +47,45 @@ it. A tagged format would not have had the problem.
 
 ## Acceptance criteria
 
-- [ ] A file written by an older poptop is read by a newer one, with fields the
+- [x] A file written by an older poptop is read by a newer one, with fields the
       newer one does not know skipped and fields it expects absent rather than
       wrong
-- [ ] A file written by a newer poptop is read by an older one, or refused with
+- [x] A file written by a newer poptop is read by an older one, or refused with
       a message that says which version wrote it
-- [ ] Adding a metric does not require a version bump
-- [ ] A test writes a file with a synthetic unknown field and reads it back
-- [ ] Measured: bytes per sample before and after, at 400 processes
+- [x] Adding a metric does not require a version bump
+- [x] A test writes a file with a synthetic unknown field and reads it back
+- [x] Measured: bytes per sample before and after, at 400 processes
+
+## How it was resolved
+
+PR #77. The first of the two shapes offered above — a schema block, not a tag
+per value.
+
+**Why.** Tagging every value costs a few bytes per field, and the thing being
+stored is 600 samples of 400 processes, so a per-field cost is paid 2.6 million
+times — roughly a fifth of the file. Declaring the shape once per file costs
+**1,501 bytes total** and nothing per sample. Bytes per sample: unchanged.
+Encode 23.1 → 22.4ms, decode 5.3 → 4.8ms.
+
+Same-version reads keep the old speed through a fast path: the reader decides
+once per file whether the schema is exactly its own, and if so skips the
+per-field comparison entirely. The merge is for the one run after an upgrade.
+
+**The other three decisions.** How far back to read: every file from format 15
+on, forever — a field difference is no longer a version difference, and anything
+older is refused with a message naming the version that wrote it. An unknown
+metric: skipped, and said once through the existing warning channel. Ring buffer
+and log: still one format; splitting them is 0072's decision, and the schema
+block is what makes a daily log viable at all.
+
+Matching is on a hash of the type structure, so a field whose type changed is
+skipped rather than misread — and reported, because a column emptying out after
+a downgrade with nothing said is the failure this item is about.
+
+**Found on the way.** Making the file self-describing made the schema block
+corruption-controlled input, which opened three ways to hang or crash the
+reader: a self-referential record recursing until the stack overflowed, and a
+zero-width record letting a four-billion-element list consume no input, in both
+the skip path and the merge path. A parsed schema is now validated once for
+cycles and minimum width. A cycle *through a list* escaped the first version of
+that check.
