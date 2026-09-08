@@ -7316,3 +7316,120 @@ fn sorting_by_pid_puts_a_group_where_its_oldest_process_is() {
         "the group did not sort by the pids it contains"
     );
 }
+
+#[test]
+fn a_query_is_evaluated_at_the_cursor_not_against_the_live_sample() {
+    // The thing no live-only tool can be asked: what was in D-state at the
+    // moment of the spike.
+    let mut app = App::new(60);
+    for i in 0..6 {
+        let mut s = sample_at(50.0, 5 - i);
+        // Blocked during the spike, running now.
+        let state = if i < 3 { 'D' } else { 'R' };
+        s.procs = vec![ProcSample {
+            state,
+            started: Some(1),
+            ..proc_named(101, "postgres", 20.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    app.filter = "state = D".into();
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    assert!(
+        app.visible_rows().is_empty(),
+        "nothing is blocked now and the query found something"
+    );
+    app.history.goto_oldest();
+    assert_eq!(
+        app.visible_rows().len(),
+        1,
+        "scrubbing back to the spike does not answer what was blocked then"
+    );
+}
+
+#[test]
+fn a_malformed_query_hides_nothing_and_says_why() {
+    let mut app = App::new(60);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let all = app.visible_rows().len();
+
+    app.filter = "cpuu > 5".into();
+    assert_eq!(
+        app.visible_rows().len(),
+        all,
+        "a mistyped query hid rows the reader was looking for"
+    );
+    let why = app.filter_error().expect("no error reported");
+    assert!(why.contains("cpuu") && why.contains("cpu"), "{why}");
+
+    // Said where the query is typed…
+    app.editing_filter = true;
+    // The filter line itself, not the whole frame. The title carries the same
+    // message, so a frame-wide search is satisfied by the title even when the
+    // line where the query is being typed says nothing — and the explanation,
+    // not the echo, because the box already shows what was typed.
+    let drawn = rows(&app, 140, 20);
+    let line = drawn
+        .iter()
+        .find(|l| l.starts_with("filter:"))
+        .expect("no filter line");
+    assert!(
+        line.contains("no field called"),
+        "the error is not shown where the query is typed: {line:?}"
+    );
+    assert!(line.contains("mem"), "the error does not name the fields");
+
+    // …and in the title once the box has closed, because a filter that is
+    // filtering nothing is a surprising thing to be doing silently.
+    app.editing_filter = false;
+    let title = rows(&app, 160, 20)
+        .into_iter()
+        .find(|l| l.contains("processes ("))
+        .unwrap();
+    assert!(title.contains("filter:"), "{title:?}");
+}
+
+#[test]
+fn a_query_finds_the_processes_a_header_figure_counts() {
+    // Each of these is a figure the reader is already looking at, and the table
+    // had no way to answer "which processes are *that*".
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = vec![
+        ProcSample {
+            state: 'D',
+            io: Some(crate::sample::IoRates {
+                read: 0,
+                write: 4 << 20,
+            }),
+            threads: Some(200),
+            started: Some(1),
+            ..proc_named(101, "writer", 2.0, 1 << 30)
+        },
+        ProcSample {
+            state: 'S',
+            io: Some(crate::sample::IoRates { read: 0, write: 0 }),
+            threads: Some(4),
+            started: Some(2),
+            ..proc_named(102, "idler", 1.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for (q, want) in [
+        ("state = D", "writer"),
+        ("write > 1mb", "writer"),
+        ("threads > 100", "writer"),
+        ("mem > 500mb", "writer"),
+        ("state = S", "idler"),
+    ] {
+        app.filter = q.into();
+        let got = app.visible_rows();
+        assert_eq!(got.len(), 1, "`{q}` matched {} rows", got.len());
+        assert_eq!(got[0].proc.command(), want, "`{q}` found the wrong one");
+    }
+}

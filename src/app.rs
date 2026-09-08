@@ -3,6 +3,7 @@
 use crate::collect::Needs;
 use crate::glyphs::GlyphSet;
 use crate::history::History;
+use crate::query::{self, Query};
 use crate::sample::{IoRates, ProcSample, Sample};
 use crate::theme::Theme;
 use crate::tree::{self, TreeRow};
@@ -307,18 +308,18 @@ impl App {
         let Some(sample) = self.history.current() else {
             return Vec::new();
         };
-        let needle = self.filter.to_lowercase();
+        let (query, _) = filter_of(&self.filter);
         let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
 
         if self.tree {
             // A filtered tree keeps matches plus their ancestors; `tree::build`
             // works out the ancestry, so it only needs the direct matches.
-            let matched: Option<HashSet<i32>> = (!needle.is_empty()).then(|| {
+            let matched: Option<HashSet<i32>> = (!query.is_empty()).then(|| {
                 sample
                     .procs
                     .iter()
                     .filter(shown)
-                    .filter(|p| matches(p, &needle))
+                    .filter(|p| query.matches(p))
                     .map(|p| p.pid)
                     .collect()
             });
@@ -333,7 +334,7 @@ impl App {
             .procs
             .iter()
             .filter(shown)
-            .filter(|p| matches(p, &needle))
+            .filter(|p| query.matches(p))
             .collect();
 
         if self.group {
@@ -360,13 +361,22 @@ impl App {
         // thread in the sample made `processes (1) · 250 kernel hidden` while a
         // filter for `nginx` was active, implying two hundred and fifty rows
         // were withheld from a list that had one candidate.
-        let needle = self.filter.to_lowercase();
+        let (query, _) = filter_of(&self.filter);
         self.history.current().map_or(0, |s| {
             s.procs
                 .iter()
-                .filter(|p| p.is_kernel_thread() && matches(p, &needle))
+                .filter(|p| p.is_kernel_thread() && query.matches(p))
                 .count()
         })
+    }
+
+    /// What is wrong with the filter, if anything.
+    ///
+    /// Surfaced where the filter is typed. A query language nobody knows the
+    /// keywords for is worse than a substring match, and on a one-line filter
+    /// box the error is the only place discovery can happen.
+    pub fn filter_error(&self) -> Option<String> {
+        filter_of(&self.filter).1
     }
 
     /// Whether the displayed sample carries per-process disk figures.
@@ -813,18 +823,14 @@ const DISK_CONSTRAINED: f32 = 90.0;
 /// to give.
 const CPU_CONSTRAINED: f32 = 95.0;
 
-/// A process matches the filter by name, command line, or pid. An empty filter
-/// matches all.
+/// The parsed filter, and the reason it could not be parsed.
 ///
-/// The command line is searched whether or not it is the thing on screen. The
-/// question people arrive with is "which of these is the API server", and the
-/// answer is in the arguments — so `/server.js` has to find it even when the
-/// column is showing `node`.
-fn matches(p: &ProcSample, needle: &str) -> bool {
-    needle.is_empty()
-        || p.name.to_lowercase().contains(needle)
-        || p.cmd
-            .as_ref()
-            .is_some_and(|c| c.to_lowercase().contains(needle))
-        || p.pid.to_string().contains(needle)
+/// A malformed query filters *nothing* away and says what is wrong. Hiding rows
+/// because a query was mistyped is the worst of both outcomes: the reader
+/// cannot see what they were looking for, and cannot see why.
+fn filter_of(text: &str) -> (Query, Option<String>) {
+    match query::parse(text) {
+        Ok(q) => (q, None),
+        Err(why) => (Query::default(), Some(why)),
+    }
 }
