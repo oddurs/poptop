@@ -827,13 +827,16 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             // would be a tree of things that are not processes. bottom makes
             // the same two exclusive.
             if app.tree {
-                app.group = false;
+                app.group = crate::app::Grouping::Off;
             }
         }
         KeyCode::Char('d') => app.detail = !app.detail,
         KeyCode::Char('g') => {
-            app.group = !app.group;
-            if app.group {
+            // A cycle: off, by name, by container. Folding by container is the
+            // same machinery with a different key, so it is a choice rather
+            // than a fifth exclusive layout.
+            app.group = app.group.next();
+            if app.group != crate::app::Grouping::Off {
                 app.tree = false;
             }
         }

@@ -278,6 +278,8 @@ impl Collector for SysinfoCollector {
                     // sysinfo already reports these as bytes since the last
                     // refresh, so unlike the /proc backend there is no counter to
                     // diff here.
+                    // macOS has no cgroups, so no container id to read.
+                    container: None,
                     io: needs
                         .wants(Source::Io)
                         .then(|| {

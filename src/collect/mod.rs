@@ -538,6 +538,7 @@ mod tests {
                     started: Some(1),
                     cmd: None,
                     io: None,
+                    container: None,
                 })
                 .collect(),
             ..Sample::empty()

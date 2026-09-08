@@ -2022,7 +2022,7 @@ const FIXED_COLUMNS: u16 =
 /// than they needed to be.
 #[cfg(test)]
 pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
-    command_width(width, show_io, show_user)
+    command_width(width, show_io, show_user, false)
 }
 
 #[cfg(test)]
@@ -2038,6 +2038,9 @@ fn min_width_for_io(show_user: bool) -> u16 {
 /// The command column's own `Constraint::Min`, and so the narrowest it is ever
 /// actually drawn at.
 const MIN_COMMAND_W: u16 = 10;
+
+/// Twelve characters, which is what `docker ps` shows.
+const CID_W: u16 = 12;
 
 /// The header over the sparkline column, carrying its scale.
 ///
@@ -2089,8 +2092,17 @@ const USER_W: u16 = 10;
 /// nineteen, one more than the two disk-rate columns together. Knowing the
 /// figure is what lets the name be elided deliberately rather than clipped by
 /// the terminal.
-fn command_width(width: u16, show_io: bool, show_user: bool) -> usize {
+fn command_width(width: u16, show_io: bool, show_user: bool, show_cid: bool) -> usize {
     let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
+    // The container column and its gap. Left out, the elision arithmetic is
+    // thirteen columns too generous and the command is elided in the middle
+    // *and then* chopped at the right edge — losing the tail with no marker,
+    // which is the failure the comment below is about.
+    let (cid, columns) = if show_cid {
+        (CID_W + 1, columns + 1)
+    } else {
+        (0, columns)
+    };
     let (user, columns) = if show_user {
         (USER_W, columns)
     } else {
@@ -2102,7 +2114,7 @@ fn command_width(width: u16, show_io: bool, show_user: bool) -> usize {
     // the arithmetic rendered `Google Chrome Helper (Renderer)` as the single
     // letter `G` on an eighty-column terminal.
     width
-        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + (columns - 1))
+        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + (columns - 1))
         .max(MIN_COMMAND_W) as usize
 }
 
@@ -2386,7 +2398,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     let one_user = app.one_user();
     let show_user = one_user.is_none();
     let show_io = app.show_io && area.width >= min_width_for_io(show_user);
-    let cmd_w = command_width(area.width, show_io, show_user);
+    // Dropped on a box running no containers, where it would be twelve columns
+    // of nothing. The same rule as the user column, and why a process in no
+    // container shows a blank rather than an em dash.
+    //
+    // Measured against the columns actually drawn, not against the IO columns'
+    // minimum: `min_width_for_io` budgets forty-five columns for DISK R, DISK W
+    // and the sparkline whether or not they are on screen, so gating on it hid
+    // the column at every width a hundred-column terminal has — on exactly the
+    // container host this exists for.
+    let show_cid = app.any_container()
+        && command_width(area.width, show_io, show_user, true) as u16 > MIN_COMMAND_W;
+    let cmd_w = command_width(area.width, show_io, show_user, show_cid);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -2580,6 +2603,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             if show_user {
                 cells.push(Cell::from(p.user.to_string()));
             }
+            if show_cid {
+                cells.push(match &p.container {
+                    Some(c) => Cell::from(c.to_string()),
+                    // Not in one. An em dash would say poptop could not tell.
+                    None => Cell::from(""),
+                });
+            }
             // The spine is structural, not data: it takes the chrome token so
             // it recedes the way a gridline should, while the name stays at
             // full contrast.
@@ -2627,6 +2657,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     header_cells.push(right("PID"));
     if show_user {
         header_cells.push(left("USER"));
+    }
+    if show_cid {
+        header_cells.push(left("CID"));
     }
     header_cells.push(left("COMMAND"));
     let header = Row::new(header_cells).style(app.theme.table_header_style());
@@ -2798,7 +2831,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             50,
             match (app.tree, app.group) {
                 (true, _) => " · tree".into(),
-                (_, true) => " · grouped".into(),
+                // Named, not just "grouped": the rows say what they fold only
+                // if you already know which key is in force, and `g` now has
+                // three states rather than two.
+                (_, g) if g != crate::app::Grouping::Off => format!(" · {}", g.label()),
                 _ => String::new(),
             },
             plain,
@@ -2832,6 +2868,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     widths.push(Constraint::Length(7));
     if show_user {
         widths.push(Constraint::Length(USER_W));
+    }
+    if show_cid {
+        // Twelve characters, which is what `docker ps` shows.
+        widths.push(Constraint::Length(CID_W));
     }
     widths.push(Constraint::Min(MIN_COMMAND_W));
 

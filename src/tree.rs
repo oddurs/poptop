@@ -233,6 +233,7 @@ mod tests {
             started: Some(0),
             cmd: None,
             io: None,
+            container: None,
         }
     }
 

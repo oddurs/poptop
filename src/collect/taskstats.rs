@@ -536,6 +536,11 @@ pub fn parse_exit(
         // interval, and the column is a rate. A total rendered there would read
         // as a rate and be wrong by however long the process lived.
         io: None::<IoRates>,
+        // The cgroup file is gone with the process. Its container could be
+        // recovered from the exit record's cgroup id on a kernel that carries
+        // one, but this record does not — so `None` means "not knowable here"
+        // and the column shows nothing rather than guessing.
+        container: None,
     })
 }
 

@@ -123,7 +123,7 @@ cargo build --release
 | `s` | cycle sort column |
 | `S` | sort by whatever is stopping work, when the panel names one |
 | `t` | toggle the process tree |
-| `g` | fold processes sharing a name into one row |
+| `g` | fold rows: by name, then by container, then off |
 | `d` | show the selected process's own history instead of the machine's |
 | `K` | show kernel threads, which are hidden by default on Linux |
 | `i` | toggle per-process disk IO columns |
@@ -185,13 +185,15 @@ is already showing you and the table had no way to itemise:
 ```text
 state = D              stuck in uninterruptible sleep, which BLOCKED counts
 task = D               the process *holding* the blocked thread
+container = 9a1f       everything in one container
+container = none       everything in none of them
 write > 1mb            who is causing the disk saturation just reported
 threads > 100          the thing leaking threads
 cpu > 5 and user = root
 ```
 
-Fields: `cpu`, `mem` (`rss`), `threads` (`thr`), `state`, `task`, `pid`,
-`read`, `write`, `user`, `name` (`command`). Operators `>` `>=` `<` `<=` `=` `!=`,
+Fields: `cpu`, `mem` (`rss`), `threads` (`thr`), `state`, `task`, `container`
+(`cid`), `pid`, `read`, `write`, `user`, `name` (`command`). Operators `>` `>=` `<` `<=` `=` `!=`,
 joined by `and`. Sizes take `k`/`m`/`g`/`t` and are binary, like the column they
 filter: `1mb` is 1048576.
 
@@ -253,6 +255,39 @@ process was inspected.
 Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
+
+### Whose process is it
+
+On a Kubernetes node, "which process is eating the box" has a second half. A
+hundred processes named `node` and no way to tell which pod any of them belongs
+to is not an answer.
+
+Every process carries a `CID` — twelve characters of its container id, from
+`/proc/<pid>/cgroup`, which is what `docker ps` shows and what atop falls back
+to. The pod *name* is not in that path at all: atop reads it from the runtime,
+with superuser. An id is what poptop can know without asking anybody's
+permission.
+
+`g` folds rows, and now cycles: **by name, then by container, then off**.
+Folding by container is the same machinery with a different key, so it is a
+choice rather than a fifth exclusive layout for a table that already has four.
+Processes in no container are not folded into a heap called "none" — grouping by
+container asks what each container is doing, and a bucket holding everything
+else answers a different question loudly.
+
+`container = 9a1f` matches on a prefix, because the id shown is twelve
+characters of sixty-four and nobody is going to type the rest.
+`container = none` is the other question, and one an empty string could not ask.
+
+The column is dropped entirely on a box running no containers, where it would be
+twelve columns of nothing — the same rule as the user column. **A process in no
+container shows a blank, not an em dash:** the dash means poptop could not tell,
+and here it can.
+
+The path differs per runtime *and* per cgroup version, and no machine runs
+docker, podman, containerd and plain systemd at once — so the parse is a pure
+function with a fixture for each, including a namespaced `0::/../..` observed
+from inside a container, which carries no id at all.
 
 ### Which cgroup is stalled
 
