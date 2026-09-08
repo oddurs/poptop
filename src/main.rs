@@ -14,6 +14,7 @@ mod config;
 mod cvd;
 mod glyphs;
 mod history;
+mod query;
 mod sample;
 mod store;
 mod theme;
@@ -127,7 +128,26 @@ KEYS:
                     CAP_SYS_PTRACE for other users' processes, so on a box
                     running its services as root they would be a wall of
                     dashes, and poptop withdraws them after one sample.
-    /               filter by name, command line, or pid
+    /               filter. A bare word is a substring match on the name, the
+                    command line, the user or the pid, as before. It is also a
+                    small query language:
+
+                        state = D              stuck in uninterruptible sleep
+                        write > 1mb            causing the disk saturation
+                        threads > 100          leaking threads
+                        cpu > 5 and user = root
+
+                    Fields: cpu, mem (rss), threads (thr), state, pid, read,
+                    write, user, name (command). Operators: > >= < <= = !=,
+                    joined by `and`. Sizes take k/m/g/t and are binary, like
+                    the column: 1mb is 1048576.
+
+                    A figure the platform could not read matches nothing — not
+                    `> 0`, and not `< 1mb` either. A malformed query filters
+                    nothing away and says what is wrong.
+
+                    Evaluated at the cursor while scrubbing, so it answers what
+                    was in D-state at the moment of the spike.
 
 ON MACOS:
     Some figures are Linux-only and simply do not appear:

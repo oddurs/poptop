@@ -2178,11 +2178,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {} is the constraint (S)", c.name())
         });
 
+    // A filter that could not be parsed is filtering nothing, which is a
+    // surprising thing for the table to be doing silently once the filter box
+    // has closed.
+    let bad_filter = app
+        .filter_error()
+        .map_or(String::new(), |why| format!(" ! filter: {why}"));
+
     let (io_text, io_is_warning) = io_status(show_io, app, collected);
     let plain = app.theme.title_style();
     let parts = [
         (0u8, format!(" processes ({})", shown_procs), plain),
         (5, absent, plain),
+        (7, bad_filter, app.theme.warning_style()),
         (10, all_one, plain),
         (20, hidden, plain),
         (40, format!(" — sort: {}", app.sort.label()), plain),
@@ -2390,11 +2398,17 @@ fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     let line = if app.editing_filter {
+        // The error, where the query is being typed. A one-line filter box has
+        // nowhere else to teach the field names, so the message carries them.
+        let tail = match app.filter_error() {
+            Some(why) => Span::styled(format!("   {why}"), app.theme.warning_style()),
+            None => Span::styled("   (Enter/Esc to finish)", app.theme.dim_style()),
+        };
         Line::from(vec![
             Span::styled("filter: ", app.theme.cursor_style()),
             Span::raw(&app.filter),
             Span::styled("█", app.theme.cursor_style()),
-            Span::styled("   (Enter/Esc to finish)", app.theme.dim_style()),
+            tail,
         ])
     } else {
         Line::from(Span::styled(
