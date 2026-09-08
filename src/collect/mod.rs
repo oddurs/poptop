@@ -17,6 +17,10 @@ use crate::sample::Sample;
 pub struct Needs {
     /// Per-process disk throughput. One extra file read per process per sample.
     pub io: bool,
+    /// Per-thread rows. A directory read per multi-threaded process plus a file
+    /// read per thread — on a box with 400 processes and eight times as many
+    /// threads, an order of magnitude more reads than a plain sample.
+    pub threads: bool,
 }
 
 /// The fastest this backend can be sampled and still report the truth.

@@ -32,6 +32,14 @@ pub struct TreeRow<'a> {
     /// vanish the moment a pool shrank to one — the row stopped being a group,
     /// and a group selection stopped matching it.
     pub members: Option<usize>,
+    /// Set when this row is a *thread* of the process on the row above it.
+    ///
+    /// `proc` still points at that process, so the row files and sorts under
+    /// it; what the renderer draws instead is this. A thread has no memory,
+    /// user or command line of its own — it shares its process's — so a row
+    /// that borrowed those fields from `proc` would be repeating the line above
+    /// it rather than adding to it.
+    pub thread: Option<crate::sample::ThreadSample>,
 }
 
 impl<'a> TreeRow<'a> {
@@ -42,7 +50,13 @@ impl<'a> TreeRow<'a> {
             prefix: String::new(),
             context_only: false,
             members: None,
+            thread: None,
         }
+    }
+
+    /// Whether this row is a thread rather than a process.
+    pub fn is_thread(&self) -> bool {
+        self.thread.is_some()
     }
 
     /// Whether this row stands for a name rather than for one process.

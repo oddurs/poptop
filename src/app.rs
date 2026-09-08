@@ -152,6 +152,12 @@ pub struct App {
     pub tree: bool,
     /// Whether the IO columns are shown.
     pub show_io: bool,
+    /// Whether the selected process expands into its threads.
+    ///
+    /// The selected one, not every one: a box has eight times as many threads
+    /// as processes, and a table that grew ninefold on a keypress would answer
+    /// "which thread is spinning" by making it harder to find anything at all.
+    pub show_threads: bool,
     /// Show kernel threads — `kworker/*`, `ksoftirqd/*`, `irq/*` — in the
     /// table.
     ///
@@ -195,6 +201,10 @@ pub struct App {
     /// yet" and "collected" is far easier to reason about while scrubbing than
     /// gaps wherever the column happened to be off.
     io_ratchet: bool,
+    /// The same ratchet for threads. Turning the view on starts collecting
+    /// them; turning it off does not stop, so scrubbing back to a moment while
+    /// the view was on still has threads to show. See [`App::io_ratchet`].
+    thread_ratchet: bool,
     /// Index into [`ZOOM_LEVELS`].
     zoom_idx: usize,
     pub glyphs: GlyphSet,
@@ -221,10 +231,12 @@ impl App {
             // real sample where most of it turns out to be unreadable; see
             // `probe_io`.
             show_io: true,
+            show_threads: false,
             show_kernel: false,
             group: false,
             detail: false,
             io_ratchet: true,
+            thread_ratchet: false,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
             theme: Theme::default(),
@@ -236,6 +248,7 @@ impl App {
     pub fn needs(&self) -> Needs {
         Needs {
             io: self.io_ratchet,
+            threads: self.thread_ratchet,
         }
     }
 
@@ -244,6 +257,17 @@ impl App {
     pub fn toggle_io(&mut self) {
         self.show_io = !self.show_io;
         self.io_ratchet |= self.show_io;
+    }
+
+    /// Expand the selected process into its threads, or stop.
+    ///
+    /// Starts collection the first time and never stops it, for the same reason
+    /// as [`App::toggle_io`]: a reader who turns the view off, scrubs back, and
+    /// turns it on again should find the threads that were there, not a gap
+    /// shaped like the moment they lost interest.
+    pub fn toggle_threads(&mut self) {
+        self.show_threads = !self.show_threads;
+        self.thread_ratchet |= self.show_threads;
     }
 
     /// The share of a sample's processes whose IO could not be read, above
@@ -334,7 +358,7 @@ impl App {
                     .procs
                     .iter()
                     .filter(shown)
-                    .filter(|p| query.matches(p))
+                    .filter(|p| query.matches_in(p, sample.tasks.as_deref()))
                     .map(|p| p.pid)
                     .collect()
             });
@@ -342,24 +366,97 @@ impl App {
             // hidden kernel thread must not survive as somebody's visible
             // ancestor, and `kthreadd` is the ancestor of every one of them.
             let procs: Vec<&ProcSample> = sample.procs.iter().filter(shown).collect();
-            return tree::build(&procs, self.sort, matched.as_ref());
+            return self.with_threads(sample, tree::build(&procs, self.sort, matched.as_ref()));
         }
 
         let mut v: Vec<&ProcSample> = sample
             .procs
             .iter()
             .filter(shown)
-            .filter(|p| query.matches(p))
+            .filter(|p| query.matches_in(p, sample.tasks.as_deref()))
             .collect();
 
         if self.group {
             let mut rows = grouped(&v);
             rows.sort_by(|a, b| self.sort.compare(&a.proc, &b.proc));
+            // Not spliced: a group row stands for a name, and the threads of
+            // one of its members belong under a process, not under a heading
+            // that folds several.
             return rows;
         }
 
         v.sort_by(|a, b| self.sort.compare(a, b));
-        v.into_iter().map(TreeRow::of).collect()
+        self.with_threads(sample, v.into_iter().map(TreeRow::of).collect())
+    }
+
+    /// Expand the selected process into its threads.
+    ///
+    /// The selected one only. A box has roughly eight times as many threads as
+    /// processes, so expanding every row would answer "which thread is
+    /// spinning" by making the spinning one harder to find — and would cost the
+    /// vertical space the tree and the groups are already competing for.
+    ///
+    /// Sorted by CPU rather than by the table's sort column, because the column
+    /// sorts by things a thread does not have its own copy of. Ties break on
+    /// tid so the order is stable frame to frame.
+    fn with_threads<'a>(&self, sample: &'a Sample, mut rows: Vec<TreeRow<'a>>) -> Vec<TreeRow<'a>> {
+        if !self.show_threads {
+            return rows;
+        }
+        let Some(Watched::Process { pid, .. }) = self.selected.as_ref() else {
+            return rows;
+        };
+        let pid = *pid;
+        // `None` means this sample predates the view being turned on. Nothing
+        // is drawn and nothing is invented; the panel title says so.
+        let Some(tasks) = sample.tasks.as_ref() else {
+            return rows;
+        };
+        let Some(at) = rows.iter().position(|r| !r.is_group() && r.proc.pid == pid) else {
+            return rows;
+        };
+        let mut mine: Vec<&crate::sample::ThreadSample> =
+            tasks.iter().filter(|t| t.pid == pid).collect();
+        mine.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(a.tid.cmp(&b.tid)));
+
+        let base = rows[at].prefix.clone();
+        let proc = rows[at].proc.clone();
+        let last = mine.len().saturating_sub(1);
+        for (i, t) in mine.iter().enumerate() {
+            rows.insert(
+                at + 1 + i,
+                TreeRow {
+                    proc: proc.clone(),
+                    prefix: format!("{base}{} ", if i == last { "└─" } else { "├─" }),
+                    context_only: false,
+                    members: None,
+                    thread: Some((*t).clone()),
+                },
+            );
+        }
+        rows
+    }
+
+    /// Why an expanded process is showing no threads, if it is.
+    ///
+    /// A process expanded to nothing looks exactly like a process with one
+    /// thread. The two are different answers, and this is which.
+    pub fn thread_note(&self) -> Option<&'static str> {
+        if !self.show_threads {
+            return None;
+        }
+        match self.history.current() {
+            None => None,
+            Some(s) if s.tasks.is_some() => None,
+            // Not "macOS cannot": the mach `task_threads` call would answer
+            // this, and sysinfo — the backend poptop uses here — simply does
+            // not expose it. Saying what is true rather than what is
+            // convenient, so nobody reads this as a kernel limitation.
+            Some(_) if cfg!(target_os = "macos") => Some("threads: not read on macOS"),
+            // Scrubbed back past the moment the view was turned on. The
+            // ratchet means this can only ever be a prefix of the buffer.
+            Some(_) => Some("threads: not collected this far back"),
+        }
     }
 
     /// Kernel threads withheld from the table right now.
@@ -626,14 +723,29 @@ impl App {
             // Selected but off screen: resume from where it was last seen.
             None => self.resume_row() as isize + delta,
         };
-        let i = from.clamp(0, rows.len() as isize - 1) as usize;
+        let mut i = from.clamp(0, rows.len() as isize - 1) as usize;
+        // A thread row carries its process's identity, so selecting one would
+        // re-select the process and leave the cursor exactly where it started —
+        // an arrow key that visibly does nothing. Step past them in the
+        // direction of travel.
+        let step = if delta < 0 { -1 } else { 1 };
+        while rows[i].is_thread() {
+            let next = i as isize + step;
+            if next < 0 || next >= rows.len() as isize {
+                break;
+            }
+            i = next as usize;
+        }
         self.selected = Some(Watched::of(&rows[i]));
     }
 
     /// Where the watched process is in these rows, if it is in them at all.
     pub fn row_of(&self, rows: &[TreeRow<'_>]) -> Option<usize> {
         let w = self.selected.as_ref()?;
-        let i = rows.iter().position(|r| w.is(r))?;
+        // Skipping thread rows: they carry their process's `proc` so they sort
+        // and file under it, which would otherwise make the first *thread* of
+        // the selected process match before the process itself.
+        let i = rows.iter().position(|r| !r.is_thread() && w.is(r))?;
         self.last_row.set(i);
         Some(i)
     }
@@ -831,6 +943,7 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
                 prefix: String::new(),
                 context_only: false,
                 members: Some(members.len()),
+                thread: None,
             }
         })
         .collect()

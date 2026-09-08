@@ -5,7 +5,7 @@
 //! a plain buffer so both are cheap to exercise.
 
 use crate::app::App;
-use crate::sample::{MemStat, ProcSample, Sample};
+use crate::sample::{MemStat, ProcSample, Sample, ThreadSample};
 use crate::theme::{Palette, Theme, Tier};
 use crate::ui;
 use ratatui::Terminal;
@@ -65,6 +65,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
         clock_ceiling: None,
+        tasks: None,
         pressure: None,
         net: None,
         filesystems: None,
@@ -499,23 +500,48 @@ fn io_collection_is_a_ratchet() {
     use crate::collect::Needs;
     // Collection starts with the columns, which are on by default.
     let mut app = App::new(60);
-    assert_eq!(app.needs(), Needs { io: true });
+    assert_eq!(
+        app.needs(),
+        Needs {
+            io: true,
+            threads: false,
+        }
+    );
 
     // Hiding the columns must NOT stop collection: resuming later would leave
     // a hole in the middle of history rather than one clean boundary.
     app.toggle_io();
     assert!(!app.show_io);
-    assert_eq!(app.needs(), Needs { io: true }, "collection must not stop");
+    assert_eq!(
+        app.needs(),
+        Needs {
+            io: true,
+            threads: false,
+        },
+        "collection must not stop"
+    );
 
     // …and showing them again changes nothing, because it never stopped.
     app.toggle_io();
-    assert_eq!(app.needs(), Needs { io: true });
+    assert_eq!(
+        app.needs(),
+        Needs {
+            io: true,
+            threads: false,
+        }
+    );
 
     // The one thing that does stop it is the probe deciding the column is
     // unreadable — a boundary at the very start rather than in the middle.
     let mut probed = App::new(60);
     probed.probe_io(&with_denied(100, 90));
-    assert_eq!(probed.needs(), Needs { io: false });
+    assert_eq!(
+        probed.needs(),
+        Needs {
+            io: false,
+            threads: false,
+        }
+    );
 }
 
 #[test]
@@ -3952,11 +3978,21 @@ fn show_churn_against_a_real_burst() {
     // Linux, where /proc/stat publishes the counter.
     use crate::collect::{Collector, Needs, Platform};
     let mut c = Platform::new().unwrap();
-    let a = c.sample(Needs { io: false }).unwrap();
+    let a = c
+        .sample(Needs {
+            io: false,
+            threads: false,
+        })
+        .unwrap();
     for _ in 0..300 {
         let _ = std::process::Command::new("/bin/true").status();
     }
-    let b = c.sample(Needs { io: false }).unwrap();
+    let b = c
+        .sample(Needs {
+            io: false,
+            threads: false,
+        })
+        .unwrap();
     match crate::history::churn(&a, &b) {
         Some(ch) => println!(
             "created {} tasks, {} visible in the table, {} came and went",
@@ -5226,13 +5262,22 @@ fn the_key_says_why_it_did_nothing_on_a_narrow_panel() {
 fn show_metric_audit() {
     use crate::collect::{Collector, Needs, Platform};
     let mut c = Platform::new().unwrap();
-    c.sample(Needs { io: false }).unwrap();
+    c.sample(Needs {
+        io: false,
+        threads: false,
+    })
+    .unwrap();
 
     // Does a fast sample rate still produce sane CPU? 0013 allows 50ms, and
     // sysinfo documents a 200ms minimum between CPU refreshes.
     for ms in [50u64, 100, 200, 1000] {
         std::thread::sleep(std::time::Duration::from_millis(ms));
-        let s = c.sample(Needs { io: false }).unwrap();
+        let s = c
+            .sample(Needs {
+                io: false,
+                threads: false,
+            })
+            .unwrap();
         println!(
             "interval {ms:>4}ms -> cpu_total {:>6.1}%  max core {:>6.1}%  max proc {:>7.1}%",
             s.cpu_total,
@@ -5241,7 +5286,12 @@ fn show_metric_audit() {
         );
     }
 
-    let s = c.sample(Needs { io: false }).unwrap();
+    let s = c
+        .sample(Needs {
+            io: false,
+            threads: false,
+        })
+        .unwrap();
     let cores = s.cpu_per_core.len();
     let no_start = s.procs.iter().filter(|p| p.started.is_none()).count();
     let over = s
@@ -5269,7 +5319,12 @@ fn the_first_sample_reports_no_cpu_rather_than_a_wrong_one() {
     // to refuse — drawn as the first frame, pushed into history, and persisted.
     use crate::collect::{Collector, Needs, Platform};
     let mut c = Platform::new().unwrap();
-    let first = c.sample(Needs { io: false }).unwrap();
+    let first = c
+        .sample(Needs {
+            io: false,
+            threads: false,
+        })
+        .unwrap();
 
     assert_eq!(first.cpu_total, 0.0, "the first sample claims a CPU figure");
     assert!(
@@ -8313,4 +8368,184 @@ fn every_series_the_panel_draws_is_in_the_list_the_gutter_is_sized_from() {
             "{name} is drawn in the gutter and is not in the list it is sized from"
         );
     }
+}
+
+/// A process with threads, and the sample's flat task list to match.
+fn sample_with_threads() -> Sample {
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            threads: Some(3),
+            ..proc_named(4021, "postgres", 40.0, 900 << 20)
+        },
+        proc_named(4200, "sshd", 0.5, 8 << 20),
+    ];
+    s.tasks = Some(vec![
+        ThreadSample {
+            pid: 4021,
+            tid: 4021,
+            name: std::sync::Arc::from("postgres"),
+            state: 'S',
+            cpu: 1.0,
+        },
+        ThreadSample {
+            pid: 4021,
+            tid: 4098,
+            name: std::sync::Arc::from("bgwriter"),
+            state: 'D',
+            cpu: 2.0,
+        },
+        ThreadSample {
+            pid: 4021,
+            tid: 4099,
+            name: std::sync::Arc::from("walwriter"),
+            state: 'R',
+            cpu: 37.0,
+        },
+    ]);
+    s
+}
+
+#[test]
+fn expanding_a_process_shows_its_threads_and_only_its_threads() {
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.select_delta(1); // postgres, the first row by CPU
+    app.toggle_threads();
+
+    let rows = app.visible_rows();
+    let names: Vec<String> = rows
+        .iter()
+        .map(|r| match &r.thread {
+            Some(t) => t.name.to_string(),
+            None => r.proc.name.to_string(),
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec!["postgres", "walwriter", "bgwriter", "postgres", "sshd"],
+        "the threads are not under their process, sorted by CPU"
+    );
+    // The main thread carries the process's name, and `sshd` — the other
+    // process — has no rows under it.
+    assert_eq!(
+        rows.iter().filter(|r| r.is_thread()).count(),
+        3,
+        "threads of an unselected process were expanded too"
+    );
+}
+
+#[test]
+fn a_thread_row_does_not_repeat_its_processs_memory() {
+    // Forty thread rows each showing the process's RSS would say the same
+    // 900 MB forty times and imply forty copies of it.
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.select_delta(1);
+    app.toggle_threads();
+    // Through `rows`, not `render`: the latter concatenates every cell with no
+    // line breaks, so `.lines()` on it yields the whole frame as one line and
+    // "is this on the thread's row" becomes "is this anywhere on screen".
+    let frame = rows(&app, 120, 20);
+    let thread_row = frame
+        .iter()
+        .find(|l| l.contains("walwriter"))
+        .expect("no thread row was drawn");
+    assert!(
+        thread_row.contains('—'),
+        "a thread row has no em dash where the process's figures would be: {thread_row}"
+    );
+    assert!(
+        !thread_row.contains("900"),
+        "a thread row repeated its process's memory: {thread_row}"
+    );
+    assert!(
+        thread_row.contains("4099"),
+        "a thread row does not carry its tid: {thread_row}"
+    );
+}
+
+#[test]
+fn the_title_counts_processes_and_not_the_threads_under_them() {
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.select_delta(1);
+    app.toggle_threads();
+    let frame = render(&app, 120, 20);
+    assert!(
+        frame.contains("processes (2)"),
+        "the thread rows were counted as processes:\n{frame}"
+    );
+}
+
+#[test]
+fn moving_the_selection_steps_over_the_thread_rows() {
+    // A thread row carries its process's identity, so selecting one would
+    // re-select the process and leave the cursor where it started — an arrow
+    // key that visibly does nothing.
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.select_delta(1);
+    app.toggle_threads();
+
+    let before = app.visible_rows();
+    let from = app.row_of(&before).expect("nothing selected");
+    app.select_delta(1);
+    let after = app.visible_rows();
+    let to = app.row_of(&after).expect("the selection was lost");
+    assert!(to > from, "the selection did not move past the thread rows");
+    assert_eq!(
+        after[to].proc.name.as_ref(),
+        "sshd",
+        "the selection did not land on the next process"
+    );
+}
+
+#[test]
+fn a_blocked_task_is_findable_from_the_process_that_holds_it() {
+    // What makes the header's task-level figures itemisable: `BLOCKED` counts
+    // tasks, so two blocked threads inside one healthy-looking process are a
+    // number the process table cannot otherwise account for.
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.filter = "task = D".into();
+    let rows = app.visible_rows();
+    let names: Vec<&str> = rows.iter().map(|r| r.proc.name.as_ref()).collect();
+    assert_eq!(
+        names,
+        vec!["postgres"],
+        "the process holding the blocked thread was not found"
+    );
+
+    // Its own state is `S`. The process is not blocked; a thread inside it is.
+    assert_eq!(
+        rows[0].proc.state, 'S',
+        "the fixture does not test the case"
+    );
+}
+
+#[test]
+fn a_task_predicate_matches_nothing_when_no_threads_were_collected() {
+    // A question about data that was not gathered. Matching everything would
+    // claim every process has such a thread; the panel title says why the
+    // result is empty.
+    let mut app = App::new(600);
+    let mut s = sample_with_threads();
+    s.tasks = None;
+    app.push(s);
+    app.filter = "task = D".into();
+    assert!(
+        app.visible_rows().is_empty(),
+        "a predicate about threads that were never collected matched anyway"
+    );
+    app.show_threads = true;
+    assert_eq!(
+        app.thread_note(),
+        Some(if cfg!(target_os = "macos") {
+            "threads: not read on macOS"
+        } else {
+            "threads: not collected this far back"
+        }),
+        "nothing explained the empty result"
+    );
 }

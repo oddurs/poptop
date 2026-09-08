@@ -7,6 +7,7 @@
 use super::{Collector, Needs};
 use crate::sample::{
     DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
+    ThreadSample,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -137,6 +138,12 @@ pub struct ProcFs {
     partitions: std::collections::HashSet<Arc<str>>,
     /// pid -> cumulative (utime + stime) jiffies at the previous sample.
     prev_proc_jiffies: HashMap<i32, u64>,
+    /// The same, per thread, keyed by tid. Separate from the per-process map
+    /// even though a main thread's tid equals its pid: the two are read at
+    /// different times and only one of them exists when the thread view is off,
+    /// and sharing a map would make a stale process entry look like a thread
+    /// that had not moved.
+    prev_task_jiffies: HashMap<i32, u64>,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_at: Option<SystemTime>,
@@ -214,6 +221,7 @@ impl ProcFs {
             block_devices: read_block_devices(),
             partitions: std::collections::HashSet::new(),
             prev_proc_jiffies: HashMap::new(),
+            prev_task_jiffies: HashMap::new(),
             prev_proc_io: HashMap::new(),
             prev_at: None,
             users: parse_passwd(),
@@ -612,7 +620,7 @@ impl ProcFs {
         elapsed: Duration,
         needs: Needs,
         denied: &mut usize,
-    ) -> io::Result<Vec<ProcSample>> {
+    ) -> io::Result<(Vec<ProcSample>, Option<Vec<ThreadSample>>)> {
         // Destructured so the shared read buffer, the path buffer and the
         // previous-sample maps are all borrowed disjointly. Going through
         // `&mut self` would hold the whole collector for as long as the text
@@ -621,6 +629,7 @@ impl ProcFs {
             buf,
             path,
             prev_proc_jiffies,
+            prev_task_jiffies,
             prev_proc_io,
             users,
             names,
@@ -642,6 +651,8 @@ impl ProcFs {
         let mut out = Vec::new();
         let mut seen = HashMap::new();
         let mut seen_io = HashMap::new();
+        let mut tasks = Vec::new();
+        let mut seen_tasks = HashMap::new();
         let elapsed_secs = elapsed.as_secs_f64();
 
         for entry in fs::read_dir("/proc")? {
@@ -694,6 +705,19 @@ impl ProcFs {
                     Err(why) => *denied += usize::from(why.counts()),
                 }
             }
+            if needs.threads && p.threads.unwrap_or(1) > 1 {
+                read_tasks(
+                    pid,
+                    &p,
+                    elapsed_secs,
+                    &mut seen_tasks,
+                    prev_task_jiffies,
+                    *ticks_per_sec,
+                    &mut tasks,
+                    path,
+                    buf,
+                );
+            }
             out.push(p);
         }
 
@@ -713,8 +737,122 @@ impl ProcFs {
         // Collection could not resume before the probe existed, which is why
         // this held: the ratchet only ever went off to on.
         *prev_proc_io = if needs.io { seen_io } else { HashMap::new() };
-        Ok(out)
+        // Same reasoning as the IO map one line up: a jiffy count from before
+        // the view was turned off would be divided by one interval and render
+        // a thread at hundreds of times its real share.
+        *prev_task_jiffies = if needs.threads {
+            seen_tasks
+        } else {
+            HashMap::new()
+        };
+        // `None` when nobody asked, an empty list when the box genuinely has no
+        // multi-threaded process. The pair is the difference between "not
+        // collected" and "none found", which is the distinction this codebase
+        // does not collapse anywhere else either.
+        Ok((out, needs.threads.then_some(tasks)))
     }
+}
+
+/// Every thread of one process, from `/proc/<pid>/task/`.
+///
+/// Only called for a process whose `stat` says it has more than one thread. A
+/// single-threaded process *is* its thread, so a row for it would repeat the
+/// process row one column narrower — and skipping them is most of what keeps
+/// this affordable, since most processes on any box are single-threaded.
+///
+/// A thread that exits while the directory is being walked is normal, not an
+/// error: the same reasoning as the process loop, one level down.
+#[allow(clippy::too_many_arguments)]
+fn read_tasks(
+    pid: i32,
+    proc: &ProcSample,
+    elapsed_secs: f64,
+    seen: &mut HashMap<i32, u64>,
+    prev: &HashMap<i32, u64>,
+    ticks_per_sec: f64,
+    out: &mut Vec<ThreadSample>,
+    path: &mut String,
+    buf: &mut Vec<u8>,
+) {
+    path.clear();
+    let _ = write!(path, "/proc/{pid}/task");
+    let Ok(dir) = fs::read_dir(&path) else { return };
+    for entry in dir {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Ok(tid) = name.parse::<i32>() else {
+            continue;
+        };
+
+        path.clear();
+        let _ = write!(path, "/proc/{pid}/task/{tid}/stat");
+        let Ok(stat) = read_into(path, buf) else {
+            continue;
+        };
+        let Some(t) = parse_task_stat(pid, tid, stat, elapsed_secs, seen, prev, ticks_per_sec)
+        else {
+            continue;
+        };
+        // A thread's name is its own, but the kernel gives the main thread the
+        // process's, so it repeats. Shared rather than allocated again: the
+        // process's `Arc<str>` is the same string.
+        out.push(ThreadSample {
+            name: if tid == pid {
+                proc.name.clone()
+            } else {
+                t.name
+            },
+            ..t
+        });
+    }
+}
+
+/// The fields of a thread's `stat`, which has the same shape as a process's.
+///
+/// Split from the read so it can be tested against a fixture, like every other
+/// parser here.
+fn parse_task_stat(
+    pid: i32,
+    tid: i32,
+    stat: &str,
+    elapsed_secs: f64,
+    seen: &mut HashMap<i32, u64>,
+    prev: &HashMap<i32, u64>,
+    ticks_per_sec: f64,
+) -> Option<ThreadSample> {
+    // Field 2 is the thread name in parentheses and may contain spaces and
+    // parentheses of its own, so the split is on the last ')' — the same trap,
+    // and the same answer, as `parse_proc_stat`.
+    let close = stat.rfind(')')?;
+    let open = stat.find('(')?;
+    let comm = stat.get(open + 1..close)?;
+    let rest: Vec<&str> = stat.get(close + 1..)?.split_whitespace().collect();
+
+    let state = rest.first()?.chars().next().unwrap_or('?');
+    let utime: u64 = rest.get(11)?.parse().ok()?;
+    let stime: u64 = rest.get(12)?.parse().ok()?;
+    let jiffies = utime.saturating_add(stime);
+    seen.insert(tid, jiffies);
+
+    // No previous reading means this thread was not there last time, and a
+    // delta against zero would report its whole lifetime's CPU as this
+    // interval's. Zero for a first sighting, exactly as the process path does.
+    let cpu = match prev.get(&tid) {
+        Some(&before) => {
+            let delta = jiffies.saturating_sub(before) as f64;
+            ((delta / ticks_per_sec) / elapsed_secs * 100.0) as f32
+        }
+        None => 0.0,
+    };
+
+    Some(ThreadSample {
+        pid,
+        tid,
+        name: Arc::from(comm),
+        state,
+        cpu,
+    })
 }
 
 /// Why a process's disk IO could not be read.
@@ -1567,7 +1705,7 @@ impl Collector for ProcFs {
         let net = self.read_net(elapsed);
 
         let mut io_denied = 0;
-        let procs = self.read_procs(elapsed, needs, &mut io_denied)?;
+        let (procs, tasks) = self.read_procs(elapsed, needs, &mut io_denied)?;
         // `/proc/stat` is read *after* the process walk, not before, so every
         // process in `procs` is guaranteed to have been counted by `forks`.
         // Read first, a task created during the walk appeared in `procs`
@@ -1600,6 +1738,7 @@ impl Collector for ProcFs {
             pressure: self.read_pressure(),
             filesystems: self.read_filesystems(),
             net,
+            tasks,
         })
     }
 }
@@ -1607,6 +1746,66 @@ impl Collector for ProcFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real `/proc/<pid>/task/<tid>/stat`, with the trap intact: the thread
+    /// name contains a space *and* a close parenthesis, so a split on the
+    /// *first* `)` cuts the name short and every field after it reads as the
+    /// wrong one. A name with only an opening bracket does not test this —
+    /// `find` and `rfind` land on the same byte — which is what the first
+    /// version of this fixture got wrong.
+    const TASK_STAT: &str = "4098 (tokio-rt (w)) R 1 4021 4021 0 -1 4194304 \
+        0 0 0 0 137 42 0 0 20 0 9 0 8842145 2846720000 41221 18446744073709551615 \
+        1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+
+    #[test]
+    fn a_threads_stat_is_read_past_a_name_with_a_bracket_in_it() {
+        let mut seen = HashMap::new();
+        let prev = HashMap::new();
+        let t = parse_task_stat(4021, 4098, TASK_STAT, 1.0, &mut seen, &prev, 100.0)
+            .expect("a thread stat did not parse");
+        assert_eq!(t.pid, 4021);
+        assert_eq!(t.tid, 4098);
+        assert_eq!(
+            &*t.name, "tokio-rt (w)",
+            "the name was cut at the wrong bracket"
+        );
+        assert_eq!(t.state, 'R');
+        // No previous reading, so no rate to report yet.
+        assert_eq!(t.cpu, 0.0, "a thread's first sighting invented a rate");
+        assert_eq!(
+            seen.get(&4098),
+            Some(&179),
+            "the jiffies carried forward are not utime + stime"
+        );
+    }
+
+    #[test]
+    fn a_threads_cpu_is_the_delta_and_never_its_whole_lifetime() {
+        // The bug this shape invites: a thread appearing for the first time
+        // with a lifetime's worth of jiffies, divided by one interval, renders
+        // at thousands of percent. The first sighting is zero and the second
+        // is a real delta.
+        let mut seen = HashMap::new();
+        let mut prev = HashMap::new();
+        prev.insert(4098, 129u64);
+        let t = parse_task_stat(4021, 4098, TASK_STAT, 2.0, &mut seen, &prev, 100.0)
+            .expect("did not parse");
+        // 179 - 129 = 50 jiffies, 100 per second, over two seconds.
+        assert_eq!(t.cpu, 25.0, "the rate is not the delta over the interval");
+    }
+
+    #[test]
+    fn a_thread_that_went_backwards_reads_as_idle_rather_than_enormous() {
+        // A tid reused between two samples. Saturating rather than wrapping:
+        // the alternative is a subtraction underflowing into a rate with
+        // eighteen digits.
+        let mut seen = HashMap::new();
+        let mut prev = HashMap::new();
+        prev.insert(4098, 1_000_000u64);
+        let t = parse_task_stat(4021, 4098, TASK_STAT, 1.0, &mut seen, &prev, 100.0)
+            .expect("did not parse");
+        assert_eq!(t.cpu, 0.0, "a counter that went backwards was not clamped");
+    }
 
     /// Build a parse context from a collector, so the tests exercise the same
     /// state the collector would hand the parser.
@@ -2207,15 +2406,29 @@ mod tests {
         // ever went off to on.
         let mut pf = ProcFs::new().unwrap();
         let mut denied = 0;
-        pf.read_procs(Duration::from_secs(1), Needs { io: true }, &mut denied)
-            .unwrap();
+        pf.read_procs(
+            Duration::from_secs(1),
+            Needs {
+                io: true,
+                threads: false,
+            },
+            &mut denied,
+        )
+        .unwrap();
         assert!(
             !pf.prev_proc_io.is_empty(),
             "collecting IO recorded no counters"
         );
 
-        pf.read_procs(Duration::from_secs(1), Needs { io: false }, &mut denied)
-            .unwrap();
+        pf.read_procs(
+            Duration::from_secs(1),
+            Needs {
+                io: false,
+                threads: false,
+            },
+            &mut denied,
+        )
+        .unwrap();
         assert!(
             pf.prev_proc_io.is_empty(),
             "counters survived collection being switched off"
