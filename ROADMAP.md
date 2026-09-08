@@ -47,13 +47,9 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`##########` 96% · 26 of 27 done · due 2027-01-01
+`##########` 100% · 27 of 27 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
-
-### backlog
-
-- [ ] `0052` The per-process history is shown at one percent of its value <sup>feature · p2</sup>
 
 ### done
 
@@ -81,6 +77,7 @@ Config file, user themes, documented and safe to depend on.
 - [x] `0049` Filtering is a substring match, so the useful questions cannot be asked <sup>feature · p2</sup>
 - [x] `0050` Twelve rows of the same program crowd out everything else <sup>feature · p2</sup>
 - [x] `0051` Scrubbing loses the process you were watching <sup>bug · p2</sup>
+- [x] `0052` The per-process history is shown at one percent of its value <sup>feature · p2</sup>
 - [x] `0053` A throttled machine looks identical to a busy one <sup>feature · p2</sup>
 - [x] `0054` Kernel threads crowd out the processes anyone is looking for <sup>feature · p3</sup>
 

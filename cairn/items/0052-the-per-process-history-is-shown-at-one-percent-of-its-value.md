@@ -2,7 +2,7 @@
 id: 52
 title: The per-process history is shown at one percent of its value
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -50,7 +50,7 @@ about the process.
 
 ## Acceptance criteria
 
-- [ ] A key opens a full-width history for the selected process
-- [ ] It draws from the retained buffer, with no new collection
-- [ ] Where the process is absent from the buffer is shown, not interpolated
-- [ ] The time cursor is the same one the timeline uses
+- [x] A key opens a full-width history for the selected process
+- [x] It draws from the retained buffer, with no new collection
+- [x] Where the process is absent from the buffer is shown, not interpolated
+- [x] The time cursor is the same one the timeline uses
