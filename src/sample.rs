@@ -56,6 +56,7 @@ impl Default for ProcSample {
             started: None,
             cmd: None,
             io: None,
+            container: None,
         }
     }
 }
@@ -665,13 +666,20 @@ pub struct ProcSample {
     /// rendered as a zero: a fabricated zero is indistinguishable from a
     /// genuinely idle process.
     pub io: Option<IoRates>,
+    /// The container this process is in, as a twelve-character id.
+    ///
+    /// `None` means it is in no container — not that poptop could not tell.
+    /// The pod *name* is not in the cgroup path at all: atop reads it from the
+    /// runtime with superuser, and an id is what poptop can know without asking
+    /// anybody's permission.
+    pub container: Option<Arc<str>>,
 }
 
 crate::persist::codec! { ThreadSample { pid: i32, tid: i32, name: Arc<str>, state: char, cpu: f32 } }
 
 crate::persist::codec! { CgroupStat { path: Arc<str>, depth: u32, cpu: Option<f32>, cpu_max: Option<f32>, mem: Option<u64>, mem_max: Option<u64>, read: Option<u64>, write: Option<u64>, pressure: Option<Pressure>, procs: Option<u32> } }
 
-crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates> } }
+crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates>, container: Option<Arc<str>> } }
 
 /// A complete snapshot of the machine at one instant.
 #[derive(Debug, Clone)]
@@ -999,6 +1007,8 @@ mod tests {
             started: Some(1),
             cmd: None,
             io: None,
+
+            container: None,
         };
         assert_eq!(p.command(), "[kworker/3:1]");
         p.cmd = Some(Arc::from("node server.js"));

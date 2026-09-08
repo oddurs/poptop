@@ -49,6 +49,7 @@ fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
         started: Some(0),
         cmd: None,
         io: None,
+        container: None,
     }
 }
 
@@ -7097,7 +7098,7 @@ fn grouping_folds_a_worker_pool_into_one_row_that_sums() {
     // state.
     let mut app = App::new(60);
     worker_pool(&mut app, None);
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     let rows_data = app.visible_rows();
@@ -7133,7 +7134,7 @@ fn grouping_folds_a_worker_pool_into_one_row_that_sums() {
 fn a_group_states_nothing_it_cannot_sum() {
     let mut app = App::new(60);
     worker_pool(&mut app, None);
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     let rows_data = app.visible_rows();
@@ -7172,7 +7173,7 @@ fn a_group_with_one_unreadable_member_reports_no_io_rather_than_a_short_total() 
             write: 0,
         }),
     );
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
 
     let rows_data = app.visible_rows();
     // The row that folds more than one. Every row is a group row while
@@ -7218,7 +7219,7 @@ fn grouping_and_the_tree_are_mutually_exclusive() {
     let mut app = App::new(60);
     worker_pool(&mut app, None);
 
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     app.tree = true;
     // Whichever the renderer honours, it must not try to do both: the tree path
     // is taken and the rows are processes, with pids.
@@ -7236,7 +7237,7 @@ fn a_group_can_be_followed_across_samples() {
     // across that, and it is what the reader picked.
     let mut app = App::new(60);
     worker_pool(&mut app, None);
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     select_until(&mut app, "the ruby group", |n| n == "ruby");
@@ -7283,7 +7284,7 @@ fn the_title_counts_processes_even_when_a_row_stands_for_six() {
         title_of(&app)
     );
 
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     let grouped = title_of(&app);
     assert!(
         grouped.contains("processes (7)"),
@@ -7308,7 +7309,7 @@ fn a_group_of_mixed_owners_claims_neither() {
             .collect();
         app.push(s);
     }
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     let rows_data = app.visible_rows();
@@ -7324,7 +7325,7 @@ fn a_group_of_mixed_owners_claims_neither() {
     // …and when they do agree, it says so.
     let mut same = App::new(60);
     worker_pool(&mut same, None);
-    same.group = true;
+    same.group = crate::app::Grouping::Name;
     let rows_data = same.visible_rows();
     let group = rows_data.iter().find(|r| r.count() > 1).unwrap();
     assert_eq!(&*group.proc.user, "root");
@@ -7338,7 +7339,7 @@ fn a_group_shrinking_to_one_process_keeps_its_selection() {
     // stopped being a group, and a group selection stopped matching it.
     let mut app = App::new(60);
     worker_pool(&mut app, None);
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     select_until(&mut app, "the ruby group", |n| n == "ruby");
 
@@ -7378,7 +7379,7 @@ fn sorting_by_pid_puts_a_group_where_its_oldest_process_is() {
     // what was in it, while the column it was nominally sorting by showed `×6`.
     let mut app = App::new(60);
     worker_pool(&mut app, None);
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     app.sort = crate::app::Sort::Pid;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
@@ -8557,7 +8558,7 @@ fn the_tree_and_the_groups_say_they_are_not_expanding_anything() {
     );
 
     app.tree = false;
-    app.group = true;
+    app.group = crate::app::Grouping::Name;
     assert_eq!(app.thread_note(), Some("threads: not shown while grouped"));
     assert!(!app.visible_rows().iter().any(|r| r.is_thread()));
 }
@@ -9143,4 +9144,104 @@ fn the_cgroup_walk_is_only_paid_for_while_the_view_is_open() {
         !app.needs().asked(Source::Cgroups),
         "the walk outlived the view"
     );
+}
+
+fn in_container(pid: i32, name: &str, cpu: f32, cid: Option<&str>) -> ProcSample {
+    ProcSample {
+        container: cid.map(std::sync::Arc::from),
+        ..proc_named(pid, name, cpu, 64 << 20)
+    }
+}
+
+fn containerful() -> Sample {
+    let mut s = sample(10.0);
+    s.procs = vec![
+        in_container(4001, "node", 30.0, Some("9a1f0e4c2b7d")),
+        in_container(4002, "node", 20.0, Some("9a1f0e4c2b7d")),
+        in_container(4003, "node", 10.0, Some("c0ffee123456")),
+        in_container(4200, "sshd", 0.5, None),
+    ];
+    s
+}
+
+#[test]
+fn a_process_names_the_container_it_is_in() {
+    // On a Kubernetes node this is a hundred processes named `node` with no way
+    // to tell which one belongs where.
+    let mut app = App::new(600);
+    app.push(containerful());
+    let shown = rows(&app, 160, 12).join("\n");
+    assert!(shown.contains("CID"), "no container column:\n{shown}");
+    assert!(shown.contains("9a1f0e4c2b7d"), "the id is not shown");
+}
+
+#[test]
+fn a_box_with_no_containers_does_not_carry_an_empty_column() {
+    // Nine columns of em dash on every machine that runs no containers. The
+    // same rule as the user column.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![in_container(4200, "sshd", 0.5, None)];
+    app.push(s);
+    let shown = rows(&app, 160, 12).join("\n");
+    assert!(
+        !shown.contains("CID"),
+        "an empty column was drawn:\n{shown}"
+    );
+}
+
+#[test]
+fn grouping_cycles_through_name_and_container_rather_than_adding_a_mode() {
+    use crate::app::Grouping;
+    let mut app = App::new(600);
+    app.push(containerful());
+
+    assert_eq!(app.group, Grouping::Off);
+    app.group = app.group.next();
+    assert_eq!(app.group, Grouping::Name);
+    // Three `node` processes fold to one row, plus `sshd`.
+    let by_name = app.visible_rows();
+    let names: Vec<&str> = by_name.iter().map(|r| r.proc.name.as_ref()).collect();
+    assert_eq!(names, vec!["node", "sshd"], "grouping by name changed");
+    drop(by_name);
+
+    app.group = app.group.next();
+    assert_eq!(app.group, Grouping::Container);
+    let rows_now = app.visible_rows();
+    let counts: Vec<usize> = rows_now.iter().map(|r| r.count()).collect();
+    assert_eq!(
+        counts,
+        vec![2, 1],
+        "the two processes in one container did not fold into one row"
+    );
+    // `sshd` is in no container and is not a row: a bucket holding every
+    // process that is not in one answers a different question loudly.
+    assert_eq!(rows_now.len(), 2, "a process in no container was folded in");
+
+    app.group = app.group.next();
+    assert_eq!(app.group, Grouping::Off, "the cycle does not return");
+}
+
+#[test]
+fn processes_can_be_filtered_by_container_and_by_the_absence_of_one() {
+    let mut app = App::new(600);
+    app.push(containerful());
+
+    // A prefix, because the id shown is twelve characters of sixty-four.
+    app.filter = "container = 9a1f".into();
+    let pids: Vec<i32> = app.visible_rows().iter().map(|r| r.proc.pid).collect();
+    assert_eq!(pids, vec![4001, 4002], "the container filter missed");
+
+    // The other question, which an empty string could not ask.
+    app.filter = "container = none".into();
+    let pids: Vec<i32> = app.visible_rows().iter().map(|r| r.proc.pid).collect();
+    assert_eq!(
+        pids,
+        vec![4200],
+        "processes in no container cannot be found"
+    );
+
+    // And a process in a container is not matched by a different one.
+    app.filter = "cid = deadbeef".into();
+    assert!(app.visible_rows().is_empty(), "an unrelated id matched");
 }

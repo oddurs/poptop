@@ -40,6 +40,8 @@ pub enum Field {
     State,
     /// The state of any *task* of this process — see `matches_in`.
     Thread,
+    /// The container id, or its absence.
+    Container,
     Pid,
     Read,
     Write,
@@ -63,6 +65,8 @@ const FIELDS: &[(&str, Field)] = &[
     // punishes typing. The kernel calls them tasks, and so does the header the
     // predicate exists to itemise.
     ("task", Field::Thread),
+    ("container", Field::Container),
+    ("cid", Field::Container),
     ("pid", Field::Pid),
     ("read", Field::Read),
     ("write", Field::Write),
@@ -85,7 +89,7 @@ impl Field {
     fn is_text(self) -> bool {
         matches!(
             self,
-            Field::State | Field::Thread | Field::User | Field::Name
+            Field::State | Field::Thread | Field::Container | Field::User | Field::Name
         )
     }
 }
@@ -225,6 +229,16 @@ impl Query {
                             }
                         }
                     }
+                    // A prefix, because the id shown is twelve characters of a
+                    // sixty-four character one and nobody is going to type the
+                    // rest. `container = none` finds the processes in no
+                    // container, which is the other question this asks and one
+                    // an empty string could not express.
+                    Field::Container => match (value.as_str(), &p.container) {
+                        ("none" | "-", c) => c.is_none(),
+                        (want, Some(c)) => c.to_lowercase().starts_with(want),
+                        (_, None) => false,
+                    },
                     // Containment, because `name = node` should find
                     // `node /srv/api/server.js` — which is what anyone typing
                     // it means, and the reason the command line is worth
@@ -258,7 +272,9 @@ fn number_of(p: &ProcSample, f: Field) -> Option<f64> {
         Field::Pid => p.pid as f64,
         Field::Read => p.io?.read as f64,
         Field::Write => p.io?.write as f64,
-        Field::State | Field::Thread | Field::User | Field::Name => return None,
+        Field::State | Field::Thread | Field::Container | Field::User | Field::Name => {
+            return None;
+        }
     })
 }
 
@@ -499,6 +515,7 @@ mod tests {
                 read: 2 << 20,
                 write: 512 << 10,
             }),
+            container: None,
         }
     }
 
@@ -646,6 +663,7 @@ mod review_tests {
             started: Some(1),
             cmd: Some(Arc::from(name)),
             io: Some(IoRates { read: 0, write: 0 }),
+            container: None,
         }
     }
 

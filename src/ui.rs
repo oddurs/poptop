@@ -2385,6 +2385,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // fact belongs in a sentence. See `App::one_user`.
     let one_user = app.one_user();
     let show_user = one_user.is_none();
+    // Dropped on a box running no containers, where it would be nine columns of
+    // em dash. The same rule as the user column, and why a process in no
+    // container shows nothing rather than a blank.
+    let show_cid = app.any_container() && area.width >= min_width_for_io(show_user) + 13;
     let show_io = app.show_io && area.width >= min_width_for_io(show_user);
     let cmd_w = command_width(area.width, show_io, show_user);
     let rows_data = app.visible_rows();
@@ -2580,6 +2584,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             if show_user {
                 cells.push(Cell::from(p.user.to_string()));
             }
+            if show_cid {
+                cells.push(match &p.container {
+                    Some(c) => Cell::from(c.to_string()),
+                    // Not in one. An em dash would say poptop could not tell.
+                    None => Cell::from(""),
+                });
+            }
             // The spine is structural, not data: it takes the chrome token so
             // it recedes the way a gridline should, while the name stays at
             // full contrast.
@@ -2627,6 +2638,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     header_cells.push(right("PID"));
     if show_user {
         header_cells.push(left("USER"));
+    }
+    if show_cid {
+        header_cells.push(left("CID"));
     }
     header_cells.push(left("COMMAND"));
     let header = Row::new(header_cells).style(app.theme.table_header_style());
@@ -2798,7 +2812,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             50,
             match (app.tree, app.group) {
                 (true, _) => " · tree".into(),
-                (_, true) => " · grouped".into(),
+                // Named, not just "grouped": the rows say what they fold only
+                // if you already know which key is in force, and `g` now has
+                // three states rather than two.
+                (_, g) if g != crate::app::Grouping::Off => format!(" · {}", g.label()),
                 _ => String::new(),
             },
             plain,
@@ -2832,6 +2849,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     widths.push(Constraint::Length(7));
     if show_user {
         widths.push(Constraint::Length(USER_W));
+    }
+    if show_cid {
+        // Twelve characters, which is what `docker ps` shows.
+        widths.push(Constraint::Length(12));
     }
     widths.push(Constraint::Min(MIN_COMMAND_W));
 

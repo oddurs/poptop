@@ -304,3 +304,146 @@ mod tests {
         assert_eq!(parse_cpu_max("max 100000"), None);
     }
 }
+
+/// The container id in a `/proc/<pid>/cgroup` path, if there is one.
+///
+/// Split from the read because it cannot be tested against a machine: no host
+/// runs docker, podman, containerd and plain systemd at once, and the paths
+/// differ per runtime *and* per cgroup version. So it is a pure function over
+/// the file's text, with a fixture for each.
+///
+/// Returns the id truncated to twelve characters, which is what `docker ps`
+/// shows and what atop falls back to. The pod *name* is not in the path at all
+/// — atop reads it from the runtime, with superuser — so an id is what poptop
+/// can know without asking anybody's permission.
+pub fn container_of(text: &str) -> Option<Arc<str>> {
+    // v2 is one `0::/path` line; v1 is several `id:controllers:/path`. Both end
+    // in the path, and the container component looks the same in either.
+    for line in text.lines() {
+        let path = line.rsplit(':').next()?;
+        for part in path.split('/').rev() {
+            if let Some(id) = id_in(part) {
+                return Some(Arc::from(id));
+            }
+        }
+    }
+    None
+}
+
+/// The id inside one path component, if that component names a container.
+fn id_in(part: &str) -> Option<&str> {
+    // systemd: `docker-<id>.scope`, `libpod-<id>.scope`,
+    // `cri-containerd-<id>.scope`, `crio-<id>.scope`.
+    let stem = part.strip_suffix(".scope").unwrap_or(part);
+    let after = [
+        "docker-",
+        "libpod-",
+        "cri-containerd-",
+        "crio-",
+        "containerd-",
+    ]
+    .into_iter()
+    .find_map(|p| stem.strip_prefix(p))
+    // cgroupfs: the component *is* the id, as under `/docker/<id>`.
+    .unwrap_or(stem);
+    // A container id is a long hex string. Requiring that is what keeps
+    // `session-3.scope` and `user-1000.slice` from being read as containers —
+    // and a pod's own `.slice`, whose uuid has dashes in it, is not one either:
+    // the container inside it is, and that is the row's answer.
+    let hex = after.len() >= 32 && after.chars().all(|c| c.is_ascii_hexdigit());
+    hex.then(|| &after[..12])
+}
+
+#[cfg(test)]
+mod container_tests {
+    use super::*;
+
+    /// One fixture per runtime, because no machine has them all.
+    const CASES: &[(&str, &str, Option<&str>)] = &[
+        (
+            "docker, cgroup v2 under systemd",
+            "0::/system.slice/docker-9a1f0e4c2b7d8e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f.scope\n",
+            Some("9a1f0e4c2b7d"),
+        ),
+        (
+            "docker, cgroupfs",
+            "0::/docker/9a1f0e4c2b7d8e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f\n",
+            Some("9a1f0e4c2b7d"),
+        ),
+        (
+            "docker, cgroup v1 with a controller per line",
+            "12:pids:/docker/9a1f0e4c2b7d8e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f\n\
+             11:memory:/docker/9a1f0e4c2b7d8e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f\n",
+            Some("9a1f0e4c2b7d"),
+        ),
+        (
+            "podman",
+            "0::/machine.slice/libpod-4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b.scope\n",
+            Some("4b3c2d1e0f9a"),
+        ),
+        (
+            "containerd under kubernetes",
+            "0::/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod3f2e1d0c_9b8a_7654_3210_fedcba987654.slice/\
+             cri-containerd-c0ffee1234567890abcdef1234567890abcdef1234567890abcdef1234567890.scope\n",
+            Some("c0ffee123456"),
+        ),
+        (
+            "cri-o",
+            "0::/kubepods.slice/kubepods-besteffort.slice/crio-deadbeefcafe1234567890abcdef1234567890abcdef1234567890abcdef12.scope\n",
+            Some("deadbeefcafe"),
+        ),
+        (
+            "a login session, which is not a container",
+            "0::/user.slice/user-1000.slice/session-3.scope\n",
+            None,
+        ),
+        (
+            "a plain system service",
+            "0::/system.slice/sshd.service\n",
+            None,
+        ),
+        ("the root cgroup", "0::/\n", None),
+        ("nothing at all", "", None),
+        (
+            // Observed on a Docker Desktop VM: from inside a container the
+            // path is namespaced and relative, and carries no id at all. Which
+            // is why this parser is tested against fixtures — no machine has
+            // every runtime, and the one available here has none of them.
+            "a namespaced relative path",
+            "0::/../..\n",
+            None,
+        ),
+    ];
+
+    #[test]
+    fn a_container_id_is_found_in_every_runtimes_path() {
+        for (what, text, want) in CASES {
+            assert_eq!(
+                container_of(text).as_deref(),
+                *want,
+                "{what}: parsed the wrong container out of {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pods_own_slice_is_not_mistaken_for_a_container() {
+        // The uuid in `…-pod3f2e1d0c_9b8a_….slice` is long, and without the
+        // hex check it reads as an id — so every process in the pod would be
+        // labelled with the pod's slice rather than the container it is in.
+        assert_eq!(
+            container_of(
+                "0::/kubepods.slice/kubepods-burstable-pod3f2e1d0c_9b8a_7654_3210_fedcba987654.slice\n"
+            ),
+            None,
+            "a pod slice was read as a container"
+        );
+    }
+
+    #[test]
+    fn a_short_hex_component_is_not_an_id() {
+        // `user-1000.slice` and friends are hex-ish and short. The length is
+        // what separates them from a container id.
+        assert_eq!(container_of("0::/system.slice/abcdef.scope\n"), None);
+    }
+}

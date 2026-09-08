@@ -134,6 +134,54 @@ const BUDGET_SHARE: f32 = 0.25;
 /// Consecutive over-budget samples before anything is given up.
 const BUDGET_STRIKES: u32 = 3;
 
+/// What a row stands for while the table is folding.
+type GroupKey = fn(&ProcSample) -> Option<&Arc<str>>;
+
+/// What the table folds rows by, if anything.
+///
+/// A cycle rather than a second mode. Folding by container is the same
+/// machinery as folding by name with a different key, and giving it its own
+/// toggle would add a fifth exclusive layout to a table that already has four.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Grouping {
+    #[default]
+    Off,
+    /// Processes sharing a name, which is 0050's behaviour.
+    Name,
+    /// Processes in the same container. Processes in none are not shown: the
+    /// question is what each container is doing.
+    Container,
+}
+
+impl Grouping {
+    /// The next state of the `g` cycle.
+    pub fn next(self) -> Self {
+        match self {
+            Grouping::Off => Grouping::Name,
+            Grouping::Name => Grouping::Container,
+            Grouping::Container => Grouping::Off,
+        }
+    }
+
+    /// What each row stands for, or `None` when the table is not folding.
+    fn key(self) -> Option<GroupKey> {
+        match self {
+            Grouping::Off => None,
+            Grouping::Name => Some(|p| Some(&p.name)),
+            Grouping::Container => Some(|p| p.container.as_ref()),
+        }
+    }
+
+    /// What to call it in the panel.
+    pub fn label(self) -> &'static str {
+        match self {
+            Grouping::Off => "",
+            Grouping::Name => "grouped by name",
+            Grouping::Container => "grouped by container",
+        }
+    }
+}
+
 pub struct App {
     pub history: History,
     pub sort: Sort,
@@ -202,7 +250,7 @@ pub struct App {
     /// A mode, not the default, and mutually exclusive with the tree — bottom
     /// makes the same two choices. Grouping destroys parentage by construction,
     /// so a grouped tree would be a tree of things that are not processes.
-    pub group: bool,
+    pub group: Grouping,
     /// Show the selected process's own history in place of the machine's.
     ///
     /// The buffer already holds every retained sample's whole process table, so
@@ -285,7 +333,7 @@ impl App {
             show_threads: false,
             show_cgroups: false,
             show_kernel: false,
-            group: false,
+            group: Grouping::Off,
             detail: false,
             io_ratchet: true,
             thread_ratchet: false,
@@ -500,8 +548,8 @@ impl App {
             .filter(|p| query.matches_in(p, sample.tasks.as_deref()))
             .collect();
 
-        if self.group {
-            let mut rows = grouped(&v);
+        if let Some(key) = self.group.key() {
+            let mut rows = grouped(&v, key);
             rows.sort_by(|a, b| self.sort.compare(&a.proc, &b.proc));
             // Not spliced: a group row stands for a name, and the threads of
             // one of its members belong under a process, not under a heading
@@ -580,7 +628,7 @@ impl App {
         // parentage, groups by a name that folds several processes. Saying so
         // rather than doing nothing: a key that silently has no effect is the
         // ambiguity this whole note exists to remove.
-        if self.group {
+        if self.group != Grouping::Off {
             return Some("threads: not shown while grouped");
         }
         if self.tree {
@@ -707,6 +755,18 @@ impl App {
     /// cannot afford it at this interval, and `--interval` is the answer.
     fn insist(&mut self, s: Source) {
         self.withheld.retain(|w| *w != s);
+    }
+
+    /// The container id to show, if the column is worth its width.
+    ///
+    /// Dropped when no process on screen is in one — on a box running no
+    /// containers the column would be nine columns of em dash. The same rule
+    /// as `one_user`, and the reason a process in no container says nothing
+    /// rather than showing a blank.
+    pub fn any_container(&self) -> bool {
+        self.history
+            .current()
+            .is_some_and(|s| s.procs.iter().any(|p| p.container.is_some()))
     }
 
     /// Kernel threads withheld from the table right now.
@@ -1120,14 +1180,22 @@ impl Watched {
 ///   name rather than the command line is deliberate for the same reason —
 ///   grouping by command line would fold nothing, because the arguments are
 ///   what differ.
-fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
+fn grouped<'a>(
+    procs: &[&'a ProcSample],
+    key: fn(&'a ProcSample) -> Option<&'a Arc<str>>,
+) -> Vec<TreeRow<'a>> {
     let mut order: Vec<&Arc<str>> = Vec::new();
     let mut by_name: HashMap<&str, Vec<&'a ProcSample>> = HashMap::new();
     for p in procs {
-        if by_name.entry(&p.name).or_default().is_empty() {
-            order.push(&p.name);
+        // A process the key does not apply to is dropped, not folded into a
+        // heap called "none". Grouping by container asks "what is each
+        // container doing", and a bucket holding every process on the box that
+        // is not in one answers a different question loudly.
+        let Some(k) = key(p) else { continue };
+        if by_name.entry(k).or_default().is_empty() {
+            order.push(k);
         }
-        by_name.get_mut(&*p.name).expect("just inserted").push(p);
+        by_name.get_mut(&**k).expect("just inserted").push(p);
     }
 
     order
@@ -1189,6 +1257,10 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
                     started: None,
                     cmd: None,
                     io,
+                    // A group stands for a name, and the processes under
+                    // it can be in different containers — or none. There is no
+                    // one answer, so the column shows none.
+                    container: None,
                 }),
                 prefix: String::new(),
                 context_only: false,
