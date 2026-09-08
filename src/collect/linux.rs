@@ -176,6 +176,9 @@ pub struct ProcFs {
     /// Whether the previous sample read cgroups, so a reopened view starts
     /// from a fresh baseline rather than a stale one.
     cgroups_were_read: bool,
+    /// Whether the PSS permission note has been said. Once per run, not once
+    /// per sample.
+    said_pss_denied: bool,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_at: Option<SystemTime>,
@@ -265,6 +268,7 @@ impl ProcFs {
             prev_cgroups: cgroups::Prev::default(),
             cgroup_v2: None,
             cgroups_were_read: false,
+            said_pss_denied: false,
             prev_proc_io: HashMap::new(),
             prev_at: None,
             users: parse_passwd(),
@@ -784,6 +788,7 @@ impl ProcFs {
         let mut out = Vec::new();
         let mut seen = HashMap::new();
         let mut seen_faults: HashMap<i32, (u64, u64)> = HashMap::new();
+        let mut pss_denied = 0usize;
         let mut seen_io = HashMap::new();
         let mut tasks = Vec::new();
         let mut seen_tasks = HashMap::new();
@@ -836,7 +841,7 @@ impl ProcFs {
                 // for the life of the process rather than re-read on a slot.
                 p.container = container_of(pid, p.started.unwrap_or(0), containers, path);
                 if needs.wants(Source::Pss) {
-                    p.pss = read_pss(pid, path, buf);
+                    p.pss = read_pss(pid, path, buf, &mut pss_denied);
                 }
             }
             // Kernel threads are skipped rather than attempted and counted as
@@ -880,6 +885,21 @@ impl ProcFs {
         // is exactly why nothing else would ever remove them.
         containers.retain(|pid, _| seen.contains_key(pid));
         *prev_proc_jiffies = seen;
+        // Replaced wholesale, not extended: this is next sample's baseline and
+        // it self-prunes the same way the jiffies do — an `extend` would keep
+        // one entry per pid ever seen.
+        *prev_proc_faults = seen_faults;
+        // Said once per run, through the same channel as everything else the
+        // backend had to give up on. Without it a non-root reader opening the
+        // memory view sees a full column of em dashes, pays 4.2us a process for
+        // it, and is told nothing.
+        if pss_denied > 0 && !self.said_pss_denied {
+            self.said_pss_denied = true;
+            self.notes.push(format!(
+                "{pss_denied} processes' proportional memory needs CAP_SYS_PTRACE; \
+                 run as root to see them"
+            ));
+        }
         // Cleared rather than kept while collection is off. Rates are a delta
         // against the previous read divided by one interval, so counters left
         // over from five minutes ago would render every long-lived process at
@@ -1186,10 +1206,23 @@ const CMD_READ_MAX: usize = 4096;
 /// being walked — the same two cases as the IO probe, and neither is an error.
 /// Never zero: a process whose share could not be measured is not one using no
 /// memory.
-fn read_pss(pid: i32, path: &mut String, buf: &mut Vec<u8>) -> Option<u64> {
+fn read_pss(pid: i32, path: &mut String, buf: &mut Vec<u8>, denied: &mut usize) -> Option<u64> {
     path.clear();
     let _ = write!(path, "/proc/{pid}/smaps_rollup");
-    let text = read_into(path, buf).ok()?;
+    let text = match read_into(path, buf) {
+        Ok(t) => t,
+        Err(e) => {
+            // Counted the way the IO probe counts its own, and for the same
+            // reason: a column of em dashes with no explanation is the failure
+            // this codebase does not ship. Only the permission case — a process
+            // that exited while the directory was walked is normal and nothing
+            // would fix it.
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                *denied += 1;
+            }
+            return None;
+        }
+    };
     // Published in kilobytes, like the rest of that file.
     text.lines()
         .find_map(|l| l.strip_prefix("Pss:"))
@@ -2418,6 +2451,29 @@ mod tests {
     }
 
     #[test]
+    fn the_fault_baseline_survives_to_the_next_sample() {
+        // Without the write-back, `prev_faults` is the empty map on every
+        // sample, `rate` always takes its first-sighting arm, and the column
+        // this whole item is about reads zero forever — for a process thrashing
+        // on major faults as much as for an idle one.
+        //
+        // Asserted on the collector rather than on the parser: the parser's own
+        // test checks the map it is handed, which is exactly the thing that was
+        // being thrown away.
+        let mut pf = ProcFs::new().unwrap();
+        pf.collect(Needs::default()).unwrap();
+        assert!(
+            !pf.prev_proc_faults.is_empty(),
+            "a sample left no fault baseline for the next one"
+        );
+        let me = std::process::id() as i32;
+        assert!(
+            pf.prev_proc_faults.contains_key(&me),
+            "the baseline does not include this process"
+        );
+    }
+
+    #[test]
     fn a_faults_first_sighting_is_zero_and_its_second_is_a_rate() {
         // The counters are cumulative since the process started, so a delta
         // against nothing reports a whole lifetime of paging as this second's —
@@ -2438,7 +2494,7 @@ mod tests {
         let mut path = String::new();
         let mut buf = Vec::new();
         let me = std::process::id() as i32;
-        if let Some(pss) = read_pss(me, &mut path, &mut buf) {
+        if let Some(pss) = read_pss(me, &mut path, &mut buf, &mut 0) {
             assert!(
                 pss > 64 * 1024,
                 "this process reads {pss} bytes of proportional memory, which \

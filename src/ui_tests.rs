@@ -9623,3 +9623,73 @@ fn proportional_memory_is_only_read_while_the_view_that_shows_it_is_open() {
         "the read outlived the view"
     );
 }
+
+#[test]
+fn the_memory_view_still_elides_the_command_rather_than_chopping_it() {
+    use crate::app::View;
+    // The view drops one column and *adds* four, so counting only the drops
+    // left the elision arithmetic thirty-five columns too generous — the
+    // command elided in the middle and then chopped at the right edge with no
+    // marker, which is precisely what `command_width` exists to prevent.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cmd: Some(std::sync::Arc::from(
+            "/usr/lib/chromium/chromium --type=renderer --enable-features=Vulkan --tail=marker",
+        )),
+        pss: Some(300 << 20),
+        vsize: Some(4 << 30),
+        majflt: Some(3),
+        ..proc_named(4001, "chromium", 12.0, 900 << 20)
+    }];
+    app.push(s);
+    app.view = View::Memory;
+
+    for w in [120u16, 140, 160] {
+        let shown = rows(&app, w, 10).join("\n");
+        assert!(
+            shown.contains('…'),
+            "nothing was elided at {w}, so this proves nothing:\n{shown}"
+        );
+        assert!(
+            shown.contains("tail=marker"),
+            "the end of the command was chopped at {w} columns:\n{shown}"
+        );
+    }
+}
+
+#[test]
+fn a_grouped_row_does_not_borrow_one_members_growth() {
+    use crate::app::{Grouping, View};
+    // A group's synthesised pid is its lowest member's and its `started` is
+    // `None`, so where the platform also reports `None` the lookup matches that
+    // one member and draws its delta beside group-summed memory as if it were
+    // the group's. Every other grouped figure sums or collapses to an em dash.
+    let mut app = App::new(600);
+    let procs = |rss: u64| {
+        vec![
+            ProcSample {
+                started: None,
+                ..proc_named(4001, "node", 1.0, rss)
+            },
+            ProcSample {
+                started: None,
+                ..proc_named(4002, "node", 1.0, 10 << 20)
+            },
+        ]
+    };
+    let mut before = sample_at(1.0, 1);
+    before.procs = procs(100 << 20);
+    let mut now = sample_at(1.0, 0);
+    now.procs = procs(500 << 20);
+    app.push(before);
+    app.push(now);
+    app.group = Grouping::Name;
+    app.view = View::Memory;
+
+    let shown = rows(&app, 180, 10).join("\n");
+    assert!(
+        !shown.contains("+400.0M"),
+        "a group borrowed one member's growth:\n{shown}"
+    );
+}

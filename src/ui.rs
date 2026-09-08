@@ -2022,7 +2022,7 @@ const FIXED_COLUMNS: u16 =
 /// than they needed to be.
 #[cfg(test)]
 pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
-    command_width(width, show_io, show_user, false, 0)
+    command_width(width, show_io, show_user, false, 0, 0)
 }
 
 #[cfg(test)]
@@ -2038,6 +2038,14 @@ fn min_width_for_io(show_user: bool) -> u16 {
 /// The command column's own `Constraint::Min`, and so the narrowest it is ever
 /// actually drawn at.
 const MIN_COMMAND_W: u16 = 10;
+
+/// Major faults a second above which the column is worth looking at.
+///
+/// A rate, not a percentage — which is why it is not `heat_style`'s threshold.
+/// Ten a second is a process being paged in steadily rather than one taking the
+/// odd fault at startup, and anything above that is the answer to why it is
+/// slow.
+const MAJFLT_WARN: u32 = 10;
 
 /// Twelve characters, which is what `docker ps` shows.
 const CID_W: u16 = 12;
@@ -2098,6 +2106,7 @@ fn command_width(
     show_user: bool,
     show_cid: bool,
     dropped: u16,
+    taken: u16,
 ) -> usize {
     let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
     // The container column and its gap. Left out, the elision arithmetic is
@@ -2124,7 +2133,7 @@ fn command_width(
     // Left out, the elision is more cautious than it needs to be — a milder
     // failure than the other direction, but still a name cut for no reason.
     width
-        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + (columns - 1))
+        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + taken + (columns - 1))
         .saturating_add(dropped)
         .max(MIN_COMMAND_W) as usize
 }
@@ -2437,8 +2446,21 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // what it has reserved, whether it is being paged in, and which way it is
     // going.
     let show_mem_cols = app.view == crate::app::View::Memory;
-    // What the view has given back, in columns, for the command to use.
-    let dropped = if show_bars { 0 } else { BAR_W as u16 * 2 + 3 } + if show_thr { 0 } else { 5 };
+    // What the view has given back, in columns, for the command to use — less
+    // what it has taken. The memory view drops the thread count and *adds* four
+    // columns of its own, so counting only the drops left the arithmetic
+    // thirty-five columns too generous, and the command was elided in the
+    // middle and then chopped at the right edge with no marker: the exact
+    // failure `command_width` exists to prevent.
+    let given = i32::from(if show_bars { 0 } else { BAR_W as u16 * 2 + 3 })
+        + if show_thr { 0 } else { 5 }
+        - if show_mem_cols {
+            8 + 8 + 7 + 8 + 4i32
+        } else {
+            0
+        };
+    let dropped = given.max(0) as u16;
+    let taken = (-given).max(0) as u16;
     // Dropped on a box running no containers, where it would be twelve columns
     // of nothing. The same rule as the user column, and why a process in no
     // container shows a blank rather than an em dash.
@@ -2449,8 +2471,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // the column at every width a hundred-column terminal has — on exactly the
     // container host this exists for.
     let show_cid = app.any_container()
-        && command_width(area.width, show_io, show_user, true, dropped) as u16 > MIN_COMMAND_W;
-    let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped);
+        && command_width(area.width, show_io, show_user, true, dropped, taken) as u16
+            > MIN_COMMAND_W;
+    let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped, taken);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -2649,14 +2672,28 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                     None => "—".into(),
                 }));
                 cells.push(match p.majflt {
-                    // Coloured, because a process taking major faults is being
-                    // paged in from disk and that is the answer to why it is
-                    // slow — the one figure here that is a symptom rather than
-                    // a size.
-                    Some(n) => num(n.to_string()).style(app.theme.heat_style(n as f32)),
+                    // Coloured against a *fault* threshold, not through
+                    // `heat_style`: that compares against the warn and critical
+                    // *percentages*, so a process taking five faults a second —
+                    // a real symptom — rendered as dim nothing, and anything
+                    // over eighty pinned to critical. A rate per second is not
+                    // a percentage of anything.
+                    Some(n) if n >= MAJFLT_WARN => {
+                        num(n.to_string()).style(app.theme.warning_style())
+                    }
+                    Some(n) => num(n.to_string()),
                     None => num("—").style(app.theme.dim_style()),
                 });
-                cells.push(match app.growth(p.pid, p.started) {
+                // Not for a group. Its synthesised pid is the lowest member's
+                // and its `started` is `None`, so on a platform that also
+                // reports `None` there the lookup matches that one member and
+                // draws its delta beside group-summed memory as if it were the
+                // group's. Every other grouped figure either sums or collapses
+                // to an em dash; so does this.
+                let grew = (!r.is_group())
+                    .then(|| app.growth(p.pid, p.started))
+                    .flatten();
+                cells.push(match grew {
                     Some(d) => num(fmt_growth(d)),
                     None => num("—").style(app.theme.dim_style()),
                 });

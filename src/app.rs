@@ -523,6 +523,14 @@ impl App {
     pub fn growth(&self, pid: i32, started: Option<u64>) -> Option<i64> {
         let now = self.history.current()?;
         let before = self.history.previous()?;
+        // An interval of zero has no notion of a missed tick, and `gaps_in`
+        // says so explicitly — 0013 makes the interval configurable. Without
+        // the same guard the timeline would draw no seam while this column
+        // showed an em dash on every row, which is the divergence the comment
+        // below is about.
+        if self.interval.is_zero() {
+            return None;
+        }
         let gap = now.at.duration_since(before.at).ok()?;
         // The timeline's definition of adjacent, not a second one. `gap_limit`
         // is exposed for exactly this: two definitions would eventually
@@ -1316,6 +1324,18 @@ impl Watched {
 /// Not a sum of what happens to be there: a total missing one member's
 /// contribution is a smaller number presented as a complete one, which is the
 /// shape of a wrong answer rather than an absent one.
+/// The same, for a narrow counter that could overflow.
+///
+/// `u32` of faults a second is enough for any one process and not for a group
+/// of hundreds. Saturating rather than wrapping: a number pinned at the top of
+/// its range is visibly wrong, and a wrapped one is quietly small.
+fn sum_rate(members: &[&ProcSample], f: impl Fn(&ProcSample) -> Option<u32>) -> Option<u32> {
+    members
+        .iter()
+        .map(|p| f(p))
+        .try_fold(0u32, |acc, v| Some(acc.saturating_add(v?)))
+}
+
 fn sum_of<T: std::iter::Sum<T> + Copy>(
     members: &[&ProcSample],
     f: impl Fn(&ProcSample) -> Option<T>,
@@ -1450,8 +1470,12 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                     // does; `nice` does not, because a group of processes with
                     // different niceness has no one niceness — the same reason
                     // `state` is an em dash here.
-                    minflt: sum_of(members, |p| p.minflt),
-                    majflt: sum_of(members, |p| p.majflt),
+                    // Saturating, unlike the others: these are per-second
+                    // rates in a `u32`, and a name-group of hundreds of
+                    // heavily-faulting processes overflows it — a panic in
+                    // debug and a small wrong number in release.
+                    minflt: sum_rate(members, |p| p.minflt),
+                    majflt: sum_rate(members, |p| p.majflt),
                     vsize: sum_of(members, |p| p.vsize),
                     nice: match members.iter().all(|p| p.nice == first.nice) {
                         true => first.nice,
