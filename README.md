@@ -124,7 +124,7 @@ cargo build --release
 | `S` | sort by whatever is stopping work, when the panel names one |
 | `v` | switch column set: generic, memory, disk |
 | `t` | toggle the process tree |
-| `g` | fold rows: by name, then by container, then off |
+| `g` | fold rows: by name, by user, by container, then off |
 | `d` | show the selected process's own history instead of the machine's |
 | `K` | show kernel threads, which are hidden by default on Linux |
 | `i` | toggle per-process disk IO columns |
@@ -407,6 +407,23 @@ four exclusive modes on four keys, which is where interfaces go wrong. They are:
 `d` is neither. It changes the *timeline* panel rather than the table, and
 counting it as a table mode is what made this look like four axes.
 
+### Which user is eating the machine
+
+On a shared box that is the first question, and the `USER` column cannot answer
+it: it is folded away precisely when it is constant, and it is one column of many
+rows when it is not. `g` folds by user, and the row *is* the user — CPU, memory
+and threads summed across everything they are running.
+
+The identity inverts with the key. Grouping by user makes the username the row's
+name, so the `USER` column is dropped: drawing it beside the identity is the
+same word twice. That is the opposite of the usual rule, which drops the column
+when every row shares a value.
+
+The refusals do not change. A group of processes in three different states has
+no state, and says `—`; a group whose IO could not be read for one member has no
+total. Selection follows a group by its key, so a user whose process list turns
+over completely is still the row that was selected.
+
 ### Whose process is it
 
 On a Kubernetes node, "which process is eating the box" has a second half. A
@@ -419,7 +436,8 @@ to. The pod *name* is not in that path at all: atop reads it from the runtime,
 with superuser. An id is what poptop can know without asking anybody's
 permission.
 
-`g` folds rows, and now cycles: **by name, then by container, then off**.
+`g` folds rows, and now cycles: **by name, by user, by container, then off** —
+atop's `p`, `u` and `j`, on one key.
 Folding by container is the same machinery with a different key, so it is a
 choice rather than a fifth exclusive layout for a table that already has four.
 Processes in no container are not folded into a heap called "none" — grouping by

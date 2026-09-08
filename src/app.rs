@@ -248,6 +248,13 @@ pub enum Grouping {
     Off,
     /// Processes sharing a name, which is 0050's behaviour.
     Name,
+    /// Processes belonging to one user.
+    ///
+    /// On a shared box "which user is eating the machine" is the first
+    /// question, and the `USER` column cannot answer it: it is folded away
+    /// precisely when it is constant, and one column of many rows when it is
+    /// not.
+    User,
     /// Processes in the same container. Processes in none are not shown: the
     /// question is what each container is doing.
     Container,
@@ -258,7 +265,8 @@ impl Grouping {
     pub fn next(self) -> Self {
         match self {
             Grouping::Off => Grouping::Name,
-            Grouping::Name => Grouping::Container,
+            Grouping::Name => Grouping::User,
+            Grouping::User => Grouping::Container,
             Grouping::Container => Grouping::Off,
         }
     }
@@ -268,6 +276,12 @@ impl Grouping {
         match self {
             Grouping::Off => None,
             Grouping::Name => Some(|p| Some(&p.name)),
+            // Not the `?` an unresolvable uid falls back to on macOS. It is a
+            // placeholder, not an identity, so folding on it heaps every
+            // process whose owner could not be looked up into one row and
+            // presents the total as one user's usage — the "heap called none"
+            // this function refuses for containers, wearing a name.
+            Grouping::User => Some(|p| (&*p.user != "?").then_some(&p.user)),
             Grouping::Container => Some(|p| p.container.as_ref()),
         }
     }
@@ -277,6 +291,7 @@ impl Grouping {
         match self {
             Grouping::Off => "",
             Grouping::Name => "grouped by name",
+            Grouping::User => "grouped by user",
             Grouping::Container => "grouped by container",
         }
     }
@@ -1269,7 +1284,20 @@ impl App {
                 .procs
                 .iter()
                 .any(|p| p.pid == *pid && p.started == *started),
-            Watched::Group { name } => sample.procs.iter().any(|p| *p.name == **name),
+            // Through the *grouping's* key, not the process name. A group's
+            // name is whatever it folds on — a username, a container id — so
+            // matching it against `p.name` finds nothing the moment the key is
+            // not the name, and the panel says `alice not running here` about a
+            // user who is running plenty. Precisely the false claim about the
+            // machine this function exists to avoid.
+            Watched::Group { name } => match self.group.key() {
+                Some(key) => sample
+                    .procs
+                    .iter()
+                    .any(|p| key(p).is_some_and(|k| k == name)),
+                // Not grouping any more, so there is no group to be absent.
+                None => true,
+            },
         };
         (!here).then_some(w)
     }
@@ -1449,7 +1477,11 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                     // bob are not alice's, and taking whichever sorted first
                     // renders a fact the group does not have — the same reason
                     // `state` is an em dash.
-                    user: match members.iter().all(|p| p.user == first.user) {
+                    // Grouping by user, every member shares it by definition —
+                    // and it is the row's identity, so the check below would
+                    // reach the same answer the long way round.
+                    user: match by == Grouping::User || members.iter().all(|p| p.user == first.user)
+                    {
                         true => first.user.clone(),
                         false => Arc::from("—"),
                     },
