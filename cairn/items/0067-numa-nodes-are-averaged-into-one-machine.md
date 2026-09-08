@@ -2,7 +2,7 @@
 id: 67
 title: NUMA nodes are averaged into one machine
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 58

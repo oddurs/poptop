@@ -665,6 +665,29 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
             None => outln!("{label:<7} —  not published here"),
         }
     }
+    // Per node, and only where there is more than one. A box with a single
+    // node says nothing: its per-node figures are the figures above.
+    match &s.nodes {
+        Some(nodes) => {
+            for n in nodes {
+                let cpu = n.cpu.map_or("—".to_string(), |v| format!("{v:.1}%"));
+                // The parts, not just the total: a node whose free memory is
+                // mostly page cache and a node that is genuinely empty are the
+                // same number here otherwise, and only one of them is fine.
+                let part = |v: Option<u64>| v.map_or("—".to_string(), ui::fmt_bytes);
+                outln!(
+                    "node{:<3} {} of {} free, cpu {cpu}, file {}, dirty {}, shmem {}",
+                    n.id,
+                    ui::fmt_bytes(n.free),
+                    ui::fmt_bytes(n.total),
+                    part(n.file),
+                    part(n.dirty),
+                    part(n.shmem)
+                );
+            }
+        }
+        None => outln!("nodes   —  one node, or not published here"),
+    }
     outln!("procs   {}", s.procs.len());
     // The processes that lived and died inside the interval — the ones a
     // sample of `/proc` at an instant cannot see at all. An em dash where the

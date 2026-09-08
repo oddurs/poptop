@@ -148,12 +148,36 @@ pub struct CgroupStat {
     pub procs: Option<u32>,
 }
 
+/// One NUMA node.
+///
+/// On a two-socket machine a single memory figure averages a node that is
+/// exhausted with one that is idle, and reads as half full — while the process
+/// pinned to the exhausted node stalls on allocation with the header saying
+/// there is plenty.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeStat {
+    pub id: u32,
+    pub total: u64,
+    pub free: u64,
+    /// Page cache on this node.
+    pub file: Option<u64>,
+    pub dirty: Option<u64>,
+    pub shmem: Option<u64>,
+    /// The mean of this node's cores, from the per-core figures poptop already
+    /// has. Free: no read, just the arithmetic the whole-machine figure was
+    /// already hiding.
+    ///
+    /// `None` where the node's CPU list could not be read, which is the only
+    /// thing that maps cores onto nodes.
+    pub cpu: Option<f32>,
+}
+
 // Every record whose schema the file carries. A record reachable from `Sample`
 // but missing here has no schema in the file and cannot be read back, which
 // `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
     MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ThreadSample,
-    CgroupStat, ProcSample, Sample
+    CgroupStat, NodeStat, ProcSample, Sample
 }
 
 // The wire order for each retained struct, listed beside it. The list cannot
@@ -732,6 +756,8 @@ crate::persist::codec! { ThreadSample { pid: i32, tid: i32, name: Arc<str>, stat
 
 crate::persist::codec! { CgroupStat { path: Arc<str>, depth: u32, cpu: Option<f32>, cpu_max: Option<f32>, mem: Option<u64>, mem_max: Option<u64>, read: Option<u64>, write: Option<u64>, pressure: Option<Pressure>, procs: Option<u32> } }
 
+crate::persist::codec! { NodeStat { id: u32, total: u64, free: u64, file: Option<u64>, dirty: Option<u64>, shmem: Option<u64>, cpu: Option<f32> } }
+
 crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates>, container: Option<Arc<str>>, minflt: Option<u32>, majflt: Option<u32>, vsize: Option<u64>, nice: Option<i32>, pss: Option<u64> } }
 
 /// A complete snapshot of the machine at one instant.
@@ -915,6 +941,12 @@ pub struct Sample {
     /// `None` means nobody asked, or this machine has no unified hierarchy —
     /// not that it has no cgroups.
     pub cgroups: Option<Vec<CgroupStat>>,
+    /// The machine's NUMA nodes, when it has more than one.
+    ///
+    /// `None` on a single-node machine as well as on a platform that will not
+    /// say: a box with one node spends no space announcing that it has one, and
+    /// the figures for it are the whole-machine figures already on screen.
+    pub nodes: Option<Vec<NodeStat>>,
 }
 
 impl Sample {
@@ -979,11 +1011,12 @@ impl Sample {
             tasks: None,
             exited: None,
             cgroups: None,
+            nodes: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from

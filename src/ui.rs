@@ -30,6 +30,16 @@ const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 /// `poptop` — and on a thirty-row terminal every chrome row is a process the
 /// table cannot show.
 pub const HEADER_H: u16 = 2;
+
+/// The header's height for a given sample.
+///
+/// [`HEADER_H`] plus a row for the NUMA nodes, on a machine that has more than
+/// one. A box with a single node spends nothing here: its per-node figures are
+/// the figures on the two rows above, and a permanent row restating them is a
+/// row the process table does not get.
+pub fn header_height(s: &Sample) -> u16 {
+    HEADER_H + u16::from(s.nodes.is_some())
+}
 /// The height the timeline had when it was fixed.
 ///
 /// It is the floor, not a minimum for legibility: growing a panel must never
@@ -65,12 +75,12 @@ pub const PROCS_FLOOR_H: u16 = PROCS_FLOOR_ROWS + PROCS_CHROME_H;
 ///
 /// Never below the height it used to have, and never so tall the process table
 /// cannot be read.
-pub fn timeline_height(total: u16) -> u16 {
-    let spare = total.saturating_sub(HEADER_H + PROCS_RESERVE_H + 1);
+pub fn timeline_height(total: u16, header: u16) -> u16 {
+    let spare = total.saturating_sub(header + PROCS_RESERVE_H + 1);
     let want = (spare * 2 / 5).clamp(TIMELINE_MIN_H, TIMELINE_MAX_H);
     // On a terminal too small for the floor, take what is left over — but never
     // everything, or the table disappears.
-    want.min(total.saturating_sub(HEADER_H + 1 + PROCS_FLOOR_H).max(1))
+    want.min(total.saturating_sub(header + 1 + PROCS_FLOOR_H).max(1))
 }
 
 /// Rows occupied by the timeline panel.
@@ -82,13 +92,16 @@ pub fn timeline_height(total: u16) -> u16 {
 #[cfg(test)]
 pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
     let top = HEADER_H;
-    top..top + timeline_height(total_height)
+    top..top + timeline_height(total_height, HEADER_H)
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    // Measured from the sample rather than assumed, so the node row is a row
+    // the layout knows about instead of one drawn over the timeline.
+    let header = app.history.current().map_or(HEADER_H, header_height);
     let chunks = Layout::vertical([
-        Constraint::Length(HEADER_H),
-        Constraint::Length(timeline_height(f.area().height)),
+        Constraint::Length(header),
+        Constraint::Length(timeline_height(f.area().height, header)),
         // Whatever remains. `timeline_height` has already reserved the table's
         // share, and a `Min` here would outrank the timeline's `Length` and
         // silently shrink it below the height that function reports.
@@ -951,13 +964,92 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         line.push(Span::styled(scale, app.theme.dim_style()));
     }
 
-    f.render_widget(
-        Paragraph::new(vec![
-            Line::from(line),
-            core_meters(s, area.width, &app.theme),
-        ]),
-        area,
-    );
+    let mut rows = vec![Line::from(line), core_meters(s, area.width, &app.theme)];
+    rows.extend(node_meters(s, area.width, &app.theme));
+    f.render_widget(Paragraph::new(rows), area);
+}
+
+/// The per-node line, or nothing at all.
+///
+/// `None` on a machine with one node and on a platform that will not say —
+/// which is the whole rule this row follows. The figures a two-socket box
+/// needs and a one-socket box does not are per-node: a node with no memory
+/// left beside a node that is idle is the failure the whole-machine `MEM`
+/// figure averages away, and there is nothing else on this header that can
+/// tell those two machines apart.
+fn node_meters(s: &Sample, width: u16, theme: &Theme) -> Option<Line<'static>> {
+    let nodes = s.nodes.as_deref()?;
+    let n = nodes.len();
+    let w = width as usize;
+    let label = format!("{n:>3} nodes ");
+    let bare = || Line::from(Span::styled(format!("{n} nodes"), theme.dim_style()));
+
+    // Too narrow even for the label: state the count. The same ladder the core
+    // meters follow, and for the same reason — a row of node figures that
+    // cannot say how many are missing is worse than the count alone.
+    if cols(&label) >= w {
+        return Some(bare());
+    }
+    let avail = w - cols(&label);
+
+    let cell = |node: &crate::sample::NodeStat| {
+        let cpu = match node.cpu {
+            Some(v) => Span::styled(format!("{v:>5.1}%"), theme.figure_style(v)),
+            // A node whose CPU list names cores `/proc/stat` did not is not a
+            // node that is idle.
+            None => Span::styled("    —".to_string(), theme.dim_style()),
+        };
+        let used = node
+            .total
+            .checked_sub(node.free)
+            .map(|u| u as f32 / node.total.max(1) as f32 * 100.0)
+            .unwrap_or(0.0);
+        vec![
+            Span::styled(format!("n{} ", node.id), theme.dim_style()),
+            cpu,
+            Span::styled(" ", theme.dim_style()),
+            Span::styled(fmt_bytes(node.free), theme.heat_style(used)),
+            Span::styled(" free", theme.dim_style()),
+        ]
+    };
+
+    // Build every cell, then take the ones that fit — cell widths differ, so
+    // reserving a per-node guess would either waste columns or overrun.
+    let cells: Vec<Vec<Span<'static>>> = nodes.iter().map(cell).collect();
+    let cell_w = |c: &Vec<Span<'static>>| c.iter().map(|s| cols(&s.content)).sum::<usize>();
+    const GAP: usize = 3;
+    let marker = |shown: usize| {
+        if shown == n {
+            0
+        } else {
+            cols(&format!(" +{}", n - shown))
+        }
+    };
+    let mut shown = 0;
+    let mut used = 0;
+    for c in &cells {
+        let next = used + if shown == 0 { 0 } else { GAP } + cell_w(c);
+        if next + marker(shown + 1) > avail {
+            break;
+        }
+        used = next;
+        shown += 1;
+    }
+    if shown == 0 {
+        return Some(bare());
+    }
+
+    let mut spans = vec![Span::styled(label, theme.dim_style())];
+    for (i, c) in cells.into_iter().take(shown).enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" ".repeat(GAP)));
+        }
+        spans.extend(c);
+    }
+    if shown < n {
+        spans.push(Span::styled(format!(" +{}", n - shown), theme.dim_style()));
+    }
+    Some(Line::from(spans))
 }
 
 /// The heat ramp's scale, when the panel is wide enough to carry it.

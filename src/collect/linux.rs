@@ -16,8 +16,8 @@ pub const SUPPORTED: &[Source] = &[
     Source::Pss,
 ];
 use crate::sample::{
-    CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample,
-    Stall, ThreadSample,
+    CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, NodeStat, Pressure, ProcSample,
+    Sample, Stall, ThreadSample,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -26,6 +26,7 @@ use std::fs::File;
 use std::io;
 use std::io::Read as _;
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -2197,6 +2198,9 @@ impl Collector for ProcFs {
         // taken between consecutive reads, so moving both by a millisecond
         // changes nothing about it.
         let stat = self.read_stat_file()?;
+        // Before the per-core figures are moved into the sample. The node CPU
+        // is their mean, so this costs no read of its own.
+        let nodes = read_nodes(&stat.per_core);
         // Taken with the read and before anything else fallible, like the
         // counters above and for the reason `prev_at` states.
         let vm = read_vmstat(&mut self.buf);
@@ -2271,6 +2275,9 @@ impl Collector for ProcFs {
             tasks,
             exited,
             cgroups,
+            // From the per-core figures already collected, so the CPU half of
+            // this costs no read at all.
+            nodes,
         })
     }
 }
@@ -2760,6 +2767,89 @@ mod tests {
             "an exited process kept its container: {} entries",
             pf.containers.len()
         );
+    }
+
+    /// One node's `meminfo`, whose lines carry the node number *before* the key
+    /// — `Node 1 MemFree:` — which is why the key cannot be matched at the
+    /// start of the line the way `/proc/meminfo`'s is.
+    const NODE_MEMINFO: &str = "Node 1 MemTotal:       16384000 kB\n\
+        Node 1 MemFree:          512000 kB\n\
+        Node 1 MemUsed:        15872000 kB\n\
+        Node 1 FilePages:       2048000 kB\n\
+        Node 1 Dirty:             64000 kB\n\
+        Node 1 Shmem:            128000 kB\n";
+
+    #[test]
+    fn a_nodes_meminfo_is_read_past_the_node_number() {
+        let n = parse_node_meminfo(1, NODE_MEMINFO, Some(42.5));
+        assert_eq!(n.id, 1);
+        assert_eq!(n.total, 16_384_000 * 1024);
+        assert_eq!(n.free, 512_000 * 1024, "MemFree was read as MemTotal");
+        assert_eq!(n.file, Some(2_048_000 * 1024));
+        assert_eq!(n.dirty, Some(64_000 * 1024));
+        assert_eq!(n.shmem, Some(128_000 * 1024));
+        assert_eq!(n.cpu, Some(42.5));
+
+        // A line the node does not publish is absent, not zero.
+        let bare = parse_node_meminfo(0, "Node 0 MemTotal: 100 kB\n", None);
+        assert_eq!(bare.dirty, None);
+        assert_eq!(bare.cpu, None);
+    }
+
+    #[test]
+    fn one_node_is_not_a_topology() {
+        // A fixture tree, because the machine this is written on and the
+        // container it is tested in both have no `node` directory at all.
+        let root = std::env::temp_dir().join("poptop-node-fixture");
+        let write = |id: u32, free_kb: u64, cpus: &str| {
+            let dir = root.join(format!("node{id}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("meminfo"),
+                format!("Node {id} MemTotal: 1024 kB\nNode {id} MemFree: {free_kb} kB\n"),
+            )
+            .unwrap();
+            fs::write(dir.join("cpulist"), format!("{cpus}\n")).unwrap();
+        };
+        let _ = fs::remove_dir_all(&root);
+        write(0, 512, "0-1");
+        let cores = [10.0, 30.0, 50.0, 70.0];
+
+        assert!(
+            read_nodes_in(&root, &cores).is_none(),
+            "a single node was reported as a topology"
+        );
+
+        // Node 10 sorts before node 2 by name and after it by number, so the
+        // order below is only right if the ids were sorted as numbers.
+        write(10, 128, "3");
+        write(2, 256, "2");
+        let nodes = read_nodes_in(&root, &cores).expect("three nodes is a topology");
+        let ids: Vec<u32> = nodes.iter().map(|n| n.id).collect();
+        assert_eq!(ids, [0, 2, 10], "nodes came back out of numeric order");
+        assert_eq!(nodes[0].free, 512 * 1024);
+        assert_eq!(nodes[0].cpu, Some(20.0));
+        assert_eq!(nodes[1].free, 256 * 1024);
+        assert_eq!(nodes[1].cpu, Some(50.0), "node 2 was given another's cores");
+        assert_eq!(nodes[2].free, 128 * 1024);
+        assert_eq!(nodes[2].cpu, Some(70.0));
+
+        // A machine with no node directory says nothing rather than failing.
+        assert!(read_nodes_in(&root.join("absent"), &cores).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_nodes_cpu_is_the_mean_of_the_cores_it_owns() {
+        // `cpulist` is ranges and singletons: `0-3,8,12-13`.
+        let cores = [0.0, 10.0, 20.0, 30.0, 99.0, 99.0, 99.0, 99.0, 40.0];
+        assert_eq!(node_cpu("0-3\n", &cores), Some(15.0));
+        assert_eq!(node_cpu("0-3,8\n", &cores), Some(20.0));
+        assert_eq!(node_cpu("8\n", &cores), Some(40.0));
+        // A list naming cores this machine has no figures for is not averaged
+        // down to what happens to overlap — it says nothing.
+        assert_eq!(node_cpu("40-47\n", &cores), None);
+        assert_eq!(node_cpu("\n", &cores), None);
     }
 
     #[test]
@@ -4106,5 +4196,103 @@ mod page_size_tests {
         }
         // …and a kernel that does say gets no note at all.
         assert!(page_size_from(Some(&entry(6, 16384))).1.is_empty());
+    }
+}
+
+/// Where the kernel publishes per-node memory and topology.
+const NODE_ROOT: &str = "/sys/devices/system/node";
+
+/// The machine's NUMA nodes, or `None`.
+///
+/// `None` on a machine with one node as well as on one with no `node` directory
+/// at all: a box with a single node spends no space announcing it, and its
+/// per-node figures are the whole-machine figures already on screen.
+///
+/// One read of a small file per node plus one of its CPU list, so the cost is
+/// bounded by socket count rather than by anything that scales — which is why
+/// this is not behind the cost model.
+fn read_nodes(per_core: &[f32]) -> Option<Vec<NodeStat>> {
+    read_nodes_in(Path::new(NODE_ROOT), per_core)
+}
+
+/// [`read_nodes`] against a given root, so the walk itself can be put in front
+/// of a fixture tree — the machine this is written on has no nodes at all.
+fn read_nodes_in(root: &Path, per_core: &[f32]) -> Option<Vec<NodeStat>> {
+    let mut ids: Vec<u32> = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.strip_prefix("node")?.parse().ok())
+        .collect();
+    ids.sort_unstable();
+    // One node is not a topology. Reporting it would be a table with one row
+    // saying what the header already says.
+    if ids.len() < 2 {
+        return None;
+    }
+    Some(
+        ids.into_iter()
+            .map(|id| {
+                let dir = root.join(format!("node{id}"));
+                let mem = fs::read_to_string(dir.join("meminfo")).unwrap_or_default();
+                let cpus = fs::read_to_string(dir.join("cpulist"))
+                    .ok()
+                    .and_then(|l| node_cpu(&l, per_core));
+                parse_node_meminfo(id, &mem, cpus)
+            })
+            .collect(),
+    )
+}
+
+/// The mean utilisation of the cores in a node's CPU list.
+///
+/// `None` for a list that names no core poptop has a figure for — a machine
+/// whose `cpulist` and `/proc/stat` disagree is one where averaging what
+/// happens to overlap would invent a number.
+fn node_cpu(list: &str, per_core: &[f32]) -> Option<f32> {
+    let mut sum = 0.0;
+    let mut n = 0u32;
+    for part in list.trim().split(',') {
+        let (from, to) = match part.split_once('-') {
+            Some((a, b)) => (
+                a.trim().parse::<usize>().ok()?,
+                b.trim().parse::<usize>().ok()?,
+            ),
+            None => {
+                let one = part.trim().parse::<usize>().ok()?;
+                (one, one)
+            }
+        };
+        for i in from..=to {
+            if let Some(v) = per_core.get(i) {
+                sum += v;
+                n += 1;
+            }
+        }
+    }
+    (n > 0).then(|| sum / n as f32)
+}
+
+/// One node's `meminfo`, whose lines read `Node 0 MemTotal:  16384 kB`.
+///
+/// Split from the read so it can be tested against a fixture: no machine
+/// available here has a second node, which is the whole condition this reports
+/// on.
+fn parse_node_meminfo(id: u32, text: &str, cpu: Option<f32>) -> NodeStat {
+    let find = |key: &str| -> Option<u64> {
+        text.lines().find_map(|l| {
+            // `Node 0 MemFree:` — the node number is in the line, so the key
+            // has to be matched after it rather than at the start.
+            let (_, rest) = l.split_once(key)?;
+            Some(rest.split_whitespace().next()?.parse::<u64>().ok()? * 1024)
+        })
+    };
+    NodeStat {
+        id,
+        total: find("MemTotal:").unwrap_or(0),
+        free: find("MemFree:").unwrap_or(0),
+        file: find("FilePages:"),
+        dirty: find("Dirty:"),
+        shmem: find("Shmem:"),
+        cpu,
     }
 }

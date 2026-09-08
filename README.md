@@ -680,6 +680,46 @@ so they cost nothing: 1.05 ms per sample at 402 processes, unchanged. macOS
 publishes no equivalent and shows none of them, rather than a zero that would
 claim the box is never stuck.
 
+### Which half of the machine is full
+
+A two-socket box is two machines that share a process table. Node 0 can be idle
+with forty gigabytes free while node 1 is at ninety percent CPU and one
+gigabyte from swapping, and every whole-machine figure on the header above
+averages that into a comfortable middle: `CPU 50%`, `MEM 62%`, nothing wrong.
+The processes pinned to node 1 are the ones stalling, and there is no figure on
+a whole-machine header that can say so.
+
+So the header grows a third row, but only on a machine that has more than one
+node:
+
+```text
+  2 nodes n0   6.0% 48.0G free   n1  93.0% 1.0G free
+```
+
+Per node: the mean utilisation of the cores it owns, and the memory it has
+left. Free rather than used, because on a NUMA box "free" is the number that
+decides whether the next allocation stays local or goes across the
+interconnect.
+
+**A single-node machine spends nothing here.** The row is absent, not empty —
+its per-node figures would be the two rows above restated, and a permanent row
+saying so is a row the process table does not get. The same rule the throttling
+and steal figures follow. macOS says nothing at all: it publishes no node
+topology, and one invented from core counts would be a guess.
+
+Nodes come from `/sys/devices/system/node`: one small `meminfo` and one
+`cpulist` per node, so the cost is bounded by socket count rather than by
+anything that scales with the machine — which is why this is not behind the
+cost model that gates threads, PSS and cgroups. A node whose `cpulist` names
+cores `/proc/stat` did not report shows `—` for CPU rather than a mean of
+whichever ones happened to overlap.
+
+The row follows the same ladder as the rest of the header: too narrow for every
+node and it drops them from the right with `+3`, so the count is never silently
+wrong; too narrow for even one and it states `8 nodes` alone.
+
+`--once` prints a line per node, and `nodes   —` on a machine with one.
+
 The header drops its least diagnostic figures first rather than letting the
 terminal clip whatever is rightmost — rightmost is not least useful. At sixty
 columns you still get all four of the figures above. `--once` reports the same

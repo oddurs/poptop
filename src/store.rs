@@ -473,6 +473,30 @@ mod tests {
             tasks: None,
             exited: None,
             cgroups: None,
+            // Two of them, lopsided, with `file` absent on one and present on
+            // the other: with a single node a misaligned read has nothing to
+            // run into, and with every optional field the same on both sides a
+            // codec that dropped one round-trips green.
+            nodes: Some(vec![
+                crate::sample::NodeStat {
+                    id: 0,
+                    total: 64 << 30,
+                    free: 48 << 30,
+                    file: Some(9 << 30),
+                    dirty: Some(1 << 20),
+                    shmem: None,
+                    cpu: Some(6.5),
+                },
+                crate::sample::NodeStat {
+                    id: 1,
+                    total: 64 << 30,
+                    free: 1 << 30,
+                    file: None,
+                    dirty: None,
+                    shmem: Some(3 << 30),
+                    cpu: None,
+                },
+            ]),
             procs: (0..procs).map(|i| proc_of(i as i32, "postgres")).collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(4242),
@@ -515,6 +539,7 @@ mod tests {
         assert_eq!(a.pressure, b.pressure);
         assert_eq!(a.net, b.net);
         assert_eq!(a.filesystems, b.filesystems);
+        assert_eq!(a.nodes, b.nodes);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
             assert_eq!(x.pid, y.pid);
@@ -549,6 +574,24 @@ mod tests {
             decode(&encode(&[&s])).unwrap()[0].disks,
             Some(Vec::new()),
             "an empty device list came back as an absent one"
+        );
+    }
+
+    #[test]
+    fn a_single_node_machines_silence_survives_the_file() {
+        // `None` here is "one node, or a platform that will not say", and the
+        // header spends a row on the difference. Restored as an empty list it
+        // would be "a machine with no nodes", which is a claim — and one that
+        // would draw a `0 nodes` row on every laptop.
+        let mut s = sample_of(1.0, 1);
+        s.nodes = None;
+        assert_eq!(decode(&encode(&[&s])).unwrap()[0].nodes, None);
+
+        s.nodes = Some(Vec::new());
+        assert_eq!(
+            decode(&encode(&[&s])).unwrap()[0].nodes,
+            Some(Vec::new()),
+            "an empty node list came back as an absent one"
         );
     }
 
@@ -1287,6 +1330,7 @@ mod tests_support {
             tasks: None,
             exited: None,
             cgroups: None,
+            nodes: None,
             procs: (0..procs)
                 .map(|i| ProcSample {
                     pid: i as i32,
