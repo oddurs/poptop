@@ -9833,3 +9833,30 @@ fn dirty_is_coloured_on_its_own_scale() {
         "a tenth of memory dirty drew calm"
     );
 }
+
+#[test]
+fn a_qualifier_never_outlives_the_figure_it_qualifies() {
+    // Rank is the drop order, so a component ranked above its parent survives a
+    // narrowing that removes the parent: `DIRTY 4.0G` with no `MEM` at all, a
+    // fact about memory stated while the memory figure is gone. `CLK` and `STL`
+    // sit just below `CPU` for the same reason.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.mem.total = 16 << 30;
+    s.mem.dirty = Some(4 << 30);
+    s.steal = Some(30.0);
+    s.clock_ceiling = Some(60.0);
+    app.push(s);
+
+    for w in (30u16..=200).step_by(5) {
+        let head = rows(&app, w, 8).join("\n");
+        for (part, parent) in [("DIRTY", "MEM"), ("CLK", "CPU"), ("STL", "CPU")] {
+            if head.contains(part) {
+                assert!(
+                    head.contains(parent),
+                    "at {w} columns `{part}` outlived the `{parent}` it qualifies:\n{head}"
+                );
+            }
+        }
+    }
+}
