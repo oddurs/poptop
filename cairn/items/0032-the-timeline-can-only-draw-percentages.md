@@ -2,10 +2,10 @@
 id: 32
 title: The timeline can only draw percentages
 type: feature
-status: backlog
+status: done
 milestone: later
 created: 2026-09-07
-updated: 2026-09-07
+updated: 2026-09-08
 priority: p3
 area: ui
 ---
@@ -40,7 +40,7 @@ missing pieces are the label, the rules and the readout.
 
 ## Acceptance criteria
 
-- [ ] A byte-valued series renders with a byte axis and no threshold rules
-- [ ] The cursor readout uses the series' own units
-- [ ] The percentage series are unchanged, asserted by their existing tests
-- [ ] The network throughput row comes back
+- [x] A byte-valued series renders with a byte axis and no threshold rules
+- [x] The cursor readout uses the series' own units
+- [x] The percentage series are unchanged, asserted by their existing tests
+- [x] The network throughput row comes back

@@ -83,16 +83,13 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`#######···` 67% · 2 of 3 done
+`##########` 100% · 3 of 3 done
 
 Good ideas without a date yet.
-
-### backlog
-
-- [ ] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 
 ### done
 
 - [x] `0014` Persist history across restarts <sup>feature · p3</sup>
+- [x] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 - [x] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
 
