@@ -154,15 +154,24 @@ impl Codec for usize {
     }
 }
 
+/// One byte, not four.
+///
+/// The only `char` retained is [`crate::sample::ProcSample::state`], a single
+/// letter from the fixed set both backends agree on. Writing it as a full
+/// `u32` scalar cost three bytes per process per sample — 0.7 MB of a 16.5 MB
+/// store at 400 processes, measured, which is 4% of the retention that is the
+/// whole reason this file exists.
+///
+/// Anything outside ASCII writes as `?`, which is already what an unrecognised
+/// state renders as: `status_char` maps every status it does not know to `?`,
+/// so this loses nothing that was not already lost.
 impl Codec for char {
     fn write(&self, out: &mut Out) {
-        Codec::write(&(*self as u32), out);
+        let b = u32::from(*self);
+        Codec::write(&if b < 128 { b as u8 } else { b'?' }, out);
     }
-    /// A byte that is not a character comes back as `?`, which is the same
-    /// thing an unrecognised process state renders as. A corrupt cache should
-    /// lose a column, not a sample.
     fn read(r: &mut In<'_>) -> Option<Self> {
-        Some(char::from_u32(u32::read(r)?).unwrap_or('?'))
+        Some(char::from(u8::read(r)?))
     }
 }
 

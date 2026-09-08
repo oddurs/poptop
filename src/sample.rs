@@ -752,31 +752,52 @@ impl Sample {
     pub fn empty() -> Self {
         Self {
             at: SystemTime::now(),
-            cpu_total: 0.0,
-            cpu_per_core: Vec::new(),
-            iowait: None,
-            running: None,
-            blocked: None,
-            mem: MemStat::default(),
-            load: [0.0; 3],
-            procs: Vec::new(),
-            uptime: std::time::Duration::ZERO,
-            forks: None,
+            // The fixture's machine keeps per-process IO accounting; tests that
+            // want the other answer say so.
             io_supported: true,
-            io_collected: false,
-            io_denied: 0,
-            disks: None,
-            clock_ceiling: None,
-            pressure: None,
-            net: None,
-            filesystems: None,
+            ..Self::unknown()
         }
     }
 }
 
 #[cfg(test)]
-mod command_tests {
+mod tests {
+
     use super::*;
+
+    #[test]
+    fn a_sample_that_knows_nothing_claims_nothing() {
+        // `unknown()` is the base every collector defaults through, so a value
+        // fabricated here is fabricated on every platform that stays quiet
+        // about that field — the widest possible blast radius for exactly the
+        // mistake this codebase refuses to make.
+        let s = Sample::unknown();
+        let claims: Vec<&str> = [
+            ("iowait", s.iowait.is_some()),
+            ("running", s.running.is_some()),
+            ("blocked", s.blocked.is_some()),
+            ("forks", s.forks.is_some()),
+            ("disks", s.disks.is_some()),
+            ("pressure", s.pressure.is_some()),
+            ("clock_ceiling", s.clock_ceiling.is_some()),
+            ("net", s.net.is_some()),
+            ("filesystems", s.filesystems.is_some()),
+            ("mem.free", s.mem.free.is_some()),
+            // Not an `Option`, but it is the flag that decides whether the IO
+            // columns render at all. Defaulting it to `true` would put a zero
+            // where a platform has said nothing.
+            ("io_supported", s.io_supported),
+            ("io_collected", s.io_collected),
+        ]
+        .into_iter()
+        .filter(|(_, claimed)| *claimed)
+        .map(|(name, _)| name)
+        .collect();
+        assert!(
+            claims.is_empty(),
+            "an unknown sample claims to know {claims:?}"
+        );
+    }
 
     fn label(argv: &[&str]) -> Option<String> {
         command_from_argv(argv.iter().copied())

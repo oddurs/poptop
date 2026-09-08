@@ -524,6 +524,58 @@ mod tests {
     }
 
     #[test]
+    fn a_process_state_survives_a_round_trip_and_costs_one_byte() {
+        // Written as a byte rather than a full `char` scalar, which is worth a
+        // test because the saving is the point: three bytes per process per
+        // sample is 4% of the store at 400 processes.
+        let mut s = sample_of(1.0, 0);
+        s.procs = "RSDZTI"
+            .chars()
+            .map(|c| ProcSample {
+                state: c,
+                ..proc_of(1, "x")
+            })
+            .collect();
+        let bytes = encode(&[&s]);
+        let back = decode(&bytes).expect("did not decode");
+        let got: String = back[0].procs.iter().map(|p| p.state).collect();
+        assert_eq!(got, "RSDZTI", "the states did not survive");
+
+        // The saving, asserted rather than described. Six more processes cost
+        // six more records, and a record is:
+        //
+        //   pid 4, ppid 4, name 4, user 4, cpu 4, rss 8, threads 1+4,
+        //   state 1, started 1+8, cmd 1+4, io 1+16  =  65
+        //
+        // Names and users are interned, so a repeated one costs its index and
+        // nothing else — which is why this is the marginal cost of a process
+        // and not the cost of the first one.
+        //
+        // Pinning the total rather than a bound makes this the format's size
+        // test: a `char` written as a `u32` scalar reads 68 here, and so does
+        // any field that quietly grows.
+        let mut wider = s.clone();
+        wider.procs.extend(s.procs.iter().cloned());
+        let per_proc = (encode(&[&wider]).len() - bytes.len()) / 6;
+        assert_eq!(per_proc, 65, "a retained process changed size");
+    }
+
+    #[test]
+    fn a_state_outside_ascii_decodes_as_unknown_rather_than_corrupting_the_row() {
+        // No backend produces one — `status_char` maps everything it does not
+        // recognise to `?` already. This pins what happens if one ever does,
+        // because the alternative to a documented `?` is a byte that silently
+        // becomes a different letter.
+        let mut s = sample_of(1.0, 0);
+        s.procs = vec![ProcSample {
+            state: 'π',
+            ..proc_of(1, "x")
+        }];
+        let back = decode(&encode(&[&s])).expect("did not decode");
+        assert_eq!(back[0].procs[0].state, '?', "a wide state was not flagged");
+    }
+
+    #[test]
     fn a_command_line_survives_a_round_trip_and_a_missing_one_stays_missing() {
         // The two are different answers and the file has to keep them apart: a
         // kernel thread has no command line, and restoring it as an empty
