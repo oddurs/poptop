@@ -15,12 +15,181 @@ use crate::sample::Sample;
 /// has to be complete.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Needs {
-    /// Per-process disk throughput. One extra file read per process per sample.
-    pub io: bool,
-    /// Per-thread rows. A directory read per multi-threaded process plus a file
-    /// read per thread — on a box with 400 processes and eight times as many
-    /// threads, an order of magnitude more reads than a plain sample.
-    pub threads: bool,
+    /// Which optional sources to gather.
+    wanted: u32,
+    /// Which sample this is, for the sources that are not read every time.
+    tick: u64,
+}
+
+/// One optional thing a sample can gather, with what it costs and how often it
+/// is worth reading.
+///
+/// A single `bool` was the whole capability model, added because per-process IO
+/// costs a file read per process. It cannot express "read this every tenth
+/// sample", "read this only while its panel is open", or "stop reading this
+/// because it costs more than the interval" — and v2.1 adds subsystems whose
+/// costs differ by two orders of magnitude.
+///
+/// Three ad-hoc answers to the same question already exist in this codebase:
+/// the IO probe withdraws its columns when most are unreadable, the
+/// command-line cache re-reads on a slot staggered by pid, and the clock
+/// ceiling rescans its policy set once a minute. This is where the third of
+/// those now lives, and where the rest belong.
+/// How much of each thing the last sample found, so a cost per unit can be
+/// turned into a cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Size {
+    pub procs: u64,
+    pub tasks: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    /// Per-process disk throughput, from `/proc/<pid>/io`.
+    Io,
+    /// Per-thread rows, from `/proc/<pid>/task/<tid>/stat`.
+    Threads,
+    /// The set of cpufreq policies, which is not the ceiling itself — that is
+    /// read every sample — but the hardware maximum each policy is measured
+    /// against. CPU hotplug is routine on cloud instances and a driver can load
+    /// after the tool starts, so never rescanning costs a machine that gained a
+    /// policy the figure entirely; rescanning every sample is a directory walk
+    /// for an answer that changes about once a day.
+    ClockPolicies,
+}
+
+impl Source {
+    pub const ALL: [Source; 3] = [Source::Io, Source::Threads, Source::ClockPolicies];
+
+    /// What to call it when poptop has to say it stopped reading it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Io => "per-process disk IO",
+            Source::Threads => "threads",
+            Source::ClockPolicies => "clock policies",
+        }
+    }
+
+    /// Roughly what one unit of this costs to read, measured rather than
+    /// guessed, so a budget can drop the most expensive thing first instead of
+    /// the most recently added.
+    ///
+    /// Measured on Linux at the sample sizes in the item: per-process IO is one
+    /// extra file read per process; a thread is a file read of its own, with a
+    /// directory read per multi-threaded process amortised into it.
+    pub fn nanos_each(self) -> u64 {
+        match self {
+            Source::Io => 5_700,
+            Source::Threads => 3_100,
+            // A directory walk of `/sys/devices/system/cpu`, once a minute.
+            // Counted per sample rather than per unit because there is one of
+            // it.
+            Source::ClockPolicies => 200_000,
+        }
+    }
+
+    /// Whether its cost grows with the size of the machine.
+    ///
+    /// The budget only ever gives up sources for which this is true, and the
+    /// reason is not tidiness: a fixed cost read once a minute cannot be why a
+    /// sample ran long, so dropping it would cost a figure and fix nothing.
+    ///
+    /// It also makes [`Self::nanos_each`] comparable. Per-unit and per-sample
+    /// costs are different quantities, and `max_by_key` over both of them
+    /// together picked the clock policy walk — a directory listing once a
+    /// minute — over per-process IO on four hundred processes.
+    pub fn scales(self) -> bool {
+        match self {
+            Source::Io | Source::Threads => true,
+            Source::ClockPolicies => false,
+        }
+    }
+
+    /// Roughly what this source costs on a machine of this size.
+    pub fn total_nanos(self, size: Size) -> u64 {
+        let units = match self {
+            Source::Io => size.procs,
+            Source::Threads => size.tasks,
+            Source::ClockPolicies => 1,
+        };
+        self.nanos_each().saturating_mul(units)
+    }
+
+    /// How many samples apart this is worth reading. One means every sample.
+    pub fn every(self) -> u64 {
+        match self {
+            Source::Io | Source::Threads => 1,
+            Source::ClockPolicies => 60,
+        }
+    }
+
+    fn bit(self) -> u32 {
+        1 << (self as u32)
+    }
+}
+
+impl Needs {
+    /// Nothing optional, at sample zero.
+    pub const NONE: Needs = Needs { wanted: 0, tick: 0 };
+
+    pub fn at(tick: u64) -> Self {
+        Needs { wanted: 0, tick }
+    }
+
+    pub fn with(mut self, s: Source) -> Self {
+        self.wanted |= s.bit();
+        self
+    }
+
+    pub fn without(mut self, s: Source) -> Self {
+        self.wanted &= !s.bit();
+        self
+    }
+
+    /// Whether this sample should gather it: asked for, and due.
+    ///
+    /// The two are separate questions and both have to be yes. A source nobody
+    /// wants is never due, and a source everybody wants is still only read on
+    /// its cadence.
+    pub fn wants(self, s: Source) -> bool {
+        self.wanted & s.bit() != 0 && self.due(s)
+    }
+
+    /// Whether this sample is one of the ones this source is read on.
+    ///
+    /// Split out because it is the part worth testing directly: a cadence with
+    /// no consumer yet is still a rule, and `every() == 1` must mean every
+    /// sample rather than every sample but the first.
+    pub fn due(self, s: Source) -> bool {
+        self.tick.is_multiple_of(s.every())
+    }
+
+    /// Whether it was asked for at all, cadence aside.
+    pub fn asked(self, s: Source) -> bool {
+        self.wanted & s.bit() != 0
+    }
+
+    /// The most expensive source in this set, which is the one a budget should
+    /// give up first.
+    ///
+    /// The source costing the most on *this* machine, which is the one a budget
+    /// should give up first.
+    ///
+    /// Weighted by how many units there actually are, not by cost per unit.
+    /// Per-process IO is 5.7us a process and a thread is 3.1us, so per unit IO
+    /// looks dearer — but a box with 400 processes has some 3200 threads, which
+    /// makes threads about 9.9ms against IO's 2.3ms. Ranking on the unit cost
+    /// gives up the cheaper source, stays over budget, and costs the reader the
+    /// IO columns for nothing before three more strikes finally reach the
+    /// source that was actually responsible.
+    ///
+    /// Only sources whose cost scales with the machine; see [`Source::scales`].
+    pub fn costliest(self, size: Size) -> Option<Source> {
+        Source::ALL
+            .into_iter()
+            .filter(|s| self.asked(*s) && s.scales())
+            .max_by_key(|s| s.total_nanos(size))
+    }
 }
 
 /// The fastest this backend can be sampled and still report the truth.
@@ -32,6 +201,13 @@ pub struct Needs {
 /// between them meant applying the Linux reasoning to a platform it was never
 /// about.
 pub use backend::{MIN_INTERVAL, MIN_INTERVAL_WHY};
+
+/// Which optional sources this backend actually reads.
+///
+/// Declared by the backend rather than inferred, so nothing can ask for a
+/// source that will never arrive — and so the budget cannot spend three strikes
+/// "giving up" something that was costing nothing.
+pub use backend::SUPPORTED;
 
 /// Whether a filesystem lives in RAM rather than on a device.
 ///

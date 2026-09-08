@@ -256,6 +256,40 @@ Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
 
+### What it costs to watch
+
+Everything optional declares what it costs and how often it is worth reading —
+per-process disk IO at ~5.7 µs a process, threads at ~3.1 µs a thread, the
+cpufreq policy set as one directory walk a minute. A single boolean could not
+express "read this every tenth sample" or "stop reading this, it costs more than
+the interval", and the subsystems still to come differ in cost by two orders of
+magnitude.
+
+Two things decide. The panel that needs a source asks for it, and a **budget**
+gives things up when sampling outgrows its share of the interval — a quarter,
+past which the tool is a meaningful part of the load it is measuring, on the box
+that is already in trouble. One source at a time, most expensive first, and only
+after three consecutive over-budget samples, because one slow sample is a page
+fault rather than a verdict.
+
+"Most expensive" is counted on *your* machine, not per unit. IO is dearer per
+process than a thread is per thread, but a box with 400 processes has some 3200
+threads — so threads are about 9.9 ms against IO's 2.3 ms, and giving up IO
+first would cost you the columns and leave the sample just as slow.
+
+The objection to a budget is that it can silently drop a figure. So it never
+does: `per-process disk IO withheld, sampling was over budget` sits in the panel
+title until you ask for that source again by name, which clears it. If it goes
+over budget again it will be given up again — that is poptop telling you the
+machine cannot afford it at this interval, and `--interval` is what acts on it.
+
+Only sources whose cost **grows with the machine** are candidates, and only
+when they are big enough to be the reason. A directory walk once a minute cannot
+be why a sample ran long. Neither can the IO columns, if the process table walk
+alone is over budget — so poptop says `sampling takes longer than a quarter of
+the interval` and leaves your columns alone, rather than dismantling itself one
+at a time chasing a target it cannot reach. `--interval` is what acts on that.
+
 `--glyphs=braille|block|ascii` picks how the timeline is drawn. Braille packs
 two samples into every character cell and stacks cells vertically for twelve
 distinct heights; `block` needs less font support; `ascii` needs none. A Linux

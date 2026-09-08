@@ -26,7 +26,7 @@ mod ui;
 mod ui_tests;
 
 use app::App;
-use collect::{Collector, Needs, Platform};
+use collect::{Collector, Needs, Platform, Source};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::io;
 use std::time::{Duration, Instant};
@@ -286,18 +286,9 @@ fn main() -> io::Result<()> {
             // of gating a column is a number rather than a claim.
             let n = 20;
             for needs in [
-                Needs {
-                    io: false,
-                    threads: false,
-                },
-                Needs {
-                    io: true,
-                    threads: false,
-                },
-                Needs {
-                    io: true,
-                    threads: true,
-                },
+                Needs::NONE,
+                Needs::NONE.with(Source::Io),
+                Needs::NONE.with(Source::Io).with(Source::Threads),
             ] {
                 collector.sample(needs)?;
                 let t0 = std::time::Instant::now();
@@ -308,7 +299,7 @@ fn main() -> io::Result<()> {
                     count = s.procs.len();
                     tasks = s.tasks.as_ref().map_or(0, Vec::len);
                 }
-                let label = match (needs.io, needs.threads) {
+                let label = match (needs.asked(Source::Io), needs.asked(Source::Threads)) {
                     (false, _) => "io off, threads off",
                     (true, false) => "io on,  threads off",
                     (true, true) => "io on,  threads on ",
@@ -501,10 +492,7 @@ fn clock_line(s: &sample::Sample) -> Option<String> {
 }
 
 fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
-    let needs = Needs {
-        io: true,
-        threads: false,
-    };
+    let needs = Needs::NONE.with(Source::Io);
     collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
@@ -664,7 +652,13 @@ fn run(
         if Instant::now() >= next_sample {
             // Sampling continues while paused — that is the whole point. The
             // cursor stays put, the buffer keeps filling behind it.
-            app.push(collector.sample(app.needs())?);
+            // Timed, so collection that has grown past its share of the
+            // interval gives something up rather than quietly becoming part of
+            // the load it is measuring. See `App::spent`.
+            let t0 = Instant::now();
+            let s = collector.sample(app.needs())?;
+            app.spent(t0.elapsed(), interval);
+            app.push(s);
             next_sample += interval;
             // Falling a whole interval behind means the host cannot sustain
             // the rate. Resync rather than catch up: catching up would sample
