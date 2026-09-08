@@ -2,7 +2,7 @@
 id: 66
 title: Paging, swapping and the OOM killer are invisible
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 58
@@ -45,7 +45,34 @@ do. atop can, from a logfile. poptop can, from memory, with no daemon.
 
 ## Acceptance criteria
 
-- [ ] Page in/out and swap in/out as rates
-- [ ] OOM kills during an interval are reported, and visible when scrubbed to
-- [ ] 0047's memory constraint reads the rate rather than inferring it
-- [ ] Absent rather than zero where the platform will not say
+- [x] Page in/out and swap in/out as rates
+- [x] OOM kills during an interval are reported, and visible when scrubbed to
+- [x] 0047's memory constraint reads the rate rather than inferring it
+- [x] Absent rather than zero where the platform will not say
+
+## How it was resolved
+
+PR #87. The panel says `2 processes killed for memory` in the interval it
+happened, and **scrubbing back shows the count beside the process table from the
+instant before** — the thing no live-only monitor can do and which atop can do
+only from a logfile its daemon was already writing.
+
+Where it goes: beside `N tasks came and went`, one rank above, because a kill is
+a stronger fact than a task merely vanishing.
+
+**The rates fix the rule upstream.** 0047 had to infer memory pressure from swap
+*growth across a window* precisely because the level cannot tell a box that
+swapped four gigabytes in and out from one sitting on four idle ones. It reads
+the rate now — held across the window, not off the last sample, which review
+caught: one frame of ordinary reclaim would otherwise have flipped the advice
+and preempted a sustained CPU constraint.
+
+**Two units in one file:** `pgpgin`/`pgpgout` are kilobytes and the swap pair is
+pages, so one conversion for both reports swap at a four-thousandth of its size.
+
+**Review also caught three honesty failures**: an absent `oom_kill` key read as
+zero — this item's fourth criterion, failed in the one place it pointed at; no
+gap guard on the count, so a laptop suspend attributed a night's kills to one
+second; and a rate truncated before its unit was applied, which read a box
+swapping a page an interval as quiet and so silenced the signal the new
+constraint rule keys on.
