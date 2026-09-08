@@ -2,7 +2,7 @@
 id: 46
 title: The cursor readout repeats the header and drops the scale
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -54,6 +54,6 @@ read as live — but the duplication is worth being deliberate about.
 
 ## Acceptance criteria
 
-- [ ] The cursor row does not repeat figures the header is already showing
-- [ ] The slot size is stated while scrubbing, as it is while live
-- [ ] The anchors survive, so the marker's position means something
+- [x] The cursor row does not repeat figures the header is already showing
+- [x] The slot size is stated while scrubbing, as it is while live
+- [x] The anchors survive, so the marker's position means something

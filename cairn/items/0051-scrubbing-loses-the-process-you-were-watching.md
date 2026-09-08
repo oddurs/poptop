@@ -2,7 +2,7 @@
 id: 51
 title: Scrubbing loses the process you were watching
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -48,7 +48,7 @@ buffer is information — often the information.
 
 ## Acceptance criteria
 
-- [ ] Selection is of a process, not a row index
-- [ ] Scrubbing keeps the same process selected while it exists
-- [ ] A process absent at the cursor is stated, not silently swapped
-- [ ] Sorting and filtering do not move the selection to a different process
+- [x] Selection is of a process, not a row index
+- [x] Scrubbing keeps the same process selected while it exists
+- [x] A process absent at the cursor is stated, not silently swapped
+- [x] Sorting and filtering do not move the selection to a different process
