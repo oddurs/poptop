@@ -637,6 +637,13 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::Char('S') => {
             if let Some(c) = app.constraint() {
                 app.sort = c.sort();
+                // Sorting by a column that is not on screen answers the
+                // question invisibly: the rows move and nothing says why. The
+                // reader asked for this by pressing the key, so the columns
+                // come with it.
+                if c.sort() == app::Sort::Disk {
+                    app.show_io = true;
+                }
             }
         }
         KeyCode::Char('i') => app.toggle_io(),

@@ -385,10 +385,30 @@ impl App {
     /// suggestion, and a panel that changes its advice twice a second is worse
     /// than one that gives none.
     pub fn constraint(&self) -> Option<Constraint> {
+        let window: Vec<&Sample> = self.history.around(Self::CONSTANT_FOR).collect();
+        // A hold that shrinks near the start of the buffer is not a hold: one
+        // sample agrees with itself, so a single spike a second after launch
+        // named a constraint and the advice changed on every frame for the
+        // first four seconds — the flicker this window exists to prevent.
+        if window.len() < Self::CONSTANT_FOR {
+            return None;
+        }
+
+        // Swap that is *growing* is memory pressure being paid for, and unlike
+        // a headroom figure it is a measurement. It is the only memory signal
+        // macOS can stand behind: `MemStat::available` there comes from
+        // overlapping `vm_stat` quantities that routinely sum to more than the
+        // machine has, so a headroom rule reads as roomy on a box that is
+        // thrashing — the one case it exists for. Checked across the window
+        // rather than in one sample because a constant two gigabytes of swap is
+        // an idle Mac and says nothing.
+        let (first, last) = (window.first()?, window.last()?);
+        if last.mem.swap_total > 0 && last.mem.swap_used > first.mem.swap_used {
+            return Some(Constraint::Memory);
+        }
+
         let mut agreed: Option<Constraint> = None;
-        let mut any = false;
-        for s in self.history.window(Self::CONSTANT_FOR) {
-            any = true;
+        for s in &window {
             match (constraint_of(s), agreed) {
                 (Some(c), None) => agreed = Some(c),
                 (Some(c), Some(prev)) if c == prev => {}
@@ -397,7 +417,13 @@ impl App {
                 _ => return None,
             }
         }
-        any.then_some(agreed).flatten()
+        // A sort that orders nothing is not an answer. On a box where most of
+        // `/proc/<pid>/io` is unreadable the probe withdraws those columns for
+        // good, and PSI goes on reporting io stall — so the panel offered
+        // `disk is the constraint`, `S` set a sort where every figure is
+        // `None`, the table did not move, and the title named a column that
+        // was not even drawn.
+        agreed.filter(|c| *c != Constraint::Disk || self.io_collected())
     }
 
     /// The one user every process belongs to, if there is only one.
@@ -592,10 +618,15 @@ pub fn constraint_of(s: &Sample) -> Option<Constraint> {
     // Where the kernel publishes stall pressure, it answers the question
     // directly and the utilisation figures are not consulted at all.
     if let Some(p) = &s.pressure {
+        // Least important first: `max_by` keeps the *last* of equal maxima, so
+        // this order is what makes a tie fall the way the fallback below ranks
+        // them — a disk with no idle time outranks a busy CPU, because a busy
+        // CPU is often the machine working. Written the other way round it
+        // silently reported CPU whenever two stalls matched.
         let worst = [
-            (p.io.full, Constraint::Disk),
-            (p.memory.full, Constraint::Memory),
             (p.cpu.full, Constraint::Cpu),
+            (p.memory.full, Constraint::Memory),
+            (p.io.full, Constraint::Disk),
         ]
         .into_iter()
         .filter(|(v, _)| *v >= STALL_CONSTRAINED)
@@ -610,14 +641,11 @@ pub fn constraint_of(s: &Sample) -> Option<Constraint> {
     if s.busiest_disk().is_some_and(|d| d.util >= DISK_CONSTRAINED) {
         return Some(Constraint::Disk);
     }
-    // What is left, not what is used. Swap in use looks like the obvious
-    // signal and is not one: macOS swaps routinely on a machine with gigabytes
-    // free, so `swap_used > 0` named memory as the constraint on every idle Mac
-    // — permanently, and while the disk was the thing actually in the way.
-    // Running out of headroom is the claim worth making.
-    if s.mem.total > 0 && s.mem.available * 100 < s.mem.total * MEM_HEADROOM_PCT {
-        return Some(Constraint::Memory);
-    }
+    // Memory is deliberately not decided here. The only platform that reaches
+    // this path is the one whose `available` this codebase documents as not
+    // being a partition of `total`, so a headroom test on it would read as
+    // roomy on a thrashing box. It is answered from the window instead, by
+    // whether swap is growing — see `App::constraint`.
     if s.cpu_total >= CPU_CONSTRAINED {
         return Some(Constraint::Cpu);
     }
@@ -626,12 +654,6 @@ pub fn constraint_of(s: &Sample) -> Option<Constraint> {
 
 /// Utilisation at which a device has effectively no idle time left.
 const DISK_CONSTRAINED: f32 = 90.0;
-
-/// How little memory has to be left before memory is the constraint.
-///
-/// Ten percent of the machine. Below that every allocation is a reclaim and the
-/// box spends its time making room rather than working.
-const MEM_HEADROOM_PCT: u64 = 10;
 
 /// Aggregate CPU at which the processor is the thing in the way.
 ///

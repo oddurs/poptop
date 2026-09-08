@@ -6708,17 +6708,32 @@ fn swap_in_use_is_not_by_itself_a_memory_constraint() {
     // macOS swaps routinely on a machine with gigabytes free, so `swap_used >
     // 0` named memory as the constraint on every idle Mac — permanently, and
     // while the disk was the thing actually in the way.
-    let mut s = sample(10.0);
-    s.pressure = None;
-    s.mem.swap_total = 4 << 30;
-    s.mem.swap_used = 2 << 30;
-    s.mem.total = 24 << 30;
-    s.mem.available = 14 << 30;
-    assert_eq!(constraint_of(&s), None, "idle swap named a constraint");
+    let steady = |used: u64| {
+        let mut s = sample(10.0);
+        s.pressure = None;
+        s.mem.swap_total = 4 << 30;
+        s.mem.swap_used = used;
+        s.mem.total = 24 << 30;
+        s.mem.available = 1 << 30;
+        s
+    };
+    // Not even out of headroom: `available` on the only platform that reaches
+    // this path is not a partition of `total`, so it is not consulted at all.
+    assert_eq!(constraint_of(&steady(2 << 30)), None);
 
-    // Out of headroom is the claim worth making.
-    s.mem.available = 1 << 30;
-    assert_eq!(constraint_of(&s), Some(Constraint::Memory));
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        app.push(steady(2 << 30));
+    }
+    assert_eq!(app.constraint(), None, "idle swap named a constraint");
+
+    // Growing swap is memory pressure being paid for, and it is a measurement
+    // rather than an estimate.
+    let mut rising = App::new(60);
+    for i in 0..App::CONSTANT_FOR {
+        rising.push(steady((2 << 30) + (i as u64) * (64 << 20)));
+    }
+    assert_eq!(rising.constraint(), Some(Constraint::Memory));
 }
 
 #[test]
@@ -6814,8 +6829,15 @@ fn the_constraint_is_the_one_at_the_cursor() {
     // Scrubbing back to a spike to find out what was constrained *then* is the
     // whole reason the buffer exists.
     let mut app = App::new(60);
+    let io_bound = || {
+        let mut s = stalling(0.0, 30.0, 0.0);
+        // Collected, or the disk suggestion is withheld — a sort where every
+        // figure is `None` orders nothing.
+        s.io_collected = true;
+        s
+    };
     for _ in 0..App::CONSTANT_FOR {
-        app.push(stalling(0.0, 30.0, 0.0)); // disk-bound, in the past
+        app.push(io_bound()); // disk-bound, in the past
     }
     for _ in 0..App::CONSTANT_FOR {
         app.push(stalling(0.0, 0.0, 0.0)); // quiet, now
@@ -6877,4 +6899,93 @@ fn the_sort_cycle_skips_disk_when_there_are_no_disk_figures() {
     assert!(!seen.contains(&Sort::Disk), "cycled onto an empty column");
     // …and reaches it when the figures exist.
     assert_eq!(Sort::Mem.next(true), Sort::Disk);
+}
+
+#[test]
+fn a_disk_constraint_is_not_suggested_when_there_are_no_disk_figures() {
+    // On a box where most of `/proc/<pid>/io` is unreadable the probe withdraws
+    // those columns for good, while PSI goes on reporting io stall. The panel
+    // offered `disk is the constraint`, `S` set a sort where every figure is
+    // `None`, the table did not move, and the title named a column that was not
+    // even drawn.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = stalling(0.0, 30.0, 0.0);
+        s.io_collected = false;
+        s.procs = vec![proc_named(101, "postgres", 20.0, 1 << 20)];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert_eq!(
+        app.constraint(),
+        None,
+        "offered a sort by a column that is not collected"
+    );
+    let title = rows(&app, 140, 20)
+        .into_iter()
+        .find(|l| l.contains("processes ("))
+        .unwrap();
+    assert!(!title.contains("constraint"), "{title:?}");
+
+    // With the figures, the same stall does name it.
+    let mut with = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = stalling(0.0, 30.0, 0.0);
+        s.io_collected = true;
+        s.procs = vec![proc_named(101, "postgres", 20.0, 1 << 20)];
+        with.push(s);
+    }
+    assert_eq!(with.constraint(), Some(crate::app::Constraint::Disk));
+}
+
+#[test]
+fn a_single_sample_is_not_a_held_constraint() {
+    // The window clamps to what exists, so one sample agreed with itself: a
+    // spike a second after launch named a constraint, and the advice could
+    // change on every frame for the first four seconds — the flicker the
+    // window exists to prevent.
+    let mut app = App::new(60);
+    let io_bound = || {
+        let mut s = stalling(0.0, 30.0, 0.0);
+        s.io_collected = true;
+        s
+    };
+    for n in 1..App::CONSTANT_FOR {
+        app.push(io_bound());
+        assert_eq!(
+            app.constraint(),
+            None,
+            "named a constraint from {n} sample(s), fewer than the hold requires"
+        );
+    }
+    app.push(io_bound());
+    assert_eq!(
+        app.constraint(),
+        Some(crate::app::Constraint::Disk),
+        "a full window did not produce a suggestion"
+    );
+}
+
+#[test]
+fn equal_stalls_rank_the_way_the_fallback_does() {
+    use crate::app::{Constraint, constraint_of};
+    // `max_by` keeps the last of equal maxima, so the array order is what
+    // decides a tie. Written least-important-first it agrees with the
+    // utilisation fallback below it, where a disk with no idle time outranks a
+    // busy CPU — a busy CPU is often the machine working.
+    assert_eq!(
+        constraint_of(&stalling(20.0, 20.0, 0.0)),
+        Some(Constraint::Disk),
+        "a tie between cpu and io reported cpu"
+    );
+    assert_eq!(
+        constraint_of(&stalling(0.0, 20.0, 20.0)),
+        Some(Constraint::Disk),
+        "a tie between memory and io reported memory"
+    );
+    assert_eq!(
+        constraint_of(&stalling(20.0, 0.0, 20.0)),
+        Some(Constraint::Memory),
+        "a tie between cpu and memory reported cpu"
+    );
 }
