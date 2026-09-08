@@ -516,6 +516,11 @@ mod tests {
                 write: 512 << 10,
             }),
             container: None,
+            minflt: None,
+            majflt: None,
+            vsize: None,
+            nice: None,
+            pss: None,
         }
     }
 
@@ -664,6 +669,11 @@ mod review_tests {
             cmd: Some(Arc::from(name)),
             io: Some(IoRates { read: 0, write: 0 }),
             container: None,
+            minflt: None,
+            majflt: None,
+            vsize: None,
+            nice: None,
+            pss: None,
         }
     }
 

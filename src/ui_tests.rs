@@ -50,6 +50,11 @@ fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
         cmd: None,
         io: None,
         container: None,
+        minflt: None,
+        majflt: None,
+        vsize: None,
+        nice: None,
+        pss: None,
     }
 }
 
@@ -9149,6 +9154,11 @@ fn the_cgroup_walk_is_only_paid_for_while_the_view_is_open() {
 fn in_container(pid: i32, name: &str, cpu: f32, cid: Option<&str>) -> ProcSample {
     ProcSample {
         container: cid.map(std::sync::Arc::from),
+        minflt: None,
+        majflt: None,
+        vsize: None,
+        nice: None,
+        pss: None,
         ..proc_named(pid, name, cpu, 64 << 20)
     }
 }
@@ -9515,4 +9525,171 @@ fn every_view_renders_every_kind_of_row() {
             }
         }
     }
+}
+
+#[test]
+fn memory_growth_is_absent_across_a_seam_rather_than_wrong() {
+    // "Grew 400 MB since the last sample" is a rate, and a rate over an unknown
+    // interval is not a figure. A laptop that slept leaves two samples twenty
+    // minutes apart sitting next to each other in the buffer.
+    let grown = |a: u64, b: u64, age: u64| {
+        let mut app = App::new(600);
+        let mut before = sample_at(1.0, age);
+        before.procs = vec![proc_named(4001, "node", 1.0, a)];
+        let mut now = sample_at(1.0, 0);
+        now.procs = vec![proc_named(4001, "node", 1.0, b)];
+        app.push(before);
+        app.push(now);
+        app.growth(4001, Some(0))
+    };
+
+    // One second apart: a real delta, and the sign is carried. Two seconds is
+    // already the limit at the default interval — `gap_limit` calls a missed
+    // tick a gap — so the adjacent case has to be one.
+    assert_eq!(grown(100 << 20, 500 << 20, 1), Some(400 << 20));
+    assert_eq!(grown(500 << 20, 100 << 20, 1), Some(-(400i64 << 20)));
+    // Twenty minutes apart: no figure, because there is no interval to scale
+    // it by. The timeline draws a seam at exactly the same place.
+    assert_eq!(grown(100 << 20, 500 << 20, 1200), None);
+}
+
+#[test]
+fn the_memory_view_shows_what_a_process_actually_costs() {
+    use crate::app::View;
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        pss: Some(300 << 20),
+        vsize: Some(4 << 30),
+        majflt: Some(1_200),
+        ..proc_named(4001, "chrome", 12.0, 900 << 20)
+    }];
+    app.push(s);
+    app.view = View::Memory;
+
+    let shown = rows(&app, 160, 10).join("\n");
+    for want in ["PSS", "VSZ", "MAJF/s", "GROW", "300.0M", "4.0G", "1200"] {
+        assert!(
+            shown.contains(want),
+            "the memory view has no {want}:\n{shown}"
+        );
+    }
+    // And the generic view does not carry them.
+    app.view = View::Generic;
+    let generic = rows(&app, 160, 10).join("\n");
+    assert!(
+        !generic.contains("MAJF/s"),
+        "the generic view grew a column"
+    );
+}
+
+#[test]
+fn a_field_the_platform_does_not_publish_is_a_dash_not_a_zero() {
+    use crate::app::View;
+    // macOS supplies none of these through sysinfo. A zero would say this
+    // process takes no major faults and has reserved no address space.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(4001, "node", 12.0, 64 << 20)];
+    app.push(s);
+    app.view = View::Memory;
+    let shown = rows(&app, 160, 10).join("\n");
+    let row = shown
+        .lines()
+        .find(|l| l.contains("node"))
+        .expect("no row drawn");
+    assert!(
+        row.matches('—').count() >= 3,
+        "an unpublished figure was rendered as a number: {row}"
+    );
+}
+
+#[test]
+fn proportional_memory_is_only_read_while_the_view_that_shows_it_is_open() {
+    use crate::app::View;
+    use crate::collect::Source;
+    // One extra read per process, and the only column that needs it is in one
+    // view. Not a cost to pay for a figure nobody is looking at.
+    let supported = crate::collect::SUPPORTED.contains(&Source::Pss);
+    assert_eq!(supported, cfg!(target_os = "linux"));
+
+    let mut app = App::new(600);
+    assert!(!app.needs().asked(Source::Pss), "read unasked");
+    app.view = View::Memory;
+    assert_eq!(app.needs().asked(Source::Pss), supported);
+    app.view = View::Generic;
+    assert!(
+        !app.needs().asked(Source::Pss),
+        "the read outlived the view"
+    );
+}
+
+#[test]
+fn the_memory_view_still_elides_the_command_rather_than_chopping_it() {
+    use crate::app::View;
+    // The view drops one column and *adds* four, so counting only the drops
+    // left the elision arithmetic thirty-five columns too generous — the
+    // command elided in the middle and then chopped at the right edge with no
+    // marker, which is precisely what `command_width` exists to prevent.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cmd: Some(std::sync::Arc::from(
+            "/usr/lib/chromium/chromium --type=renderer --enable-features=Vulkan --tail=marker",
+        )),
+        pss: Some(300 << 20),
+        vsize: Some(4 << 30),
+        majflt: Some(3),
+        ..proc_named(4001, "chromium", 12.0, 900 << 20)
+    }];
+    app.push(s);
+    app.view = View::Memory;
+
+    for w in [120u16, 140, 160] {
+        let shown = rows(&app, w, 10).join("\n");
+        assert!(
+            shown.contains('…'),
+            "nothing was elided at {w}, so this proves nothing:\n{shown}"
+        );
+        assert!(
+            shown.contains("tail=marker"),
+            "the end of the command was chopped at {w} columns:\n{shown}"
+        );
+    }
+}
+
+#[test]
+fn a_grouped_row_does_not_borrow_one_members_growth() {
+    use crate::app::{Grouping, View};
+    // A group's synthesised pid is its lowest member's and its `started` is
+    // `None`, so where the platform also reports `None` the lookup matches that
+    // one member and draws its delta beside group-summed memory as if it were
+    // the group's. Every other grouped figure sums or collapses to an em dash.
+    let mut app = App::new(600);
+    let procs = |rss: u64| {
+        vec![
+            ProcSample {
+                started: None,
+                ..proc_named(4001, "node", 1.0, rss)
+            },
+            ProcSample {
+                started: None,
+                ..proc_named(4002, "node", 1.0, 10 << 20)
+            },
+        ]
+    };
+    let mut before = sample_at(1.0, 1);
+    before.procs = procs(100 << 20);
+    let mut now = sample_at(1.0, 0);
+    now.procs = procs(500 << 20);
+    app.push(before);
+    app.push(now);
+    app.group = Grouping::Name;
+    app.view = View::Memory;
+
+    let shown = rows(&app, 180, 10).join("\n");
+    assert!(
+        !shown.contains("+400.0M"),
+        "a group borrowed one member's growth:\n{shown}"
+    );
 }

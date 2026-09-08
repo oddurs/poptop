@@ -13,6 +13,7 @@ pub const SUPPORTED: &[Source] = &[
     Source::ClockPolicies,
     Source::Exited,
     Source::Cgroups,
+    Source::Pss,
 ];
 use crate::sample::{
     CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample,
@@ -153,6 +154,8 @@ pub struct ProcFs {
     /// and sharing a map would make a stale process entry look like a thread
     /// that had not moved.
     prev_task_jiffies: HashMap<i32, u64>,
+    /// Cumulative fault counts from the previous sample, per pid.
+    prev_proc_faults: HashMap<i32, (u64, u64)>,
     /// The exit listener, once somebody has asked for one.
     ///
     /// Opened lazily rather than at startup: it needs `CAP_NET_ADMIN` and the
@@ -173,6 +176,9 @@ pub struct ProcFs {
     /// Whether the previous sample read cgroups, so a reopened view starts
     /// from a fresh baseline rather than a stale one.
     cgroups_were_read: bool,
+    /// Whether the PSS permission note has been said. Once per run, not once
+    /// per sample.
+    said_pss_denied: bool,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_at: Option<SystemTime>,
@@ -255,12 +261,14 @@ impl ProcFs {
             partitions: std::collections::HashSet::new(),
             prev_proc_jiffies: HashMap::new(),
             prev_task_jiffies: HashMap::new(),
+            prev_proc_faults: HashMap::new(),
             exits: None,
             exits_why: None,
             boot_epoch: None,
             prev_cgroups: cgroups::Prev::default(),
             cgroup_v2: None,
             cgroups_were_read: false,
+            said_pss_denied: false,
             prev_proc_io: HashMap::new(),
             prev_at: None,
             users: parse_passwd(),
@@ -755,6 +763,7 @@ impl ProcFs {
             buf,
             path,
             prev_proc_jiffies,
+            prev_proc_faults,
             prev_task_jiffies,
             prev_proc_io,
             users,
@@ -769,6 +778,7 @@ impl ProcFs {
         } = self;
         let ctx = StatCtx {
             prev_jiffies: prev_proc_jiffies,
+            prev_faults: prev_proc_faults,
             ticks_per_sec: *ticks_per_sec,
             page_size: *page_size,
         };
@@ -777,6 +787,8 @@ impl ProcFs {
         let tick = *tick;
         let mut out = Vec::new();
         let mut seen = HashMap::new();
+        let mut seen_faults: HashMap<i32, (u64, u64)> = HashMap::new();
+        let mut pss_denied = 0usize;
         let mut seen_io = HashMap::new();
         let mut tasks = Vec::new();
         let mut seen_tasks = HashMap::new();
@@ -808,9 +820,16 @@ impl ProcFs {
                 .or_insert_with(|| Arc::from(uid.to_string().as_str()))
                 .clone();
 
-            let Some(mut p) =
-                parse_proc_stat(pid, stat, elapsed_secs, user, &mut seen, names, &ctx)
-            else {
+            let Some(mut p) = parse_proc_stat(
+                pid,
+                stat,
+                elapsed_secs,
+                user,
+                &mut seen,
+                &mut seen_faults,
+                names,
+                &ctx,
+            ) else {
                 continue;
             };
             // A kernel thread's `cmdline` is empty, so the open and the read
@@ -821,6 +840,9 @@ impl ProcFs {
                 // Same shape as the command line and one read cheaper: cached
                 // for the life of the process rather than re-read on a slot.
                 p.container = container_of(pid, p.started.unwrap_or(0), containers, path);
+                if needs.wants(Source::Pss) {
+                    p.pss = read_pss(pid, path, buf, &mut pss_denied);
+                }
             }
             // Kernel threads are skipped rather than attempted and counted as
             // denied. They are root-owned and unreadable to an ordinary user,
@@ -863,6 +885,21 @@ impl ProcFs {
         // is exactly why nothing else would ever remove them.
         containers.retain(|pid, _| seen.contains_key(pid));
         *prev_proc_jiffies = seen;
+        // Replaced wholesale, not extended: this is next sample's baseline and
+        // it self-prunes the same way the jiffies do — an `extend` would keep
+        // one entry per pid ever seen.
+        *prev_proc_faults = seen_faults;
+        // Said once per run, through the same channel as everything else the
+        // backend had to give up on. Without it a non-root reader opening the
+        // memory view sees a full column of em dashes, pays 4.2us a process for
+        // it, and is told nothing.
+        if pss_denied > 0 && !self.said_pss_denied {
+            self.said_pss_denied = true;
+            self.notes.push(format!(
+                "{pss_denied} processes' proportional memory needs CAP_SYS_PTRACE; \
+                 run as root to see them"
+            ));
+        }
         // Cleared rather than kept while collection is off. Rates are a delta
         // against the previous read divided by one interval, so counters left
         // over from five minutes ago would render every long-lived process at
@@ -1162,6 +1199,38 @@ const CMD_REFRESH: u64 = 30;
 /// directory — dropped a moment later — can be most of a long path on its own.
 const CMD_READ_MAX: usize = 4096;
 
+/// Proportional set size, from `/proc/<pid>/smaps_rollup`.
+///
+/// `None` where the file cannot be read, which is another user's process
+/// without `CAP_SYS_PTRACE` and a process that exited while the directory was
+/// being walked — the same two cases as the IO probe, and neither is an error.
+/// Never zero: a process whose share could not be measured is not one using no
+/// memory.
+fn read_pss(pid: i32, path: &mut String, buf: &mut Vec<u8>, denied: &mut usize) -> Option<u64> {
+    path.clear();
+    let _ = write!(path, "/proc/{pid}/smaps_rollup");
+    let text = match read_into(path, buf) {
+        Ok(t) => t,
+        Err(e) => {
+            // Counted the way the IO probe counts its own, and for the same
+            // reason: a column of em dashes with no explanation is the failure
+            // this codebase does not ship. Only the permission case — a process
+            // that exited while the directory was walked is normal and nothing
+            // would fix it.
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                *denied += 1;
+            }
+            return None;
+        }
+    };
+    // Published in kilobytes, like the rest of that file.
+    text.lines()
+        .find_map(|l| l.strip_prefix("Pss:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|kb| kb * 1024)
+}
+
 /// Which container a process is in, from `/proc/<pid>/cgroup`.
 ///
 /// One small read per process, once per process rather than once per sample: a
@@ -1253,6 +1322,10 @@ fn parse_proc_stat(
     elapsed_secs: f64,
     user: Arc<str>,
     seen: &mut HashMap<i32, u64>,
+    // Where this sample's cumulative fault counts go, to be next sample's
+    // baseline. Recorded here rather than derived later for the same reason the
+    // jiffies are: the raw counters do not survive the ProcSample.
+    seen_faults: &mut HashMap<i32, (u64, u64)>,
     names: &mut HashMap<i32, (u64, Arc<str>)>,
     ctx: &StatCtx,
 ) -> Option<ProcSample> {
@@ -1270,6 +1343,15 @@ fn parse_proc_stat(
     let utime: u64 = rest.get(11)?.parse().ok()?;
     let stime: u64 = rest.get(12)?.parse().ok()?;
     let threads: u32 = rest.get(17)?.parse().unwrap_or(1);
+    // Fields 10 and 12, cumulative since the process started, so they become
+    // rates below. Field N lives at rest[N - 3], the same arithmetic as every
+    // other index here.
+    let minflt: u64 = rest.get(7)?.parse().unwrap_or(0);
+    let majflt: u64 = rest.get(9)?.parse().unwrap_or(0);
+    // Field 19. Signed: -20 to 19.
+    let nice: i32 = rest.get(16)?.parse().unwrap_or(0);
+    // Field 23, in bytes already — unlike `rss`, which is in pages.
+    let vsize: u64 = rest.get(20)?.parse().unwrap_or(0);
     // Field 22, the start time, in clock ticks since boot.
     let starttime: u64 = rest.get(19)?.parse().unwrap_or(0);
     let rss_pages: u64 = rest.get(21)?.parse().unwrap_or(0);
@@ -1288,6 +1370,7 @@ fn parse_proc_stat(
 
     let jiffies = utime + stime;
     seen.insert(pid, jiffies);
+    seen_faults.insert(pid, (minflt, majflt));
 
     // Same story as the aggregate CPU: only the delta means anything.
     let cpu = match ctx.prev_jiffies.get(&pid) {
@@ -1317,6 +1400,24 @@ fn parse_proc_stat(
         io: None,
         // Filled by the caller, which has the cache.
         container: None,
+        // A rate needs two readings, and a process seen for the first time has
+        // one. Zero rather than its whole lifetime's faults divided by one
+        // interval — the same rule as its CPU, three fields up.
+        minflt: Some(rate(
+            minflt,
+            ctx.prev_faults.get(&pid).map(|(m, _)| *m),
+            elapsed_secs,
+        )),
+        majflt: Some(rate(
+            majflt,
+            ctx.prev_faults.get(&pid).map(|(_, m)| *m),
+            elapsed_secs,
+        )),
+        vsize: Some(vsize),
+        nice: Some(nice),
+        // Filled by the caller when the source is on; `smaps_rollup` is a
+        // second read and does not belong in a `stat` parser.
+        pss: None,
     })
 }
 
@@ -1326,8 +1427,24 @@ fn parse_proc_stat(
 /// be borrowed mutably at the same time.
 struct StatCtx<'a> {
     prev_jiffies: &'a HashMap<i32, u64>,
+    /// Cumulative minor and major fault counts from the previous sample, so
+    /// both can be reported as rates over the interval rather than as a
+    /// lifetime total that only ever goes up.
+    prev_faults: &'a HashMap<i32, (u64, u64)>,
     ticks_per_sec: f64,
     page_size: u64,
+}
+
+/// A cumulative counter as a rate over the interval.
+///
+/// `None` for the previous reading means this is the first sighting, and zero
+/// is the honest answer: a delta against nothing would report the process's
+/// whole life in one interval.
+fn rate(now: u64, before: Option<u64>, elapsed_secs: f64) -> u32 {
+    match before {
+        Some(was) if elapsed_secs > 0.0 => (now.saturating_sub(was) as f64 / elapsed_secs) as u32,
+        _ => 0,
+    }
 }
 
 /// Starting size of the shared read buffer.
@@ -1988,6 +2105,7 @@ mod tests {
     fn ctx(pf: &ProcFs) -> StatCtx<'_> {
         StatCtx {
             prev_jiffies: &pf.prev_proc_jiffies,
+            prev_faults: &pf.prev_proc_faults,
             ticks_per_sec: pf.ticks_per_sec,
             page_size: pf.page_size,
         }
@@ -2294,6 +2412,97 @@ mod tests {
         );
     }
 
+    /// A real `/proc/<pid>/stat`, field for field. The indices this parser uses
+    /// are `rest[N - 3]`, so a fixture is the only way to know they line up
+    /// with the fields the kernel actually writes.
+    ///
+    /// minflt 4210, majflt 17, priority 20, nice -5, num_threads 8,
+    /// starttime 1234, vsize 2846720000, rss 41221.
+    const PROC_STAT: &str = "4021 (postgres) S 1 4021 4021 0 -1 4194304 \
+        4210 0 17 0 137 42 0 0 20 -5 8 0 1234 2846720000 41221 \
+        18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+
+    #[test]
+    fn the_new_stat_fields_land_on_the_fields_the_kernel_wrote() {
+        let pf = ProcFs::new().unwrap();
+        let mut seen = HashMap::new();
+        let mut seen_faults = HashMap::new();
+        let mut names = HashMap::new();
+        let p = parse_proc_stat(
+            4021,
+            PROC_STAT,
+            1.0,
+            Arc::from("postgres"),
+            &mut seen,
+            &mut seen_faults,
+            &mut names,
+            &ctx(&pf),
+        )
+        .expect("the fixture did not parse");
+        assert_eq!(p.nice, Some(-5), "nice landed on the wrong field");
+        assert_eq!(
+            p.vsize,
+            Some(2_846_720_000),
+            "vsize landed on the wrong field"
+        );
+        assert_eq!(p.threads, Some(8), "the fixture disagrees with the parser");
+        // Cumulative counters carried forward, to become next sample's baseline.
+        assert_eq!(seen_faults.get(&4021), Some(&(4210, 17)));
+    }
+
+    #[test]
+    fn the_fault_baseline_survives_to_the_next_sample() {
+        // Without the write-back, `prev_faults` is the empty map on every
+        // sample, `rate` always takes its first-sighting arm, and the column
+        // this whole item is about reads zero forever — for a process thrashing
+        // on major faults as much as for an idle one.
+        //
+        // Asserted on the collector rather than on the parser: the parser's own
+        // test checks the map it is handed, which is exactly the thing that was
+        // being thrown away.
+        let mut pf = ProcFs::new().unwrap();
+        pf.collect(Needs::default()).unwrap();
+        assert!(
+            !pf.prev_proc_faults.is_empty(),
+            "a sample left no fault baseline for the next one"
+        );
+        let me = std::process::id() as i32;
+        assert!(
+            pf.prev_proc_faults.contains_key(&me),
+            "the baseline does not include this process"
+        );
+    }
+
+    #[test]
+    fn a_faults_first_sighting_is_zero_and_its_second_is_a_rate() {
+        // The counters are cumulative since the process started, so a delta
+        // against nothing reports a whole lifetime of paging as this second's —
+        // the same trap as its CPU, and the same answer.
+        assert_eq!(rate(4210, None, 1.0), 0, "a first sighting invented a rate");
+        assert_eq!(rate(4210, Some(4200), 1.0), 10);
+        // Over two seconds it is half as many a second.
+        assert_eq!(rate(4210, Some(4200), 2.0), 5);
+        // A counter that went backwards is a recycled pid, not a negative rate.
+        assert_eq!(rate(10, Some(4200), 1.0), 0);
+    }
+
+    #[test]
+    fn proportional_memory_is_read_in_kilobytes_and_reported_in_bytes() {
+        // `smaps_rollup` publishes kB like the rest of that family, and a
+        // figure a thousand times too small in a byte column reads as a
+        // suspiciously light process rather than as a bug.
+        let mut path = String::new();
+        let mut buf = Vec::new();
+        let me = std::process::id() as i32;
+        if let Some(pss) = read_pss(me, &mut path, &mut buf, &mut 0) {
+            assert!(
+                pss > 64 * 1024,
+                "this process reads {pss} bytes of proportional memory, which \
+                 is kilobytes rendered as bytes"
+            );
+        }
+    }
+
     #[test]
     fn the_container_cache_does_not_grow_without_bound_either() {
         // The one most likely to be forgotten, and it was: every other per-pid
@@ -2407,6 +2616,7 @@ mod tests {
             Arc::from("root"),
             &mut seen,
             &mut HashMap::new(),
+            &mut HashMap::new(),
             &ctx(&pf),
         )
         .unwrap();
@@ -2432,6 +2642,7 @@ mod tests {
             1.0,
             Arc::from("root"),
             &mut seen,
+            &mut HashMap::new(),
             &mut HashMap::new(),
             &ctx(&pf),
         )
@@ -2467,6 +2678,7 @@ mod tests {
             1.0,
             Arc::from("root"),
             &mut seen,
+            &mut HashMap::new(),
             &mut names,
             &ctx(&pf),
         )
@@ -2481,6 +2693,7 @@ mod tests {
             1.0,
             Arc::from("root"),
             &mut seen,
+            &mut HashMap::new(),
             &mut names,
             &ctx(&pf),
         )
@@ -2503,6 +2716,7 @@ mod tests {
             1.0,
             Arc::from("root"),
             &mut seen,
+            &mut HashMap::new(),
             &mut names,
             &ctx(&pf),
         )
@@ -2513,6 +2727,7 @@ mod tests {
             1.0,
             Arc::from("root"),
             &mut seen,
+            &mut HashMap::new(),
             &mut names,
             &ctx(&pf),
         )
@@ -3377,6 +3592,7 @@ auto /net autofs rw,fd=7 0 0\n\
             Arc::from("root"),
             &mut seen,
             &mut HashMap::new(),
+            &mut HashMap::new(),
             &ctx(&pf),
         )
         .unwrap();
@@ -3406,6 +3622,7 @@ auto /net autofs rw,fd=7 0 0\n\
             1.0,
             Arc::from("root"),
             &mut seen,
+            &mut HashMap::new(),
             &mut HashMap::new(),
             &ctx(&pf),
         )

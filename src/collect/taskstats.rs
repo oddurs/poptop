@@ -541,6 +541,11 @@ pub fn parse_exit(
         // one, but this record does not — so `None` means "not knowable here"
         // and the column shows nothing rather than guessing.
         container: None,
+        minflt: None,
+        majflt: None,
+        vsize: None,
+        nice: None,
+        pss: None,
     })
 }
 

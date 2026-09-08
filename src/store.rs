@@ -361,6 +361,11 @@ mod tests {
                 write: 200,
             }),
             container: None,
+            minflt: None,
+            majflt: None,
+            vsize: None,
+            nice: None,
+            pss: None,
         }
     }
 
@@ -1064,7 +1069,13 @@ mod tests {
         // six more records, and a record is:
         //
         //   pid 4, ppid 4, name 4, user 4, cpu 4, rss 8, threads 1+4,
-        //   state 1, started 1+8, cmd 1+4, io 1+16, container 1+4  =  70
+        //   state 1, started 1+8, cmd 1+4, io 1+16, container 1+4,
+        //   minflt 1+4, majflt 1+4, vsize 1+8, nice 1+4, pss 1+8  =  103
+        //
+        // Every optional costs its tag byte whether or not it is answered, so
+        // `pss` occupies nine bytes on a machine that never reads it. That is
+        // the price of a positional format, and the alternative — a length that
+        // depends on the content — is one `skip` cannot step over.
         //
         // Names and users are interned, so a repeated one costs its index and
         // nothing else — which is why this is the marginal cost of a process
@@ -1076,7 +1087,7 @@ mod tests {
         let mut wider = s.clone();
         wider.procs.extend(s.procs.iter().cloned());
         let per_proc = (encode(&[&wider]).len() - bytes.len()) / 6;
-        assert_eq!(per_proc, 70, "a retained process changed size");
+        assert_eq!(per_proc, 103, "a retained process changed size");
     }
 
     #[test]
@@ -1250,6 +1261,11 @@ mod tests_support {
                     io: None,
 
                     container: None,
+                    minflt: None,
+                    majflt: None,
+                    vsize: None,
+                    nice: None,
+                    pss: None,
                 })
                 .collect(),
             uptime: Duration::from_secs(90_000),

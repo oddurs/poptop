@@ -2022,7 +2022,7 @@ const FIXED_COLUMNS: u16 =
 /// than they needed to be.
 #[cfg(test)]
 pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
-    command_width(width, show_io, show_user, false, 0)
+    command_width(width, show_io, show_user, false, 0, 0)
 }
 
 #[cfg(test)]
@@ -2038,6 +2038,14 @@ fn min_width_for_io(show_user: bool) -> u16 {
 /// The command column's own `Constraint::Min`, and so the narrowest it is ever
 /// actually drawn at.
 const MIN_COMMAND_W: u16 = 10;
+
+/// Major faults a second above which the column is worth looking at.
+///
+/// A rate, not a percentage — which is why it is not `heat_style`'s threshold.
+/// Ten a second is a process being paged in steadily rather than one taking the
+/// odd fault at startup, and anything above that is the answer to why it is
+/// slow.
+const MAJFLT_WARN: u32 = 10;
 
 /// Twelve characters, which is what `docker ps` shows.
 const CID_W: u16 = 12;
@@ -2098,6 +2106,7 @@ fn command_width(
     show_user: bool,
     show_cid: bool,
     dropped: u16,
+    taken: u16,
 ) -> usize {
     let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
     // The container column and its gap. Left out, the elision arithmetic is
@@ -2124,9 +2133,23 @@ fn command_width(
     // Left out, the elision is more cautious than it needs to be — a milder
     // failure than the other direction, but still a name cut for no reason.
     width
-        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + (columns - 1))
+        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + taken + (columns - 1))
         .saturating_add(dropped)
         .max(MIN_COMMAND_W) as usize
+}
+
+/// A signed byte delta, with the sign carried rather than implied.
+///
+/// `+400M` and `-400M` are different facts about a process and a bare `400M`
+/// is neither. Zero is written as `·`, the same mark the IO columns use for a
+/// real nothing, so a row that did not move reads as flat rather than as a
+/// growth of nothing.
+fn fmt_growth(delta: i64) -> String {
+    match delta {
+        0 => "·".into(),
+        d if d > 0 => format!("+{}", fmt_bytes(d as u64)),
+        d => format!("-{}", fmt_bytes(d.unsigned_abs())),
+    }
 }
 
 /// A tree prefix trimmed so the name it indents still has room to be read.
@@ -2419,8 +2442,25 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // columns over one renderer, not a second renderer.
     let show_bars = app.view != crate::app::View::Disk;
     let show_thr = app.view == crate::app::View::Generic;
-    // What the view has given back, in columns, for the command to use.
-    let dropped = if show_bars { 0 } else { BAR_W as u16 * 2 + 3 } + if show_thr { 0 } else { 5 };
+    // The memory view's own columns: what a process's memory actually costs,
+    // what it has reserved, whether it is being paged in, and which way it is
+    // going.
+    let show_mem_cols = app.view == crate::app::View::Memory;
+    // What the view has given back, in columns, for the command to use — less
+    // what it has taken. The memory view drops the thread count and *adds* four
+    // columns of its own, so counting only the drops left the arithmetic
+    // thirty-five columns too generous, and the command was elided in the
+    // middle and then chopped at the right edge with no marker: the exact
+    // failure `command_width` exists to prevent.
+    let given = i32::from(if show_bars { 0 } else { BAR_W as u16 * 2 + 3 })
+        + if show_thr { 0 } else { 5 }
+        - if show_mem_cols {
+            8 + 8 + 7 + 8 + 4i32
+        } else {
+            0
+        };
+    let dropped = given.max(0) as u16;
+    let taken = (-given).max(0) as u16;
     // Dropped on a box running no containers, where it would be twelve columns
     // of nothing. The same rule as the user column, and why a process in no
     // container shows a blank rather than an em dash.
@@ -2431,8 +2471,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // the column at every width a hundred-column terminal has — on exactly the
     // container host this exists for.
     let show_cid = app.any_container()
-        && command_width(area.width, show_io, show_user, true, dropped) as u16 > MIN_COMMAND_W;
-    let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped);
+        && command_width(area.width, show_io, show_user, true, dropped, taken) as u16
+            > MIN_COMMAND_W;
+    let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped, taken);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -2555,6 +2596,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                     cells.push(num("—").style(app.theme.dim_style()));
                     cells.push(num("—").style(app.theme.dim_style()));
                 }
+                if show_mem_cols {
+                    // A thread has no memory of its own; it shares its
+                    // process's, one row up.
+                    for _ in 0..4 {
+                        cells.push(num("—").style(app.theme.dim_style()));
+                    }
+                }
                 // No sparkline. The retained history is per process, so the
                 // only series available here is the parent's — drawing it on
                 // every thread row would put the same shape beside forty
@@ -2609,6 +2657,46 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             if show_io {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
+            }
+            if show_mem_cols {
+                // Never a zero for any of these: a share nobody measured, a
+                // size the platform does not publish and a fault count that was
+                // not collected are all "not known", and this table has one way
+                // of saying that.
+                cells.push(num(match p.pss {
+                    Some(b) => fmt_bytes(b),
+                    None => "—".into(),
+                }));
+                cells.push(num(match p.vsize {
+                    Some(b) => fmt_bytes(b),
+                    None => "—".into(),
+                }));
+                cells.push(match p.majflt {
+                    // Coloured against a *fault* threshold, not through
+                    // `heat_style`: that compares against the warn and critical
+                    // *percentages*, so a process taking five faults a second —
+                    // a real symptom — rendered as dim nothing, and anything
+                    // over eighty pinned to critical. A rate per second is not
+                    // a percentage of anything.
+                    Some(n) if n >= MAJFLT_WARN => {
+                        num(n.to_string()).style(app.theme.warning_style())
+                    }
+                    Some(n) => num(n.to_string()),
+                    None => num("—").style(app.theme.dim_style()),
+                });
+                // Not for a group. Its synthesised pid is the lowest member's
+                // and its `started` is `None`, so on a platform that also
+                // reports `None` there the lookup matches that one member and
+                // draws its delta beside group-summed memory as if it were the
+                // group's. Every other grouped figure either sums or collapses
+                // to an em dash; so does this.
+                let grew = (!r.is_group())
+                    .then(|| app.growth(p.pid, p.started))
+                    .flatten();
+                cells.push(match grew {
+                    Some(d) => num(fmt_growth(d)),
+                    None => num("—").style(app.theme.dim_style()),
+                });
             }
             // The sparkline closes the measurements, so the eye can run down a
             // column of shapes rather than hunting for it past ragged names —
@@ -2692,6 +2780,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     if show_io {
         header_cells.push(right("DISK R"));
         header_cells.push(right("DISK W"));
+    }
+    if show_mem_cols {
+        header_cells.push(right("PSS"));
+        header_cells.push(right("VSZ"));
+        header_cells.push(right("MAJF/s"));
+        header_cells.push(right("GROW"));
     }
     header_cells.push(left(&spark_header(spark_ceiling)));
     header_cells.push(right("PID"));
@@ -2918,6 +3012,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     if show_io {
         widths.push(Constraint::Length(9));
         widths.push(Constraint::Length(9));
+    }
+    if show_mem_cols {
+        widths.push(Constraint::Length(8));
+        widths.push(Constraint::Length(8));
+        widths.push(Constraint::Length(7));
+        widths.push(Constraint::Length(8));
     }
     widths.push(Constraint::Length(SPARK_W as u16));
     widths.push(Constraint::Length(7));
