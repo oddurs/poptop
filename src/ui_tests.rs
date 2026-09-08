@@ -2692,9 +2692,9 @@ fn scrolling_the_list_does_not_rescale_everybody_else_history() {
     let axis_of = |app: &App| {
         render(app, 200, 30)
             .lines()
-            .find(|l| l.contains("processes ("))
+            .find(|l| l.contains("PID"))
             .and_then(|l| {
-                let i = l.find("history ≤")? + "history ≤".len();
+                let i = l.find('≤')? + '≤'.len_utf8();
                 Some(l[i..].split('%').next()?.to_string())
             })
             .expect("no axis label")
@@ -2711,13 +2711,19 @@ fn scrolling_the_list_does_not_rescale_everybody_else_history() {
 }
 
 #[test]
-fn the_table_states_its_sparkline_axis_and_gives_it_up_first() {
+fn the_sparkline_column_states_its_own_scale() {
     // One ceiling is shared by every row so the shapes can be compared, which
     // means the column has a scale — and a scale that moves without saying so
     // is an unlabelled y-axis. It moves below one core too: the steps there are
     // 10 / 25 / 50 / 100, a tenfold swing that one process touching 60% is
     // enough to cause.
-    let title = |cpu: f32, w: u16| {
+    //
+    // In the column header, not the section title. A legend belongs with the
+    // thing it explains, and the title was three metres to the left of it. Read
+    // per line with `rows`, not `render` — `render` returns the whole frame as
+    // one string with no newlines, so `.lines()` on it yields a single blob and
+    // any two facts from anywhere in the frame appear to share a line.
+    let frame = |cpu: f32| {
         let mut app = App::new(60);
         let mut s = sample(10.0);
         s.procs = vec![ProcSample {
@@ -2726,33 +2732,28 @@ fn the_table_states_its_sparkline_axis_and_gives_it_up_first() {
         }];
         app.push(s);
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-        render(&app, w, 20)
-            .lines()
-            .find(|l| l.contains("processes ("))
-            .expect("no section title")
-            .to_string()
+        rows(&app, 200, 20)
+    };
+    let find = |ls: &[String], pat: &str| {
+        ls.iter()
+            .find(|l| l.contains(pat))
+            .unwrap_or_else(|| panic!("no line containing {pat:?}"))
+            .clone()
     };
 
-    assert!(title(500.0, 200).contains("history ≤800%"));
-    assert!(title(40.0, 200).contains("history ≤50%"));
-
-    // And it is the first thing a title too long for its panel loses. ratatui
-    // truncates from the right, and `io_status` is the one message this panel
-    // goes out of its way to guarantee — without it the `i` key looks broken
-    // with nothing on screen saying why. So the ordering is the guarantee:
-    // whatever else is in the title, the axis sits after the IO status and is
-    // cut first.
-    let wide = title(500.0, 200);
-    let io_at = wide.find("io:").expect("no IO status");
-    let axis_at = wide.find("history ≤").expect("no axis label");
-    assert!(
-        io_at < axis_at,
-        "the axis label is ahead of the IO status and would truncate it: {wide:?}"
-    );
-    assert!(
-        title(500.0, 80).contains("io:"),
-        "the IO status was crowded out"
-    );
+    for (cpu, want) in [(500.0f32, "≤800%"), (40.0, "≤50%")] {
+        let ls = frame(cpu);
+        let header = find(&ls, "PID");
+        assert!(
+            header.contains(want),
+            "{want} not in the header: {header:?}"
+        );
+        let title = find(&ls, "processes (");
+        assert!(
+            !title.contains('≤'),
+            "the scale is still in the section title as well: {title:?}"
+        );
+    }
 }
 
 /// A sample carrying one device at a given utilisation and service time.
@@ -5715,10 +5716,19 @@ fn the_column_headers_name_the_columns_under_them() {
         w_head, w_body,
         "DISK W does not sit over the write rate\n{head}\n{body}"
     );
-    // And HISTORY is past both of them, over the sparkline.
+    // And the sparkline's header is past both of them, over the sparkline.
     assert!(
-        col(head, "HISTORY") > w_head,
-        "HISTORY is still to the left of the disk columns\n{head}"
+        col(head, "HIST ") > w_head,
+        "the history column is still to the left of the disk columns\n{head}"
+    );
+    // Identity comes after every measurement, including the sparkline.
+    assert!(
+        col(head, "PID") > col(head, "HIST "),
+        "identity is not at the end of the row\n{head}"
+    );
+    assert!(
+        col(head, "COMMAND") > col(head, "PID"),
+        "PID and COMMAND are not adjacent at the end\n{head}"
     );
 }
 
@@ -5828,11 +5838,12 @@ fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
             text.contains("processes ("),
             "the panel lost its own name at {w}: {text:?}"
         );
-        // Wide enough for the io message, and it is there.
+        // Wide enough for the warning, and it is there — reading as a warning
+        // rather than as one more fact behind an identical `·`.
         if w >= 100 {
             assert!(
-                text.contains(" · io"),
-                "the io message went missing at {w}: {text:?}"
+                text.contains("⚠ 3/4 need root"),
+                "the io warning went missing at {w}: {text:?}"
             );
         }
     }
@@ -5884,5 +5895,131 @@ fn folding_the_user_column_lets_the_io_columns_appear_sooner() {
     assert!(
         !rows(&two, between, 20).iter().any(|l| l.contains("DISK R")),
         "two users, and there is not room for the disk columns at {between}"
+    );
+}
+
+#[test]
+fn the_columns_that_identify_a_process_are_adjacent() {
+    // They used to sit at opposite ends of the row with eight columns of
+    // measurement between them and ten of braille immediately before the name,
+    // so reading a row meant starting at the left, jumping seventy columns
+    // right to find out what it was, and coming back.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        // Two users, so the USER column is not folded into the title — this
+        // test is about where the identity columns sit, not about collapsing.
+        s.procs = vec![
+            ProcSample {
+                io: Some(crate::sample::IoRates {
+                    read: 1 << 20,
+                    write: 0,
+                }),
+                user: std::sync::Arc::from("operator"),
+                cmd: Some(std::sync::Arc::from("node /srv/api/server.js")),
+                ..proc_named(4821, "node", 31.2, 1 << 30)
+            },
+            proc_named(4822, "cron", 1.0, 1 << 20),
+        ];
+        app.push(s);
+    }
+    app.show_io = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let frame = rows(&app, 150, 16);
+    let head = frame.iter().find(|l| l.contains("PID")).unwrap();
+    let at = |pat: &str| {
+        head.find(pat)
+            .map(|b| head[..b].chars().count())
+            .unwrap_or_else(|| panic!("{pat:?} not in {head:?}"))
+    };
+
+    // Every measurement comes before every part of the identity.
+    let identity = at("PID");
+    // `S` is searched with its padding: a bare `"S"` matches inside `RSS` and
+    // the assertion would pass for the wrong reason.
+    for measure in ["CPU%", "RSS", "  S ", "THR", "DISK R", "DISK W", "HIST "] {
+        assert!(
+            at(measure) < identity,
+            "{measure} is drawn after the identity columns: {head:?}"
+        );
+    }
+    // And the identity columns are contiguous: nothing between PID and COMMAND
+    // but USER.
+    assert!(at("USER") > identity, "{head:?}");
+    assert!(at("COMMAND") > at("USER"), "{head:?}");
+    let between = &head[head.find("PID").unwrap() + 3..head.find("COMMAND").unwrap()];
+    assert!(
+        between.split_whitespace().eq(["USER"]),
+        "something other than USER sits between PID and COMMAND: {between:?}"
+    );
+}
+
+#[test]
+fn a_warning_in_the_title_does_not_look_like_a_legend() {
+    // Four kinds of statement behind identical `·` marks read as one
+    // undifferentiated string of facts, and a reader could not tell which of
+    // them was telling them something was wrong.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        s.io_denied = 7;
+        s.procs = (0..9)
+            .map(|i| proc_named(101 + i, "postgres", 20.0 - i as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    app.show_io = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let mut term = Terminal::new(TestBackend::new(150, 20)).unwrap();
+    term.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = term.backend().buffer();
+    let y = (0..20u16)
+        .find(|y| (0..150u16).any(|x| buf[(x, *y)].symbol() == "⚠"))
+        .expect("the warning is not on screen");
+
+    let style_at = |pat: &str| {
+        let line: String = (0..150u16).map(|x| buf[(x, y)].symbol()).collect();
+        let col = line.find(pat).map(|b| line[..b].chars().count()).unwrap() as u16;
+        buf[(col, y)].style()
+    };
+    let warned = style_at("7/9 need root");
+    let plain = style_at("processes (");
+    assert_ne!(
+        warned, plain,
+        "the warning is drawn exactly like the count beside it"
+    );
+    // Compared on what the token sets. A cell's style also carries the
+    // terminal's own `Reset` for background and underline, which the token does
+    // not mention, so the two are never equal as whole structs.
+    let token = app.theme.warning_style();
+    assert_eq!(warned.fg, token.fg, "the warning is not the warning colour");
+    assert_eq!(
+        warned.add_modifier, token.add_modifier,
+        "the warning is not weighted like one"
+    );
+
+    // And when nothing is denied there is no message at all: the columns are
+    // their own legend.
+    let mut clean = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        s.io_denied = 0;
+        s.procs = vec![proc_named(101, "postgres", 20.0, 1 << 20)];
+        clean.push(s);
+    }
+    clean.show_io = true;
+    clean.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let title = rows(&clean, 150, 20)
+        .into_iter()
+        .find(|l| l.contains("processes ("))
+        .unwrap();
+    assert!(
+        !title.contains("io") && !title.contains('⚠'),
+        "a readable box is being told about io it can already see: {title:?}"
     );
 }
