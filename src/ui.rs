@@ -194,7 +194,7 @@ fn divider_of(parts: Vec<Span<'static>>, width: u16, theme: &Theme) -> Line<'sta
     Line::from(out)
 }
 
-fn fmt_bytes(b: u64) -> String {
+pub fn fmt_bytes(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut v = b as f64;
     let mut i = 0;
@@ -442,6 +442,32 @@ struct Figure<'a> {
 ///
 /// So the thresholds are stated here, in the units of the thing being measured,
 /// and mapped onto the theme's own scale so a user's colours still apply.
+/// Dirty pages as a share of the machine's memory.
+fn dirty_share(dirty: u64, total: u64) -> f32 {
+    if total == 0 {
+        return 0.0;
+    }
+    (dirty as f64 / total as f64 * 100.0) as f32
+}
+
+/// Where a dirty share sits on the utilisation scale.
+///
+/// The same argument as [`stall_heat`] and [`steal_heat`]: this is not a
+/// utilisation, so it cannot borrow utilisation's thresholds. A tenth of memory
+/// awaiting writeback is a machine that will stall shortly; the default warn of
+/// 50% would never fire before it already had.
+fn dirty_heat(share: f32, theme: &Theme) -> f32 {
+    const WARN: f32 = 5.0;
+    const CRITICAL: f32 = 10.0;
+    if share >= CRITICAL {
+        theme.critical_pct
+    } else if share >= WARN {
+        theme.warn_pct
+    } else {
+        0.0
+    }
+}
+
 fn steal_heat(pct: f32, theme: &Theme) -> f32 {
     /// A twentieth of the machine going somewhere else. Noticeable, and worth
     /// knowing before it is worth panicking about.
@@ -578,6 +604,29 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                 Span::styled(
                     format!("{steal:>5.1}%"),
                     app.theme.figure_style(steal_heat(steal, &app.theme)),
+                ),
+            ],
+        });
+    }
+
+    // Only when there is enough of it to matter. A box with a fifth of its
+    // memory dirty is about to stall on writeback and every other figure on
+    // this header looks fine until it does — but a few megabytes is what an
+    // ordinary machine carries all the time, and a figure that is always there
+    // is one nobody reads.
+    //
+    // In the memory group rather than the compute one: it is a fact about what
+    // memory is holding, not about what the CPU is doing.
+    if let Some(dirty) = s.mem.dirty.filter(|d| dirty_share(*d, s.mem.total) >= 5.0) {
+        let share = dirty_share(dirty, s.mem.total);
+        figures.push(Figure {
+            group: Group::Memory,
+            rank: 25,
+            spans: vec![
+                Span::styled("DIRTY ", dim),
+                Span::styled(
+                    fmt_bytes(dirty),
+                    app.theme.figure_style(dirty_heat(share, &app.theme)),
                 ),
             ],
         });
@@ -1601,6 +1650,11 @@ pub fn series_names() -> &'static [&'static str] {
 }
 
 /// Exposed for tests: where a stall percentage lands on the theme's scale.
+#[cfg(test)]
+pub fn dirty_heat_for_test(share: f32, theme: &Theme) -> f32 {
+    dirty_heat(share, theme)
+}
+
 #[cfg(test)]
 pub fn steal_heat_for_test(pct: f32, theme: &Theme) -> f32 {
     steal_heat(pct, theme)

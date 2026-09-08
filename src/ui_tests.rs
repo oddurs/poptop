@@ -93,6 +93,13 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
             free: Some(5 << 30),
             swap_total: 2 << 30,
             swap_used: 1 << 30,
+            dirty: None,
+            slab: None,
+            slab_reclaimable: None,
+            shmem: None,
+            page_tables: None,
+            huge_total: None,
+            huge_used: None,
         },
         load: [1.0, 2.0, 3.0],
         procs: vec![
@@ -4929,6 +4936,13 @@ fn memory_is_shown_as_a_composition_not_just_a_level() {
         free: Some(10 << 30), // all headroom is genuinely free
         swap_total: 0,
         swap_used: 0,
+        dirty: None,
+        slab: None,
+        slab_reclaimable: None,
+        shmem: None,
+        page_tables: None,
+        huge_total: None,
+        huge_used: None,
     };
     roomy.push(s.clone());
 
@@ -4968,6 +4982,13 @@ fn the_memory_bar_separates_by_glyph_so_it_survives_monochrome() {
         free: Some(4 << 30),
         swap_total: 0,
         swap_used: 0,
+        dirty: None,
+        slab: None,
+        slab_reclaimable: None,
+        shmem: None,
+        page_tables: None,
+        huge_total: None,
+        huge_used: None,
     };
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::Mono);
@@ -5002,6 +5023,13 @@ fn the_memory_bar_is_always_exactly_its_width() {
             free: Some(available / 2),
             swap_total: 0,
             swap_used: 0,
+            dirty: None,
+            slab: None,
+            slab_reclaimable: None,
+            shmem: None,
+            page_tables: None,
+            huge_total: None,
+            huge_used: None,
         };
         app.push(s);
         let n = figures_line(&app, 120, 24)
@@ -5030,6 +5058,13 @@ fn a_platform_that_cannot_partition_memory_draws_two_parts_not_three() {
         free: None,
         swap_total: 0,
         swap_used: 0,
+        dirty: None,
+        slab: None,
+        slab_reclaimable: None,
+        shmem: None,
+        page_tables: None,
+        huge_total: None,
+        huge_used: None,
     };
     app.push(s);
     let bar: String = figures_line(&app, 120, 24)
@@ -9754,4 +9789,47 @@ fn steal_is_coloured_on_its_own_scale_not_the_utilisation_one() {
     // And it maps onto the theme's own boundaries, so a user who recoloured
     // warn and critical still gets their colours.
     assert!(theme.warn_pct < theme.critical_pct);
+}
+
+#[test]
+fn dirty_appears_only_when_there_is_enough_of_it_to_matter() {
+    // A few megabytes is what an ordinary machine carries all the time; a fifth
+    // of memory awaiting writeback is a box about to stall, and every other
+    // figure on this header looks fine until it does.
+    let header = |dirty: Option<u64>| {
+        let mut app = App::new(600);
+        let mut s = sample(10.0);
+        s.mem.total = 16 << 30;
+        s.mem.dirty = dirty;
+        app.push(s);
+        rows(&app, 200, 10).join("\n")
+    };
+    assert!(
+        !header(None).contains("DIRTY"),
+        "a platform that cannot say said 0"
+    );
+    assert!(
+        !header(Some(64 << 20)).contains("DIRTY"),
+        "an ordinary machine's writeback backlog was announced"
+    );
+    let loud = header(Some(4 << 30));
+    assert!(
+        loud.contains("DIRTY") && loud.contains("4.0G"),
+        "a box about to stall on writeback said nothing:\n{loud}"
+    );
+}
+
+#[test]
+fn dirty_is_coloured_on_its_own_scale() {
+    // Not a utilisation: the default warn of 50% would never fire before the
+    // machine had already stalled.
+    let theme = crate::theme::Theme::default();
+    let heat = |v| crate::ui::dirty_heat_for_test(v, &theme);
+    assert_eq!(heat(1.0), 0.0);
+    assert_eq!(heat(5.0), theme.warn_pct);
+    assert_eq!(
+        heat(12.0),
+        theme.critical_pct,
+        "a tenth of memory dirty drew calm"
+    );
 }

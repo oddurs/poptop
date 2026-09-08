@@ -257,6 +257,32 @@ Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
 
+### What the memory is actually holding
+
+`MEM 50%` and a total say nothing about the shape of the other half. `--once`
+now partitions it: **dirty** pages awaiting writeback, **slab** and the part of
+it the kernel can reclaim, **shmem**, **page tables**, and **huge pages**
+reserved against used.
+
+The one that earns header space is **`DIRTY`**, and only above 5% of memory. A
+box with a fifth of its memory awaiting writeback is about to stall on IO and
+every other figure looks fine until it does — while a few megabytes is what an
+ordinary machine carries all the time, and a figure that is always there is one
+nobody reads.
+
+Coloured on its own scale, like `STL` and the stall figures: a tenth of memory
+dirty is serious, and the default warn of 50% would never fire before the
+machine had already stalled.
+
+**Why these and not `used`:** `used` is `total - available`, so it already
+contains every one of them. A kernel memory leak shows up there as used memory
+belonging to no process — precisely the case where the process table cannot
+explain the header — and this is where it becomes visible.
+
+An absent line is `—`, not zero. A kernel built without hugetlb has no huge
+pages to report; one with none reserved has zero of them, and those are
+different answers. `/proc/meminfo` was already being read, so this costs nothing.
+
 ### Whether the box is busy, or not being given a box
 
 `/proc/stat`'s CPU line has ten fields and poptop was reading four of them. The

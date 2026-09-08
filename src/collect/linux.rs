@@ -1568,6 +1568,49 @@ fn parse_meminfo(text: &str) -> MemStat {
     let free = get("MemFree:");
     let swap_total = get("SwapTotal:");
     let swap_free = get("SwapFree:");
+    // `None` where the line is absent, unlike `get` above, which reports a
+    // missing figure as zero. For these the difference matters: a kernel built
+    // without `CONFIG_HUGETLB` has no huge pages to report and one with none
+    // reserved has zero of them, and those are different answers.
+    let find = |key: &str| -> Option<u64> {
+        text.lines().find_map(|l| {
+            Some(
+                l.strip_prefix(key)?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()?
+                    * 1024,
+            )
+        })
+    };
+    // Counted in pages of `Hugepagesize`, not in kilobytes, so they need the
+    // page size to become bytes — the one family in this file that is not in
+    // kB, and reading them with `find` would report a two-megabyte page as two
+    // kilobytes.
+    let huge_kb = text
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("Hugepagesize:")?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+        .unwrap_or(0);
+    let huge_pages = |key: &str| -> Option<u64> {
+        text.lines()
+            .find_map(|l| {
+                l.strip_prefix(key)?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .map(|n| n * huge_kb * 1024)
+    };
+    let huge_total = huge_pages("HugePages_Total:");
+    let huge_free = huge_pages("HugePages_Free:");
     MemStat {
         total,
         // MemAvailable already accounts for reclaimable cache, so this is the
@@ -1581,6 +1624,16 @@ fn parse_meminfo(text: &str) -> MemStat {
         free: Some(free.min(available)),
         swap_total,
         swap_used: swap_total.saturating_sub(swap_free),
+        dirty: find("Dirty:"),
+        slab: find("Slab:"),
+        slab_reclaimable: find("SReclaimable:"),
+        shmem: find("Shmem:"),
+        page_tables: find("PageTables:"),
+        huge_total,
+        huge_used: match (huge_total, huge_free) {
+            (Some(t), Some(f)) => Some(t.saturating_sub(f)),
+            _ => None,
+        },
     }
 }
 
@@ -2629,6 +2682,48 @@ mod tests {
             "an exited process kept its container: {} entries",
             pf.containers.len()
         );
+    }
+
+    #[test]
+    fn meminfo_partitions_what_the_machine_is_holding() {
+        // Huge pages are counted in *pages* of `Hugepagesize`, not kilobytes
+        // like everything else in this file — reading them with the same helper
+        // reports a two-megabyte page as two kilobytes.
+        let m = parse_meminfo(
+            "MemTotal:       16384000 kB\n\
+             MemFree:         1024000 kB\n\
+             MemAvailable:    8192000 kB\n\
+             Dirty:            512000 kB\n\
+             Shmem:            256000 kB\n\
+             Slab:            1024000 kB\n\
+             SReclaimable:     768000 kB\n\
+             PageTables:        64000 kB\n\
+             HugePages_Total:      64\n\
+             HugePages_Free:       16\n\
+             Hugepagesize:       2048 kB\n\
+             SwapTotal:       2048000 kB\n\
+             SwapFree:        2048000 kB\n",
+        );
+        assert_eq!(m.dirty, Some(512_000 * 1024));
+        assert_eq!(m.slab, Some(1_024_000 * 1024));
+        assert_eq!(m.slab_reclaimable, Some(768_000 * 1024));
+        assert_eq!(m.shmem, Some(256_000 * 1024));
+        assert_eq!(m.page_tables, Some(64_000 * 1024));
+        // 64 pages of 2 MiB.
+        assert_eq!(m.huge_total, Some(64 * 2048 * 1024));
+        assert_eq!(m.huge_used, Some(48 * 2048 * 1024), "total minus free");
+    }
+
+    #[test]
+    fn a_meminfo_without_a_line_says_nothing_rather_than_zero() {
+        // A kernel built without hugetlb has no huge pages to report; one with
+        // none reserved has zero of them. Different answers.
+        let m = parse_meminfo("MemTotal: 100 kB\nMemFree: 50 kB\nMemAvailable: 60 kB\n");
+        assert_eq!(m.huge_total, None, "an absent line was reported as zero");
+        assert_eq!(m.dirty, None);
+        assert_eq!(m.slab, None);
+        // The figures that were there are still read.
+        assert_eq!(m.total, 100 * 1024);
     }
 
     #[test]

@@ -37,6 +37,27 @@ pub struct MemStat {
     pub free: Option<u64>,
     pub swap_total: u64,
     pub swap_used: u64,
+    /// Pages modified and not yet written back.
+    ///
+    /// A box with gigabytes dirty is about to stall on IO, and every other
+    /// figure here looks fine until it does.
+    pub dirty: Option<u64>,
+    /// Kernel memory, and the part of it the kernel can hand back under
+    /// pressure.
+    ///
+    /// A leak here presents as "used" memory belonging to no process, which is
+    /// precisely the case where the process table cannot explain the header.
+    pub slab: Option<u64>,
+    pub slab_reclaimable: Option<u64>,
+    /// Shared memory, counted once by the kernel — which is why per-process RSS
+    /// sums to more than the machine has.
+    pub shmem: Option<u64>,
+    /// Page tables. Large and invisible on a database box.
+    pub page_tables: Option<u64>,
+    /// Huge pages reserved, and how much of that is in use. Also large and
+    /// invisible where they are configured at all.
+    pub huge_total: Option<u64>,
+    pub huge_used: Option<u64>,
 }
 
 /// A process this reader knows nothing about, as the base a schema merge fills
@@ -140,7 +161,7 @@ crate::persist::records! {
 // above and left out here is a compile error naming the field — the reader
 // cannot build the struct, and the writer cannot destructure it. Neither is a
 // silent stop-retaining-this. See `crate::persist`.
-crate::persist::codec! { MemStat { total: u64, used: u64, available: u64, free: Option<u64>, swap_total: u64, swap_used: u64 } }
+crate::persist::codec! { MemStat { total: u64, used: u64, available: u64, free: Option<u64>, swap_total: u64, swap_used: u64, dirty: Option<u64>, slab: Option<u64>, slab_reclaimable: Option<u64>, shmem: Option<u64>, page_tables: Option<u64>, huge_total: Option<u64>, huge_used: Option<u64> } }
 
 impl ProcSample {
     /// How this process is followed from one sample to the next.
