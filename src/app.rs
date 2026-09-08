@@ -175,6 +175,20 @@ pub struct App {
     /// makes the same two choices. Grouping destroys parentage by construction,
     /// so a grouped tree would be a tree of things that are not processes.
     pub group: bool,
+    /// Show the selected process's own history in place of the machine's.
+    ///
+    /// The buffer already holds every retained sample's whole process table, so
+    /// "what has *this* process been doing" is a question the data can answer
+    /// and the interface could not: it was a ten-column sparkline in a table
+    /// row, about one percent of the screen for the thing the tool is built
+    /// around.
+    ///
+    /// It replaces the timeline rather than crowding beside it. The timeline is
+    /// the panel about time; this is the same question asked of one process, so
+    /// it is the same panel with a different subject — and it inherits
+    /// scrubbing, zoom, the cursor and the caption by being that rather than by
+    /// reimplementing them.
+    pub detail: bool,
     /// Whether IO is being collected. Deliberately a ratchet: hiding the
     /// columns does not stop collection, because resuming later would punch a
     /// hole in the middle of history. One clean boundary between "not collected
@@ -209,6 +223,7 @@ impl App {
             show_io: true,
             show_kernel: false,
             group: false,
+            detail: false,
             io_ratchet: true,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
@@ -368,6 +383,82 @@ impl App {
                 .filter(|p| p.is_kernel_thread() && query.matches(p))
                 .count()
         })
+    }
+
+    /// The watched process's own history over a window of samples.
+    ///
+    /// `None` when nothing is selected, or when the process appears nowhere in
+    /// the window — a panel about a process that was never here has nothing to
+    /// draw, and an empty graph would say it was idle.
+    ///
+    /// Every row scales to its own peak, which the graph already does per row,
+    /// so a thread count and a percentage sit in the same panel without either
+    /// pretending to be the other. Disk is in MB/s for the same reason: the
+    /// axis prints its ceiling as a bare number, and `4` is a scale a reader
+    /// can hold where `4194304` is not.
+    pub fn watched_series(&self, window: &[&Sample]) -> Option<WatchedSeries> {
+        let w = self.selected.as_ref()?;
+        let total_mem = window.last()?.mem.total.max(1) as f32;
+
+        // Summed inline rather than through `grouped`, which builds a hash map
+        // and an order vector to answer a question about one name. This runs
+        // once per sample in the window — up to the whole buffer — on every
+        // frame, and a codebase that interns `Arc<str>` to save far less should
+        // not allocate six hundred hash maps to redraw a panel.
+        let find = |s: &Sample| -> Option<Member> {
+            match w {
+                Watched::Process { pid, started, .. } => s
+                    .procs
+                    .iter()
+                    .find(|p| p.pid == *pid && p.started == *started)
+                    .map(Member::of),
+                Watched::Group { name } => {
+                    let mut it = s.procs.iter().filter(|p| *p.name == **name);
+                    let mut m = Member::of(it.next()?);
+                    for p in it {
+                        m.add(p);
+                    }
+                    Some(m)
+                }
+            }
+        };
+
+        let seen: Vec<Option<Member>> = window.iter().map(|s| find(s)).collect();
+        if seen.iter().all(Option::is_none) {
+            return None;
+        }
+        let absent: Vec<bool> = seen.iter().map(Option::is_none).collect();
+
+        // A figure the platform would not give is a gap in that row, never a
+        // zero. `threads` is `None` on macOS for processes this user does not
+        // own, and *every* process has no `io` in the first sample it appears
+        // in — there is no previous counter to diff against — so plotting zero
+        // would put a false floor under the leftmost cell of every panel.
+        let row = |name: &'static str, f: &dyn Fn(&Member) -> Option<f32>| DetailRow {
+            name,
+            values: seen
+                .iter()
+                .map(|m| m.as_ref().and_then(f).unwrap_or(0.0))
+                .collect(),
+            unknown: seen
+                .iter()
+                .map(|m| m.as_ref().is_some_and(|m| f(m).is_none()))
+                .collect(),
+        };
+
+        let mut rows = vec![
+            row("CPU", &|m| Some(m.cpu)),
+            row("MEM", &|m| Some(m.rss as f32 / total_mem * 100.0)),
+        ];
+        // Only where some sample could answer at all. A row of pure gap is
+        // worse than a shorter panel.
+        if seen.iter().flatten().any(|m| m.threads.is_some()) {
+            rows.push(row("THR", &|m| m.threads.map(|n| n as f32)));
+        }
+        if seen.iter().flatten().any(|m| m.io.is_some()) {
+            rows.push(row("DISK", &|m| m.io.map(|b| b as f32 / (1024.0 * 1024.0))));
+        }
+        Some(WatchedSeries { rows, absent })
     }
 
     /// What is wrong with the filter, if anything.
@@ -730,6 +821,54 @@ fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
             }
         })
         .collect()
+}
+
+/// One row of a process's history.
+pub struct DetailRow {
+    pub name: &'static str,
+    pub values: Vec<f32>,
+    /// Samples where the process was there and this figure was not readable.
+    /// Drawn as a gap, never as a zero.
+    pub unknown: Vec<bool>,
+}
+
+/// One process's history across a window of samples.
+pub struct WatchedSeries {
+    pub rows: Vec<DetailRow>,
+    /// Which samples the process was not in. Drawn as a gap, never as zero.
+    pub absent: Vec<bool>,
+}
+
+/// What one row of the detail panel needs from a process, or from every process
+/// sharing a name.
+///
+/// A flattened `ProcSample` rather than the thing itself, so a group is summed
+/// once as it is walked instead of being rebuilt through `grouped`.
+struct Member {
+    cpu: f32,
+    rss: u64,
+    threads: Option<u32>,
+    /// Read plus write. `None` if any member could not be read — the same
+    /// refusal `grouped` makes, for the same reason.
+    io: Option<u64>,
+}
+
+impl Member {
+    fn of(p: &ProcSample) -> Self {
+        Self {
+            cpu: p.cpu,
+            rss: p.rss,
+            threads: p.threads,
+            io: p.io.map(|io| io.read + io.write),
+        }
+    }
+
+    fn add(&mut self, p: &ProcSample) {
+        self.cpu += p.cpu;
+        self.rss += p.rss;
+        self.threads = self.threads.zip(p.threads).map(|(a, b)| a + b);
+        self.io = self.io.zip(p.io).map(|(a, b)| a + b.read + b.write);
+    }
 }
 
 /// A resource that is stopping work.

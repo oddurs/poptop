@@ -132,6 +132,15 @@ KEYS:
                     names one. Never applied on its own — a table that reorders
                     itself under the reader is worse than one that does not.
     t               toggle the process tree
+    d               show the selected process's own history in place of the
+                    machine's: CPU, memory, threads and disk over the window on
+                    screen, at full width, with the moments it was not running
+                    marked rather than interpolated. `+`/`-` widen that window
+                    the same way they do for the machine, and the cursor is the
+                    same one, so scrubbing moves both.
+
+                    Select a process with the arrow keys first — with nothing
+                    selected there is no history to show, and the panel says so.
     g               fold processes sharing a name into one row, with the count
                     in the PID column. CPU, memory and threads are summed;
                     state, user, history and the command line are not — a group
@@ -734,6 +743,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 app.group = false;
             }
         }
+        KeyCode::Char('d') => app.detail = !app.detail,
         KeyCode::Char('g') => {
             app.group = !app.group;
             if app.group {
