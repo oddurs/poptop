@@ -44,13 +44,10 @@ poptop is not the first tool to let you look backwards, and it is not the most
 capable one.
 
 **[atop](https://www.atoptool.nl/)** has recorded historical per-process data
-for years. It writes compressed daily logfiles, keeps 28 days by default, and
-does one thing poptop cannot: it captures processes that started *and finished*
-between two samples. If a burst of short-lived processes spiked your machine,
-atop can name them and poptop cannot — see
-[`docs/roadmaps/05-data-fidelity.md`](docs/roadmaps/05-data-fidelity.md).
-poptop will at least tell you they happened (below), but a count is not a list.
-On raw capability atop is the better tool.
+for years. It writes compressed daily logfiles and keeps 28 days by default,
+which poptop does not. It also captures processes that started *and finished*
+between two samples — and so, now, does poptop: see **Processes that came and
+went** below. On logging and retention atop is still the better tool.
 
 **[zenith](https://github.com/bvaisvil/zenith)** has zoomable scroll-back charts
 and saves data between runs. Its scrollback is aggregate-only, though: its
@@ -868,9 +865,49 @@ In practice the dash lands where it costs nothing. A process busy enough for its
 thread count to matter is almost always one of your own: measured across a
 660-process table, **no process above 5% CPU had an unreadable thread count.**
 
-**Actually capturing those processes** needs `taskstats` over netlink, which
-needs `CAP_NET_ADMIN` — tracked in the roadmap, and the remaining substantive
-capability gap against atop.
+**Actually capturing those processes** is what the next section is about.
+
+### Processes that came and went
+
+poptop reads `/proc` at an instant, so a process that lives 200ms never existed
+as far as a sampling monitor is concerned. That is not an edge case: a burst of
+short-lived processes is one of the commonest causes of exactly the spike you
+opened poptop to explain, and scrubbing back to it showed a process table that
+could not account for the graph above it.
+
+The kernel will tell you. `taskstats` emits a record for every task that exits,
+and poptop registers as a listener — so a process that lived and died between
+two samples is a **row in the interval that contains it**, marked `X`, with its
+pid, its parent, its user, the CPU it used and its peak memory. It filters,
+sorts and searches like any other row: `state = X` finds them all.
+
+    exited  7390  in the last interval
+            true pid 37833 0.0%
+
+It needs three things, and poptop says which is missing rather than showing you
+an empty interval:
+
+- **`CAP_NET_ADMIN`** — run as root, or grant the capability.
+- **The initial PID namespace.** The kernel registers exit listeners only
+  there, so this does not work from inside a container.
+- **The initial network namespace** — the easy one to miss. Registration
+  succeeds anywhere, but delivery goes to a port in the initial net namespace,
+  so a listener in its own hears nothing and it looks exactly like a kernel
+  without the feature.
+
+**It costs almost nothing.** Measured: 972 µs a sample against 944 µs with it
+off, and **+26 µs to capture 145 records** during a burst — the kernel has
+already written them, and poptop is only draining a socket.
+
+A burst big enough to overrun the socket buffer is reported, not swallowed:
+20,000 exits in one second overran a 4 MB buffer and the kernel dropped every
+record of it. poptop asks for 16 MB, and the `N came and went` figure in the
+panel title is the reconciliation — the kernel's own count of task creations,
+minus what the table can now account for. If records are lost, that figure is
+what says so.
+
+Not on macOS, which has no equivalent; `--once` reports `exited — not
+collected` rather than a zero.
 
 ### Themes
 

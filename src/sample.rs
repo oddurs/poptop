@@ -765,6 +765,17 @@ pub struct Sample {
     /// optional list instead of four hundred, and so the task-level figures in
     /// the header can be itemised without walking the process table.
     pub tasks: Option<Vec<ThreadSample>>,
+    /// Processes that lived and died inside this interval.
+    ///
+    /// The gap this closes is the substantive one against atop: poptop reads
+    /// `/proc` at an instant, so a process that lived 200ms never existed —
+    /// and a burst of them is one of the commonest causes of exactly the spike
+    /// somebody opens poptop to explain.
+    ///
+    /// `None` means nobody could ask: the kernel refuses exit listeners outside
+    /// the initial namespace, and macOS has no equivalent. Not an empty list,
+    /// which means the interval genuinely had none.
+    pub exited: Option<Vec<ProcSample>>,
 }
 
 impl Sample {
@@ -816,11 +827,12 @@ impl Sample {
             net: None,
             filesystems: None,
             tasks: None,
+            exited: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from

@@ -261,6 +261,15 @@ pub struct Churn {
     pub created: u64,
     /// Tasks visible in the sample that were not in the one before it.
     pub visible: u64,
+    /// Tasks that were created and exited inside the interval, and which
+    /// poptop caught the exit record for.
+    ///
+    /// Accounted for, not unseen. Before exit records existed, every one of
+    /// these was in `unseen` — that figure was the *measure* of what poptop
+    /// could not show, and its whole purpose was to stop the table quietly
+    /// claiming completeness. Now they are rows, so counting them as missing
+    /// would be the same lie in the opposite direction.
+    pub caught: u64,
 }
 
 impl Churn {
@@ -275,7 +284,9 @@ impl Churn {
     /// cumulative task counter could separate the two, and `/proc` publishes
     /// none — so the number is reported as what it honestly is.
     pub fn unseen(&self) -> u64 {
-        self.created.saturating_sub(self.visible)
+        self.created
+            .saturating_sub(self.visible)
+            .saturating_sub(self.caught)
     }
 }
 
@@ -319,7 +330,20 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
             },
         )
         .sum();
-    Some(Churn { created, visible })
+    // Only the exits that were also *created* in this interval. A process that
+    // was running at the previous sample and exited during this one was not
+    // created here, so counting it would credit the wrong side and drive
+    // `unseen` to zero on a box with ordinary turnover.
+    let caught = now.exited.as_ref().map_or(0, |e| {
+        e.iter()
+            .filter(|p| p.key().is_none_or(|k| !before.contains_key(&k)))
+            .count() as u64
+    });
+    Some(Churn {
+        created,
+        visible,
+        caught,
+    })
 }
 
 /// Which samples are not contiguous in time with the one before them.

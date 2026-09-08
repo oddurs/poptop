@@ -289,23 +289,34 @@ fn main() -> io::Result<()> {
                 Needs::NONE,
                 Needs::NONE.with(Source::Io),
                 Needs::NONE.with(Source::Io).with(Source::Threads),
+                Needs::NONE
+                    .with(Source::Io)
+                    .with(Source::Threads)
+                    .with(Source::Exited),
             ] {
                 collector.sample(needs)?;
                 let t0 = std::time::Instant::now();
                 let mut count = 0;
                 let mut tasks = 0;
+                let mut exited = 0;
                 for _ in 0..n {
                     let s = collector.sample(needs)?;
                     count = s.procs.len();
                     tasks = s.tasks.as_ref().map_or(0, Vec::len);
+                    exited += s.exited.as_ref().map_or(0, Vec::len);
                 }
-                let label = match (needs.asked(Source::Io), needs.asked(Source::Threads)) {
-                    (false, _) => "io off, threads off",
-                    (true, false) => "io on,  threads off",
-                    (true, true) => "io on,  threads on ",
+                let label = match (
+                    needs.asked(Source::Io),
+                    needs.asked(Source::Threads),
+                    needs.asked(Source::Exited),
+                ) {
+                    (false, ..) => "io off, threads off, exits off",
+                    (true, false, _) => "io on,  threads off, exits off",
+                    (true, true, false) => "io on,  threads on,  exits off",
+                    (true, true, true) => "io on,  threads on,  exits on ",
                 };
                 outln!(
-                    "{label}: {count} procs, {tasks} threads, {:?}/sample",
+                    "{label}: {count} procs, {tasks} threads, {exited} exits, {:?}/sample",
                     t0.elapsed() / n
                 );
             }
@@ -492,7 +503,7 @@ fn clock_line(s: &sample::Sample) -> Option<String> {
 }
 
 fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
-    let needs = Needs::NONE.with(Source::Io);
+    let needs = Needs::NONE.with(Source::Io).with(Source::Exited);
     collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
@@ -568,6 +579,19 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     }
     outln!("load    {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]);
     outln!("procs   {}", s.procs.len());
+    // The processes that lived and died inside the interval — the ones a
+    // sample of `/proc` at an instant cannot see at all. An em dash where the
+    // kernel would not let poptop listen, never a zero: "none exited" and "I
+    // was not allowed to look" are opposite answers.
+    match &s.exited {
+        Some(e) => {
+            outln!("exited  {}  in the last interval", e.len());
+            for p in e.iter().take(3) {
+                outln!("        {} pid {} {:.1}%", p.name, p.pid, p.cpu);
+            }
+        }
+        None => outln!("exited  —  not collected"),
+    }
     if s.io_denied > 0 {
         outln!(
             "io     {}/{} processes unreadable — run as root to see them",

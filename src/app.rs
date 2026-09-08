@@ -297,7 +297,14 @@ impl App {
 
     /// What the collector should gather for the next sample.
     pub fn needs(&self) -> Needs {
-        let mut n = Needs::at(self.sample_count).with(Source::ClockPolicies);
+        let mut n = Needs::at(self.sample_count)
+            .with(Source::ClockPolicies)
+            // Always asked for, never behind a key. Draining a socket the
+            // kernel has already filled costs almost nothing, and the whole
+            // value is that the record is there when you scrub back to the
+            // spike — a ratchet would mean the burst you are looking for
+            // happened before you thought to ask.
+            .with(Source::Exited);
         if self.io_ratchet {
             n = n.with(Source::Io);
         }
@@ -434,6 +441,10 @@ impl App {
         };
         let (query, _) = filter_of(&self.filter);
         let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
+        // Processes that lived and died inside this interval, in the interval
+        // that contains them. They are rows like any other — filtered, sorted
+        // and searched the same way — and `state` is what marks them.
+        let exited: &[ProcSample] = sample.exited.as_deref().unwrap_or(&[]);
 
         if self.tree {
             // A filtered tree keeps matches plus their ancestors; `tree::build`
@@ -450,13 +461,14 @@ impl App {
             // Withheld from the tree rather than filtered out of its rows: a
             // hidden kernel thread must not survive as somebody's visible
             // ancestor, and `kthreadd` is the ancestor of every one of them.
-            let procs: Vec<&ProcSample> = sample.procs.iter().filter(shown).collect();
+            let procs: Vec<&ProcSample> = sample.procs.iter().chain(exited).filter(shown).collect();
             return tree::build(&procs, self.sort, matched.as_ref());
         }
 
         let mut v: Vec<&ProcSample> = sample
             .procs
             .iter()
+            .chain(exited)
             .filter(shown)
             .filter(|p| query.matches_in(p, sample.tasks.as_deref()))
             .collect();
@@ -625,7 +637,10 @@ impl App {
                 match worst {
                     Source::Io => self.show_io = false,
                     Source::Threads => self.show_threads = false,
-                    Source::ClockPolicies => {}
+                    // Neither has a view to turn off: exit records go into the
+                    // table beside live rows, and the clock ceiling is a header
+                    // figure. The withheld clause is what says they stopped.
+                    Source::Exited | Source::ClockPolicies => {}
                 }
                 self.withheld.push(worst);
             }
@@ -642,6 +657,7 @@ impl App {
         Size {
             procs: s.map_or(0, |s| s.procs.len() as u64),
             tasks: s.map_or(0, |s| s.tasks.as_ref().map_or(0, Vec::len) as u64),
+            exited: s.map_or(0, |s| s.exited.as_ref().map_or(0, Vec::len) as u64),
         }
     }
 

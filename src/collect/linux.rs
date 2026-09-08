@@ -4,10 +4,15 @@
 //! a delta between the previous read and this one, which is why the collector
 //! is stateful and why the very first sample reports zero busy time.
 
-use super::{Collector, Needs, Source};
+use super::{Collector, Needs, Source, taskstats};
 
 /// Every optional source this backend reads.
-pub const SUPPORTED: &[Source] = &[Source::Io, Source::Threads, Source::ClockPolicies];
+pub const SUPPORTED: &[Source] = &[
+    Source::Io,
+    Source::Threads,
+    Source::ClockPolicies,
+    Source::Exited,
+];
 use crate::sample::{
     DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
     ThreadSample,
@@ -147,6 +152,14 @@ pub struct ProcFs {
     /// and sharing a map would make a stale process entry look like a thread
     /// that had not moved.
     prev_task_jiffies: HashMap<i32, u64>,
+    /// The exit listener, once somebody has asked for one.
+    ///
+    /// Opened lazily rather than at startup: it needs `CAP_NET_ADMIN` and the
+    /// initial namespace, and a tool that refused to start without them would
+    /// be useless on every box that has neither.
+    exits: Option<taskstats::Listener>,
+    /// Why there is no listener, said once. `None` before anything has tried.
+    exits_why: Option<String>,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_at: Option<SystemTime>,
@@ -225,6 +238,8 @@ impl ProcFs {
             partitions: std::collections::HashSet::new(),
             prev_proc_jiffies: HashMap::new(),
             prev_task_jiffies: HashMap::new(),
+            exits: None,
+            exits_why: None,
             prev_proc_io: HashMap::new(),
             prev_at: None,
             users: parse_passwd(),
@@ -589,6 +604,32 @@ impl ProcFs {
     ///
     /// One small read per frequency policy — a handful on any machine — and
     /// none at all on one that publishes none.
+    /// Processes that exited since the last sample.
+    ///
+    /// `None` when nobody asked or when the kernel refused, which are different
+    /// from an interval in which nothing exited — and that difference is the
+    /// whole point: a table that quietly omits what happened in an interval is
+    /// worse than one that says it cannot see it.
+    fn read_exited(&mut self, needs: Needs, elapsed_secs: f64) -> Option<Vec<ProcSample>> {
+        if !needs.wants(Source::Exited) {
+            return None;
+        }
+        if self.exits.is_none() && self.exits_why.is_none() {
+            match taskstats::Listener::open() {
+                Ok(l) => self.exits = Some(l),
+                Err(why) => {
+                    // Said once, through the same channel as everything else
+                    // the backend had to assume about this machine.
+                    let why = why.why();
+                    self.notes.push(why.clone());
+                    self.exits_why = Some(why);
+                }
+            }
+        }
+        let users = &mut self.users;
+        self.exits.as_mut().map(|l| l.drain(elapsed_secs, users))
+    }
+
     fn read_clock_ceiling(&mut self, needs: Needs) -> Option<f32> {
         // One directory listing a minute, and only that — on the cadence the
         // source declares rather than a counter kept here. The rule and the
@@ -1715,6 +1756,7 @@ impl Collector for ProcFs {
 
         let mut io_denied = 0;
         let (procs, tasks) = self.read_procs(elapsed, needs, &mut io_denied)?;
+        let exited = self.read_exited(needs, elapsed.as_secs_f64());
         // `/proc/stat` is read *after* the process walk, not before, so every
         // process in `procs` is guaranteed to have been counted by `forks`.
         // Read first, a task created during the walk appeared in `procs`
@@ -1748,6 +1790,7 @@ impl Collector for ProcFs {
             filesystems: self.read_filesystems(),
             net,
             tasks,
+            exited,
         })
     }
 }
