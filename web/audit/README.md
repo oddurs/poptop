@@ -15,8 +15,15 @@ node audit/sections.js               # the landing page's pictures and claims
 node audit/perf.js                   # layout shift and weight, throttled
 ```
 
-All five exit non-zero on failure, so `for f in audit headings interact
-sections; do node audit/$f.js || break; done` is the whole suite.
+All five exit non-zero on failure, and the first four run in CI — see the
+`browser` job in `.github/workflows/site.yml`, which the deploy depends on.
+That job is the point: before it existed these results were a property of one
+laptop while being quoted as a property of the repository, which is the failure
+`./check` refuses to make for the tool.
+
+`playwright-core` drives whatever Chrome is installed rather than downloading
+one. Set `CHROME` if the binary is somewhere unusual; otherwise the scripts find
+it by channel.
 
 `playwright-core` is the browserless package: it drives the Chrome on the
 machine rather than downloading its own, so this adds one small dev dependency
@@ -57,6 +64,15 @@ all and withholds a separation figure rather than reporting a failure, and that
 the keymap's caps drive the frame above them. One still is asserted to be
 *blank* — the closing frame, which is what poptop looks like a second after you
 start it.
+
+**A note on what they cannot check.** The landing page shows a *simulation* of
+poptop, and two rules exist to keep that honest: the provenance rule, enforced
+by `the_landing_page_says_where_its_data_came_from` in `cargo test`, and the
+agreement between the two braille renderers, enforced by
+`the_browser_draws_the_same_cells_as_the_terminal` against a fixture the tool
+generates. Both are Rust tests rather than browser ones, because both are
+answerable from the source — but they belong to the same job as these scripts:
+stopping the site from claiming more than it does.
 
 **`perf.js`** loads the site over a throttled connection and reports layout
 shift, paint timing and transferred weight. It is the check on the font work:

@@ -1,7 +1,13 @@
 const { chromium } = require("playwright-core");
+
+// playwright-core drives a browser rather than shipping one. `channel` finds
+// the installed Chrome on any platform; CHROME overrides it where the binary is
+// somewhere unusual, which is how this runs on a CI image.
+const LAUNCH = process.env.CHROME
+  ? { executablePath: process.env.CHROME }
+  : { channel: "chrome" };
 const fs = require("fs");
 
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const BASE = process.env.BASE || "http://127.0.0.1:3000";
 const OUT = process.env.OUT || ".";
 
@@ -180,7 +186,7 @@ const AUDIT = () => {
 };
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: CHROME });
+  const browser = await chromium.launch(LAUNCH);
   const report = [];
 
   for (const [vname, w, h] of VIEWPORTS) {

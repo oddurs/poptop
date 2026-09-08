@@ -2,7 +2,7 @@
 id: 72
 title: Nothing compares the site's braille to the terminal's
 type: chore
-status: backlog
+status: done
 milestone: web.1
 created: 2026-09-08
 updated: 2026-09-08

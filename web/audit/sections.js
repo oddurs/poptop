@@ -5,7 +5,13 @@
    behind it. These are the assertions that would fail if one broke. */
 const { chromium } = require("playwright-core");
 
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+// playwright-core drives a browser rather than shipping one. `channel` finds
+// the installed Chrome on any platform; CHROME overrides it where the binary is
+// somewhere unusual, which is how this runs on a CI image.
+const LAUNCH = process.env.CHROME
+  ? { executablePath: process.env.CHROME }
+  : { channel: "chrome" };
+
 const BASE = process.env.BASE || "http://127.0.0.1:3000";
 
 let failures = 0;
@@ -15,7 +21,7 @@ const ok = (label, cond, extra = "") => {
 };
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: CHROME });
+  const browser = await chromium.launch(LAUNCH);
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
   const page = await ctx.newPage();
   const errors = [];

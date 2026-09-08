@@ -60,8 +60,52 @@ jobs:
         with:
           path: web/dist
 
+  # The things a compiler cannot answer: colour contrast against the surface a
+  # word is actually drawn on, heading order as a browser resolves it, tap
+  # target sizes, layout shift, and whether the scrubbable frames scrub.
+  #
+  # This job exists because `--ink-faint` once sat at 3.08:1 across every page
+  # in both themes and nobody reading the diff noticed. That is the class of bug
+  # a machine has to catch, and until this ran in CI the results were a property
+  # of one laptop while being quoted as a property of the repository — which is
+  # exactly the failure `./check` refuses to make for the tool.
+  browser:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # `playwright-core` drives a browser rather than shipping one, so this is
+      # one small package and the Chrome the runner already has.
+      - name: install the driver
+        run: npm install --no-save playwright-core
+      - name: serve the site
+        run: |
+          cargo run --release -- serve --port 3000 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3000/healthz
+      - name: audit
+        run: |
+          fail=0
+          for suite in audit headings interact sections; do
+            echo "── $suite ──"
+            node "audit/$suite.js" || fail=1
+          done
+          exit $fail
+
   deploy:
-    needs: check
+    needs: [check, browser]
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
