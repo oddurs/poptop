@@ -2225,6 +2225,24 @@ fn num<'a>(s: impl Into<std::borrow::Cow<'a, str>>) -> Cell<'a> {
     Cell::from(Line::from(Span::raw(s)).alignment(Alignment::Right))
 }
 
+// The selected row, plus anything spliced *below* it that belongs to it.
+//
+// The offset pins the selected row to the bottom visible line, so thread rows —
+// which are inserted immediately after their process — all landed off-screen
+// the moment the process list was longer than the panel. The feature worked
+// only on a table that fitted on one screen, which is every fixture and no real
+// machine.
+fn last_row_to_keep(rows: &[crate::tree::TreeRow<'_>], selected: usize) -> usize {
+    let mut last = selected;
+    while rows
+        .get(last + 1)
+        .is_some_and(crate::tree::TreeRow::is_thread)
+    {
+        last += 1;
+    }
+    last
+}
+
 fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
@@ -2255,7 +2273,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // position.
     let selected = app.row_of(&rows_data);
     let selected_row = selected.unwrap_or_else(|| app.resume_row());
-    let row_offset = selected_row.saturating_sub(visible_rows.saturating_sub(1));
+    let row_offset =
+        last_row_to_keep(&rows_data, selected_row).saturating_sub(visible_rows.saturating_sub(1));
     let keys: Vec<(i32, u64)> = rows_data
         .iter()
         .skip(row_offset)
@@ -2292,7 +2311,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     let rows_visible = area.height.saturating_sub(2) as usize;
 
     // Keep the selected row on screen while scrolling through a long list.
-    let offset = selected_row.saturating_sub(rows_visible.saturating_sub(1));
+    let offset =
+        last_row_to_keep(&rows_data, selected_row).saturating_sub(rows_visible.saturating_sub(1));
 
     // Measurements first, contiguous, scanned down the left where the eye
     // starts; the sparkline closing them; then identity — PID, USER, COMMAND —

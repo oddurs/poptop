@@ -222,21 +222,35 @@ copies of it.
 
 The selected process only. A box has roughly eight times as many threads as
 processes, and a table that grew ninefold on a keypress would answer *which
-thread is spinning* by making the spinning one harder to find.
+thread is spinning* by making the spinning one harder to find. Not in the tree
+or while grouped: both order rows by something other than "this process, then
+its threads", and the panel says so rather than letting the key do nothing.
 
 **It costs, so it is asked for.** Reading `/proc/<pid>/task/<tid>/stat` for
 every thread of every multi-threaded process measured at **3.1 µs per thread** —
-1005 threads took a 534 µs sample to 3.63 ms. Nothing is collected until you
-press `y`, and then it never stops for the session: turning the view off and
-scrubbing back would otherwise punch a hole in history wherever the view
-happened to be off. Scrub back past the moment you turned it on and the panel
-says `threads: not collected this far back` rather than showing a process with
-no threads, which is what a single-threaded process looks like.
+1005 threads took a 534 µs sample to 3.63 ms — and each retained thread is 17
+bytes of every buffered sample, against 65 for a process.
+
+Nothing is collected until you press `y`. Turning the view back off keeps
+collecting for another minute, so scrubbing back over what you were just looking
+at still has threads in it, and then it stops. The IO ratchet never lets go and
+that is right for it — one extra read per process — but holding this for the
+rest of a session because somebody once pressed a key is the worse bargain.
+
+An expansion showing nothing always says why: `threads: from the next sample` at
+the live edge, `threads: not collected this far back` when you have scrubbed
+past it. A process with no thread rows and no explanation would be
+indistinguishable from a single-threaded one.
 
 `task = D` is the other half. `BLOCKED` in the header counts *tasks*, so two
 blocked threads inside one healthy-looking process are a number the process
 table could not otherwise account for — this is how you get from the figure to
-the row, and then `y` to the thread.
+the row, and then `y` to the thread. It finds single-threaded processes too,
+which are not collected but whose one thread's state *is* the process's; they
+are the commonest contributor to that figure, and a predicate that could not
+find them would be answering the wrong question. With no threads collected it
+matches nothing in **either** direction — `task != D` must not claim every
+process was inspected.
 
 Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says

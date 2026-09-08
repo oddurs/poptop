@@ -175,6 +175,16 @@ impl Query {
                 None => false,
             },
             Term::Text { field, op, value } => {
+                // A question about data that was not gathered, refused in both
+                // directions. `!hit` below would otherwise turn "no threads
+                // were collected" into `task != R` matching every process, as
+                // if all their threads had been inspected and none was
+                // running. The numeric path refuses both directions for an
+                // unreadable figure for exactly this reason; the em dash in the
+                // column is making the same refusal.
+                if *field == Field::Thread && tasks.is_none() {
+                    return false;
+                }
                 let hit = match field {
                     // Identity, so `=` means equality. `user = root` matching
                     // `rootless` and `root-ci` is not what anyone typing it
@@ -190,18 +200,30 @@ impl Query {
                             && p.state
                                 .eq_ignore_ascii_case(&value.chars().next().unwrap_or(' '))
                     }
-                    // Any thread, not every thread. The question this answers is
-                    // "which process is the blocked task inside", and a process
-                    // with thirty-nine idle threads and one in `D` is the answer
-                    // to it.
+                    // Any thread, not every thread. The question this answers
+                    // is "which process is the blocked task inside", and a
+                    // process with thirty-nine idle threads and one in `D` is
+                    // the answer to it.
                     Field::Thread => {
-                        value.chars().count() == 1
-                            && tasks.is_some_and(|ts| {
-                                let want = value.chars().next().unwrap_or(' ');
-                                ts.iter()
-                                    .filter(|t| t.pid == p.pid)
-                                    .any(|t| t.state.eq_ignore_ascii_case(&want))
-                            })
+                        value.chars().count() == 1 && {
+                            let want = value.chars().next().unwrap_or(' ');
+                            let mut mine = tasks
+                                .unwrap_or(&[])
+                                .iter()
+                                .filter(|t| t.pid == p.pid)
+                                .peekable();
+                            if mine.peek().is_none() && p.threads == Some(1) {
+                                // A single-threaded process is not collected —
+                                // it *is* its only thread, so a row for it
+                                // would repeat the process one column narrower.
+                                // Its state is that thread's state, and without
+                                // this the commonest contributor to `BLOCKED`
+                                // is the one process `task = D` can never find.
+                                p.state.eq_ignore_ascii_case(&want)
+                            } else {
+                                mine.any(|t| t.state.eq_ignore_ascii_case(&want))
+                            }
+                        }
                     }
                     // Containment, because `name = node` should find
                     // `node /srv/api/server.js` — which is what anyone typing

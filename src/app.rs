@@ -117,6 +117,12 @@ impl Sort {
     }
 }
 
+/// Samples the thread ratchet keeps collecting after the view is turned off.
+///
+/// Sixty, so a minute of scrubbing back over what you were just looking at
+/// still has threads in it, at the default interval.
+const THREAD_GRACE: u32 = 60;
+
 pub struct App {
     pub history: History,
     pub sort: Sort,
@@ -201,10 +207,22 @@ pub struct App {
     /// yet" and "collected" is far easier to reason about while scrubbing than
     /// gaps wherever the column happened to be off.
     io_ratchet: bool,
-    /// The same ratchet for threads. Turning the view on starts collecting
-    /// them; turning it off does not stop, so scrubbing back to a moment while
-    /// the view was on still has threads to show. See [`App::io_ratchet`].
+    /// The same ratchet for threads, but one that eventually lets go.
+    ///
+    /// Turning the view on starts collecting; turning it off keeps collecting
+    /// for [`THREAD_GRACE`] more samples, so scrubbing back over the last
+    /// minute still has threads to show.
+    ///
+    /// The IO ratchet never releases, and that is right for it: one extra read
+    /// per process. This costs a directory read per multi-threaded process plus
+    /// a file read per thread — 534us to 3.63ms, measured — and about 68 KB of
+    /// every retained sample at four thousand threads. Holding that for the
+    /// rest of a session because somebody once pressed `y` is a worse bargain
+    /// than a gap in history that the panel names.
     thread_ratchet: bool,
+    /// Samples since the thread view was turned off. Counts only while the
+    /// ratchet is still holding.
+    thread_idle: u32,
     /// Index into [`ZOOM_LEVELS`].
     zoom_idx: usize,
     pub glyphs: GlyphSet,
@@ -237,6 +255,7 @@ impl App {
             detail: false,
             io_ratchet: true,
             thread_ratchet: false,
+            thread_idle: 0,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
             theme: Theme::default(),
@@ -268,6 +287,7 @@ impl App {
     pub fn toggle_threads(&mut self) {
         self.show_threads = !self.show_threads;
         self.thread_ratchet |= self.show_threads;
+        self.thread_idle = 0;
     }
 
     /// The share of a sample's processes whose IO could not be read, above
@@ -336,6 +356,15 @@ impl App {
     }
 
     pub fn push(&mut self, s: Sample) {
+        // Let the thread ratchet go once the view has been off long enough.
+        // Counted in samples rather than seconds because the cost is per
+        // sample, and because the interval is configurable.
+        if self.thread_ratchet && !self.show_threads {
+            self.thread_idle = self.thread_idle.saturating_add(1);
+            if self.thread_idle > THREAD_GRACE {
+                self.thread_ratchet = false;
+            }
+        }
         self.history.push(s);
     }
 
@@ -366,7 +395,7 @@ impl App {
             // hidden kernel thread must not survive as somebody's visible
             // ancestor, and `kthreadd` is the ancestor of every one of them.
             let procs: Vec<&ProcSample> = sample.procs.iter().filter(shown).collect();
-            return self.with_threads(sample, tree::build(&procs, self.sort, matched.as_ref()));
+            return tree::build(&procs, self.sort, matched.as_ref());
         }
 
         let mut v: Vec<&ProcSample> = sample
@@ -399,6 +428,12 @@ impl App {
     /// Sorted by CPU rather than by the table's sort column, because the column
     /// sorts by things a thread does not have its own copy of. Ties break on
     /// tid so the order is stable frame to frame.
+    ///
+    /// Flat rows only. The tree orders rows by parentage and draws a spine
+    /// through them, so threads spliced between a process and its children
+    /// would make the children read as children of the last thread; a group row
+    /// stands for a name that folds several processes, and the threads of one
+    /// of them belong under a process. [`App::thread_note`] says so on screen.
     fn with_threads<'a>(&self, sample: &'a Sample, mut rows: Vec<TreeRow<'a>>) -> Vec<TreeRow<'a>> {
         if !self.show_threads {
             return rows;
@@ -445,14 +480,36 @@ impl App {
         if !self.show_threads {
             return None;
         }
+        // Both modes claim the same vertical space and both order rows by
+        // something other than "this process, then its threads" — the tree by
+        // parentage, groups by a name that folds several processes. Saying so
+        // rather than doing nothing: a key that silently has no effect is the
+        // ambiguity this whole note exists to remove.
+        if self.group {
+            return Some("threads: not shown while grouped");
+        }
+        if self.tree {
+            return Some("threads: not shown in the tree");
+        }
         match self.history.current() {
             None => None,
             Some(s) if s.tasks.is_some() => None,
+            // Before the two below, because on this platform the next sample
+            // will not have them either and neither will any sample further
+            // back — so both of those messages would be promises poptop cannot
+            // keep here.
+            //
             // Not "macOS cannot": the mach `task_threads` call would answer
             // this, and sysinfo — the backend poptop uses here — simply does
             // not expose it. Saying what is true rather than what is
             // convenient, so nobody reads this as a kernel limitation.
             Some(_) if cfg!(target_os = "macos") => Some("threads: not read on macOS"),
+            // Collection starts with the *next* sample, so for one interval
+            // after the key the newest sample has no threads. Distinguished
+            // from a scrub, because "not collected this far back" sends a
+            // reader who is already at the live edge scrolling forward, and
+            // nothing they can do there will help.
+            Some(_) if self.history.is_live() => Some("threads: from the next sample"),
             // Scrubbed back past the moment the view was turned on. The
             // ratchet means this can only ever be a prefix of the buffer.
             Some(_) => Some("threads: not collected this far back"),
