@@ -178,14 +178,41 @@ fn nums(rest: &str) -> Vec<u64> {
         .collect()
 }
 
+/// One sample: what to report, and what to remember.
+///
+/// `None` for `now` is "this machine has no NFS", which **forgets** the last
+/// reading rather than keeping it. Left standing, a machine whose mounts all
+/// went away and later came back would difference against a reading from
+/// arbitrarily long ago and report that whole span as one interval —
+/// `/proc/net/rpc/nfs` keeps accumulating whether or not anything is mounted.
+///
+/// Split from the reads so that reset is testable without a filesystem.
+pub fn step(prev: &mut Prev, now: Option<Raw>, secs: f64) -> Option<NfsStat> {
+    let Some(now) = now else {
+        *prev = None;
+        return None;
+    };
+    let out = since(prev, &now, secs);
+    *prev = Some(now);
+    out
+}
+
 /// Two readings as one interval.
 ///
 /// `None` for the very first sample, which has nothing to difference against —
 /// the same rule the disk and network rates follow, and better than a first
 /// frame reporting everything the machine has done since boot as though it
 /// happened in one second.
-pub fn since(prev: &Prev, now: &Raw) -> Option<NfsStat> {
+pub fn since(prev: &Prev, now: &Raw, secs: f64) -> Option<NfsStat> {
     let before = prev.as_ref()?;
+    if secs <= 0.0 {
+        return None;
+    }
+    // Per second, like the disk and network figures beside it on the header.
+    // As raw deltas these were labelled `op/s` and were not: at
+    // `--interval=10s` a mount doing 1.2k a second read as 12k, and at 500ms it
+    // read as half what it was doing.
+    let rate = |n: u64| (n as f64 / secs) as u64;
     // Keyed on the mount point *and* the server: a mount point reused for a
     // different export is a different mount, and differencing across the swap
     // would report one enormous interval.
@@ -208,12 +235,16 @@ pub fn since(prev: &Prev, now: &Raw) -> Option<NfsStat> {
             NfsMount {
                 mount: m.mount.clone(),
                 server: m.server.clone(),
-                read: d(|m| m.read),
-                write: d(|m| m.write),
-                ops,
+                read: rate(d(|m| m.read)),
+                write: rate(d(|m| m.write)),
+                ops: rate(ops),
                 // `trans` counts transmissions and `ops` completions, so the
                 // difference is what had to be sent again.
-                retrans: d(|m| m.trans).saturating_sub(ops),
+                retrans: rate(d(|m| m.trans).saturating_sub(ops)),
+                // A mean over the interval, not a rate — it is already a
+                // duration, and dividing it by the interval would make the
+                // same mount look faster at a longer one.
+                //
                 // A mount that completed no call has no latency. Zero would
                 // say every call was instant, which is the opposite of what an
                 // idle mount means.
@@ -222,25 +253,29 @@ pub fn since(prev: &Prev, now: &Raw) -> Option<NfsStat> {
         })
         .collect();
 
-    let server = now.server.as_ref().map(|s| {
-        // A server restarted between samples has counters that went backwards;
-        // `saturating_sub` reports the interval as quiet rather than as the
-        // whole of a `u64`.
-        let old = before.server.unwrap_or_default();
-        RawServer {
-            calls: s.calls.saturating_sub(old.calls),
-            read: s.read.saturating_sub(old.read),
-            write: s.write.saturating_sub(old.write),
-            hits: s.hits.saturating_sub(old.hits),
-            misses: s.misses.saturating_sub(old.misses),
-            badauth: s.badauth.saturating_sub(old.badauth),
-        }
+    // Both halves, like the mounts above: a server that was not running last
+    // sample has no interval to report, only a life. `nfsd`'s counters survive
+    // `rpc.nfsd 0` — the thread count is what goes to zero, and the thread
+    // count is what this is gated on — so treating an absent previous reading
+    // as a zero one would put everything since boot on the header the moment
+    // somebody restarted the server.
+    //
+    // A server restarted rather than stopped has counters that went backwards;
+    // `saturating_sub` reports that interval as quiet rather than as the whole
+    // of a `u64`.
+    let server = now.server.zip(before.server).map(|(s, old)| RawServer {
+        calls: rate(s.calls.saturating_sub(old.calls)),
+        read: rate(s.read.saturating_sub(old.read)),
+        write: rate(s.write.saturating_sub(old.write)),
+        hits: rate(s.hits.saturating_sub(old.hits)),
+        misses: rate(s.misses.saturating_sub(old.misses)),
+        badauth: rate(s.badauth.saturating_sub(old.badauth)),
     });
 
     Some(NfsStat {
         mounts,
-        client_calls: now.client_calls.saturating_sub(before.client_calls),
-        client_retrans: now.client_retrans.saturating_sub(before.client_retrans),
+        client_calls: rate(now.client_calls.saturating_sub(before.client_calls)),
+        client_retrans: rate(now.client_retrans.saturating_sub(before.client_retrans)),
         server_calls: server.map(|s| s.calls),
         server_read: server.map(|s| s.read),
         server_write: server.map(|s| s.write),
@@ -312,7 +347,7 @@ device tmpfs mounted on /run with fstype tmpfs
         };
         // Nothing to difference against: the first sample reports no NFS
         // rather than everything since the mount was made.
-        assert!(since(&None, &now).is_none());
+        assert!(since(&None, &now, 1.0).is_none());
 
         let mut before = now.clone();
         before.mounts[0].read = 96;
@@ -322,7 +357,7 @@ device tmpfs mounted on /run with fstype tmpfs
         before.client_calls = 400;
         before.client_retrans = 10;
 
-        let d = since(&Some(before), &now).expect("two readings is an interval");
+        let d = since(&Some(before.clone()), &now, 1.0).expect("two readings is an interval");
         assert_eq!(d.mounts[0].read, 4000);
         assert_eq!(d.mounts[0].ops, 100);
         // 114 transmissions for 110 completions in total, less the 10 already
@@ -336,6 +371,94 @@ device tmpfs mounted on /run with fstype tmpfs
         // rather than its whole life as one interval.
         assert_eq!(d.mounts[1].ops, 0, "a new mount reported its whole life");
         assert_eq!(d.mounts[1].rtt_ms, None, "an idle mount claimed a latency");
+
+        // Per second, not per interval. Labelled `op/s` and computed as a raw
+        // delta, the same mount read as ten times busier at `--interval=10s`.
+        let ten = since(&Some(before), &now, 10.0).unwrap();
+        assert_eq!(
+            ten.mounts[0].ops, 10,
+            "the call rate scaled with the interval"
+        );
+        assert_eq!(ten.mounts[0].read, 400);
+        assert_eq!(ten.client_calls, 10);
+        // …except the round trip, which is already a duration: the same mount
+        // is not faster because it was watched for longer.
+        assert_eq!(ten.mounts[0].rtt_ms, Some(3.0));
+    }
+
+    #[test]
+    fn a_machine_that_stops_mounting_nfs_forgets_what_it_read() {
+        // `/proc/net/rpc/nfs` accumulates whether or not anything is mounted,
+        // so a reading kept across a period with no mounts would come back as
+        // one interval covering the whole gap.
+        let raw = |calls| Raw {
+            mounts: parse_mountstats(MOUNTSTATS),
+            client_calls: calls,
+            client_retrans: 0,
+            server: None,
+        };
+        let mut prev: Prev = None;
+        assert!(
+            step(&mut prev, Some(raw(100)), 1.0).is_none(),
+            "a first reading"
+        );
+        assert_eq!(
+            step(&mut prev, Some(raw(150)), 1.0).unwrap().client_calls,
+            50
+        );
+
+        // Every mount goes away.
+        assert!(step(&mut prev, None, 1.0).is_none());
+        assert!(
+            prev.is_none(),
+            "the reading survived the machine losing its mounts"
+        );
+
+        // …and comes back an hour later. The first sample after that has
+        // nothing to difference against, which is the same rule a fresh start
+        // follows — not an hour of calls attributed to one second.
+        assert!(
+            step(&mut prev, Some(raw(9_000_000)), 1.0).is_none(),
+            "an hour of calls was reported as one interval"
+        );
+        assert_eq!(
+            step(&mut prev, Some(raw(9_000_010)), 1.0)
+                .unwrap()
+                .client_calls,
+            10
+        );
+    }
+
+    #[test]
+    fn a_server_that_appeared_between_samples_reports_no_interval() {
+        // `nfsd`'s counters survive `rpc.nfsd 0` — the thread count is what
+        // goes to zero, and the thread count is what this is gated on. So a
+        // server that was stopped and started again has a full life of calls
+        // behind it, and treating "no reading last time" as "a reading of
+        // zero" would put all of it on the header for one sample.
+        let mut now = Raw {
+            mounts: Vec::new(),
+            client_calls: 0,
+            client_retrans: 0,
+            server: Some(RawServer {
+                calls: 8_000_000,
+                ..RawServer::default()
+            }),
+        };
+        let before = Raw {
+            server: None,
+            ..now.clone()
+        };
+        let d = since(&Some(before.clone()), &now, 1.0).unwrap();
+        assert_eq!(
+            d.server_calls, None,
+            "a server seen for the first time reported everything since boot"
+        );
+
+        // And once there is a reading to difference against, it is an interval.
+        now.server.as_mut().unwrap().calls += 500;
+        let d = since(&Some(now.clone()), &now, 1.0).unwrap();
+        assert_eq!(d.server_calls, Some(0));
     }
 
     #[test]
@@ -363,7 +486,7 @@ device tmpfs mounted on /run with fstype tmpfs
             ..RawServer::default()
         });
 
-        let d = since(&Some(before), &now).unwrap();
+        let d = since(&Some(before), &now, 1.0).unwrap();
         assert_eq!(d.client_calls, 0);
         assert_eq!(d.mounts[0].ops, 0);
         assert_eq!(d.server_calls, Some(0));

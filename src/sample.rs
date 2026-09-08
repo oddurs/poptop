@@ -446,15 +446,15 @@ pub struct NfsMount {
     pub mount: Arc<str>,
     /// What is mounted — `10.0.0.1:/export`.
     pub server: Arc<str>,
-    /// Bytes the client actually read from and wrote to the server over the
-    /// interval, rather than what the application asked for: the difference is
-    /// the page cache, and the whole question about an NFS mount is how much
-    /// went over the wire.
+    /// Bytes a second the client actually read from and wrote to the server,
+    /// rather than what the application asked for: the difference is the page
+    /// cache, and the whole question about an NFS mount is how much went over
+    /// the wire.
     pub read: u64,
     pub write: u64,
-    /// RPC calls over the interval.
+    /// RPC calls a second.
     pub ops: u64,
-    /// Calls that had to be sent again.
+    /// Calls a second that had to be sent again.
     ///
     /// The single best "this mount is unhealthy" number, and the one no other
     /// figure on the header would show: a mount retransmitting steadily is one
@@ -469,29 +469,33 @@ pub struct NfsMount {
 
 crate::persist::codec! { NfsMount { mount: Arc<str>, server: Arc<str>, read: u64, write: u64, ops: u64, retrans: u64, rtt_ms: Option<f32> } }
 
-/// What this machine's NFS client and server did over the interval.
+/// What this machine's NFS client and server did.
 ///
-/// Every field is a count over the interval, not since boot, so a restored
-/// sample means the same thing as a live one.
+/// Every count is per second, like the disk and network figures — not a total
+/// since boot and not a raw delta, so a restored sample means the same thing
+/// as a live one whatever interval either was collected at. [`NfsMount::rtt_ms`]
+/// is the exception and says so: it is already a duration.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NfsStat {
     /// One per mount, in the order the kernel lists them.
     pub mounts: Vec<NfsMount>,
-    /// Client RPC calls over the interval, across every mount.
+    /// Client RPC calls a second, across every mount.
     pub client_calls: u64,
-    /// Client calls retransmitted.
+    /// Client calls a second that were retransmitted.
     pub client_retrans: u64,
-    /// Server RPC calls, or `None` where this machine runs no `nfsd` threads.
+    /// Server RPC calls a second, or `None` where this machine runs no `nfsd`
+    /// threads — or where it has only just started running them, which is a
+    /// life rather than an interval.
     ///
     /// `None` rather than zero: a box that does not serve NFS and a box whose
     /// server is idle are different machines, and only one of them is worth a
     /// figure on the header.
     pub server_calls: Option<u64>,
-    /// Bytes the server read and wrote for its clients.
+    /// Bytes a second the server read and wrote for its clients.
     pub server_read: Option<u64>,
     pub server_write: Option<u64>,
-    /// Reply-cache hits and misses. A miss is work the server had to do again
-    /// for a client that asked twice.
+    /// Reply-cache hits and misses a second. A miss is work the server had to
+    /// do again for a client that asked twice.
     pub server_hits: Option<u64>,
     pub server_misses: Option<u64>,
     /// Calls the server refused. Not a performance figure — a configuration
@@ -506,10 +510,27 @@ impl NfsStat {
     ///
     /// By calls rather than by bytes, and for the reason the header figure
     /// exists: an NFS mount that is a problem is usually one making thousands
-    /// of small calls, not one moving a lot of data. Ties go to the earlier,
-    /// as [`NetStat::busiest`] does.
+    /// of small calls, not one moving a lot of data.
+    ///
+    /// Retransmissions count towards it. A mount whose server has stopped
+    /// answering has calls going out and none coming back — `ops` at zero and
+    /// `retrans` climbing — so ranking on completions alone loses the failing
+    /// mount to any healthy one beside it, which is exactly the case this
+    /// figure exists for.
+    ///
+    /// Ties go to the earlier, as [`NetStat::busiest`] does, and for the same
+    /// reason it is written out rather than left to `max_by_key`: that returns
+    /// the *last* maximum, so on an idle machine the mount named would be
+    /// whichever the kernel happened to list last.
     pub fn busiest(&self) -> Option<&NfsMount> {
-        self.mounts.iter().max_by_key(|m| (m.ops, m.read + m.write))
+        let key = |m: &NfsMount| (m.ops + m.retrans, m.read + m.write);
+        let mut best: Option<&NfsMount> = None;
+        for m in &self.mounts {
+            if best.is_none_or(|b| key(m) > key(b)) {
+                best = Some(m);
+            }
+        }
+        best
     }
 
     /// Whether this machine has anything to say about NFS at all.
@@ -1143,6 +1164,38 @@ mod tests {
         };
         assert_eq!(&*s.busiest().unwrap().mount, "/b");
         assert!(s.in_use());
+
+        // A mount whose server has stopped answering has calls going out and
+        // none coming back. Ranked on completions alone it loses to any
+        // healthy mount beside it and never reaches the header — which is the
+        // one case the figure exists for.
+        let stalled = NfsStat {
+            mounts: vec![
+                m("/healthy", 40, 4096),
+                NfsMount {
+                    mount: Arc::from("/hung"),
+                    server: Arc::from("s"),
+                    ops: 0,
+                    retrans: 300,
+                    ..NfsMount::default()
+                },
+            ],
+            ..NfsStat::default()
+        };
+        assert_eq!(
+            &*stalled.busiest().unwrap().mount,
+            "/hung",
+            "the mount that stopped answering lost to a working one"
+        );
+
+        // Ties go to the earlier. `max_by_key` returns the *last* maximum, so
+        // on an idle machine the mount named would be whichever the kernel
+        // happened to list last, and it would change as mounts came and went.
+        let idle = NfsStat {
+            mounts: vec![m("/first", 0, 0), m("/second", 0, 0)],
+            ..NfsStat::default()
+        };
+        assert_eq!(&*idle.busiest().unwrap().mount, "/first");
 
         // A machine that neither mounts nor serves it has nothing to say.
         assert!(!NfsStat::default().in_use());

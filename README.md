@@ -1084,6 +1084,20 @@ test: the count of running `nfsd` threads is. A box that does not serve NFS and
 a box whose server is quiet are different machines, and only one of them is
 worth a figure.
 
+Every figure here is **per second**, like the disk and network ones beside it,
+so `--interval` cannot change what a mount appears to be doing. The mean round
+trip is the exception and is a mean over the interval: it is already a duration,
+and a mount is not faster for having been watched for longer. A mount that
+completed no call reads `—` rather than `0.0ms`, which would say every call was
+instant.
+
+A mount whose server has **stopped answering** has calls going out and none
+coming back, so the share has no denominator; there the header prints the
+retransmission rate itself — `300 re/s` — as loudly as the ramp goes. That mount
+also outranks a healthy busy one for the header's single slot, because ranking on
+completed calls alone would lose the failing mount to any working mount beside
+it, which is the one case this figure is for.
+
 `--once` prints a line per mount — calls, retransmissions, mean round trip,
 bytes actually read and written — plus the client's totals across every mount
 and, where one is running, the server's reply-cache hits and misses and the

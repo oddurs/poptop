@@ -720,21 +720,30 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // ordinary throughout; `NET` already carries the interface.
     if let Some(nfs) = s.nfs.as_ref().filter(|n| n.in_use()) {
         if let Some(m) = nfs.busiest().filter(|m| m.ops > 0 || m.retrans > 0) {
-            let lost = m.retrans as f32 / m.ops.max(1) as f32 * 100.0;
+            // A share of nothing is not a percentage. A mount whose server has
+            // stopped answering has calls going out and none coming back, so
+            // `ops` is zero while `retrans` climbs — and dividing by a floor of
+            // one printed `300.0% re` for the one failure this figure exists to
+            // show. There the count is the fact, and it is as loud as the ramp
+            // goes.
+            let lost = (m.ops > 0).then(|| m.retrans as f32 / m.ops as f32 * 100.0);
+            let heat = app
+                .theme
+                .figure_style(lost.map_or(f32::MAX, |l| retrans_heat(l, &app.theme)));
             let mut spans = vec![
                 Span::styled(format!("{} ", short_mount(&m.mount)), dim),
-                Span::styled(
-                    format!("{} op/s", fmt_count(m.ops)),
-                    app.theme.figure_style(retrans_heat(lost, &app.theme)),
-                ),
+                Span::styled(format!("{} op/s", fmt_count(m.ops)), heat),
             ];
             // Only when something is going wrong. A healthy mount retransmits
             // nothing for weeks, and `0.0% re` on every frame is a figure
             // nobody reads by the second day — the rule `CLK` and `STL` follow.
             if m.retrans > 0 {
                 spans.push(Span::styled(
-                    format!(" {lost:.1}% re"),
-                    app.theme.figure_style(retrans_heat(lost, &app.theme)),
+                    match lost {
+                        Some(l) => format!(" {l:.1}% re"),
+                        None => format!(" {} re/s", fmt_count(m.retrans)),
+                    },
+                    heat,
                 ));
             }
             figures.push(Figure {

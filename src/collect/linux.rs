@@ -583,13 +583,6 @@ impl ProcFs {
         )
     }
 
-    /// Traffic and health over `elapsed`, or `None` if `/proc/net/dev` cannot
-    /// be read.
-    ///
-    /// The interface list is filtered the same way the disk list is: an
-    /// interface appears once it has ever carried a byte. A laptop publishes
-    /// twenty-odd, almost all of them idle `utun*` tunnels, and a measurement
-    /// keeps the real one visible without a rule about names.
     /// NFS, or `None` on a machine that neither mounts nor serves it.
     ///
     /// Three world-readable files, no daemon and no library — the reading rule
@@ -597,30 +590,36 @@ impl ProcFs {
     /// any kernel with the modules loaded, so they are read but never taken as
     /// evidence: a mount, or a running `nfsd`, is what makes this machine one
     /// with something to say about NFS.
-    fn read_nfs(&mut self) -> Option<NfsStat> {
+    fn read_nfs(&mut self, elapsed: Duration) -> Option<NfsStat> {
         let stats = fs::read_to_string("/proc/self/mountstats").ok()?;
         let mounts = nfs::parse_mountstats(&stats);
         let server = fs::read_to_string("/proc/net/rpc/nfsd")
             .ok()
             .and_then(|t| nfs::parse_rpc_nfsd(&t));
-        if mounts.is_empty() && server.is_none() {
-            return None;
-        }
-        let (client_calls, client_retrans) = fs::read_to_string("/proc/net/rpc/nfs")
-            .ok()
-            .and_then(|t| nfs::parse_rpc_nfs(&t))
-            .unwrap_or((0, 0));
-        let now = nfs::Raw {
-            mounts,
-            client_calls,
-            client_retrans,
-            server,
-        };
-        let since = nfs::since(&self.prev_nfs, &now);
-        self.prev_nfs = Some(now);
-        since
+        // `None` here is "this machine has no NFS", which `step` treats as a
+        // reason to forget the last reading rather than to keep it.
+        let now = (!mounts.is_empty() || server.is_some()).then(|| {
+            let (client_calls, client_retrans) = fs::read_to_string("/proc/net/rpc/nfs")
+                .ok()
+                .and_then(|t| nfs::parse_rpc_nfs(&t))
+                .unwrap_or((0, 0));
+            nfs::Raw {
+                mounts,
+                client_calls,
+                client_retrans,
+                server,
+            }
+        });
+        nfs::step(&mut self.prev_nfs, now, elapsed.as_secs_f64())
     }
 
+    /// Traffic and health over `elapsed`, or `None` if `/proc/net/dev` cannot
+    /// be read.
+    ///
+    /// The interface list is filtered the same way the disk list is: an
+    /// interface appears once it has ever carried a byte. A laptop publishes
+    /// twenty-odd, almost all of them idle `utun*` tunnels, and a measurement
+    /// keeps the real one visible without a rule about names.
     fn read_net(&mut self, elapsed: Duration) -> Option<NetStat> {
         let dev = fs::read_to_string("/proc/net/dev").ok()?;
         // Absent files stay absent rather than becoming zeroes: a kernel that
@@ -2286,7 +2285,7 @@ impl Collector for ProcFs {
         // baseline, or the next sample would diff against nothing.
         let was_ctxt = stat.ctxt.and_then(|n| self.prev_ctxt.replace(n));
         let was_intr = stat.intr.and_then(|n| self.prev_intr.replace(n));
-        let nfs = self.read_nfs();
+        let nfs = self.read_nfs(elapsed);
         Ok(Sample {
             at: now,
             nfs,

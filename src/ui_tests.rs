@@ -485,6 +485,46 @@ fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
 }
 
 #[test]
+fn a_mount_that_stopped_answering_is_not_a_share_of_nothing() {
+    // Calls going out, none coming back. Dividing by a floor of one printed
+    // `300.0% re`, which is not a percentage — and it did it for the one
+    // failure the whole figure exists to show.
+    let mut app = App::new(600);
+    let mut s = sample(8.0);
+    s.nfs = Some(crate::sample::NfsStat {
+        mounts: vec![
+            crate::sample::NfsMount {
+                mount: std::sync::Arc::from("/mnt/working"),
+                server: std::sync::Arc::from("10.0.0.2:/w"),
+                ops: 40,
+                ..Default::default()
+            },
+            crate::sample::NfsMount {
+                mount: std::sync::Arc::from("/mnt/hung"),
+                server: std::sync::Arc::from("10.0.0.1:/h"),
+                ops: 0,
+                retrans: 300,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    });
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let row = rows(&app, 160, 30)[0].clone();
+
+    assert!(
+        row.contains("/mnt/hung"),
+        "the mount that stopped answering was not the one named: {row}"
+    );
+    assert!(
+        !row.contains("% re"),
+        "a share of no completed calls was printed as a percentage: {row}"
+    );
+    assert!(row.contains("300 re/s"), "{row}");
+}
+
+#[test]
 fn a_failing_mount_is_louder_than_a_busy_one() {
     // A percent of calls resent is a mount worth looking at; five percent is
     // one that is failing. Read off the machine's own ramp, five percent would

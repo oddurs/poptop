@@ -576,13 +576,15 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     // NFS, where the machine mounts or serves it. On a box whose storage is
     // remote the `disk` line above describes a local disk doing nothing while
     // the machine waits on the network, and nothing else here would say so.
-    // Counts over the interval, like `net` above, rather than rates: `--once`
-    // has one interval and naming it is what makes the figures comparable.
+    // Per second, like every other rate here, so a script comparing two
+    // machines does not have to know what interval each was run at.
     if let Some(nfs) = s.nfs.as_ref().filter(|n| n.in_use()) {
         for m in &nfs.mounts {
+            // A mean over the interval, not a rate: a mount is not faster
+            // because it was watched for longer. `—` where nothing completed.
             let rtt = m.rtt_ms.map_or("—".to_string(), |v| format!("{v:.1}ms"));
             outln!(
-                "nfs     {}  {}, {} calls, {} resent, {rtt} mean, {} read, {} written",
+                "nfs     {}  {}, {}/s calls, {}/s resent, {rtt} mean, {}/s read, {}/s written",
                 m.mount,
                 m.server,
                 m.ops,
@@ -592,7 +594,7 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
             );
         }
         outln!(
-            "nfsc    {} calls, {} resent  client, across every mount",
+            "nfsc    {}/s calls, {}/s resent  client, across every mount",
             nfs.client_calls,
             nfs.client_retrans
         );
@@ -600,7 +602,7 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
             let part = |v: Option<u64>| v.map_or("—".to_string(), |n| n.to_string());
             let bytes = |v: Option<u64>| v.map_or("—".to_string(), human);
             outln!(
-                "nfsd    {calls} calls, {} read, {} written, {} cache hits, {} misses, {} refused",
+                "nfsd    {calls}/s calls, {}/s read, {}/s written, {} hits, {} misses, {} refused",
                 bytes(nfs.server_read),
                 bytes(nfs.server_write),
                 part(nfs.server_hits),
