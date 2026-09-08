@@ -39,14 +39,6 @@ pub struct MemStat {
     pub swap_used: u64,
 }
 
-// The wire order for each retained struct, listed beside it. The list cannot
-// fall behind the struct: both halves are generated from it, so a field added
-// above and left out here is a compile error naming the field — the reader
-// cannot build the struct, and the writer cannot destructure it. Neither is a
-// silent stop-retaining-this. See `crate::persist`.
-// Every record whose schema the file carries. A record reachable from `Sample`
-// but missing here has no schema in the file and cannot be read back, which
-// `every_reachable_record_has_a_schema` asserts rather than assumes.
 /// A process this reader knows nothing about, as the base a schema merge fills
 /// in. Never a real process: `pid` 0 belongs to no task and `state` is the `?`
 /// an unrecognised state already renders as.
@@ -76,10 +68,18 @@ impl Default for Sample {
     }
 }
 
+// Every record whose schema the file carries. A record reachable from `Sample`
+// but missing here has no schema in the file and cannot be read back, which
+// `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
     MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ProcSample, Sample
 }
 
+// The wire order for each retained struct, listed beside it. The list cannot
+// fall behind the struct: both halves are generated from it, so a field added
+// above and left out here is a compile error naming the field — the reader
+// cannot build the struct, and the writer cannot destructure it. Neither is a
+// silent stop-retaining-this. See `crate::persist`.
 crate::persist::codec! { MemStat { total: u64, used: u64, available: u64, free: Option<u64>, swap_total: u64, swap_used: u64 } }
 
 impl ProcSample {

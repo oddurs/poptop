@@ -147,6 +147,70 @@ impl Ty {
     }
 }
 
+/// Whether a parsed schema can be walked at all.
+///
+/// The schema block is the file describing itself, which means it is also the
+/// part of a corrupt file that decides how the rest is read. Two shapes are
+/// unwalkable and both are reachable by corruption:
+///
+/// - **A cycle.** A record whose fields lead back to itself makes [`skip`]
+///   recurse without consuming a byte, which is a stack overflow rather than a
+///   `None`.
+/// - **A zero-width record.** A record with no fields consumes nothing, so a
+///   list of four billion of them is four billion iterations that never run out
+///   of input — a hang, or an allocation of four billion elements.
+///
+/// Rejecting both here is what lets every loop downstream bound itself on
+/// "bytes remaining": once no type is zero-width, a count larger than the
+/// buffer is a count no honest file could have written.
+fn schema_is_sane(map: &HashMap<Box<str>, Vec<Field>>) -> bool {
+    fn width(
+        ty: &Ty,
+        map: &HashMap<Box<str>, Vec<Field>>,
+        path: &mut Vec<Box<str>>,
+    ) -> Option<u64> {
+        Some(match ty {
+            Ty::U8 | Ty::Bool | Ty::Char => 1,
+            Ty::U16 => 2,
+            Ty::U32 | Ty::I32 | Ty::F32 | Ty::Str => 4,
+            Ty::U64 | Ty::I64 | Ty::F64 | Ty::Usize | Ty::Dur => 8,
+            Ty::Time => 12,
+            // The tag is written whether or not the payload means anything, so
+            // an optional is never narrower than one byte.
+            Ty::Opt(inner) => 1u64.saturating_add(width(inner, map, path)?),
+            // The length prefix, even when the list is empty — so a list
+            // contributes a fixed four bytes whatever its element type is. The
+            // element is still walked, because a cycle that goes *through* a
+            // list is still a cycle, and this is the only place that would see
+            // it. poptop writes no recursive type, so refusing all of them
+            // costs nothing and leaves the schema a plain DAG.
+            Ty::List(inner) => {
+                width(inner, map, path)?;
+                4
+            }
+            Ty::Arr(inner, n) => width(inner, map, path)?.saturating_mul(u64::from(*n)),
+            Ty::Rec(name) => {
+                if path.iter().any(|p| p == name) {
+                    return None;
+                }
+                let fields = map.get(name)?;
+                path.push(name.clone());
+                let mut total: u64 = 0;
+                for f in fields {
+                    total = total.saturating_add(width(&f.ty, map, path)?);
+                }
+                path.pop();
+                total
+            }
+        })
+    }
+
+    map.keys().all(|name| {
+        let mut path = Vec::new();
+        width(&Ty::Rec(name.clone()), map, &mut path).is_some_and(|w| w > 0)
+    })
+}
+
 /// A type's identity, as a compile-time constant.
 pub trait Typed {
     /// Hashes the *structure* of the type, so a field whose type changed no
@@ -187,6 +251,18 @@ impl Registry {
 /// branch is bounds-checked and every length is the reader's own, so a corrupt
 /// header cannot make this run away.
 pub fn skip(ty: &Ty, reg: &Registry, r: &mut In<'_>) -> Option<()> {
+    skip_at(ty, reg, r, 0)
+}
+
+fn skip_at(ty: &Ty, reg: &Registry, r: &mut In<'_>, depth: u32) -> Option<()> {
+    // A record whose fields are records nests as deep as the schema says. The
+    // schema is validated for cycles when it is parsed, so this bound is the
+    // second lock rather than the first — but `skip` is the one function a
+    // corrupt file can drive hardest, and a stack overflow is not a failure
+    // mode this can return `None` from.
+    if depth > 32 {
+        return None;
+    }
     match ty {
         Ty::U8 | Ty::Bool | Ty::Char => r.take(1).map(|_| ()),
         Ty::U16 => r.take(2).map(|_| ()),
@@ -195,25 +271,36 @@ pub fn skip(ty: &Ty, reg: &Registry, r: &mut In<'_>) -> Option<()> {
         Ty::Time => r.take(12).map(|_| ()),
         Ty::Opt(inner) => {
             r.take(1)?;
-            skip(inner, reg, r)
+            skip_at(inner, reg, r, depth + 1)
         }
         Ty::List(inner) => {
             let n = u32::read_raw(r)?;
+            // An early exit, not the safety property. `schema_is_sane`
+            // guarantees every type is at least one byte wide, so the loop
+            // below would terminate on the first read past the end regardless
+            // — this just makes an impossible count one comparison instead of
+            // as many reads as there are bytes left.
+            if n as usize > r.remaining() {
+                return None;
+            }
             for _ in 0..n {
-                skip(inner, reg, r)?;
+                skip_at(inner, reg, r, depth + 1)?;
             }
             Some(())
         }
         Ty::Arr(inner, n) => {
+            if *n as usize > r.remaining() {
+                return None;
+            }
             for _ in 0..*n {
-                skip(inner, reg, r)?;
+                skip_at(inner, reg, r, depth + 1)?;
             }
             Some(())
         }
         Ty::Rec(name) => {
             let fields = reg.fields(name)?;
             for f in fields {
-                skip(&f.ty, reg, r)?;
+                skip_at(&f.ty, reg, r, depth + 1)?;
             }
             Some(())
         }
@@ -429,6 +516,12 @@ impl<'a> In<'a> {
         Self { bytes, at, strings }
     }
 
+    /// Bytes not yet consumed. Used to reject a length no file could satisfy
+    /// before allocating or looping on it.
+    pub fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.at)
+    }
+
     pub fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let end = self.at.checked_add(n)?;
         let out = self.bytes.get(self.at..end)?;
@@ -461,6 +554,12 @@ impl<'a> In<'a> {
                 });
             }
             map.insert(name, fields);
+        }
+
+        // The schema is the one part of the file a reader must trust before it
+        // can bound anything else, so it is checked before it is used.
+        if !schema_is_sane(&map) {
+            return None;
         }
 
         // Every record this build knows, declared by the file with the same
@@ -638,8 +737,13 @@ impl<T: Codec> Codec for Vec<T> {
     }
     fn read_exact(reg: &Registry, r: &mut In<'_>) -> Option<Self> {
         let n = u32::read_exact(reg, r)? as usize;
-        // Capacity is bounded before allocating: a corrupt length field must
-        // not be able to ask for a gigabyte.
+        // Every element is at least one byte, so a count larger than what is
+        // left is a corrupt length. Checked before the loop rather than only
+        // bounding `with_capacity`, so a bogus count costs one comparison
+        // rather than a 64K allocation it is about to throw away.
+        if n > r.remaining() {
+            return None;
+        }
         let mut out = Vec::with_capacity(n.min(1 << 16));
         for _ in 0..n {
             out.push(T::read_exact(reg, r)?);
@@ -649,6 +753,9 @@ impl<T: Codec> Codec for Vec<T> {
     fn read(ty: &Ty, reg: &Registry, r: &mut In<'_>) -> Option<Self> {
         let Ty::List(inner) = ty else { return None };
         let n = u32::read_raw(r)? as usize;
+        if n > r.remaining() {
+            return None;
+        }
         let mut out = Vec::with_capacity(n.min(1 << 16));
         for _ in 0..n {
             out.push(T::read(inner, reg, r)?);
@@ -827,6 +934,122 @@ mod tests {
             pub pid: i32,
         }
         crate::persist::codec! { Proc { name: Arc<str>, threads: Option<u32>, pid: i32 } }
+    }
+
+    fn field(name: &str, ty: Ty) -> Field {
+        Field {
+            name: name.into(),
+            hash: 0,
+            ty,
+        }
+    }
+
+    /// Parse a schema block as a reader would, and say whether it was accepted.
+    fn schema_accepted(records: &[(&'static str, Vec<Field>)]) -> bool {
+        let mut out = Out::default();
+        out.schema_block(records);
+        let mut r = In::new(&out.bytes, 0, Vec::new());
+        r.schema_block(&[]).is_some()
+    }
+
+    #[test]
+    fn a_schema_that_refers_to_itself_is_refused_rather_than_walked() {
+        // A record whose field is itself. `skip` would recurse without
+        // consuming a byte, which is a stack overflow rather than a `None` —
+        // and the schema block is corruption-controlled data now, so this has
+        // to be refused at the door.
+        assert!(
+            !schema_accepted(&[("Loop", vec![field("me", Ty::Rec("Loop".into()))])]),
+            "a self-referential schema was accepted"
+        );
+        // Through a longer ring, and through a list, which is how it would
+        // actually show up.
+        assert!(
+            !schema_accepted(&[
+                ("A", vec![field("b", Ty::Rec("B".into()))]),
+                (
+                    "B",
+                    vec![field("a", Ty::List(Box::new(Ty::Rec("A".into()))))]
+                ),
+            ]),
+            "a schema with a two-record cycle was accepted"
+        );
+    }
+
+    #[test]
+    fn a_schema_with_a_zero_width_record_is_refused() {
+        // A record with no fields consumes nothing, so a list of four billion
+        // of them is four billion iterations that never run out of input.
+        // Every bound downstream is stated in bytes remaining, which only works
+        // because nothing is zero-width.
+        assert!(
+            !schema_accepted(&[
+                ("Nothing", vec![]),
+                (
+                    "Holder",
+                    vec![field("xs", Ty::List(Box::new(Ty::Rec("Nothing".into()))))]
+                ),
+            ]),
+            "a schema with a zero-width record was accepted"
+        );
+        assert!(
+            !schema_accepted(&[("Empty", vec![field("xs", Ty::Arr(Box::new(Ty::U8), 0))])]),
+            "a record that is nothing but an empty array was accepted"
+        );
+    }
+
+    #[test]
+    fn a_schema_that_names_a_record_it_does_not_declare_is_refused() {
+        assert!(
+            !schema_accepted(&[("A", vec![field("b", Ty::Rec("Missing".into()))])]),
+            "a schema referring to an undeclared record was accepted"
+        );
+    }
+
+    #[test]
+    fn an_impossible_length_is_refused_before_it_is_looped_on() {
+        // Four billion elements against a nine-byte buffer.
+        //
+        // What makes this terminate is `schema_is_sane` refusing a zero-width
+        // type, so each element consumes at least one byte and the buffer runs
+        // out. The length checks are an early exit on top of that, and this
+        // pins the behaviour all three paths owe: refused, not attempted. A
+        // mutation removing the checks leaves this passing, which is correct —
+        // the guarantee lives in the validator, and the cycle and zero-width
+        // tests are what hold it up.
+        let mut out = Out::default();
+        Codec::write(&u32::MAX, &mut out);
+        out.bytes.extend([0u8; 5]);
+        let reg = Registry::default();
+
+        let mut r = In::new(&out.bytes, 0, Vec::new());
+        assert!(
+            skip(&Ty::List(Box::new(Ty::U8)), &reg, &mut r).is_none(),
+            "skip accepted a length no file could satisfy"
+        );
+
+        let mut r = In::new(&out.bytes, 0, Vec::new());
+        assert!(
+            <Vec<u8> as Codec>::read_exact(&reg, &mut r).is_none(),
+            "the fast path accepted a length no file could satisfy"
+        );
+
+        let mut r = In::new(&out.bytes, 0, Vec::new());
+        assert!(
+            <Vec<u8> as Codec>::read(&Ty::List(Box::new(Ty::U8)), &reg, &mut r).is_none(),
+            "the merge path accepted a length no file could satisfy"
+        );
+    }
+
+    #[test]
+    fn the_schema_this_build_writes_is_one_it_would_accept() {
+        // The validator is strict enough to reject shapes poptop never writes;
+        // this is the other direction, that it is not so strict it rejects the
+        // real one.
+        assert!(
+            schema_accepted(&crate::sample::schemas()),
+            "this build writes a schema it would refuse to read"
+        );
     }
 
     #[test]

@@ -206,8 +206,15 @@ fn read_file_as(
     }
 
     let reg = r.schema_block(mine)?;
-    for note in unknown_fields(&reg, mine) {
+    for note in schema_notes(&reg, mine) {
         notes.push(note);
+    }
+    if reg.fields("Sample").is_none() {
+        // Nothing else in the file can be reached without it. Said out loud,
+        // because otherwise `unwrap_or_default` at the call site turns the
+        // user's whole history into an empty buffer with no explanation.
+        notes.push("the stored history declares no samples; it was discarded".to_string());
+        return None;
     }
 
     let n_strings = u32::read_raw(&mut r)?;
@@ -232,18 +239,30 @@ fn read_file_as(
 }
 
 /// Fields the file carries that this build has no home for, named once each.
-fn unknown_fields(
+fn schema_notes(
     reg: &Registry,
     mine: &[(&'static str, Vec<crate::persist::Field>)],
 ) -> Vec<String> {
     let mut out = Vec::new();
     for (rec, want) in mine {
+        // A record this build knows and the file does not is not by itself a
+        // problem: either nothing refers to it, or the field that does will
+        // fail the type-hash check below and be reported there. The one that is
+        // fatal is the top-level record, which `read_file_as` checks.
         let Some(got) = reg.fields(rec) else { continue };
-        let dropped: Vec<&str> = got
-            .iter()
-            .filter(|f| !want.iter().any(|w| w.name == f.name))
-            .map(|f| &*f.name)
-            .collect();
+        let mut dropped: Vec<&str> = Vec::new();
+        let mut retyped: Vec<&str> = Vec::new();
+        for f in got {
+            match want.iter().find(|w| w.name == f.name) {
+                None => dropped.push(&f.name),
+                // Same name, different type. The reader skips it rather than
+                // misreading it — which is right, and silent, which is not: the
+                // column would just empty out. This is the case a downgrade
+                // hits after a metric changes precision.
+                Some(w) if w.hash != f.hash => retyped.push(&f.name),
+                Some(_) => {}
+            }
+        }
         if !dropped.is_empty() {
             out.push(format!(
                 "the stored history has {} this poptop does not read: {}",
@@ -253,6 +272,22 @@ fn unknown_fields(
                     "fields"
                 },
                 dropped.join(", ")
+            ));
+        }
+        if !retyped.is_empty() {
+            out.push(format!(
+                "the stored history measures {} differently than this poptop, so {} skipped: {}",
+                if retyped.len() == 1 {
+                    "a field"
+                } else {
+                    "fields"
+                },
+                if retyped.len() == 1 {
+                    "it was"
+                } else {
+                    "they were"
+                },
+                retyped.join(", ")
             ));
         }
     }
@@ -774,6 +809,82 @@ mod tests {
                     .to_string()
             ],
             "the skipped field was not reported"
+        );
+    }
+
+    #[test]
+    fn a_field_whose_type_changed_is_skipped_and_said_out_loud() {
+        // The case a downgrade hits after a metric changes precision. Reading
+        // it as the current type would put a number in the column that was
+        // never measured, so it is skipped — and skipping it silently would
+        // empty the column with no explanation, which is the outcome the
+        // schema block exists to prevent.
+        use crate::persist::{Field, Typed};
+        let s = sample_of(12.0, 2);
+        let file = encode(&[&s]);
+
+        // This build, but claiming `clock_ceiling` is an `Option<f64>`.
+        let mut mine = schemas();
+        let sample = mine
+            .iter_mut()
+            .find(|(n, _)| *n == "Sample")
+            .expect("no Sample");
+        let field = sample
+            .1
+            .iter_mut()
+            .find(|f| &*f.name == "clock_ceiling")
+            .expect("no clock_ceiling");
+        *field = Field {
+            name: "clock_ceiling".into(),
+            hash: <Option<f64> as Typed>::HASH,
+            ty: <Option<f64> as Typed>::ty(),
+        };
+
+        let mut notes = Vec::new();
+        let back = read_file_as(&file, &mine, &mut notes).expect("the file was refused");
+        assert_eq!(back.len(), 1, "the sample did not survive");
+        assert_eq!(
+            back[0].cpu_total, 12.0,
+            "the field after the retyped one was misread"
+        );
+        assert_eq!(
+            notes,
+            vec![
+                "the stored history measures a field differently than this poptop, \
+                 so it was skipped: clock_ceiling"
+                    .to_string()
+            ],
+            "the retyped field was not reported"
+        );
+    }
+
+    #[test]
+    fn a_file_that_declares_no_samples_says_so_rather_than_going_quiet() {
+        // A schema that parses, passes validation, and describes nothing this
+        // reader can start from. Without the note the read returns `None`,
+        // `unwrap_or_default` turns it into an empty buffer, and the user is
+        // told nothing about where their history went.
+        let mut head = Out::default();
+        head.schema_block(&[(
+            "Elsewhere",
+            vec![crate::persist::Field {
+                name: "n".into(),
+                hash: <u64 as crate::persist::Typed>::HASH,
+                ty: <u64 as crate::persist::Typed>::ty(),
+            }],
+        )]);
+        let mut file = MAGIC.to_vec();
+        file.extend(VERSION.to_le_bytes());
+        file.extend(head.bytes);
+        file.extend(0u32.to_le_bytes()); // no strings
+        file.extend(0u32.to_le_bytes()); // no samples
+
+        let (back, notes) = decode_reporting(&file);
+        assert!(back.is_none(), "a file with no Sample record was read");
+        assert_eq!(
+            notes,
+            vec!["the stored history declares no samples; it was discarded".to_string()],
+            "a file with nothing to read from went quiet"
         );
     }
 
