@@ -2,7 +2,7 @@
 id: 44
 title: A row's identity is split across both ends of it
 type: feature
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -51,6 +51,6 @@ the abstract.
 
 ## Acceptance criteria
 
-- [ ] The columns identifying a process are adjacent
-- [ ] Numeric columns stay contiguous and scannable
-- [ ] The choice is written down with the alternative that was rejected
+- [x] The columns identifying a process are adjacent
+- [x] Numeric columns stay contiguous and scannable
+- [x] The choice is written down with the alternative that was rejected

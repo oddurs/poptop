@@ -2,7 +2,7 @@
 id: 45
 title: The process title mixes four kinds of statement
 type: bug
-status: backlog
+status: done
 milestone: v1.0
 created: 2026-09-07
 updated: 2026-09-07
@@ -59,7 +59,7 @@ its own treatment; the table has not had that pass.
 
 ## Acceptance criteria
 
-- [ ] A section title carries one kind of statement
-- [ ] Column-scoped facts sit with their column
-- [ ] A warning is distinguishable from a legend without reading it
-- [ ] The title still degrades on a narrow panel and still names the count
+- [x] A section title carries one kind of statement
+- [x] Column-scoped facts sit with their column
+- [x] A warning is distinguishable from a legend without reading it
+- [x] The title still degrades on a narrow panel and still names the count

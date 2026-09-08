@@ -47,14 +47,12 @@ Collector fast enough for sub-second sampling, and the data-fidelity gaps agains
 
 ## v1.0 — Yours to configure
 
-`#######···` 67% · 18 of 27 done · due 2027-01-01
+`########··` 74% · 20 of 27 done · due 2027-01-01
 
 Config file, user themes, documented and safe to depend on.
 
 ### backlog
 
-- [ ] `0044` A row's identity is split across both ends of it <sup>feature · p2</sup>
-- [ ] `0045` The process title mixes four kinds of statement <sup>bug · p2</sup>
 - [ ] `0046` The cursor readout repeats the header and drops the scale <sup>bug · p3</sup>
 - [ ] `0047` The table is always sorted by CPU, even when CPU is not the problem <sup>feature · p1</sup>
 - [ ] `0049` Filtering is a substring match, so the useful questions cannot be asked <sup>feature · p2</sup>
@@ -81,6 +79,8 @@ Config file, user themes, documented and safe to depend on.
 - [x] `0041` The process table can be squeezed to zero processes <sup>bug · p1</sup>
 - [x] `0042` Every number in the process table is left-aligned <sup>bug · p1</sup>
 - [x] `0043` A column of one repeated value costs as much as a column of information <sup>feature · p2</sup>
+- [x] `0044` A row's identity is split across both ends of it <sup>feature · p2</sup>
+- [x] `0045` The process title mixes four kinds of statement <sup>bug · p2</sup>
 - [x] `0048` Every node process looks the same, because the table shows comm <sup>bug · p1</sup>
 - [x] `0054` Kernel threads crowd out the processes anyone is looking for <sup>feature · p3</sup>
 
