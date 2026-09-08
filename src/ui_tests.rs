@@ -7530,3 +7530,29 @@ fn a_clock_ceiling_survives_a_round_trip() {
         "a platform that would not say came back claiming a figure"
     );
 }
+
+#[test]
+fn the_scripted_output_says_when_the_machine_is_capped() {
+    // A script reading only `cpu` sees 100% on a capped machine and on a
+    // healthy one — the same failure the `stall` line was added to prevent, and
+    // here there is nothing else in the output that could give it away.
+    let mut s = sample(10.0);
+    s.cpu_total = 100.0;
+    s.clock_ceiling = Some(62.0);
+    let capped = crate::clock_line(&s).expect("a capped machine said nothing");
+    assert!(capped.contains("62.0%"), "{capped}");
+    assert!(capped.starts_with("clock"), "{capped}");
+
+    // …and a machine at full speed spends no line saying so, as the header
+    // spends no columns.
+    s.clock_ceiling = Some(100.0);
+    assert_eq!(crate::clock_line(&s), None);
+    s.clock_ceiling = Some(99.7);
+    assert_eq!(
+        crate::clock_line(&s),
+        None,
+        "a rounding artefact was announced"
+    );
+    s.clock_ceiling = None;
+    assert_eq!(crate::clock_line(&s), None);
+}

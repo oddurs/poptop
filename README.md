@@ -603,6 +603,33 @@ network on a machine that cannot see one.
 Per-process network attribution is still out of scope — it needs `/proc/net`
 inode matching or eBPF and is its own project.
 
+### Throttling
+
+```text
+CPU 100.0%   CLK  62.0%   MEM  41.2% ██████▒▒░░░░  6.6G / 16.0G
+```
+
+`CLK 62.0%` is how much of the processor's nominal clock the kernel is currently
+allowing. A capped machine reports 100% busy and gets less work done than it did
+an hour ago, and every other figure here reads normal — `STALL`, `WAIT` and disk
+saturation all look healthy, because nothing is *waiting*. The work is simply
+being done more slowly. Without this figure that case is invisible.
+
+Not a temperature. `84°C` makes you infer, and on hardware whose nominal is 85°C
+it makes you infer wrongly.
+
+It is the **policy ceiling**, not the current frequency. An idle core clocks
+down, which is a healthy machine doing nothing and reads identically to a
+throttled one; a ceiling says what the machine is *permitted* to do, so an idle
+box reads 100%. That catches whatever the driver reports by lowering its policy
+maximum — thermal, power, or a limit somebody set by hand — and not hardware
+capping that leaves the policy alone and reports through counters instead.
+
+Shown only below 99% of nominal. Drivers report ceilings a fraction under the
+hardware maximum as a matter of course, and a permanent `CLK 99.7%` would be the
+figure that taught everyone to ignore it. macOS publishes nothing reachable
+without shelling out, so there it is absent rather than 100%.
+
 ### Stall pressure
 
 ```text

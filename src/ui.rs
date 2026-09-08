@@ -448,7 +448,7 @@ fn short_mount(mount: &str) -> String {
 /// course — rounding in the frequency table, a boost bin excluded from the
 /// policy — and a permanent `CLK 99.7%` on a machine that is not throttled at
 /// all would be the figure that taught everyone to ignore it.
-const CLOCK_NOMINAL: f32 = 99.0;
+pub const CLOCK_NOMINAL: f32 = 99.0;
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let mem_pct = s.mem.used_pct();

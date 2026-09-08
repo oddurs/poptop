@@ -107,9 +107,17 @@ pub struct ProcFs {
     prev_net: Option<NetTotals>,
     /// The nominal maximum frequency of each frequency policy, read once.
     ///
-    /// A fact about the hardware, so it does not change while the tool is
-    /// running — and reading it every sample would double the cost of a figure
-    /// that is already the most expensive thing per core here.
+    /// Read once and then rescanned rarely. The *ceiling* changes constantly,
+    /// which is the point; what this holds is the hardware maximum, which does
+    /// not — so reading it every sample would double the cost of the figure for
+    /// nothing.
+    ///
+    /// Rarely rather than never, because the policy *set* does change: CPU
+    /// hotplug is routine on cloud instances and on `cpuset`-managed hosts, and
+    /// a `cpufreq` driver can load after the tool starts. Read strictly once, a
+    /// machine that published no policy at launch would never show `CLK` again
+    /// for the life of the process — which for a tool whose whole point is
+    /// being left running is the wrong way round.
     ///
     /// Empty when the machine publishes no frequency policy at all, which is
     /// every virtualised CPU — including every machine available to test this
@@ -571,6 +579,10 @@ impl ProcFs {
     /// One small read per frequency policy — a handful on any machine — and
     /// none at all on one that publishes none.
     fn read_clock_ceiling(&mut self) -> Option<f32> {
+        // One directory listing a minute, and only that.
+        if self.tick.is_multiple_of(CLOCK_RESCAN) {
+            self.nominal_khz = nominal_clocks();
+        }
         if self.nominal_khz.is_empty() {
             return None;
         }
@@ -807,6 +819,14 @@ fn nominal_clocks() -> Vec<(String, u64)> {
     out.sort_unstable();
     out
 }
+
+/// How many samples between rescans of the frequency policy set.
+///
+/// A minute at the default interval. The set changes only when a CPU is
+/// hotplugged or a driver loads, and both are rare enough that a minute of
+/// staleness costs nothing — while never rescanning costs a machine that gained
+/// a policy the figure entirely.
+const CLOCK_RESCAN: u64 = 60;
 
 /// Where the kernel publishes each CPU's frequency policy.
 const CPUFREQ: &str = "/sys/devices/system/cpu";
@@ -1646,6 +1666,28 @@ mod tests {
     }
 
     #[test]
+    fn the_policy_set_is_rescanned_so_a_late_driver_is_not_missed() {
+        // CPU hotplug is routine on cloud instances and a `cpufreq` driver can
+        // load after the tool starts. Read strictly once, a machine that
+        // published no policy at launch would never show `CLK` again for the
+        // life of the process — which for a tool whose whole point is being
+        // left running is the wrong way round.
+        let mut pf = ProcFs::new().unwrap();
+        // Poison it with a policy that does not exist. A rescan replaces the
+        // vector wholesale, so its disappearance is the rescan happening.
+        pf.nominal_khz = vec![("policy-that-is-not-there".to_string(), 3_600_000)];
+        for _ in 0..CLOCK_RESCAN + 1 {
+            pf.collect(Needs::default()).unwrap();
+        }
+        assert!(
+            !pf.nominal_khz
+                .iter()
+                .any(|(n, _)| n == "policy-that-is-not-there"),
+            "the policy set was never rescanned"
+        );
+    }
+
+    #[test]
     fn a_machine_with_no_cpufreq_costs_nothing_and_says_nothing() {
         // Every virtualised CPU, which is every machine available to test this
         // on. `None` rather than 100%, which would claim the machine is running
@@ -1654,9 +1696,18 @@ mod tests {
         if pf.nominal_khz.is_empty() {
             assert_eq!(pf.read_clock_ceiling(), None);
         }
-        // …and the sample agrees with whatever the machine publishes.
+        // One direction only. A ceiling implies a policy was found, but a
+        // policy does not imply a ceiling: `cpuinfo_max_freq` and
+        // `scaling_max_freq` are separate reads, and a hardened host can permit
+        // the first and refuse the second. Asserted the other way round, this
+        // fails on a machine where the code is behaving exactly as designed.
         let s = pf.collect(Needs::default()).unwrap();
-        assert_eq!(s.clock_ceiling.is_some(), !pf.nominal_khz.is_empty());
+        if s.clock_ceiling.is_some() {
+            assert!(
+                !pf.nominal_khz.is_empty(),
+                "a ceiling was reported with no policy behind it"
+            );
+        }
     }
 
     #[test]

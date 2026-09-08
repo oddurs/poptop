@@ -446,6 +446,21 @@ fn check_theme(name: &str) -> io::Result<()> {
 ///
 /// Two samples are taken, one interval apart: CPU figures are deltas between
 /// reads, so a single sample could only ever report zero.
+/// The scripted machine-is-capped line, or nothing.
+///
+/// A script reading only `cpu` sees 100% on a capped machine and on a healthy
+/// one — the same failure the `stall` line was added to prevent, and here there
+/// is nothing else in the output that could give it away.
+///
+/// Split from `once` so it can be tested: that function writes to stdout, and a
+/// figure this easy to forget wants an assertion rather than an eyeball.
+fn clock_line(s: &sample::Sample) -> Option<String> {
+    let clock = s.clock_ceiling.filter(|c| *c < ui::CLOCK_NOMINAL)?;
+    Some(format!(
+        "clock   {clock:.1}%  of nominal — the machine is capped"
+    ))
+}
+
 fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     let needs = Needs { io: true };
     collector.sample(needs)?;
@@ -529,6 +544,10 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
             s.io_denied,
             s.procs.len()
         );
+    }
+
+    if let Some(line) = clock_line(&s) {
+        outln!("{line}");
     }
 
     let mut top = s.procs.clone();
