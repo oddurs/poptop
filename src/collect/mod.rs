@@ -42,6 +42,7 @@ pub struct Size {
     pub procs: u64,
     pub tasks: u64,
     pub exited: u64,
+    pub cgroups: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,6 +57,11 @@ pub enum Source {
     /// socket, so this is cheap — but it is a capability that can be refused,
     /// and everything that can be refused belongs in this list.
     Exited,
+    /// Per-cgroup utilisation and pressure, from the unified hierarchy.
+    ///
+    /// The expensive one, by an order of magnitude: six files per node, and a
+    /// Kubernetes node has a thousand nodes. Bounded by depth as well as gated.
+    Cgroups,
     /// The set of cpufreq policies, which is not the ceiling itself — that is
     /// read every sample — but the hardware maximum each policy is measured
     /// against. CPU hotplug is routine on cloud instances and a driver can load
@@ -66,7 +72,8 @@ pub enum Source {
 }
 
 impl Source {
-    pub const ALL: [Source; 4] = [
+    pub const ALL: [Source; 5] = [
+        Source::Cgroups,
         Source::Io,
         Source::Threads,
         Source::ClockPolicies,
@@ -78,6 +85,7 @@ impl Source {
         match self {
             Source::Io => "per-process disk IO",
             Source::Threads => "threads",
+            Source::Cgroups => "cgroups",
             Source::Exited => "exited processes",
             Source::ClockPolicies => "clock policies",
         }
@@ -100,6 +108,8 @@ impl Source {
             // Draining a socket that already holds the records. Charged per
             // exited process, which is what there are more of on the machine
             // this would matter on.
+            // Six files a node, measured on a real hierarchy.
+            Source::Cgroups => 30_000,
             Source::Exited => 500,
             Source::ClockPolicies => 200_000,
         }
@@ -117,7 +127,7 @@ impl Source {
     /// minute — over per-process IO on four hundred processes.
     pub fn scales(self) -> bool {
         match self {
-            Source::Io | Source::Threads | Source::Exited => true,
+            Source::Io | Source::Threads | Source::Exited | Source::Cgroups => true,
             Source::ClockPolicies => false,
         }
     }
@@ -128,6 +138,7 @@ impl Source {
             Source::Io => size.procs,
             Source::Threads => size.tasks,
             Source::Exited => size.exited,
+            Source::Cgroups => size.cgroups,
             Source::ClockPolicies => 1,
         };
         self.nanos_each().saturating_mul(units)
@@ -143,7 +154,7 @@ impl Source {
     /// they were never going to be the reason a sample ran long.
     pub fn restorable(self) -> bool {
         match self {
-            Source::Io | Source::Threads => true,
+            Source::Io | Source::Threads | Source::Cgroups => true,
             Source::Exited | Source::ClockPolicies => false,
         }
     }
@@ -151,7 +162,15 @@ impl Source {
     /// How many samples apart this is worth reading. One means every sample.
     pub fn every(self) -> u64 {
         match self {
-            Source::Io | Source::Threads | Source::Exited => 1,
+            // Cgroups are read every sample too, and were not always. A
+            // cadence of two halved the update rate of a view somebody had just
+            // opened, made every rate wrong by a factor of two — the deltas
+            // spanned two intervals and were divided by one — and left the
+            // budget unable to give up the source it calls most expensive,
+            // because the cheap tick in between reset the strike count and the
+            // odd tick reported no cgroups to charge for. The gate that makes
+            // this affordable is the view being open, not the cadence.
+            Source::Io | Source::Threads | Source::Exited | Source::Cgroups => 1,
             Source::ClockPolicies => 60,
         }
     }
@@ -241,6 +260,27 @@ pub use backend::{MIN_INTERVAL, MIN_INTERVAL_WHY};
 /// source that will never arrive — and so the budget cannot spend three strikes
 /// "giving up" something that was costing nothing.
 pub use backend::SUPPORTED;
+
+/// How many levels below the root the cgroup walk goes.
+///
+/// Four reaches a container on a Kubernetes node —
+/// `kubepods.slice / kubepods-burstable.slice / …-pod<uid>.slice /
+/// cri-containerd-<id>.scope` — which is the level somebody is looking for.
+/// atop defaults to seven and allows two to nine; seven on that tree is every
+/// process's own scope, which is thousands of reads for rows nobody reads.
+///
+/// Not behind a `cfg`. These are poptop's policy rather than the platform's,
+/// and a sample collected on Linux and read back on a Mac has to be described
+/// by the bounds it was collected under — not by whatever the reading machine
+/// would have used.
+pub const CGROUP_DEPTH: u32 = 4;
+
+/// The most cgroups one sample will read, whatever the depth allows.
+///
+/// A stated bound rather than an unbounded walk: 1017 cgroups took 7.3ms a
+/// sample, measured, and reaching this is reported so a truncated tree is never
+/// mistaken for a small one.
+pub const CGROUP_MAX_NODES: usize = 512;
 
 /// Whether a filesystem lives in RAM rather than on a device.
 ///
@@ -423,18 +463,29 @@ pub trait Collector {
         Ok(s)
     }
 
-    /// What the backend could not determine about this machine, said once at
-    /// startup rather than folded into every figure that depends on it.
+    /// What the backend could not determine about this machine, said once
+    /// rather than folded into every figure that depends on it.
     ///
     /// A backend that has to assume something is still usable — the assumption
     /// is almost always right — but an assumption nobody is told about is the
     /// same shape as a wrong number, and that is the one thing this tool is
     /// not allowed to produce.
-    fn notes(&self) -> Vec<String> {
+    ///
+    /// **Drained, not read.** Some of these cannot exist at startup: a source
+    /// that is only opened when a view is — an exit listener, a cgroup walk —
+    /// discovers it is unavailable the first time somebody asks, which is long
+    /// after the startup warnings have been printed. Anything pushed later has
+    /// to be collected later, or it is written to a channel nobody is
+    /// listening to. There is deliberately no non-draining form: one existed,
+    /// both call sites moved to this, and it sat unused — a second way to read
+    /// the same channel is a second way to read it twice.
+    fn take_notes(&mut self) -> Vec<String> {
         Vec::new()
     }
 }
 
+#[cfg(target_os = "linux")]
+pub mod cgroups;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

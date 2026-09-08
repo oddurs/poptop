@@ -4,7 +4,7 @@
 //! a delta between the previous read and this one, which is why the collector
 //! is stateful and why the very first sample reports zero busy time.
 
-use super::{Collector, Needs, Source, taskstats};
+use super::{Collector, Needs, Source, cgroups, taskstats};
 
 /// Every optional source this backend reads.
 pub const SUPPORTED: &[Source] = &[
@@ -12,10 +12,11 @@ pub const SUPPORTED: &[Source] = &[
     Source::Threads,
     Source::ClockPolicies,
     Source::Exited,
+    Source::Cgroups,
 ];
 use crate::sample::{
-    DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
-    ThreadSample,
+    CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample,
+    Stall, ThreadSample,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -164,6 +165,14 @@ pub struct ProcFs {
     /// once. Exit records carry an absolute time and live rows carry ticks
     /// since boot; this is what puts them on one clock.
     boot_epoch: Option<u64>,
+    /// Cumulative cgroup counters from the previous sample, for the ones that
+    /// are rates.
+    prev_cgroups: cgroups::Prev,
+    /// Whether this machine has a unified hierarchy, decided once.
+    cgroup_v2: Option<bool>,
+    /// Whether the previous sample read cgroups, so a reopened view starts
+    /// from a fresh baseline rather than a stale one.
+    cgroups_were_read: bool,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_at: Option<SystemTime>,
@@ -245,6 +254,9 @@ impl ProcFs {
             exits: None,
             exits_why: None,
             boot_epoch: None,
+            prev_cgroups: cgroups::Prev::default(),
+            cgroup_v2: None,
+            cgroups_were_read: false,
             prev_proc_io: HashMap::new(),
             prev_at: None,
             users: parse_passwd(),
@@ -605,10 +617,43 @@ impl ProcFs {
         Ok(Duration::from_secs_f64(secs))
     }
 
-    /// The clock ceiling, from the policy maximum each CPU currently permits.
+    /// Per-cgroup figures, when the view is open.
     ///
-    /// One small read per frequency policy — a handful on any machine — and
-    /// none at all on one that publishes none.
+    /// `None` when nobody asked or when this machine has no unified hierarchy.
+    /// cgroup v1 has no `cpu.stat` in this shape, no unified tree and no PSI,
+    /// so there is nothing to walk — said once rather than shown as an empty
+    /// table, which would read as "this machine has no cgroups".
+    fn read_cgroups(&mut self, needs: Needs, elapsed_secs: f64) -> Option<Vec<CgroupStat>> {
+        if !needs.wants(Source::Cgroups) {
+            self.cgroups_were_read = false;
+            return None;
+        }
+        if self.cgroup_v2.is_none() {
+            let ok = cgroups::v2_available();
+            if !ok {
+                self.notes.push(
+                    "cgroup v2 is not mounted here, so per-cgroup figures are unavailable".into(),
+                );
+            }
+            self.cgroup_v2 = Some(ok);
+        }
+        if self.cgroup_v2 != Some(true) {
+            return None;
+        }
+        // Cleared when the view has been shut, so reopening it does not diff
+        // against counters from ten minutes ago and render every cgroup at
+        // hundreds of percent. The same reasoning as the per-process IO map.
+        if !self.cgroups_were_read {
+            self.prev_cgroups = cgroups::Prev::default();
+        }
+        self.cgroups_were_read = true;
+        Some(cgroups::read(
+            &mut self.prev_cgroups,
+            elapsed_secs,
+            cgroups::DEFAULT_DEPTH,
+        ))
+    }
+
     /// Processes that exited since the last sample.
     ///
     /// `None` when nobody asked or when the kernel refused, which are different
@@ -656,6 +701,10 @@ impl ProcFs {
             .map(|l| l.drain(elapsed_secs, boot, prev_proc_jiffies, users))
     }
 
+    /// The clock ceiling, from the policy maximum each CPU currently permits.
+    ///
+    /// One small read per frequency policy — a handful on any machine — and
+    /// none at all on one that publishes none.
     fn read_clock_ceiling(&mut self, needs: Needs) -> Option<f32> {
         // One directory listing a minute, and only that — on the cadence the
         // source declares rather than a counter kept here. The rule and the
@@ -1759,8 +1808,8 @@ fn parse_passwd() -> HashMap<u32, Arc<str>> {
 }
 
 impl Collector for ProcFs {
-    fn notes(&self) -> Vec<String> {
-        self.notes.clone()
+    fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
     }
 
     fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
@@ -1787,6 +1836,7 @@ impl Collector for ProcFs {
         // draining first makes that window as small as it can be rather than as
         // large.
         let exited = self.read_exited(needs, elapsed.as_secs_f64());
+        let cgroups = self.read_cgroups(needs, elapsed.as_secs_f64());
         let (procs, tasks) = self.read_procs(elapsed, needs, &mut io_denied)?;
         // `/proc/stat` is read *after* the process walk, not before, so every
         // process in `procs` is guaranteed to have been counted by `forks`.
@@ -1822,6 +1872,7 @@ impl Collector for ProcFs {
             net,
             tasks,
             exited,
+            cgroups,
         })
     }
 }

@@ -91,12 +91,42 @@ pub struct ThreadSample {
     pub cpu: f32,
 }
 
+/// One cgroup, in the unified hierarchy.
+///
+/// `cpu` and `mem` are **subtree totals**, because that is what cgroup v2
+/// publishes — a parent reads higher than any one child rather than equal to
+/// the sum of the rows beneath it. The rollup is the kernel's arithmetic, not
+/// poptop's, which is the only version of it that can be right about a cgroup
+/// holding both processes and children.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CgroupStat {
+    /// Path below the hierarchy root; `/` for the root itself.
+    pub path: Arc<str>,
+    /// Levels below the root, so the table can indent without re-parsing.
+    pub depth: u32,
+    /// Percent of one core over the interval. `None` on the first sighting:
+    /// a rate needs two readings, and the alternative is reporting a cgroup's
+    /// whole lifetime of CPU as this second's.
+    pub cpu: Option<f32>,
+    /// `cpu.max` as a percentage of one core. `None` means unlimited, which is
+    /// a different answer from a limit of zero.
+    pub cpu_max: Option<f32>,
+    pub mem: Option<u64>,
+    pub mem_max: Option<u64>,
+    pub read: Option<u64>,
+    pub write: Option<u64>,
+    /// The reason this exists. Machine-wide PSI says something is stalled;
+    /// this says which cgroup is stalled, which is the question.
+    pub pressure: Option<Pressure>,
+    pub procs: Option<u32>,
+}
+
 // Every record whose schema the file carries. A record reachable from `Sample`
 // but missing here has no schema in the file and cannot be read back, which
 // `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
     MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ThreadSample,
-    ProcSample, Sample
+    CgroupStat, ProcSample, Sample
 }
 
 // The wire order for each retained struct, listed beside it. The list cannot
@@ -639,6 +669,8 @@ pub struct ProcSample {
 
 crate::persist::codec! { ThreadSample { pid: i32, tid: i32, name: Arc<str>, state: char, cpu: f32 } }
 
+crate::persist::codec! { CgroupStat { path: Arc<str>, depth: u32, cpu: Option<f32>, cpu_max: Option<f32>, mem: Option<u64>, mem_max: Option<u64>, read: Option<u64>, write: Option<u64>, pressure: Option<Pressure>, procs: Option<u32> } }
+
 crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates> } }
 
 /// A complete snapshot of the machine at one instant.
@@ -776,6 +808,11 @@ pub struct Sample {
     /// the initial namespace, and macOS has no equivalent. Not an empty list,
     /// which means the interval genuinely had none.
     pub exited: Option<Vec<ProcSample>>,
+    /// Per-cgroup utilisation and pressure, when asked for.
+    ///
+    /// `None` means nobody asked, or this machine has no unified hierarchy —
+    /// not that it has no cgroups.
+    pub cgroups: Option<Vec<CgroupStat>>,
 }
 
 impl Sample {
@@ -828,11 +865,12 @@ impl Sample {
             filesystems: None,
             tasks: None,
             exited: None,
+            cgroups: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from

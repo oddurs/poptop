@@ -67,6 +67,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         clock_ceiling: None,
         tasks: None,
         exited: None,
+        cgroups: None,
         pressure: None,
         net: None,
         filesystems: None,
@@ -8734,6 +8735,7 @@ fn the_budget_gives_up_what_costs_most_on_this_machine() {
         procs: 400,
         tasks: 3200,
         exited: 0,
+        cgroups: 0,
     };
     assert_eq!(
         Needs::NONE
@@ -8750,6 +8752,7 @@ fn the_budget_gives_up_what_costs_most_on_this_machine() {
         procs: 400,
         tasks: 10,
         exited: 0,
+        cgroups: 0,
     };
     assert_eq!(
         Needs::NONE
@@ -9025,4 +9028,119 @@ fn a_process_that_was_already_running_is_not_credited_to_this_intervals_churn() 
         "a process born and gone in this interval was missed"
     );
     assert_eq!(c.unseen(), 1);
+}
+
+fn cgroup(path: &str, depth: u32, cpu: f32, io_psi: f32) -> crate::sample::CgroupStat {
+    use crate::sample::{CgroupStat, Pressure, Stall};
+    CgroupStat {
+        path: std::sync::Arc::from(path),
+        depth,
+        cpu: Some(cpu),
+        mem: Some(64 << 20),
+        pressure: Some(Pressure {
+            cpu: Stall {
+                some: 0.0,
+                full: 0.0,
+            },
+            io: Stall {
+                some: io_psi,
+                full: 0.0,
+            },
+            memory: Stall {
+                some: 0.0,
+                full: 0.0,
+            },
+        }),
+        procs: Some(3),
+        ..CgroupStat::default()
+    }
+}
+
+#[test]
+fn the_cgroup_view_names_the_stalled_one_rather_than_reporting_a_stall() {
+    // The reason this exists. Machine-wide PSI says something is stalled on IO;
+    // this says which cgroup is, which is the question a container host asks.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.cgroups = Some(vec![
+        cgroup("/kubepods.slice/pod-a.slice", 2, 4.0, 0.1),
+        cgroup("/kubepods.slice/pod-b.slice", 2, 1.0, 61.5),
+    ]);
+    app.push(s);
+    app.toggle_cgroups();
+
+    let frame = rows(&app, 140, 14);
+    let shown = frame.join("\n");
+    assert!(
+        shown.contains("cgroups (2)"),
+        "the view did not open:\n{shown}"
+    );
+    assert!(shown.contains("PSI IO"), "no pressure column:\n{shown}");
+    assert!(
+        shown.contains("61.5"),
+        "the stalled cgroup's pressure is missing"
+    );
+    assert!(
+        shown.contains("pod-b.slice"),
+        "the row is not identifiable:\n{shown}"
+    );
+    // The process table is not also on screen: it is a table of different
+    // things, not a set of extra columns.
+    assert!(
+        !shown.contains("COMMAND"),
+        "both tables were drawn:\n{shown}"
+    );
+}
+
+#[test]
+fn a_cgroup_with_pressure_switched_off_shows_a_dash_not_a_zero() {
+    use crate::sample::CgroupStat;
+    // `cgroup.pressure` can be disabled per node. A zero there would say the
+    // node never stalls, which is the opposite of "nobody is measuring".
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.cgroups = Some(vec![CgroupStat {
+        path: std::sync::Arc::from("/quiet.slice"),
+        pressure: None,
+        ..CgroupStat::default()
+    }]);
+    app.push(s);
+    app.toggle_cgroups();
+    let shown = rows(&app, 140, 10).join("\n");
+    assert!(
+        shown.contains('—'),
+        "an unmeasured cgroup showed a number:\n{shown}"
+    );
+}
+
+#[test]
+fn the_cgroup_walk_is_only_paid_for_while_the_view_is_open() {
+    use crate::collect::Source;
+    // Six files a node against a thousand nodes, measured at 7.3ms a sample —
+    // not something to collect for a panel nobody is looking at.
+    // Neither platform skips silently. An early `return` here is how the source
+    // being missing from the Linux backend's `SUPPORTED` list went unnoticed:
+    // `needs()` strips anything not in that list, so the key set a bit that was
+    // cleared on every tick and the whole view was dead — while this test
+    // passed by not running.
+    let supported = crate::collect::SUPPORTED.contains(&Source::Cgroups);
+    assert_eq!(
+        supported,
+        cfg!(target_os = "linux"),
+        "the backend with a unified hierarchy is the one that should declare it"
+    );
+
+    let mut app = App::new(600);
+    assert!(!app.needs().asked(Source::Cgroups), "walked unasked");
+    app.toggle_cgroups();
+    assert_eq!(
+        app.needs().asked(Source::Cgroups),
+        supported,
+        "the key and the backend disagree about whether cgroups can be read"
+    );
+    app.toggle_cgroups();
+    assert!(
+        !app.needs().asked(Source::Cgroups),
+        "the walk outlived the view"
+    );
 }

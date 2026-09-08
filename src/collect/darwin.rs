@@ -555,11 +555,11 @@ mod tests {
         // wrong. That is a warning. "This platform does not read disks" is an
         // absence — nothing on screen is wrong — and it never changes on a
         // given machine, so repeating it forever is noise.
-        let c = SysinfoCollector::new().unwrap();
+        let mut c = SysinfoCollector::new().unwrap();
+        let notes = c.take_notes();
         assert!(
-            c.notes().is_empty(),
-            "an absence is being announced as an assumption: {:?}",
-            c.notes()
+            notes.is_empty(),
+            "an absence is being announced as an assumption: {notes:?}"
         );
 
         // It is still said, where someone wondering why the figure is missing
