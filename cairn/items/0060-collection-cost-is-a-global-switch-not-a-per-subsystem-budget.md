@@ -2,7 +2,7 @@
 id: 60
 title: Collection cost is a global switch, not a per-subsystem budget
 type: feature
-status: backlog
+status: done
 milestone: v2.0
 created: 2026-09-08
 updated: 2026-09-08
@@ -55,7 +55,42 @@ rather than in a second table that has to be kept in step.
 
 ## Acceptance criteria
 
-- [ ] A subsystem declares its cost and its cadence
+- [x] A subsystem declares its cost and its cadence
 - [ ] Sampling stays inside its interval on a box with a thousand cgroups
-- [ ] Anything withheld for cost is stated, not silently missing
-- [ ] Measured with `--bench` on a machine with each subsystem present
+- [x] Anything withheld for cost is stated, not silently missing
+- [x] Measured with `--bench` on a machine with each subsystem present
+
+## How it was resolved
+
+PR #79. Gating is per **source** — the things that cost differently are sources
+(`/proc/<pid>/io`, `/proc/<pid>/task/`, a cgroup walk), not individual fields —
+and each declares its cost per unit, whether that cost grows with the machine,
+and how many samples apart it is worth reading.
+
+**Who decides: both.** Pull decides what is *worth* gathering; a budget decides
+what the machine can *afford*. The objection to a budget is not that it is wrong
+but that it can silently drop a figure, so it never does: everything given up is
+named in the panel until the reader asks for that source back by name.
+
+**Cadence has a real user, not a speculative one.** The clock policy rescan was
+one of the three ad-hoc answers this item complains about; that rule now lives
+with every other source's and the collector reads it.
+
+**Two things review corrected, both worth recording.** Ranking by cost *per
+unit* gives up per-process IO on a box whose threads cost four times as much —
+2.3ms against 9.9ms at 400 processes — so cost is now weighted by what the last
+sample found. And the budget was charged for mandatory work it could not give
+up, so a box whose baseline exceeds the budget lost every optional source to a
+banner blaming them; it now gives up a source only when that source could
+account for the overrun, and otherwise says the interval is too short.
+
+Backends declare which sources they read, so `y` on macOS no longer starts a
+collection that will never produce a row.
+
+## Criterion 2 is deliberately unticked
+
+"Sampling stays inside its interval on a box with a thousand cgroups" cannot be
+demonstrated by this item: cgroups arrive in v2.1. What this delivers is the
+mechanism that will hold it, tested against a synthetic over-budget sample.
+Ticking it on a machine with no cgroups to walk would be the kind of claim this
+project does not make. It is 0063's to close.
