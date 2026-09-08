@@ -71,6 +71,11 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
         clock_ceiling: None,
+        pgin: None,
+        pgout: None,
+        swin: None,
+        swout: None,
+        oom_kills: None,
         tasks: None,
         exited: None,
         cgroups: None,
@@ -9859,4 +9864,139 @@ fn a_qualifier_never_outlives_the_figure_it_qualifies() {
             }
         }
     }
+}
+
+#[test]
+fn an_oom_kill_is_reported_and_survives_a_scrub_back_to_it() {
+    // The sharpest thing poptop can say. A killed process is gone from the next
+    // sample with nothing anywhere explaining it, and scrubbing back to the
+    // moment shows both the count and the table from the instant before — which
+    // is the thing no live-only monitor can do.
+    let mut app = App::new(600);
+    let mut killed = sample(10.0);
+    killed.oom_kills = Some(2);
+    killed.procs = vec![proc_named(4001, "hungry", 90.0, 12 << 30)];
+    app.push(killed);
+    // The interval after: the process is gone and so is the count.
+    let mut after = sample(10.0);
+    after.oom_kills = Some(0);
+    after.procs = vec![proc_named(4200, "sshd", 0.5, 8 << 20)];
+    app.push(after);
+
+    let now = rows(&app, 200, 12).join("\n");
+    assert!(
+        !now.contains("killed for memory"),
+        "an interval with no kills announced some:\n{now}"
+    );
+
+    app.history.scrub(-1);
+    let then = rows(&app, 200, 12).join("\n");
+    assert!(
+        then.contains("2 processes killed for memory"),
+        "scrubbing back to the kill said nothing:\n{then}"
+    );
+    assert!(
+        then.contains("hungry"),
+        "the table from the instant before is gone, which is the whole point"
+    );
+
+    // A platform that cannot say is silent rather than reporting none.
+    let mut quiet = App::new(600);
+    let mut s = sample(10.0);
+    s.oom_kills = None;
+    quiet.push(s);
+    assert!(
+        !rows(&quiet, 200, 12)
+            .join("\n")
+            .contains("killed for memory")
+    );
+}
+
+#[test]
+fn the_memory_constraint_reads_the_swap_rate_rather_than_inferring_it() {
+    use crate::app::Constraint;
+    // The level cannot tell a machine thrashing four gigabytes in and out from
+    // one sitting on four idle gigabytes; that is why this rule had to infer it
+    // from growth across a window.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.mem.swap_total = 8 << 30;
+    // A steady level — the inference sees nothing — but swapping right now.
+    s.mem.swap_used = 4 << 30;
+    s.swout = Some(64 << 20);
+    // Enough samples to fill the window: the rule refuses to name a constraint
+    // from a buffer too short to hold one, which is the flicker guard it opens
+    // with, and the rate is checked inside that guard rather than around it —
+    // an instantaneous measurement still should not make the advice change on
+    // every frame for the first few seconds after launch.
+    for _ in 0..12 {
+        app.push(s.clone());
+    }
+    assert_eq!(
+        app.constraint(),
+        Some(Constraint::Memory),
+        "a box swapping 64MB a second at a steady level was called unconstrained"
+    );
+}
+
+#[test]
+fn a_night_of_oom_kills_is_not_attributed_to_one_second() {
+    // The count is a raw since-boot delta, not a rate: the paging figures
+    // divide by elapsed time and survive a sleep, but this does not. The first
+    // sample after a laptop suspend carries every kill from the whole gap.
+    let mut app = App::new(600);
+    app.push(sample_at(1.0, 3600));
+    let mut back = sample_at(1.0, 0);
+    back.oom_kills = Some(37);
+    app.push(back);
+    let shown = rows(&app, 200, 10).join("\n");
+    assert!(
+        !shown.contains("killed for memory"),
+        "an hour of kills was attributed to one second:\n{shown}"
+    );
+
+    // …and across an ordinary interval it is still reported.
+    let mut app = App::new(600);
+    app.push(sample_at(1.0, 1));
+    let mut now = sample_at(1.0, 0);
+    now.oom_kills = Some(2);
+    app.push(now);
+    assert!(
+        rows(&app, 200, 10)
+            .join("\n")
+            .contains("2 processes killed for memory")
+    );
+}
+
+#[test]
+fn one_frame_of_ordinary_reclaim_does_not_flip_the_advice() {
+    use crate::app::Constraint;
+    // Any Linux box with a non-zero swappiness pages an idle daemon out now and
+    // then. Reading the rate off the last sample alone would re-sort the table
+    // on that frame and flip back on the next — the flicker the window exists
+    // to prevent.
+    let mut app = App::new(600);
+    let quiet = |swout| {
+        let mut s = sample(10.0);
+        s.mem.swap_total = 8 << 30;
+        s.mem.swap_used = 4 << 30;
+        s.swout = Some(swout);
+        s
+    };
+    for _ in 0..12 {
+        app.push(quiet(0));
+    }
+    app.push(quiet(4 << 10));
+    assert_ne!(
+        app.constraint(),
+        Some(Constraint::Memory),
+        "one frame of reclaim named a memory constraint"
+    );
+
+    // A box that is swapping every sample of the window is a different matter.
+    let mut app = App::new(600);
+    for _ in 0..13 {
+        app.push(quiet(64 << 20));
+    }
+    assert_eq!(app.constraint(), Some(Constraint::Memory));
 }

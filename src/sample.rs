@@ -875,6 +875,30 @@ pub struct Sample {
     /// optional list instead of four hundred, and so the task-level figures in
     /// the header can be itemised without walking the process table.
     pub tasks: Option<Vec<ThreadSample>>,
+    /// **Bytes a second** read from and written to disk — the file-backed
+    /// traffic, not swap.
+    ///
+    /// Bytes rather than pages, and a rate rather than a total, because that is
+    /// what the collector produces and what the panel renders. The kernel
+    /// publishes `pgpgin`/`pgpgout` in kilobytes and the swap pair in pages;
+    /// both are converted where the page size is known.
+    pub pgin: Option<u64>,
+    pub pgout: Option<u64>,
+    /// **Bytes a second** swapped in and out.
+    ///
+    /// The figure the swap *level* cannot give: a machine that swapped four
+    /// gigabytes in and out during the interval and one sitting on four idle
+    /// gigabytes report the same level, and only one of them is in trouble.
+    pub swin: Option<u64>,
+    pub swout: Option<u64>,
+    /// Processes the OOM killer ended during the interval.
+    ///
+    /// An event, not a level, and the sharpest thing on this list: a process
+    /// that was killed is gone from the next sample with nothing anywhere
+    /// saying why. Scrubbing back to the moment and seeing both the count and
+    /// the process table from the instant before is a thing no live-only
+    /// monitor can do.
+    pub oom_kills: Option<u64>,
     /// Processes that lived and died inside this interval.
     ///
     /// The gap this closes is the substantive one against atop: poptop reads
@@ -945,6 +969,11 @@ impl Sample {
             disks: None,
             pressure: None,
             clock_ceiling: None,
+            pgin: None,
+            pgout: None,
+            swin: None,
+            swout: None,
+            oom_kills: None,
             net: None,
             filesystems: None,
             tasks: None,
@@ -954,7 +983,7 @@ impl Sample {
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
@@ -997,6 +1026,11 @@ mod tests {
             ("disks", s.disks.is_some()),
             ("pressure", s.pressure.is_some()),
             ("clock_ceiling", s.clock_ceiling.is_some()),
+            ("pgin", s.pgin.is_some()),
+            ("pgout", s.pgout.is_some()),
+            ("swin", s.swin.is_some()),
+            ("swout", s.swout.is_some()),
+            ("oom_kills", s.oom_kills.is_some()),
             ("net", s.net.is_some()),
             ("filesystems", s.filesystems.is_some()),
             ("mem.free", s.mem.free.is_some()),

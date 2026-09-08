@@ -2947,6 +2947,41 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {} tasks came and went", c.unseen())
         });
 
+    // An event rather than a level, so it sits beside the other event this
+    // panel reports. The sharpest figure poptop has: a process the OOM killer
+    // ended is gone from the next sample with nothing anywhere saying why, and
+    // scrubbing back to this moment shows the table from the instant before.
+    // Behind the same gap guard as the churn above, and for the reason stated
+    // there. This is a raw since-boot delta, not a rate: the paging figures
+    // divide by elapsed time and so survive a sleep, but a *count* does not —
+    // the first sample after a laptop suspend carries every kill from the whole
+    // night and the panel would attribute them to the one second the table is
+    // describing.
+    // A sample whose predecessor is not in the buffer is not across a gap —
+    // the same convention the seam detector states, that index zero has no
+    // predecessor here and inventing one would put a seam at the left edge of
+    // every fresh buffer. The collector's delta was taken against a real
+    // previous collection either way.
+    let gapped = app
+        .history
+        .previous()
+        .zip(app.history.current())
+        .is_some_and(|(prev, now)| {
+            now.at
+                .duration_since(prev.at)
+                .is_ok_and(|d| d >= history::gap_limit(app.interval))
+        });
+    let killed = app
+        .history
+        .current()
+        .filter(|_| !gapped)
+        .and_then(|s| s.oom_kills)
+        .filter(|n| *n > 0)
+        .map_or(String::new(), |n| match n {
+            1 => " · 1 process killed for memory".to_string(),
+            n => format!(" · {n} processes killed for memory"),
+        });
+
     // Never silently shorter than the count beside it. Placed early, before
     // the parts a narrow terminal drops: a table missing two hundred rows with
     // nothing saying so is worse than a table with no axis label.
@@ -3024,6 +3059,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     //  30  the io status        — the message the `i` key looks broken without
     //  40  the sort column      — not otherwise stated anywhere
     //  50  `tree`               — visible in the rows themselves
+    //  58  OOM kills            — an event, and the answer to "what happened
+    //                             to my process"
     //  60  churn                — a nicety
     //  70  the history axis     — a nicety, and the ladder it was already at
     //                             the bottom of
@@ -3104,6 +3141,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             plain,
         ),
         (60, churn, plain),
+        // Ranked with the churn it sits beside, one above: a process that was
+        // killed is a stronger fact than one that merely came and went, and it
+        // is the answer to a question somebody is actively asking.
+        (58, killed, app.theme.warning_style()),
         (
             30,
             io_text,

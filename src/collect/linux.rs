@@ -224,6 +224,9 @@ pub struct ProcFs {
     /// Cumulative context-switch and interrupt counts from the previous sample.
     prev_ctxt: Option<u64>,
     prev_intr: Option<u64>,
+    /// Cumulative `/proc/vmstat` counters from the previous sample: page in,
+    /// page out, swap in, swap out, OOM kills.
+    prev_vm: Option<VmCounters>,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_at: Option<SystemTime>,
@@ -324,6 +327,7 @@ impl ProcFs {
             said_pss_denied: false,
             prev_ctxt: None,
             prev_intr: None,
+            prev_vm: None,
             prev_proc_io: HashMap::new(),
             prev_at: None,
             users: parse_passwd(),
@@ -1512,6 +1516,56 @@ struct StatCtx<'a> {
     page_size: u64,
 }
 
+/// The `/proc/vmstat` counters poptop reports, as the kernel publishes them:
+/// cumulative since boot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct VmCounters {
+    pgin: u64,
+    pgout: u64,
+    swin: u64,
+    swout: u64,
+    /// `None` where the kernel does not publish the key at all — pre-4.13, or
+    /// a build without it. Zero would be poptop saying nothing was killed.
+    oom: Option<u64>,
+}
+
+/// Read them, or `None` if the file is not there.
+///
+/// One extra read a sample, of a file whose whole content is a few hundred
+/// short lines. It is not behind the cost model because it does not scale with
+/// anything: a box with ten thousand processes has the same `vmstat` as an idle
+/// one.
+fn read_vmstat(buf: &mut Vec<u8>) -> Option<VmCounters> {
+    Some(parse_vmstat(read_into("/proc/vmstat", buf).ok()?))
+}
+
+/// Split from the read so it can be tested against a fixture, like every other
+/// parser here — and because the units are the part worth pinning: `pgpgin` and
+/// `pgpgout` are in kilobytes while the swap pair is in *pages*, so one
+/// conversion applied to both reports swap at a four-thousandth of its size.
+fn parse_vmstat(text: &str) -> VmCounters {
+    let find = |key: &str| -> Option<u64> {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.trim().parse::<u64>().ok())
+    };
+    let get = |key: &str| -> u64 { find(key).unwrap_or(0) };
+    VmCounters {
+        // In their own units, and turned into bytes by the caller — the only
+        // place that knows the page size.
+        pgin: get("pgpgin "),
+        pgout: get("pgpgout "),
+        swin: get("pswpin "),
+        swout: get("pswpout "),
+        // Every OOM kill since boot. The delta is what happened in this
+        // interval, which is the only form of it worth showing.
+        // `None` where the key is missing rather than the zero `get` gives. A
+        // counter that exists at zero and a counter that does not exist are
+        // different answers, and this is the one figure here where the
+        // difference is the whole point.
+        oom: find("oom_kill "),
+    }
+}
+
 /// A machine-wide cumulative counter as a rate, or `None`.
 ///
 /// `None` when the platform does not publish it and on the first sighting —
@@ -2143,6 +2197,22 @@ impl Collector for ProcFs {
         // taken between consecutive reads, so moving both by a millisecond
         // changes nothing about it.
         let stat = self.read_stat_file()?;
+        // Taken with the read and before anything else fallible, like the
+        // counters above and for the reason `prev_at` states.
+        let vm = read_vmstat(&mut self.buf);
+        let was_vm = vm.and_then(|v| self.prev_vm.replace(v));
+        let secs = elapsed.as_secs_f64();
+        let vm_rate = |f: fn(&VmCounters) -> u64, unit: u64| -> Option<u64> {
+            let (now, before) = (vm?, was_vm?);
+            // Multiplied by the unit *before* the divide. Truncating to an
+            // integer first reports anything under one unit a second as exactly
+            // zero, so a box steadily swapping out a page or two an interval
+            // reads as quiet — and the constraint rule keys on `> 0`, so that
+            // would silence the signal this change exists to add.
+            (secs > 0.0).then(|| {
+                (f(&now).saturating_sub(f(&before)).saturating_mul(unit) as f64 / secs) as u64
+            })
+        };
         // Taken and stored together with the read, before anything else
         // fallible — the same discipline as `prev_at` above, and for the same
         // reason it states: a sample that dies on a later `?` leaves the clock
@@ -2178,6 +2248,20 @@ impl Collector for ProcFs {
             forks: stat.forks,
             io_supported: self.io_supported,
             clock_ceiling: self.read_clock_ceiling(needs),
+            // `pgpgin`/`pgpgout` are kilobytes, the swap pair is pages.
+            pgin: vm_rate(|v| v.pgin, 1024),
+            pgout: vm_rate(|v| v.pgout, 1024),
+            swin: vm_rate(|v| v.swin, self.page_size),
+            swout: vm_rate(|v| v.swout, self.page_size),
+            // A count, not a rate: "two processes were killed in this interval"
+            // is the fact, and dividing it by seconds would make one kill in a
+            // one-second interval indistinguishable from none.
+            oom_kills: match (vm, was_vm) {
+                (Some(now), Some(before)) => {
+                    now.oom.zip(before.oom).map(|(n, b)| n.saturating_sub(b))
+                }
+                _ => None,
+            },
             io_collected: needs.wants(Source::Io) && self.io_supported,
             io_denied,
             disks,
@@ -2675,6 +2759,47 @@ mod tests {
             !pf.containers.contains_key(&-12345),
             "an exited process kept its container: {} entries",
             pf.containers.len()
+        );
+    }
+
+    #[test]
+    fn vmstat_keeps_the_page_counters_in_their_own_units() {
+        // `pgpgin`/`pgpgout` are kilobytes and the swap pair is *pages*. One
+        // conversion applied to both reports swap at a four-thousandth of its
+        // real size — a thrashing box rendered as a quiet one.
+        let v = parse_vmstat(
+            "nr_free_pages 262144\n\
+             pgpgin 1048576\n\
+             pgpgout 524288\n\
+             pswpin 4096\n\
+             pswpout 8192\n\
+             oom_kill 3\n",
+        );
+        assert_eq!(v.pgin, 1_048_576, "kilobytes, unconverted");
+        assert_eq!(v.pgout, 524_288);
+        assert_eq!(v.swin, 4_096, "pages, unconverted");
+        assert_eq!(v.swout, 8_192);
+        assert_eq!(v.oom, Some(3));
+    }
+
+    #[test]
+    fn a_vmstat_line_is_found_among_the_hundreds_around_it() {
+        // The keys carry a trailing space so a future `oom_kill_something`
+        // cannot be read as `oom_kill`. None of the five collides today —
+        // removing the spaces keeps this passing, and saying otherwise would be
+        // a comment claiming a guard the test does not hold up. It is cheap
+        // insurance against a kernel that adds one, not a current defence.
+        let v = parse_vmstat("pgpgin 10\npgpgout 20\noom_kill 1\n");
+        assert_eq!((v.pgin, v.pgout, v.oom), (10, 20, Some(1)));
+        // A kernel that does not publish the key at all — pre-4.13, or a build
+        // without it — says nothing rather than "none were killed". This is the
+        // one figure here where the difference is the whole point: a confident
+        // `oomkill 0` is poptop answering a question it cannot see.
+        assert_eq!(parse_vmstat("").oom, None, "an absent key was read as zero");
+        assert_eq!(
+            parse_vmstat("oom_kill 0\n").oom,
+            Some(0),
+            "a real zero was lost"
         );
     }
 

@@ -257,6 +257,28 @@ Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
 
+### What happened to my process
+
+A process the OOM killer ended is gone from the next sample with nothing
+anywhere saying why. That is the commonest question a monitor is asked, and
+poptop could not answer it even with the buffer.
+
+The panel now says `2 processes killed for memory` in the interval it happened,
+and **scrubbing back to that moment shows the count beside the process table
+from the instant before** — which is a thing no live-only monitor can do, and
+which atop can do only from a logfile its daemon had to be writing in advance.
+
+`--once` reports page-in, page-out, swap-in and swap-out as **rates**. The swap
+*level* cannot tell a machine that swapped four gigabytes in and out during the
+interval from one sitting on four idle gigabytes — they report the same number.
+The constraint detector reads that rate now, where before it had to infer memory
+pressure from swap *growth* across a window precisely because the level said
+nothing. The inference is still there for platforms that publish no rate.
+
+Two units, one file: `pgpgin`/`pgpgout` are in kilobytes and the swap pair is in
+*pages*, so one conversion applied to both reports swap at a four-thousandth of
+its size — a thrashing box rendered as a quiet one.
+
 ### What the memory is actually holding
 
 `MEM 50%` and a total say nothing about the shape of the other half. `--once`
