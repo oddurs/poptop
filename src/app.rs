@@ -99,21 +99,26 @@ impl Sort {
         }
     }
 
-    /// The next sort in the cycle.
+    /// The next sort in the cycle, within the columns this view shows.
+    ///
+    /// Cycling within the view is what keeps the two from disagreeing: sorting
+    /// by a column that is not on screen is an ordering the reader cannot see
+    /// the reason for, and atop allows exactly that.
     ///
     /// `Disk` is skipped when its column is not being collected, because every
     /// row would answer `None` and the key would order nothing. It is still
     /// reachable there by accepting a suggestion, which only appears when the
     /// figures exist.
-    pub fn next(self, io: bool) -> Self {
-        let n = match self {
-            Sort::Cpu => Sort::Mem,
-            Sort::Mem => Sort::Disk,
-            Sort::Disk => Sort::Pid,
-            Sort::Pid => Sort::Name,
-            Sort::Name => Sort::Cpu,
-        };
-        if n == Sort::Disk && !io { Sort::Pid } else { n }
+    pub fn next(self, io: bool, view: View) -> Self {
+        let keys = view.sorts();
+        let here = keys.iter().position(|k| *k == self).unwrap_or(0);
+        for step in 1..=keys.len() {
+            let n = keys[(here + step) % keys.len()];
+            if n != Sort::Disk || io {
+                return n;
+            }
+        }
+        self
     }
 }
 
@@ -133,6 +138,101 @@ const BUDGET_SHARE: f32 = 0.25;
 
 /// Consecutive over-budget samples before anything is given up.
 const BUDGET_STRIKES: u32 = 3;
+
+/// Which columns the table shows.
+///
+/// atop solves the same problem with seven of these — `g` generic, `m` memory,
+/// `d` disk, `n` network — each a different column set over the same rows. The
+/// table is already at its width on an eighty-column terminal, so more fields
+/// cannot mean more columns.
+///
+/// # The mode axes, resolved rather than multiplied
+///
+/// Tree, grouping, thread expansion and now views looked like four exclusive
+/// modes on four keys, which is where interfaces go wrong. They are two axes:
+///
+/// - **What the table is *of*** — processes flat, as a tree, folded by name or
+///   by container, with a process expanded to its threads, or cgroups instead.
+///   `t`, `g`, `y`, `C`.
+/// - **What it *shows*** — this. `v`.
+///
+/// `d` is neither: it changes the *timeline* panel, not the table, and calling
+/// it a table mode was the thing that made this look like four axes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    /// What poptop has always shown: CPU, memory, state, threads, history.
+    #[default]
+    Generic,
+    /// Memory, with the room the other columns were using.
+    Memory,
+    /// Disk throughput, always — not only when it happens to fit.
+    ///
+    /// This is the concrete thing views fix today: `DISK R`/`DISK W` are shown
+    /// only when there is room, so on a narrow terminal the figures vanish with
+    /// nothing to bring them back. This key is what brings them back.
+    Disk,
+}
+
+impl View {
+    pub fn next(self) -> Self {
+        match self {
+            View::Generic => View::Memory,
+            View::Memory => View::Disk,
+            View::Disk => View::Generic,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            View::Generic => "generic",
+            View::Memory => "memory",
+            View::Disk => "disk",
+        }
+    }
+
+    /// Whether the per-process disk columns belong in this view.
+    ///
+    /// In the disk view they are the point, so they are not subject to the
+    /// width test that hides them elsewhere.
+    pub fn wants_io(self) -> bool {
+        matches!(self, View::Generic | View::Disk)
+    }
+
+    /// The sort keys reachable from this view.
+    ///
+    /// atop keeps sort and view independent, which allows sorting by a column
+    /// the view does not show — an ordering the reader cannot see the reason
+    /// for. Here `s` cycles within the view, so the two cannot disagree and the
+    /// panel can name both without either contradicting the table.
+    pub fn sorts(self) -> &'static [Sort] {
+        match self {
+            View::Generic => &[Sort::Cpu, Sort::Mem, Sort::Disk, Sort::Pid, Sort::Name],
+            View::Memory => &[Sort::Mem, Sort::Cpu, Sort::Pid, Sort::Name],
+            View::Disk => &[Sort::Disk, Sort::Cpu, Sort::Pid, Sort::Name],
+        }
+    }
+
+    /// The sort to fall back to when switching into this view leaves the
+    /// current one unreachable.
+    ///
+    /// `io` is whether the per-process disk figures are being collected. The
+    /// disk view's first choice is `Sort::Disk`, and without those figures every
+    /// row answers `None` to it — "not an ordering, a shuffle", which is why
+    /// [`Sort::next`] already refuses to cycle onto it. Switching views must
+    /// not walk in the back door.
+    pub fn default_sort_for(self, io: bool) -> Sort {
+        let first = self.sorts()[0];
+        if first == Sort::Disk && !io {
+            return self
+                .sorts()
+                .iter()
+                .copied()
+                .find(|s| *s != Sort::Disk)
+                .unwrap_or(Sort::Cpu);
+        }
+        first
+    }
+}
 
 /// What a row stands for while the table is folding.
 type GroupKey = fn(&ProcSample) -> Option<&Arc<str>>;
@@ -185,6 +285,8 @@ impl Grouping {
 pub struct App {
     pub history: History,
     pub sort: Sort,
+    /// Which columns the table shows. See [`View`].
+    pub view: View,
     /// Index into the *sorted* process list of the displayed sample.
     /// The process being watched, not the row it happens to be on.
     ///
@@ -317,6 +419,7 @@ impl App {
         Self {
             history: History::new(history_len),
             sort: Sort::Cpu,
+            view: View::default(),
             selected: None,
             last_row: std::cell::Cell::new(0),
             filter: String::new(),

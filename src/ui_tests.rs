@@ -6425,7 +6425,7 @@ fn sorting_does_not_move_the_selection_to_a_different_process() {
 
     let mut seen = Vec::new();
     for _ in 0..4 {
-        app.sort = app.sort.next(false);
+        app.sort = app.sort.next(false, crate::app::View::Generic);
         let rows = app.visible_rows();
         let i = app.row_of(&rows).expect("the sort lost the selection");
         assert_eq!(&*rows[i].proc.name, "redis", "the sort moved the selection");
@@ -6968,12 +6968,12 @@ fn the_sort_cycle_skips_disk_when_there_are_no_disk_figures() {
     let mut seen = vec![Sort::Cpu];
     let mut s = Sort::Cpu;
     for _ in 0..6 {
-        s = s.next(false);
+        s = s.next(false, crate::app::View::Generic);
         seen.push(s);
     }
     assert!(!seen.contains(&Sort::Disk), "cycled onto an empty column");
     // …and reaches it when the figures exist.
-    assert_eq!(Sort::Mem.next(true), Sort::Disk);
+    assert_eq!(Sort::Mem.next(true, crate::app::View::Generic), Sort::Disk);
 }
 
 #[test]
@@ -9320,4 +9320,199 @@ fn processes_can_be_filtered_by_container_and_by_the_absence_of_one() {
     // And a process in a container is not matched by a different one.
     app.filter = "cid = deadbeef".into();
     assert!(app.visible_rows().is_empty(), "an unrelated id matched");
+}
+
+#[test]
+fn the_disk_columns_are_reachable_on_a_narrow_terminal() {
+    // The concrete thing views fix. `DISK R`/`DISK W` are shown only when there
+    // is room, so on a narrow terminal the figures vanish with nothing to bring
+    // them back — and a disk view is that key.
+    use crate::app::View;
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = vec![ProcSample {
+        io: Some(crate::sample::IoRates {
+            read: 5 << 20,
+            write: 1 << 20,
+        }),
+        ..proc_named(4001, "postgres", 12.0, 64 << 20)
+    }];
+    app.push(s);
+
+    let narrow = rows(&app, 90, 10).join("\n");
+    assert!(
+        !narrow.contains("DISK R"),
+        "the fixture is not narrow enough to test this:\n{narrow}"
+    );
+
+    app.view = View::Disk;
+    let shown = rows(&app, 90, 10).join("\n");
+    assert!(
+        shown.contains("DISK R") && shown.contains("DISK W"),
+        "the disk view did not bring the columns back:\n{shown}"
+    );
+    // It made room by dropping what the view does not need, rather than by
+    // pushing the command off the edge.
+    assert!(
+        !shown.contains("THR"),
+        "the disk view kept the thread count"
+    );
+    assert!(
+        shown.contains("postgres"),
+        "the command was pushed off:\n{shown}"
+    );
+}
+
+#[test]
+fn the_sort_and_the_view_cannot_disagree() {
+    use crate::app::{Sort, View};
+    // atop allows sorting by a column the view does not show, which is an
+    // ordering the reader cannot see the reason for.
+    let mut app = App::new(600);
+    app.view = View::Memory;
+    app.sort = Sort::Cpu;
+    for _ in 0..8 {
+        app.sort = app.sort.next(true, app.view);
+        assert!(
+            app.view.sorts().contains(&app.sort),
+            "`s` reached {:?}, which the {} view does not show",
+            app.sort,
+            app.view.label()
+        );
+    }
+}
+
+#[test]
+fn switching_views_brings_an_unreachable_sort_with_it() {
+    use crate::app::{Sort, View};
+    let mut app = App::new(600);
+    app.view = View::Generic;
+    app.sort = Sort::Disk;
+    // Memory does not show disk, so the sort has to move.
+    app.view = View::Memory;
+    if !app.view.sorts().contains(&app.sort) {
+        app.sort = app.view.default_sort_for(true);
+    }
+    assert_eq!(app.sort, Sort::Mem, "the sort was left pointing at nothing");
+}
+
+#[test]
+fn the_panel_names_the_view_when_it_is_not_the_default() {
+    use crate::app::View;
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let generic = rows(&app, 140, 10).join("\n");
+    assert!(generic.contains("sort: CPU"));
+    // Not "does the word appear" — the key hints carry `v view`. The default
+    // view is the one that needs no announcing, so it is the *clause* that must
+    // be absent.
+    assert!(
+        !generic.contains("generic view"),
+        "the default view is named for no reason:\n{generic}"
+    );
+
+    app.view = View::Memory;
+    app.sort = app.view.default_sort_for(true);
+    let mem = rows(&app, 140, 10).join("\n");
+    assert!(
+        mem.contains("memory view, sort: MEM"),
+        "the panel does not say which columns the ordering is over:\n{mem}"
+    );
+}
+
+#[test]
+fn the_disk_view_does_not_sort_by_a_column_no_row_can_answer() {
+    use crate::app::{Sort, View};
+    // "A sort key every row answers `None` to is not an ordering, it is a
+    // shuffle" — `Sort::next` already refuses to cycle onto Disk when the
+    // column is not collected. Switching *views* must not walk in the back
+    // door: `View::Disk.default_sort()` is `Sort::Disk`.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = false;
+    s.procs = vec![proc_named(4001, "postgres", 12.0, 64 << 20)];
+    app.push(s);
+    assert!(!app.io_collected(), "the fixture does not test the case");
+
+    app.view = View::Disk;
+    app.sort = app.view.default_sort_for(app.io_collected());
+    assert_ne!(
+        app.sort,
+        Sort::Disk,
+        "the disk view sorted by a figure no row has"
+    );
+}
+
+#[test]
+fn every_view_renders_every_kind_of_row() {
+    use crate::app::{Grouping, View};
+    // The header, the widths and the cells are three lists that have to stay in
+    // lockstep, and a view drops entries from all three. A mismatch does not
+    // panic — ratatui just misaligns the columns silently — so this walks every
+    // view against every row shape the table can produce.
+    for view in [View::Generic, View::Memory, View::Disk] {
+        for grouping in [Grouping::Off, Grouping::Name] {
+            let mut app = App::new(600);
+            app.push(sample_with_threads());
+            app.view = view;
+            app.group = grouping;
+            app.select_delta(1);
+            if grouping == Grouping::Off {
+                app.toggle_threads();
+            }
+            for w in [80u16, 100, 140, 200] {
+                let frame = rows(&app, w, 14);
+                // The header is the row under the divider, and every data row
+                // has to start where it starts.
+                let header = frame
+                    .iter()
+                    .position(|l| l.contains("CPU%"))
+                    .unwrap_or_else(|| panic!("no header in {view:?} at {w}"));
+                assert!(
+                    frame.len() > header + 1,
+                    "{view:?} at {w} drew a header and no rows"
+                );
+                // Alignment, not width. ratatui clips at the edge, so a row
+                // that is too long is invisible — but a header list and a cell
+                // list of different lengths shift every column after the
+                // difference, silently, and that is the failure a view can
+                // actually cause. `COMMAND` is the last column, so it is the
+                // one that has moved if anything has.
+                // In *characters*, not bytes. `find` gives a byte offset and
+                // the rows carry braille and block glyphs, so a byte index
+                // compared against a `chars()` index is the same trap this
+                // codebase has hit three times: the header is ASCII and the
+                // row is not, so the two disagree by however many multi-byte
+                // glyphs precede the column.
+                let at = frame[header]
+                    .find("COMMAND")
+                    .map(|b| frame[header][..b].chars().count())
+                    .unwrap_or_else(|| panic!("no COMMAND header in {view:?} at {w}"));
+                // The cell *begins* at the header's offset whatever is in it —
+                // a tree prefix lives inside the command cell, so matching on
+                // the name would be measuring the prefix. What must hold for
+                // every row shape is that the cell starts where its header
+                // does: something at `at`, and nothing immediately before it.
+                // Data rows only. Everything in the table starts with a CPU
+                // figure, and the key hints below the table do not — scanning
+                // those compares the footer against a column header.
+                for row in frame[header + 1..]
+                    .iter()
+                    .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+                {
+                    let c: Vec<char> = row.chars().collect();
+                    if c.len() <= at || c[at].is_whitespace() {
+                        continue;
+                    }
+                    assert!(
+                        c.get(at - 1).is_some_and(|p| p.is_whitespace()),
+                        "{view:?} at {w}: the command cell does not start under its header \
+                         at {at} — the header and the cells are out of step\n{}\n{row}",
+                        frame[header]
+                    );
+                }
+            }
+        }
+    }
 }

@@ -122,6 +122,7 @@ cargo build --release
 | `↑` / `↓` | select a process |
 | `s` | cycle sort column |
 | `S` | sort by whatever is stopping work, when the panel names one |
+| `v` | switch column set: generic, memory, disk |
 | `t` | toggle the process tree |
 | `g` | fold rows: by name, then by container, then off |
 | `d` | show the selected process's own history instead of the machine's |
@@ -255,6 +256,37 @@ process was inspected.
 Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
+
+### What the table shows
+
+atop spends seven keys on this — `g` generic, `m` memory, `d` disk, `n` network
+— each a different column set over the same rows. poptop's table is already at
+its width on an eighty-column terminal, so more fields cannot mean more columns.
+
+`v` cycles **generic → memory → disk**. It is a named list of columns over one
+renderer, not a second renderer.
+
+The concrete thing it fixes today: `DISK R` and `DISK W` are shown only when
+there is room, so on a narrow terminal the figures vanish with nothing to bring
+them back. In the disk view they are the point, so they are exempt from that
+width test — and the view makes room by dropping the bars and the thread count
+rather than by pushing the command off the edge.
+
+**Sort and view cannot disagree.** `s` cycles within the columns the current
+view shows, and switching views brings the sort with it when it has to. atop
+allows sorting by a column the view does not show, which is an ordering with no
+visible reason for it. The panel names both — `memory view, sort: MEM`.
+
+**Two axes, not four.** Tree, grouping, thread expansion and views looked like
+four exclusive modes on four keys, which is where interfaces go wrong. They are:
+
+- **what the table is *of*** — processes flat, as a tree, folded by name or by
+  container, with one expanded to its threads, or cgroups instead (`t`, `g`,
+  `y`, `C`)
+- **what it *shows*** — the column set (`v`)
+
+`d` is neither. It changes the *timeline* panel rather than the table, and
+counting it as a table mode is what made this look like four axes.
 
 ### Whose process is it
 
