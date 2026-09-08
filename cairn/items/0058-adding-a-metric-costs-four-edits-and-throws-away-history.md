@@ -2,7 +2,7 @@
 id: 58
 title: Adding a metric costs four edits and throws away history
 type: chore
-status: backlog
+status: done
 milestone: v2.0
 created: 2026-09-08
 updated: 2026-09-08
@@ -58,8 +58,42 @@ depended on.
 
 ## Acceptance criteria
 
-- [ ] Adding a system metric is a single declaration plus its read
-- [ ] Adding a per-process metric is the same
-- [ ] macOS absence is expressed once, in the declaration, not per call site
-- [ ] The cost of the change is measured with `--bench`, both directions
-- [ ] Every existing metric is expressed in the new form, none left special
+- [x] Adding a system metric is a single declaration plus its read
+- [x] Adding a per-process metric is the same
+- [x] macOS absence is expressed once, in the declaration, not per call site
+- [x] The cost of the change is measured with `--bench`, both directions
+- [x] Every existing metric is expressed in the new form, none left special
+
+## How it was resolved
+
+PR #75. The second of the two shapes offered above — named fields kept,
+store code generated — with one change: the struct stays hand-written and the
+macro takes a list of its field names beside it.
+
+**Why not one list.** Generating the struct too would have put the doc comments
+that document what poptop measures inside a macro invocation, in the file most
+often read. And struct order is a readability choice while wire order is a
+compatibility contract; collapsing them means reordering fields for legibility
+silently changes the format.
+
+So criterion one is met as *one declaration in `sample.rs` that the compiler
+will not let you leave incomplete*, rather than literally one line. The reader
+cannot build a struct it is missing a field for and the writer destructures
+`Self` exhaustively, both checked by mutation.
+
+**macOS absence** is `Sample::unknown()`, the base a collector defaults through.
+The reasons macOS cannot answer a given metric stayed in `darwin.rs`, grouped
+above the construction — they are macOS-specific measurements and would be wrong
+in the platform-neutral model.
+
+**Measured:** collection unchanged (6.08/6.41ms → 6.20/6.19ms); store identical
+at 15.8 MB for 600 samples of 400 processes; decode 5.94 → 5.00ms. The first
+attempt came out 0.7 MB larger, which was `state` widening from one byte to
+four — `Codec for char` now writes a byte and a test pins the record at 65.
+
+**Found on the way:** a corrupt store could panic the reader at startup on the
+very first field, reachable by flipping a single bit. Fixed, with a sweep that
+asserts no single-byte corruption panics.
+
+**Not fixed here:** `VERSION` 13 → 14 still discards stored history. That is
+0059, and it is a much smaller change now that there is one place to add a tag.
