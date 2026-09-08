@@ -21,15 +21,59 @@ Timeline, scrubbing, process tree, colour that survives a colourblind reader and
 - [x] `0017` The process table header is too heavy <sup>bug · p2</sup>
 - [x] `0018` Piping --once into head panics <sup>bug · p2</sup>
 
-## v0.2 — Cheap enough to run
+## v2.0 — Nothing escapes
 
-`##########` 92% · 11 of 12 done · due 2026-11-01
+`··········` 0% · 0 of 5 done · due 2027-04-01
 
-Collector fast enough for sub-second sampling, and the data-fidelity gaps against atop closed or disclosed.
+The foundation for atop parity: a model that can carry two hundred metrics
 
 ### backlog
 
 - [ ] `0011` Capture processes that live and die between samples <sup>feature · p0</sup>
+- [ ] `0058` Adding a metric costs four edits and throws away history <sup>chore · p0</sup>
+- [ ] `0059` A store upgrade must not discard history <sup>bug · p0</sup>
+- [ ] `0060` Collection cost is a global switch, not a per-subsystem budget <sup>feature · p1</sup>
+- [ ] `0061` Threads are counted but never shown <sup>feature · p1</sup>
+
+## v2.1 — Everything the kernel says
+
+`··········` 0% · 0 of 10 done · due 2027-07-01
+
+Breadth and depth: the subsystems atop reports that poptop does not — NUMA,
+
+### backlog
+
+- [ ] `0062` Nothing says which processes a container is running <sup>feature · p1</sup>
+- [ ] `0063` cgroup v2 utilisation and pressure, per cgroup <sup>feature · p1</sup>
+- [ ] `0064` CPU accounting stops at busy and idle <sup>feature · p2</sup>
+- [ ] `0065` Memory is a percentage and a total, with no composition <sup>feature · p2</sup>
+- [ ] `0066` Paging, swapping and the OOM killer are invisible <sup>feature · p2</sup>
+- [ ] `0067` NUMA nodes are averaged into one machine <sup>feature · p3</sup>
+- [ ] `0068` NFS, GPU and the interconnects are not reported at all <sup>feature · p3</sup>
+- [ ] `0069` A process has eleven fields where atop shows seventy <sup>feature · p1</sup>
+- [ ] `0070` One table cannot show seventy columns <sup>feature · p1</sup>
+- [ ] `0071` Work accumulates by program but not by user or container <sup>feature · p2</sup>
+
+## v2.2 — An institution
+
+`··········` 0% · 0 of 6 done · due 2027-10-01
+
+What makes atop something a fleet depends on rather than something you run:
+
+### backlog
+
+- [ ] `0072` History ends when the process does <sup>feature · p0</sup>
+- [ ] `0073` There is no way to open yesterday <sup>feature · p0</sup>
+- [ ] `0074` The only machine-readable output is one plain-text sample <sup>feature · p1</sup>
+- [ ] `0075` Nothing summarises a day <sup>feature · p2</sup>
+- [ ] `0076` Nothing can be done to a process, only watched <sup>feature · p3</sup>
+- [ ] `0077` The comparison table will be wrong the moment this lands <sup>docs · p2</sup>
+
+## v0.2 — Cheap enough to run
+
+`##########` 100% · 11 of 11 done · due 2026-11-01
+
+Collector fast enough for sub-second sampling, and the data-fidelity gaps against atop closed or disclosed.
 
 ### done
 
