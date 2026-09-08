@@ -538,6 +538,26 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         });
     }
 
+    // Only when the hypervisor is actually taking time. On bare metal it is
+    // zero forever and a permanent `STL 0.0%` is a figure nobody reads by the
+    // second day — the same rule as the clock ceiling above.
+    //
+    // Ranked with it, and for the same reason: this is the other figure that
+    // *qualifies* CPU rather than adding to it. `CPU 40%` with `STL 55%` is a
+    // machine working as hard as it is being allowed to, and nothing else on
+    // this header can say so. A tenth of a percent is scheduling noise on any
+    // shared host; a whole percent is somebody else's workload.
+    if let Some(steal) = s.steal.filter(|v| *v >= 1.0) {
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: 6,
+            spans: vec![
+                Span::styled("STL ", dim),
+                Span::styled(format!("{steal:>5.1}%"), app.theme.figure_style(steal)),
+            ],
+        });
+    }
+
     // The figure that separates "nothing to do" from "cannot get on with
     // anything". Absent on a platform that will not say, rather than zero.
     if let Some(iowait) = s.iowait {

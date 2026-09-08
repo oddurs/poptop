@@ -41,6 +41,19 @@ struct CpuTimes {
     /// about the CPU being quiet and silent about the reason, which is the
     /// single most common confusing case there is: high load, idle CPU.
     iowait: u64,
+    /// Time the hypervisor took for something else.
+    ///
+    /// On a cloud instance this is the difference between "the box is busy" and
+    /// "the box is not being given a box", and there is no other way to see it.
+    /// It is one field of a line already being parsed.
+    steal: u64,
+    /// Time given to guests, which on a hypervisor is the work rather than the
+    /// overhead.
+    guest: u64,
+    /// Hard and soft interrupt time, kept apart. A network-heavy box's softirq
+    /// time is the answer to why user time looks low while nothing is idle.
+    irq: u64,
+    softirq: u64,
 }
 
 impl CpuTimes {
@@ -60,10 +73,18 @@ impl CpuTimes {
         // summing every field as-is would double-count them.
         let total: u64 = v.iter().take(8).sum();
         let iowait = v.get(4).copied().unwrap_or(0);
+        let at = |i: usize| v.get(i).copied().unwrap_or(0);
         Some(Self {
             idle: v[3] + iowait,
             total,
             iowait,
+            irq: at(5),
+            softirq: at(6),
+            steal: at(7),
+            // Already inside `user`, so it is *not* added to `total` — the same
+            // double count the line above avoids. Reported as its own share of
+            // the same denominator.
+            guest: at(8) + at(9),
         })
     }
 
@@ -80,6 +101,18 @@ impl CpuTimes {
         }
         let dw = self.iowait.saturating_sub(prev.iowait);
         ((dw as f64 / dt as f64) * 100.0) as f32
+    }
+
+    /// Any of these counters as a share of the interval.
+    ///
+    /// The same denominator `busy_pct_since` uses, so every figure on the CPU
+    /// line can be read against every other.
+    fn share_since(&self, prev: &Self, f: impl Fn(&Self) -> u64) -> f32 {
+        let dt = self.total.saturating_sub(prev.total);
+        if dt == 0 {
+            return 0.0;
+        }
+        ((f(self).saturating_sub(f(prev)) as f64 / dt as f64) * 100.0) as f32
     }
 
     /// Busy percentage between two reads.
@@ -179,6 +212,9 @@ pub struct ProcFs {
     /// Whether the PSS permission note has been said. Once per run, not once
     /// per sample.
     said_pss_denied: bool,
+    /// Cumulative context-switch and interrupt counts from the previous sample.
+    prev_ctxt: Option<u64>,
+    prev_intr: Option<u64>,
     /// pid -> cumulative (read_bytes, write_bytes) at the previous sample.
     prev_proc_io: HashMap<i32, (u64, u64)>,
     prev_at: Option<SystemTime>,
@@ -243,6 +279,14 @@ struct StatRead {
     /// Tasks in uninterruptible sleep — vmstat's `b`, and the D-state count
     /// that answers "why is load high when nothing is running".
     blocked: Option<u32>,
+    /// Shares of the interval, on the same denominator as `busy`.
+    steal: f32,
+    guest: f32,
+    irq: f32,
+    softirq: f32,
+    /// Context switches and interrupts since boot, to be turned into rates.
+    ctxt: Option<u64>,
+    intr: Option<u64>,
 }
 
 impl ProcFs {
@@ -269,6 +313,8 @@ impl ProcFs {
             cgroup_v2: None,
             cgroups_were_read: false,
             said_pss_denied: false,
+            prev_ctxt: None,
+            prev_intr: None,
             prev_proc_io: HashMap::new(),
             prev_at: None,
             users: parse_passwd(),
@@ -306,6 +352,8 @@ impl ProcFs {
         let mut forks = None;
         let mut running = None;
         let mut blocked = None;
+        let mut ctxt = None;
+        let mut intr = None;
         for line in stat.lines() {
             if let Some(n) = line.strip_prefix("processes ") {
                 forks = n.trim().parse().ok();
@@ -317,6 +365,15 @@ impl ProcFs {
             }
             if let Some(n) = line.strip_prefix("procs_blocked ") {
                 blocked = n.trim().parse().ok();
+                continue;
+            }
+            if let Some(n) = line.strip_prefix("ctxt ") {
+                ctxt = n.trim().parse().ok();
+                continue;
+            }
+            if let Some(n) = line.strip_prefix("intr ") {
+                // The first number is the total; the rest are per-IRQ counts.
+                intr = n.split_whitespace().next().and_then(|v| v.parse().ok());
                 continue;
             }
             let Some(rest) = line.strip_prefix("cpu") else {
@@ -339,12 +396,16 @@ impl ProcFs {
             }
         }
 
-        let (total_pct, iowait_pct) = match *prev_total {
+        let (total_pct, iowait_pct, steal, guest, irq, softirq) = match *prev_total {
             Some(prev) => (
                 total_now.busy_pct_since(&prev),
                 total_now.iowait_pct_since(&prev),
+                total_now.share_since(&prev, |t| t.steal),
+                total_now.share_since(&prev, |t| t.guest),
+                total_now.share_since(&prev, |t| t.irq),
+                total_now.share_since(&prev, |t| t.softirq),
             ),
-            None => (0.0, 0.0),
+            None => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         };
         let core_pcts = cores_now
             .iter()
@@ -364,6 +425,12 @@ impl ProcFs {
             forks,
             running,
             blocked,
+            steal,
+            guest,
+            irq,
+            softirq,
+            ctxt,
+            intr,
         })
     }
 
@@ -1435,6 +1502,16 @@ struct StatCtx<'a> {
     page_size: u64,
 }
 
+/// A machine-wide cumulative counter as a rate, or `None`.
+///
+/// `None` when the platform does not publish it and on the first sighting —
+/// "I do not know yet" rather than a boot's worth of context switches
+/// attributed to one second.
+fn delta_rate(now: Option<u64>, before: Option<u64>, elapsed_secs: f64) -> Option<u64> {
+    let (now, before) = (now?, before?);
+    (elapsed_secs > 0.0).then(|| (now.saturating_sub(before) as f64 / elapsed_secs) as u64)
+}
+
 /// A cumulative counter as a rate over the interval.
 ///
 /// `None` for the previous reading means this is the first sighting, and zero
@@ -2009,11 +2086,23 @@ impl Collector for ProcFs {
         // taken between consecutive reads, so moving both by a millisecond
         // changes nothing about it.
         let stat = self.read_stat_file()?;
+        let (was_ctxt, was_intr) = (self.prev_ctxt, self.prev_intr);
+        self.prev_ctxt = stat.ctxt;
+        self.prev_intr = stat.intr;
         Ok(Sample {
             at: now,
             cpu_total: stat.busy,
             cpu_per_core: stat.per_core,
             iowait: Some(stat.iowait),
+            steal: Some(stat.steal),
+            guest: Some(stat.guest),
+            irq: Some(stat.irq),
+            softirq: Some(stat.softirq),
+            // Cumulative counters as rates, like every other counter here. A
+            // first sighting reports nothing rather than a boot's worth of
+            // switches divided by one interval.
+            ctxt: delta_rate(stat.ctxt, was_ctxt, elapsed.as_secs_f64()),
+            intr: delta_rate(stat.intr, was_intr, elapsed.as_secs_f64()),
             running: stat.running,
             blocked: stat.blocked,
             mem: self.read_mem()?,
@@ -2524,6 +2613,35 @@ mod tests {
     }
 
     #[test]
+    fn the_cpu_line_is_read_past_busy_and_idle() {
+        // user nice system idle iowait irq softirq steal guest guest_nice
+        let a = CpuTimes::parse(" 100 10 50 800 20 5 5 10 7 3").unwrap();
+        let b = CpuTimes::parse(" 200 10 50 800 20 9 25 60 7 3").unwrap();
+        // total counts the first eight, so it advances by
+        // 100 + 4 + 20 + 50 = 174.
+        let pct = |f: fn(&CpuTimes) -> u64| b.share_since(&a, f);
+        assert!(
+            (pct(|t| t.steal) - 28.7).abs() < 0.1,
+            "steal: {}",
+            pct(|t| t.steal)
+        );
+        assert!((pct(|t| t.softirq) - 11.5).abs() < 0.1, "softirq");
+        assert!((pct(|t| t.irq) - 2.3).abs() < 0.1, "irq");
+        // guest is inside user and is *not* in the total; it did not move here.
+        assert_eq!(pct(|t| t.guest), 0.0);
+    }
+
+    #[test]
+    fn a_counter_with_no_previous_reading_is_absent_rather_than_a_boots_worth() {
+        // A boot's worth of context switches divided by one interval is a
+        // number in the millions presented as this second's.
+        assert_eq!(delta_rate(Some(1_000), None, 1.0), None);
+        assert_eq!(delta_rate(None, Some(1_000), 1.0), None);
+        assert_eq!(delta_rate(Some(1_500), Some(1_000), 1.0), Some(500));
+        assert_eq!(delta_rate(Some(1_500), Some(1_000), 2.0), Some(250));
+    }
+
+    #[test]
     fn cpu_times_skips_guest_double_count() {
         // user nice system idle iowait irq softirq steal guest guest_nice
         let t = CpuTimes::parse(" 100 10 50 800 20 5 5 10 999 999").unwrap();
@@ -2540,11 +2658,19 @@ mod tests {
             idle: 900,
             total: 1000,
             iowait: 0,
+            steal: 0,
+            guest: 0,
+            irq: 0,
+            softirq: 0,
         };
         let b = CpuTimes {
             idle: 950,
             total: 1100,
             iowait: 0,
+            steal: 0,
+            guest: 0,
+            irq: 0,
+            softirq: 0,
         };
         // 100 jiffies passed, 50 idle -> 50% busy
         assert!((b.busy_pct_since(&a) - 50.0).abs() < 0.01);
@@ -2558,11 +2684,19 @@ mod tests {
             idle: 900,
             total: 1000,
             iowait: 100,
+            steal: 0,
+            guest: 0,
+            irq: 0,
+            softirq: 0,
         };
         let b = CpuTimes {
             idle: 980,
             total: 1100,
             iowait: 130,
+            steal: 0,
+            guest: 0,
+            irq: 0,
+            softirq: 0,
         };
         // 100 jiffies passed: 80 idle (30 of it waiting), 20 busy.
         assert!((b.busy_pct_since(&a) - 20.0).abs() < 0.01);
@@ -2577,11 +2711,19 @@ mod tests {
             idle: 0,
             total: 0,
             iowait: 0,
+            steal: 0,
+            guest: 0,
+            irq: 0,
+            softirq: 0,
         };
         let b = CpuTimes {
             idle: 100,
             total: 100,
             iowait: 100,
+            steal: 0,
+            guest: 0,
+            irq: 0,
+            softirq: 0,
         };
         assert_eq!(
             b.busy_pct_since(&a),
@@ -2597,6 +2739,10 @@ mod tests {
             idle: 900,
             total: 1000,
             iowait: 0,
+            steal: 0,
+            guest: 0,
+            irq: 0,
+            softirq: 0,
         };
         assert_eq!(a.busy_pct_since(&a), 0.0);
     }
