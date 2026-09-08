@@ -2,7 +2,7 @@
 id: 70
 title: One table cannot show seventy columns
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 69
@@ -48,7 +48,41 @@ them back. A disk view is that key.
 
 ## Acceptance criteria
 
-- [ ] Column sets switchable with one key, sharing one renderer
-- [ ] The disk columns are reachable on a narrow terminal
-- [ ] Sort and view interact predictably, and the panel says which is active
-- [ ] The mode axes are resolved rather than multiplied
+- [x] Column sets switchable with one key, sharing one renderer
+- [x] The disk columns are reachable on a narrow terminal
+- [x] Sort and view interact predictably, and the panel says which is active
+- [x] The mode axes are resolved rather than multiplied
+
+## How it was resolved
+
+PR #83. `v` cycles generic, memory, disk — a named list of columns over one
+renderer.
+
+**The concrete fix:** `DISK R`/`DISK W` are shown only when they fit, so on a
+narrow terminal they vanish with nothing to bring them back. In the disk view
+they are the point, so they are exempt from that width test, and the view makes
+room by dropping the bars and the thread count rather than pushing the command
+off the edge.
+
+**Sort and view cannot disagree.** `s` cycles within the current view's columns,
+and switching views brings the sort along when the new one cannot show it. atop
+keeps them independent, which allows an ordering the reader cannot see the
+reason for. The panel names both.
+
+**The axes, resolved:** what the table is *of* (flat, tree, folded by name or
+container, expanded to threads, or cgroups) and what it *shows* (the column
+set). `d` is neither — it changes the timeline panel, and counting it as a table
+mode is what made this look like four axes.
+
+**Not user-definable yet.** atop has `o` and poptop has a config file, so the
+hook exists — but a user-defined column list wants the column descriptors 0069
+will produce, and inventing them now would mean inventing them twice. The three
+views are thin for the same reason; memory gets interesting when 0069 lands PSS,
+swap and fault counts.
+
+**Self-reviewed**, the review agent having stalled twice. It found one real bug:
+switching to the disk view sorted by `Sort::Disk` even where the column is not
+collected — the shuffle `Sort::next` already refuses. And it produced the test
+this refactor most needed, which asserts the command cell begins under its
+header across every view and row shape, since a header/cell mismatch misaligns
+silently rather than panicking.

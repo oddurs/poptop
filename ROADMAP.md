@@ -37,7 +37,7 @@ The foundation for atop parity: a model that can carry two hundred metrics
 
 ## v2.1 — Everything the kernel says
 
-`##········` 20% · 2 of 10 done · due 2027-07-01
+`###·······` 30% · 3 of 10 done · due 2027-07-01
 
 Breadth and depth: the subsystems atop reports that poptop does not — NUMA,
 
@@ -49,13 +49,13 @@ Breadth and depth: the subsystems atop reports that poptop does not — NUMA,
 - [ ] `0067` NUMA nodes are averaged into one machine <sup>feature · p3</sup>
 - [ ] `0068` NFS, GPU and the interconnects are not reported at all <sup>feature · p3</sup>
 - [ ] `0069` A process has eleven fields where atop shows seventy <sup>feature · p1</sup>
-- [ ] `0070` One table cannot show seventy columns <sup>feature · p1</sup>
 - [ ] `0071` Work accumulates by program but not by user or container <sup>feature · p2</sup>
 
 ### done
 
 - [x] `0062` Nothing says which processes a container is running <sup>feature · p1</sup>
 - [x] `0063` cgroup v2 utilisation and pressure, per cgroup <sup>feature · p1</sup>
+- [x] `0070` One table cannot show seventy columns <sup>feature · p1</sup>
 
 ## v2.2 — An institution
 
