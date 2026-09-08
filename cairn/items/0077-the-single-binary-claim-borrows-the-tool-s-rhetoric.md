@@ -2,7 +2,7 @@
 id: 77
 title: The single-binary claim borrows the tool's rhetoric
 type: docs
-status: backlog
+status: done
 milestone: web.1
 created: 2026-09-08
 updated: 2026-09-08

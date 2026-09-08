@@ -24,10 +24,16 @@ is silent, because nobody diffs prose.
 Rename a heading in the README and `cargo test` fails. That is the only kind of
 link check worth having.
 
-**The whole site is the binary.** Content is `include_str!`d at compile time, so
-there is nothing to deploy beside it, no content directory to mount, and no path
-to get wrong — the same property that lets poptop itself run with nothing set up
-first.
+**There is no build step.** Content, stylesheets and fonts are `include_str!`d
+and `include_bytes!`d at compile time. No bundler, no asset pipeline, no npm
+anywhere in the deployed path, and an export that is byte-identical between
+builds because everything it draws from is compiled in.
+
+Running it as a server is a single static binary with no runtime dependencies
+and a `/healthz`, which is an unusual thing for a documentation site to be. What
+this is *not* is poptop's "nothing to set up first" — that principle is about a
+stranger's machine at three in the morning, and reusing the phrase for a build
+directory spends the project's credibility on a property nothing depends on.
 
 **The hero is the product, not a picture of it.** `assets/js/demo.js` draws a
 real poptop frame in braille from a buffer generated on the server, and you can
@@ -78,6 +84,20 @@ face than the text around them stops lining up with its own gutter.
 Every type token is a `font` shorthand, so a size can never be used without the
 line height it was drawn for. Tracking rides alongside in a matching
 `--track-*` token, because the shorthand cannot carry it.
+
+**Provenance.** A picture of poptop says where its data came from and who drew
+it, in the same breath as the claim it supports.
+
+This is the third rule and the one that had to be learnt. The landing page shows
+a *simulation* of the product — fabricated data, drawn by a reimplementation of
+the renderer — and the tool never had to have a rule for that, so the site did
+not write one. A rewrite of the hero then deleted the caption saying the buffer
+was generated, and the page described seeded data as a "recorded poptop session"
+for a whole working session before anyone noticed.
+
+It survived because nothing said the caption was load-bearing.
+`the_landing_page_says_where_its_data_came_from` now fails the build if it goes
+missing again, which is the same treatment the colour rule gets in the tool.
 
 ## What it does about the boring parts
 

@@ -43,24 +43,24 @@ The landing page works and is honest, but it lists features where it should
 
 ## web.1 — The site holds up under cross-examination
 
-`####······` 33% · 3 of 9 done · due 2026-10-22
+`########··` 78% · 7 of 9 done · due 2026-10-22
 
 Findings from an adversarial review of `web/`. Thirteen charges, seven upheld,
 
 ### backlog
 
 - [ ] `0068` Nothing enforces the browser audit <sup>chore · p0</sup>
-- [ ] `0069` The colour-vision drift check only runs one way <sup>chore · p0</sup>
 - [ ] `0072` Nothing compares the site's braille to the terminal's <sup>chore · p1</sup>
-- [ ] `0074` Page furniture is filed under the components layer <sup>chore · p2</sup>
-- [ ] `0076` The site has no rule governing its own simulation <sup>docs · p1</sup>
-- [ ] `0077` The single-binary claim borrows the tool's rhetoric <sup>docs · p2</sup>
 
 ### done
 
+- [x] `0069` The colour-vision drift check only runs one way <sup>chore · p0</sup>
 - [x] `0070` The 404 page exists twice, verbatim <sup>chore · p1</sup>
 - [x] `0071` One number, written three times <sup>chore · p1</sup>
+- [x] `0074` Page furniture is filed under the components layer <sup>chore · p2</sup>
 - [x] `0075` ui::section takes five positional arguments <sup>chore · p2</sup>
+- [x] `0076` The site has no rule governing its own simulation <sup>docs · p1</sup>
+- [x] `0077` The single-binary claim borrows the tool's rhetoric <sup>docs · p2</sup>
 
 ## v2.0 — Nothing escapes
 

@@ -1,9 +1,10 @@
 /* The landing page's own furniture.
    ---------------------------------------------------------------------------
    Everything here exists because a section of the landing page argues with a
-   picture. Nothing in this file is used anywhere else, which is why it is its
-   own layer rather than more weight in `40-components.css`. */
-@layer components {
+   picture. Nothing in it is used anywhere else, which is why it is the `page`
+   layer rather than more weight in `40-components.css` — same precedence, and
+   a name that does not promise reuse. */
+@layer page {
   .section--hero {
     padding-block: var(--s-8) var(--s-7);
     border-top: 0;

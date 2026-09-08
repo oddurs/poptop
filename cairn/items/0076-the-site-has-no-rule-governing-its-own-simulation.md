@@ -2,7 +2,7 @@
 id: 76
 title: The site has no rule governing its own simulation
 type: docs
-status: backlog
+status: done
 milestone: web.1
 created: 2026-09-08
 updated: 2026-09-08

@@ -2,7 +2,7 @@
 id: 69
 title: The colour-vision drift check only runs one way
 type: chore
-status: backlog
+status: done
 milestone: web.1
 created: 2026-09-08
 updated: 2026-09-08

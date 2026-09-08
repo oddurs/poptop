@@ -14,7 +14,12 @@ use std::sync::LazyLock;
 /// Cascade layers, declared once, in the order they lose to each other.
 /// Declaring them up front means a component rule beats a base rule no matter
 /// which file happens to be read first.
-const LAYERS: &str = "@layer reset, tokens, base, layout, components, prose, utilities;\n";
+///
+/// `page` sits just after `components` and holds furniture that belongs to one
+/// page — the landing page's twin frames, its hatched band, its colour-vision
+/// control. Same precedence a component would have had, honest name: a reader
+/// looking for reusable parts should not have to wade through scaffolding.
+const LAYERS: &str = "@layer reset, tokens, base, layout, components, page, prose, utilities;\n";
 
 pub static CSS: LazyLock<String> = LazyLock::new(|| {
     [

@@ -2,7 +2,7 @@
 id: 74
 title: Page furniture is filed under the components layer
 type: chore
-status: backlog
+status: done
 milestone: web.1
 created: 2026-09-08
 updated: 2026-09-08
