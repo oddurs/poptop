@@ -377,7 +377,13 @@ fn main() -> io::Result<()> {
     // user should hear about.
     if settings.store {
         let boot = store::boot_time(&first);
-        let restored = store::load().unwrap_or_default();
+        // Whatever the reader had to say about the file: a format it could
+        // not read, or a field this build has no home for. Said out loud for
+        // the same reason as the boot mismatch below — a user should hear
+        // about history they are not getting.
+        let mut said = Vec::new();
+        let restored = store::load(&mut said).unwrap_or_default();
+        warnings.extend(said.into_iter().map(config::Warning));
         let total = restored.len();
         let usable: Vec<sample::Sample> = restored
             .into_iter()

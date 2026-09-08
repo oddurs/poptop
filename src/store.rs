@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 14;
+const VERSION: u32 = 15;
 
 /// When the machine this sample came from was booted.
 ///
@@ -97,10 +97,11 @@ pub fn path_from(
     Some(base.join("poptop").join("history"))
 }
 
-use crate::persist::{Codec, In, Out};
+use crate::persist::{Codec, In, Out, Raw, Registry, Ty};
+use crate::sample::schemas;
 
-/// Bytes the file carries beyond the sample bodies: magic, version, and the
-/// two counts.
+/// Bytes the file carries beyond the sample bodies and the schema: magic,
+/// version, and the two counts.
 const HEADER_BYTES: usize = MAGIC.len() + 4 + 4 + 4;
 
 /// Serialise samples, oldest first, dropping the oldest to fit [`MAX_BYTES`].
@@ -108,9 +109,19 @@ pub fn encode(samples: &[&Sample]) -> Vec<u8> {
     encode_within(samples, MAX_BYTES)
 }
 
+/// The schema block, which is the same bytes for every file this build writes.
+fn schema_bytes() -> Vec<u8> {
+    let mut out = Out::default();
+    out.schema_block(&schemas());
+    out.bytes
+}
+
 /// The cap as a parameter, so the trimming rule can be tested without building
 /// sixty megabytes of fixture to provoke it.
 fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
+    let schema = schema_bytes();
+    let fixed = HEADER_BYTES + schema.len();
+
     // Written newest-first into the body and reversed at the end, so trimming
     // to fit drops the *oldest* — the opposite would throw away the samples
     // most likely to explain whatever made you open poptop.
@@ -120,7 +131,7 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
         let before = out.bytes.len();
         let table_before = out.table_bytes;
         sample.write(&mut out);
-        if HEADER_BYTES + out.table_bytes + out.bytes.len() > max_bytes {
+        if fixed + out.table_bytes + out.bytes.len() > max_bytes {
             out.bytes.truncate(before);
             out.table_bytes = table_before;
             break;
@@ -136,9 +147,10 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
         sample.write(&mut out);
     }
 
-    let mut file = Vec::with_capacity(HEADER_BYTES + out.table_bytes + out.bytes.len());
+    let mut file = Vec::with_capacity(fixed + out.table_bytes + out.bytes.len());
     file.extend_from_slice(MAGIC);
     file.extend_from_slice(&VERSION.to_le_bytes());
+    file.extend_from_slice(&schema);
     file.extend_from_slice(&(out.strings.len() as u32).to_le_bytes());
     for s in &out.strings {
         file.extend_from_slice(&(s.len() as u32).to_le_bytes());
@@ -149,36 +161,118 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
     file
 }
 
-/// Parse a store, or `None` if it is not one this version understands.
+/// Parse a store, and whatever the reader had to say about it.
 ///
-/// Every failure mode lands here rather than propagating: a wrong magic, a
-/// version that is not exactly [`VERSION`], a truncated body, a string index
-/// with no table entry. This is a cache, and the honest outcome for all of them
-/// is starting with an empty buffer.
-pub fn decode(bytes: &[u8]) -> Option<Vec<Sample>> {
+/// Failures land here rather than propagating: a wrong magic, a framing version
+/// that is not [`VERSION`], a truncated body, a string index with no table
+/// entry. This is a cache, and the honest outcome for all of them is starting
+/// with an empty buffer.
+///
+/// A *field* the file has and this build does not is not a failure — it is the
+/// case the schema block exists for. It is skipped, and said once, because a
+/// metric quietly vanishing from a graph is how a reader stops being able to
+/// trust the graph.
+pub fn decode_reporting(bytes: &[u8]) -> (Option<Vec<Sample>>, Vec<String>) {
+    let mut notes = Vec::new();
+    let samples = read_file(bytes, &mut notes);
+    (samples, notes)
+}
+
+fn read_file(bytes: &[u8], notes: &mut Vec<String>) -> Option<Vec<Sample>> {
+    read_file_as(bytes, &schemas(), notes)
+}
+
+/// The reader's own schema as a parameter, so a test can read a real store
+/// while claiming to be a build that disagrees with it.
+fn read_file_as(
+    bytes: &[u8],
+    mine: &[(&'static str, Vec<crate::persist::Field>)],
+    notes: &mut Vec<String>,
+) -> Option<Vec<Sample>> {
     let mut r = In::new(bytes, 0, Vec::new());
-    if r.take(MAGIC.len())? != MAGIC || u32::read(&mut r)? != VERSION {
+    if r.take(MAGIC.len())? != MAGIC {
         return None;
     }
-    let n_strings = u32::read(&mut r)?;
+    let found = u32::read_raw(&mut r)?;
+    if found != VERSION {
+        // Named, because "your history is gone" is a thing a user should be
+        // able to look up rather than guess at. Only reachable for a file
+        // older than the schema block itself; from `VERSION` 15 on, a
+        // difference in fields is merged rather than refused.
+        notes.push(format!(
+            "the stored history is format {found}, this poptop reads {VERSION}; discarded"
+        ));
+        return None;
+    }
+
+    let reg = r.schema_block(mine)?;
+    for note in unknown_fields(&reg, mine) {
+        notes.push(note);
+    }
+
+    let n_strings = u32::read_raw(&mut r)?;
     let mut strings = Vec::with_capacity(n_strings.min(1 << 20) as usize);
     for _ in 0..n_strings {
-        let len = u32::read(&mut r)? as usize;
+        let len = u32::read_raw(&mut r)? as usize;
         strings.push(Arc::from(std::str::from_utf8(r.take(len)?).ok()?));
     }
     r.strings = strings;
 
-    let n_samples = u32::read(&mut r)?;
+    let n_samples = u32::read_raw(&mut r)?;
     let mut samples = Vec::with_capacity(n_samples.min(1 << 20) as usize);
+    let sample_ty = Ty::Rec("Sample".into());
     for _ in 0..n_samples {
-        samples.push(Sample::read(&mut r)?);
+        samples.push(if reg.exact {
+            Sample::read_exact(&reg, &mut r)?
+        } else {
+            Sample::read(&sample_ty, &reg, &mut r)?
+        });
     }
     Some(samples)
 }
 
+/// Fields the file carries that this build has no home for, named once each.
+fn unknown_fields(
+    reg: &Registry,
+    mine: &[(&'static str, Vec<crate::persist::Field>)],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (rec, want) in mine {
+        let Some(got) = reg.fields(rec) else { continue };
+        let dropped: Vec<&str> = got
+            .iter()
+            .filter(|f| !want.iter().any(|w| w.name == f.name))
+            .map(|f| &*f.name)
+            .collect();
+        if !dropped.is_empty() {
+            out.push(format!(
+                "the stored history has {} this poptop does not read: {}",
+                if dropped.len() == 1 {
+                    "a field"
+                } else {
+                    "fields"
+                },
+                dropped.join(", ")
+            ));
+        }
+    }
+    out
+}
+
+/// Parse a store, discarding what the reader had to say.
+///
+/// Only tests use this: the program has somewhere to put a note, and a reader
+/// that throws away what it noticed is the thing this item exists to stop.
+#[cfg(test)]
+pub fn decode(bytes: &[u8]) -> Option<Vec<Sample>> {
+    decode_reporting(bytes).0
+}
+
 /// Read the store, if there is one and it is readable.
-pub fn load() -> Option<Vec<Sample>> {
-    decode(&std::fs::read(path()?).ok()?)
+pub fn load(notes: &mut Vec<String>) -> Option<Vec<Sample>> {
+    let (samples, said) = decode_reporting(&std::fs::read(path()?).ok()?);
+    notes.extend(said);
+    samples
 }
 
 /// Write the store, creating its directory.
@@ -520,7 +614,7 @@ mod tests {
         Codec::write(&None::<Arc<str>>, &mut out);
         let mut r = In::new(&out.bytes, 0, out.strings.clone());
         assert_eq!(
-            <Option<Arc<str>>>::read(&mut r),
+            <Option<Arc<str>>>::read_exact(&Registry::default(), &mut r),
             Some(None),
             "an absent string did not decode"
         );
@@ -578,6 +672,198 @@ mod tests {
                 let _ = decode(&bad);
             }
         }
+    }
+
+    /// A file written by a poptop that measures one thing more than this one.
+    ///
+    /// The schema gains a field and every body gains its value, which is
+    /// exactly what a later release would produce.
+    fn file_from_a_later_poptop(samples: &[&Sample]) -> Vec<u8> {
+        use crate::persist::{Field, Typed};
+        let mut mine = schemas();
+        let sample = mine
+            .iter_mut()
+            .find(|(n, _)| *n == "Sample")
+            .expect("no Sample");
+        sample.1.push(Field {
+            name: "cosmic_rays".into(),
+            hash: <u64 as Typed>::HASH,
+            ty: <u64 as Typed>::ty(),
+        });
+        // A second one whose type is a list of records, because that is the
+        // hardest thing to step over without reading: the reader has to walk
+        // the file's schema for that record type to know how wide each element
+        // is. A scalar alone lets a broken `skip` pass.
+        sample.1.push(Field {
+            name: "gpus".into(),
+            hash: <Option<Vec<DiskStat>> as Typed>::HASH,
+            ty: <Option<Vec<DiskStat>> as Typed>::ty(),
+        });
+
+        let mut head = Out::default();
+        head.schema_block(&mine);
+        let mut body = Out::default();
+        for s in samples {
+            s.write(&mut body);
+            Codec::write(&99u64, &mut body);
+            Codec::write(
+                &Some(vec![
+                    DiskStat {
+                        name: Arc::from("gpu0"),
+                        ..DiskStat::default()
+                    },
+                    DiskStat {
+                        name: Arc::from("gpu1"),
+                        await_ms: Some(1.5),
+                        ..DiskStat::default()
+                    },
+                ]),
+                &mut body,
+            );
+        }
+
+        let mut f = head.bytes;
+        // MAGIC and VERSION go in front of the schema, as `encode` writes them.
+        let mut file = MAGIC.to_vec();
+        file.extend(VERSION.to_le_bytes());
+        file.append(&mut f);
+        file.extend((body.strings.len() as u32).to_le_bytes());
+        for s in &body.strings {
+            file.extend((s.len() as u32).to_le_bytes());
+            file.extend(s.as_bytes());
+        }
+        file.extend((samples.len() as u32).to_le_bytes());
+        file.extend(body.bytes);
+        file
+    }
+
+    #[test]
+    fn a_file_from_a_later_poptop_keeps_every_field_this_one_understands() {
+        // The whole point of the schema block. A user who upgrades, downgrades,
+        // and upgrades again keeps their history through all of it.
+        // More than one sample, deliberately. The extra fields land at the end
+        // of a sample's body, so with a single sample a `skip` that consumes
+        // the wrong number of bytes has nothing left to corrupt and the test
+        // passes anyway — which is exactly what happened the first time this
+        // was written. The second sample is what makes the skip load-bearing.
+        let all: Vec<Sample> = (0..3).map(|i| sample_of(37.5 + i as f32, 3)).collect();
+        let refs: Vec<&Sample> = all.iter().collect();
+        let (back, notes) = decode_reporting(&file_from_a_later_poptop(&refs));
+        let back = back.expect("a file with two extra fields was refused");
+
+        assert_eq!(back.len(), 3, "the samples did not survive");
+        assert_eq!(
+            back.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            vec![37.5, 38.5, 39.5],
+            "a sample after a skipped field was misread"
+        );
+        let got = &back[2];
+        assert_eq!(got.cpu_total, 39.5, "a scalar after the schema was misread");
+        assert_eq!(got.procs.len(), 3, "the process table was misread");
+        assert_eq!(got.iowait, Some(61.25), "an optional was misread");
+        assert_eq!(got.mem.total, 16 << 30, "a nested record was misread");
+        assert_eq!(
+            got.disks.as_ref().map(Vec::len),
+            Some(2),
+            "a list of nested records was misread"
+        );
+        assert_eq!(
+            notes,
+            vec![
+                "the stored history has fields this poptop does not read: cosmic_rays, gpus"
+                    .to_string()
+            ],
+            "the skipped field was not reported"
+        );
+    }
+
+    #[test]
+    fn the_merge_path_and_the_fast_path_agree_on_a_real_store() {
+        // The two tests above use a three-field record. This runs the merge
+        // over the actual nineteen-field `Sample`, with its nested records,
+        // its lists of nested records and its four hundred processes — and
+        // asserts the slow path produces the same bytes as the fast one.
+        let all: Vec<Sample> = (0..3).map(|i| sample_of(i as f32, 5)).collect();
+        let refs: Vec<&Sample> = all.iter().collect();
+        let file = encode(&refs);
+
+        let fast = decode(&file).expect("the fast path failed");
+
+        // A record this build claims to have and the file does not, so the
+        // exactness check fails and every sample takes the merge.
+        let mut mine = schemas();
+        mine.push(("Ghost", Vec::new()));
+        let mut notes = Vec::new();
+        let merged = read_file_as(&file, &mine, &mut notes).expect("the merge path failed");
+
+        let fast_refs: Vec<&Sample> = fast.iter().collect();
+        let merged_refs: Vec<&Sample> = merged.iter().collect();
+        assert_eq!(
+            encode(&merged_refs),
+            encode(&fast_refs),
+            "the merge path read a different store than the fast path"
+        );
+    }
+
+    #[test]
+    fn a_file_from_before_the_schema_block_says_which_version_wrote_it() {
+        let mut file = encode(&[&sample_of(1.0, 1)]);
+        file[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&13u32.to_le_bytes());
+        let (back, notes) = decode_reporting(&file);
+        assert!(
+            back.is_none(),
+            "a file from before the schema block was read"
+        );
+        assert_eq!(
+            notes,
+            vec![format!(
+                "the stored history is format 13, this poptop reads {VERSION}; discarded"
+            )],
+            "the version that wrote it was not named"
+        );
+    }
+
+    #[test]
+    fn every_reachable_record_has_a_schema() {
+        // `records!` is a hand-written list, and a record reachable from
+        // `Sample` but missing from it has no schema in the file and cannot be
+        // read back. Walk the types rather than trusting the list.
+        use crate::persist::Ty;
+        fn walk(ty: &Ty, out: &mut Vec<String>) {
+            match ty {
+                Ty::Opt(i) | Ty::List(i) | Ty::Arr(i, _) => walk(i, out),
+                Ty::Rec(n) => out.push(n.to_string()),
+                _ => {}
+            }
+        }
+        let all = schemas();
+        let mut reachable = vec!["Sample".to_string()];
+        let mut seen = 0;
+        while seen < reachable.len() {
+            let name = reachable[seen].clone();
+            seen += 1;
+            let fields = all
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("`{name}` is reachable but has no schema"))
+                .1
+                .clone();
+            for f in &fields {
+                let mut found = Vec::new();
+                walk(&f.ty, &mut found);
+                for n in found {
+                    if !reachable.contains(&n) {
+                        reachable.push(n);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            reachable.len(),
+            all.len(),
+            "the record list has entries nothing reaches, or the walk missed one: \
+             reachable {reachable:?}"
+        );
     }
 
     #[test]
@@ -736,9 +1022,11 @@ mod cost {
         let read = t0.elapsed();
 
         println!(
-            "{} samples x 400 procs: {:.1} MB, encode {write:?}, decode {read:?}",
+            "{} samples x 400 procs: {:.1} MB, encode {write:?}, decode {read:?}, \
+             schema {} bytes",
             back.len(),
-            bytes.len() as f64 / 1e6
+            bytes.len() as f64 / 1e6,
+            schema_bytes().len()
         );
     }
 }
