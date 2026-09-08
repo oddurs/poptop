@@ -3,11 +3,11 @@
 use crate::collect::Needs;
 use crate::glyphs::GlyphSet;
 use crate::history::History;
-use crate::sample::{ProcSample, Sample};
+use crate::sample::{IoRates, ProcSample, Sample};
 use crate::theme::Theme;
 use crate::tree::{self, TreeRow};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Nominal time between samples.
@@ -162,6 +162,18 @@ pub struct App {
     ///
     /// A no-op on macOS, where [`ProcSample::is_kernel_thread`] is never true.
     pub show_kernel: bool,
+    /// Fold processes sharing a name into one row.
+    ///
+    /// Twelve of the fifteen rows on screen being the same program is the same
+    /// waste the folded `USER` column is, one axis over: repetition that costs
+    /// space and conveys nothing. Six `ruby` rows are individually unremarkable
+    /// and together are 21% of a core and 2.3GB, which is the fact worth
+    /// knowing and the one a list of six cannot state.
+    ///
+    /// A mode, not the default, and mutually exclusive with the tree — bottom
+    /// makes the same two choices. Grouping destroys parentage by construction,
+    /// so a grouped tree would be a tree of things that are not processes.
+    pub group: bool,
     /// Whether IO is being collected. Deliberately a ratchet: hiding the
     /// columns does not stop collection, because resuming later would punch a
     /// hole in the middle of history. One clean boundary between "not collected
@@ -195,6 +207,7 @@ impl App {
             // `probe_io`.
             show_io: true,
             show_kernel: false,
+            group: false,
             io_ratchet: true,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
@@ -322,14 +335,15 @@ impl App {
             .filter(shown)
             .filter(|p| matches(p, &needle))
             .collect();
+
+        if self.group {
+            let mut rows = grouped(&v);
+            rows.sort_by(|a, b| self.sort.compare(&a.proc, &b.proc));
+            return rows;
+        }
+
         v.sort_by(|a, b| self.sort.compare(a, b));
-        v.into_iter()
-            .map(|p| TreeRow {
-                proc: p,
-                prefix: String::new(),
-                context_only: false,
-            })
-            .collect()
+        v.into_iter().map(TreeRow::of).collect()
     }
 
     /// Kernel threads withheld from the table right now.
@@ -499,13 +513,13 @@ impl App {
             None => self.resume_row() as isize + delta,
         };
         let i = from.clamp(0, rows.len() as isize - 1) as usize;
-        self.selected = Some(Watched::of(rows[i].proc));
+        self.selected = Some(Watched::of(&rows[i]));
     }
 
     /// Where the watched process is in these rows, if it is in them at all.
     pub fn row_of(&self, rows: &[TreeRow<'_>]) -> Option<usize> {
         let w = self.selected.as_ref()?;
-        let i = rows.iter().position(|r| w.is(r.proc))?;
+        let i = rows.iter().position(|r| w.is(r))?;
         self.last_row.set(i);
         Some(i)
     }
@@ -526,7 +540,7 @@ impl App {
     /// through the buffer is what the reader scrubbed back to find out about.
     pub fn watched_but_absent(&self, rows: &[TreeRow<'_>]) -> Option<&Watched> {
         let w = self.selected.as_ref()?;
-        if rows.iter().any(|r| w.is(r.proc)) {
+        if rows.iter().any(|r| w.is(r)) {
             return None;
         }
         // Not in the rows is not the same as not in the sample. A filter or the
@@ -536,39 +550,147 @@ impl App {
         // cases need no message anyway: the reader typed the filter, and it is
         // on screen.
         let sample = self.history.current()?;
-        sample.procs.iter().all(|p| !w.is(p)).then_some(w)
+        // A group is present whenever any of its members is: it has no identity
+        // of its own beyond the name they share.
+        let here = match w {
+            Watched::Process { pid, started, .. } => sample
+                .procs
+                .iter()
+                .any(|p| p.pid == *pid && p.started == *started),
+            Watched::Group { name } => sample.procs.iter().any(|p| *p.name == **name),
+        };
+        (!here).then_some(w)
     }
 }
 
-/// A process the table is following.
+/// What the table is following.
+///
+/// A group is followed by name rather than by `(pid, started)`, because it has
+/// neither: its figures are a sum and its membership changes as processes come
+/// and go. Following the name is the only thing that stays true across that,
+/// and it is what the reader picked — they selected `ruby`, not one of six
+/// interchangeable rubies.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Watched {
-    pid: i32,
-    started: Option<u64>,
-    /// What the table called it when it was chosen, so the panel can say who is
-    /// missing when it is missing.
-    ///
-    /// [`ProcSample::command`], not `name`: on Linux `name` is the kernel's
-    /// fifteen-character `comm`, so a reader who selected the row
-    /// `node /srv/api/server.js` was told `node not running here` — which on a
-    /// box with four node services identifies nothing. That is exactly the
-    /// failure the command-line column was added to fix, reintroduced one line
-    /// over.
-    pub name: Arc<str>,
+pub enum Watched {
+    Process {
+        pid: i32,
+        started: Option<u64>,
+        /// What the table called it when it was chosen, so the panel can say
+        /// who is missing when it is missing.
+        ///
+        /// [`ProcSample::command`], not `name`: on Linux `name` is the kernel's
+        /// fifteen-character `comm`, so a reader who selected the row
+        /// `node /srv/api/server.js` was told `node not running here` — which
+        /// on a box with four node services identifies nothing. That is exactly
+        /// the failure the command-line column was added to fix, reintroduced
+        /// one line over.
+        name: Arc<str>,
+    },
+    Group {
+        name: Arc<str>,
+    },
 }
 
 impl Watched {
-    fn of(p: &ProcSample) -> Self {
-        Self {
-            pid: p.pid,
-            started: p.started,
-            name: Arc::from(p.command()),
+    fn of(row: &TreeRow<'_>) -> Self {
+        if row.is_group() {
+            return Watched::Group {
+                name: row.proc.name.clone(),
+            };
+        }
+        Watched::Process {
+            pid: row.proc.pid,
+            started: row.proc.started,
+            name: Arc::from(row.proc.command()),
         }
     }
 
-    fn is(&self, p: &ProcSample) -> bool {
-        self.pid == p.pid && self.started == p.started
+    /// What to call it in a sentence.
+    pub fn name(&self) -> &Arc<str> {
+        match self {
+            Watched::Process { name, .. } | Watched::Group { name } => name,
+        }
     }
+
+    fn is(&self, row: &TreeRow<'_>) -> bool {
+        match self {
+            Watched::Process { pid, started, .. } => {
+                !row.is_group() && *pid == row.proc.pid && *started == row.proc.started
+            }
+            Watched::Group { name } => row.is_group() && **name == *row.proc.name,
+        }
+    }
+}
+
+/// Fold processes sharing a name into one row each.
+///
+/// What sums and what does not is the whole design:
+///
+/// - **CPU, RSS and threads sum.** They are quantities of the same thing, and
+///   the sum is the fact the six separate rows could not state.
+/// - **State does not.** Four sleeping and two running is not a state, so a
+///   group has none. `—`, the same mark every other unknowable figure here
+///   uses.
+/// - **IO sums, unless any member could not be read.** A group whose total
+///   omits an unreadable member is a smaller number presented as a complete
+///   one, which is the fabricated zero this codebase refuses everywhere else.
+/// - **Start time and history do not exist.** A group's history is not the sum
+///   of its members': membership changes as processes come and go, so a line
+///   drawn through it would be continuity that never happened. `started` is
+///   `None`, which is also what stops [`ProcSample::key`] from producing a
+///   sparkline for it.
+/// - **The command line does not.** Six rubies were started six different ways;
+///   the shared `comm` is the only thing true of all of them. Grouping on the
+///   name rather than the command line is deliberate for the same reason —
+///   grouping by command line would fold nothing, because the arguments are
+///   what differ.
+fn grouped<'a>(procs: &[&'a ProcSample]) -> Vec<TreeRow<'a>> {
+    let mut order: Vec<&Arc<str>> = Vec::new();
+    let mut by_name: HashMap<&str, Vec<&'a ProcSample>> = HashMap::new();
+    for p in procs {
+        if by_name.entry(&p.name).or_default().is_empty() {
+            order.push(&p.name);
+        }
+        by_name.get_mut(&*p.name).expect("just inserted").push(p);
+    }
+
+    order
+        .into_iter()
+        .map(|name| {
+            let members = &by_name[&**name];
+            let first = members[0];
+            if members.len() == 1 {
+                return TreeRow::of(first);
+            }
+            let io = members
+                .iter()
+                .map(|p| p.io)
+                .try_fold(IoRates::default(), |acc, io| {
+                    io.map(|io| IoRates {
+                        read: acc.read + io.read,
+                        write: acc.write + io.write,
+                    })
+                });
+            TreeRow {
+                proc: std::borrow::Cow::Owned(ProcSample {
+                    pid: 0,
+                    ppid: 0,
+                    name: name.clone(),
+                    user: first.user.clone(),
+                    cpu: members.iter().map(|p| p.cpu).sum(),
+                    rss: members.iter().map(|p| p.rss).sum(),
+                    threads: members.iter().map(|p| p.threads).sum(),
+                    state: '—',
+                    started: None,
+                    cmd: None,
+                    io,
+                }),
+                prefix: String::new(),
+                context_only: false,
+                members: members.len(),
+            }
+        })
+        .collect()
 }
 
 /// A resource that is stopping work.

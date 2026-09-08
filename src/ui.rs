@@ -1963,7 +1963,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .skip(offset)
         .take(rows_visible)
         .map(|(i, r)| {
-            let p = r.proc;
+            let p = &r.proc;
             let mut style = Style::default();
             if Some(i) == selected {
                 style = app.theme.selection_style();
@@ -2015,7 +2015,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 .style(app.theme.dim_style()),
             );
             // Identity, all of it together — see the note above `rows`.
-            cells.push(num(p.pid.to_string()));
+            // A group has no pid — it is not a process. The column carries how
+            // many were folded in instead, which is the fact that replaces it.
+            cells.push(num(if r.is_group() {
+                format!("×{}", r.members)
+            } else {
+                p.pid.to_string()
+            }));
             // Dropped, not blanked: an empty cell still occupies its ten
             // columns, and giving them to `COMMAND` is the whole point.
             if show_user {
@@ -2035,6 +2041,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             let (prefix, room) = fit_prefix(&r.prefix, cmd_w);
             cells.push(Cell::from(Line::from(vec![
                 Span::styled(prefix, app.theme.chrome_style()),
+                // A group shows the name its members share. Their command
+                // lines are what differ — that is why they are separate
+                // processes — so there is no one command line to show.
                 Span::raw(elide_middle(p.command(), room)),
             ])));
             Row::new(cells).style(style)
@@ -2144,7 +2153,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // why nothing is highlighted.
     let absent = app
         .watched_but_absent(&rows_data)
-        .map_or(String::new(), |w| format!(" · {} not running here", w.name));
+        .map_or(String::new(), |w| {
+            format!(" · {} not running here", w.name())
+        });
 
     // Named, never imposed. A table that reorders itself under the reader is
     // worse than one that does not, so this says what is in the way and `S`
@@ -2171,10 +2182,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         (45, constraint, plain),
         (
             50,
-            if app.tree {
-                " · tree".into()
-            } else {
-                String::new()
+            match (app.tree, app.group) {
+                (true, _) => " · tree".into(),
+                (_, true) => " · grouped".into(),
+                _ => String::new(),
             },
             plain,
         ),
@@ -2407,6 +2418,7 @@ pub const KEY_HINTS: &[&str] = &[
     "t tree",
     "i io",
     "K kernel",
+    "g group",
     "S constraint",
 ];
 
