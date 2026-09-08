@@ -548,8 +548,8 @@ impl App {
             .filter(|p| query.matches_in(p, sample.tasks.as_deref()))
             .collect();
 
-        if let Some(key) = self.group.key() {
-            let mut rows = grouped(&v, key);
+        if self.group != Grouping::Off {
+            let mut rows = grouped(&v, self.group);
             rows.sort_by(|a, b| self.sort.compare(&a.proc, &b.proc));
             // Not spliced: a group row stands for a name, and the threads of
             // one of its members belong under a process, not under a heading
@@ -1180,10 +1180,10 @@ impl Watched {
 ///   name rather than the command line is deliberate for the same reason —
 ///   grouping by command line would fold nothing, because the arguments are
 ///   what differ.
-fn grouped<'a>(
-    procs: &[&'a ProcSample],
-    key: fn(&'a ProcSample) -> Option<&'a Arc<str>>,
-) -> Vec<TreeRow<'a>> {
+fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
+    let Some(key) = by.key() else {
+        return Vec::new();
+    };
     let mut order: Vec<&Arc<str>> = Vec::new();
     let mut by_name: HashMap<&str, Vec<&'a ProcSample>> = HashMap::new();
     for p in procs {
@@ -1209,7 +1209,14 @@ fn grouped<'a>(
             // an ordinary row here made the selection vanish the moment a pool
             // shrank to one: the row stopped being a group, and a group
             // selection stopped matching it.
-            if members.len() == 1 {
+            // Only when the key *is* the process's own name. Grouping by
+            // container, the key is the container — so borrowing the single
+            // member's row labels it `node` and puts it in a table beside rows
+            // labelled `9a1f0e4c2b7d`, where the one container holding one
+            // process cannot be told from anything else. `Watched::Group`
+            // follows that label too, so the selection would jump to an
+            // unrelated row the moment membership changed.
+            if members.len() == 1 && by == Grouping::Name {
                 return TreeRow {
                     members: Some(1),
                     ..TreeRow::of(first)
@@ -1257,10 +1264,15 @@ fn grouped<'a>(
                     started: None,
                     cmd: None,
                     io,
-                    // A group stands for a name, and the processes under
-                    // it can be in different containers — or none. There is no
-                    // one answer, so the column shows none.
-                    container: None,
+                    // Grouping by name, the members can be in different
+                    // containers — or none — so there is no one answer and the
+                    // column shows none. Grouping by container, every member
+                    // shares it by definition, and blanking it would empty the
+                    // column on exactly the rows whose container is known.
+                    container: match by {
+                        Grouping::Container => Some(name.clone()),
+                        _ => None,
+                    },
                 }),
                 prefix: String::new(),
                 context_only: false,

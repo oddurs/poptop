@@ -9176,6 +9176,61 @@ fn a_process_names_the_container_it_is_in() {
 }
 
 #[test]
+fn a_container_id_does_not_push_the_command_off_the_right_edge() {
+    // The column adds thirteen columns that the elision arithmetic has to know
+    // about, or a command is elided in the middle *and then* chopped at the
+    // right edge — losing the tail with no marker, which is the failure
+    // `command_width` exists to prevent.
+    let mut app = App::new(600);
+    let mut s = containerful();
+    s.procs[0].cmd = Some(std::sync::Arc::from(
+        "node /srv/api/server.js --port 3000 --cluster --inspect --max-old-space-size=4096",
+    ));
+    app.push(s);
+    // Not "does a row exceed the width" — ratatui clips at the edge, so that
+    // can never fire and the first version of this test passed against the
+    // broken arithmetic. The symptom is the *tail* going missing:
+    // `elide_middle` keeps the end of a command precisely because that is what
+    // identifies it, and arithmetic that over-counts the room hands ratatui a
+    // string too long and it chops the end off instead.
+    // Not "does a row exceed the width" — ratatui clips at the edge, so that
+    // can never fire, and the first version of this test passed against the
+    // broken arithmetic for exactly that reason.
+    //
+    // The symptom is the *tail* going missing. `elide_middle` keeps the end of
+    // a command because that is what identifies it, and arithmetic that
+    // over-counts the room hands ratatui a string too long, which chops the end
+    // instead — an elision marker in the middle and a silent cut at the edge.
+    for w in [140u16, 160] {
+        let shown = rows(&app, w, 12).join("\n");
+        assert!(
+            shown.contains('…'),
+            "nothing was elided at {w} columns, so this proves nothing:\n{shown}"
+        );
+        assert!(
+            shown.contains("size=4096"),
+            "the end of the command was chopped at {w} columns:\n{shown}"
+        );
+    }
+}
+
+#[test]
+fn the_container_column_survives_a_hundred_column_terminal() {
+    // Gated on the IO columns' minimum width, it did not: `min_width_for_io`
+    // budgets forty-five columns for DISK R, DISK W and the sparkline whether
+    // or not they are drawn, so the column vanished at exactly the width a
+    // normal terminal has.
+    let mut app = App::new(600);
+    app.push(containerful());
+    app.show_io = false;
+    let shown = rows(&app, 100, 12).join("\n");
+    assert!(
+        shown.contains("CID"),
+        "no container column on a hundred-column terminal:\n{shown}"
+    );
+}
+
+#[test]
 fn a_box_with_no_containers_does_not_carry_an_empty_column() {
     // Nine columns of em dash on every machine that runs no containers. The
     // same rule as the user column.
@@ -9213,6 +9268,27 @@ fn grouping_cycles_through_name_and_container_rather_than_adding_a_mode() {
         counts,
         vec![2, 1],
         "the two processes in one container did not fold into one row"
+    );
+    // Labelled by the container, including the one holding a single process.
+    // Borrowing that member's row labels it `node` and drops it into a table
+    // beside rows labelled `9a1f0e4c2b7d`, where the container holding one
+    // process cannot be told from anything else on screen.
+    let labels: Vec<&str> = rows_now.iter().map(|r| r.proc.name.as_ref()).collect();
+    assert_eq!(
+        labels,
+        vec!["9a1f0e4c2b7d", "c0ffee123456"],
+        "a container group is labelled with a process name"
+    );
+    // …and it keeps its container, rather than blanking the column on exactly
+    // the rows whose container is known.
+    let cids: Vec<Option<&str>> = rows_now
+        .iter()
+        .map(|r| r.proc.container.as_deref())
+        .collect();
+    assert_eq!(
+        cids,
+        vec![Some("9a1f0e4c2b7d"), Some("c0ffee123456")],
+        "the CID column is empty on a row grouped by CID"
     );
     // `sshd` is in no container and is not a row: a bucket holding every
     // process that is not in one answers a different question loudly.

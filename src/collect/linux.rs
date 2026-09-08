@@ -857,6 +857,11 @@ impl ProcFs {
         // without bound exactly like the counters would.
         names.retain(|pid, _| seen.contains_key(pid));
         cmds.retain(|pid, _| seen.contains_key(pid));
+        // And the container ids, for the same reason. This one is easier to
+        // forget precisely because it never expires on a slot: it is the only
+        // cache here whose entries are valid for a process's whole life, which
+        // is exactly why nothing else would ever remove them.
+        containers.retain(|pid, _| seen.contains_key(pid));
         *prev_proc_jiffies = seen;
         // Cleared rather than kept while collection is off. Rates are a delta
         // against the previous read divided by one interval, so counters left
@@ -1157,12 +1162,6 @@ const CMD_REFRESH: u64 = 30;
 /// directory — dropped a moment later — can be most of a long path on its own.
 const CMD_READ_MAX: usize = 4096;
 
-/// The command line for a process, read at most once per `CMD_REFRESH` samples.
-///
-/// `None` means the file was empty or unreadable. Empty is the common case and
-/// means what it says — a kernel thread has no command line — and unreadable is
-/// a process that exited while we walked the directory. Neither is an error and
-/// both render as the `comm` fallback, so they are not told apart here.
 /// Which container a process is in, from `/proc/<pid>/cgroup`.
 ///
 /// One small read per process, once per process rather than once per sample: a
@@ -1189,6 +1188,12 @@ fn container_of(
     found
 }
 
+/// The command line for a process, read at most once per `CMD_REFRESH` samples.
+///
+/// `None` means the file was empty or unreadable. Empty is the common case and
+/// means what it says — a kernel thread has no command line — and unreadable is
+/// a process that exited while we walked the directory. Neither is an error and
+/// both render as the `comm` fallback, so they are not told apart here.
 fn cmdline(
     pid: i32,
     started: u64,
@@ -2286,6 +2291,26 @@ mod tests {
             !pf.cmds.contains_key(&-12345),
             "an exited process was kept: {} entries, was {before}",
             pf.cmds.len()
+        );
+    }
+
+    #[test]
+    fn the_container_cache_does_not_grow_without_bound_either() {
+        // The one most likely to be forgotten, and it was: every other per-pid
+        // map here expires on a refresh slot, so something removes stale
+        // entries anyway. This cache is deliberately valid for a process's
+        // whole life, which means nothing removes an entry unless the prune
+        // does — one permanent entry per pid ever seen, on the kind of box
+        // that churns thousands an hour.
+        let mut pf = ProcFs::new().unwrap();
+        pf.collect(Needs::default()).unwrap();
+        pf.containers
+            .insert(-12345, (0, Some(Arc::from("a ghost"))));
+        pf.collect(Needs::default()).unwrap();
+        assert!(
+            !pf.containers.contains_key(&-12345),
+            "an exited process kept its container: {} entries",
+            pf.containers.len()
         );
     }
 
