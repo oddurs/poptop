@@ -35,6 +35,14 @@ pub struct Needs {
 /// command-line cache re-reads on a slot staggered by pid, and the clock
 /// ceiling rescans its policy set once a minute. This is where the third of
 /// those now lives, and where the rest belong.
+/// How much of each thing the last sample found, so a cost per unit can be
+/// turned into a cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Size {
+    pub procs: u64,
+    pub tasks: u64,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
     /// Per-process disk throughput, from `/proc/<pid>/io`.
@@ -97,6 +105,16 @@ impl Source {
         }
     }
 
+    /// Roughly what this source costs on a machine of this size.
+    pub fn total_nanos(self, size: Size) -> u64 {
+        let units = match self {
+            Source::Io => size.procs,
+            Source::Threads => size.tasks,
+            Source::ClockPolicies => 1,
+        };
+        self.nanos_each().saturating_mul(units)
+    }
+
     /// How many samples apart this is worth reading. One means every sample.
     pub fn every(self) -> u64 {
         match self {
@@ -154,16 +172,23 @@ impl Needs {
     /// The most expensive source in this set, which is the one a budget should
     /// give up first.
     ///
-    /// Cost per unit rather than total, because the collector does not know how
-    /// many processes or threads there will be until it has walked them — and
-    /// the ordering between these does not change with the count.
+    /// The source costing the most on *this* machine, which is the one a budget
+    /// should give up first.
+    ///
+    /// Weighted by how many units there actually are, not by cost per unit.
+    /// Per-process IO is 5.7us a process and a thread is 3.1us, so per unit IO
+    /// looks dearer — but a box with 400 processes has some 3200 threads, which
+    /// makes threads about 9.9ms against IO's 2.3ms. Ranking on the unit cost
+    /// gives up the cheaper source, stays over budget, and costs the reader the
+    /// IO columns for nothing before three more strikes finally reach the
+    /// source that was actually responsible.
     ///
     /// Only sources whose cost scales with the machine; see [`Source::scales`].
-    pub fn costliest(self) -> Option<Source> {
+    pub fn costliest(self, size: Size) -> Option<Source> {
         Source::ALL
             .into_iter()
             .filter(|s| self.asked(*s) && s.scales())
-            .max_by_key(|s| s.nanos_each())
+            .max_by_key(|s| s.total_nanos(size))
     }
 }
 
@@ -176,6 +201,13 @@ impl Needs {
 /// between them meant applying the Linux reasoning to a platform it was never
 /// about.
 pub use backend::{MIN_INTERVAL, MIN_INTERVAL_WHY};
+
+/// Which optional sources this backend actually reads.
+///
+/// Declared by the backend rather than inferred, so nothing can ask for a
+/// source that will never arrive — and so the budget cannot spend three strikes
+/// "giving up" something that was costing nothing.
+pub use backend::SUPPORTED;
 
 /// Whether a filesystem lives in RAM rather than on a device.
 ///

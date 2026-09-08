@@ -2541,6 +2541,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // budget that silently dropped a figure would be the objection to having a
     // budget at all.
     let afford = match app.withheld() {
+        // Over budget with nothing optional big enough to be the reason. A
+        // different message because it has a different remedy: the interval is
+        // too short for this machine, and no column poptop could drop would
+        // change that.
+        [] if app.baseline_over_budget() => {
+            " · sampling takes longer than a quarter of the interval".to_string()
+        }
         [] => String::new(),
         w => format!(
             " · {} withheld, sampling was over budget",

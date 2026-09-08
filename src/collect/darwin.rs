@@ -6,6 +6,14 @@
 
 use super::procinfo::{self, Kinfo};
 use super::{Collector, Needs, Source};
+
+/// Every optional source this backend reads.
+///
+/// No threads: sysinfo exposes no per-thread accounting, and mach's
+/// `task_threads` — which would — is not called here. Declared rather than left
+/// implicit, so `y` cannot start a collection that will never produce a row and
+/// the budget cannot give up something that was never costing anything.
+pub const SUPPORTED: &[Source] = &[Source::Io];
 use crate::sample::{IoRates, Link, MemStat, NetStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::io;

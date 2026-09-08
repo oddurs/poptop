@@ -5,6 +5,9 @@
 //! is stateful and why the very first sample reports zero busy time.
 
 use super::{Collector, Needs, Source};
+
+/// Every optional source this backend reads.
+pub const SUPPORTED: &[Source] = &[Source::Io, Source::Threads, Source::ClockPolicies];
 use crate::sample::{
     DiskStat, FsStat, IoRates, Link, MemStat, NetStat, Pressure, ProcSample, Sample, Stall,
     ThreadSample,
@@ -1881,11 +1884,13 @@ mod tests {
         // Poison it with a policy that does not exist. A rescan replaces the
         // vector wholesale, so its disappearance is the rescan happening.
         pf.nominal_khz = vec![("policy-that-is-not-there".to_string(), 3_600_000)];
-        // Real ticks, because the cadence is a function of the tick the
-        // caller passes. `Needs::default()` is tick zero every time, which is
-        // due on every cadence and would let this pass without a rescan ever
-        // being scheduled.
-        for i in 0..CLOCK_RESCAN + 1 {
+        // Real ticks, from *one*. Two ways this goes vacuous: `Needs::default()`
+        // is tick zero every time, which is due on every cadence; and starting
+        // the loop at zero clears the poison on the first iteration, so the
+        // assertion holds however long the cadence is — it would pass with a
+        // cadence of a million. Starting at one means only a rescan that is
+        // actually scheduled can satisfy it.
+        for i in 1..=CLOCK_RESCAN {
             pf.collect(Needs::at(i).with(Source::ClockPolicies))
                 .unwrap();
         }

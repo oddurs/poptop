@@ -1,6 +1,6 @@
 //! Application state and input handling.
 
-use crate::collect::{Needs, Source};
+use crate::collect::{Needs, SUPPORTED, Size, Source};
 use crate::glyphs::GlyphSet;
 use crate::history::History;
 use crate::query::{self, Query};
@@ -247,6 +247,10 @@ pub struct App {
     /// Consecutive samples that ran over budget. One slow sample is a hiccup;
     /// three in a row is the machine telling you something.
     over_budget: u32,
+    /// Sampling is over budget and nothing optional is big enough to be why —
+    /// so the interval is too short for this machine, which is a different
+    /// message and a different remedy.
+    baseline_over: bool,
     /// Index into [`ZOOM_LEVELS`].
     zoom_idx: usize,
     pub glyphs: GlyphSet,
@@ -283,6 +287,7 @@ impl App {
             sample_count: 0,
             withheld: Vec::new(),
             over_budget: 0,
+            baseline_over: false,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
             theme: Theme::default(),
@@ -298,6 +303,14 @@ impl App {
         }
         if self.thread_ratchet {
             n = n.with(Source::Threads);
+        }
+        // Nothing this backend does not read. Otherwise `y` on macOS starts a
+        // collection that will never produce a row, and the budget can spend
+        // three strikes giving up a source that was costing nothing.
+        for s in Source::ALL {
+            if !SUPPORTED.contains(&s) {
+                n = n.without(s);
+            }
         }
         // What the budget gave up. Applied last, so a source poptop stopped
         // reading stays stopped until the reader asks for it again by name.
@@ -546,7 +559,9 @@ impl App {
             // this, and sysinfo — the backend poptop uses here — simply does
             // not expose it. Saying what is true rather than what is
             // convenient, so nobody reads this as a kernel limitation.
-            Some(_) if cfg!(target_os = "macos") => Some("threads: not read on macOS"),
+            Some(_) if !SUPPORTED.contains(&Source::Threads) => {
+                Some("threads: not read on this platform")
+            }
             // Collection starts with the *next* sample, so for one interval
             // after the key the newest sample has no threads. Distinguished
             // from a scrub, because "not collected this far back" sends a
@@ -574,8 +589,10 @@ impl App {
     /// page fault, a scheduler decision, another process finishing — and
     /// withdrawing a column for one of those would be its own kind of noise.
     pub fn spent(&mut self, took: std::time::Duration, interval: std::time::Duration) {
-        if took <= interval.mul_f32(BUDGET_SHARE) {
+        let budget = interval.mul_f32(BUDGET_SHARE);
+        if took <= budget {
             self.over_budget = 0;
+            self.baseline_over = false;
             return;
         }
         self.over_budget += 1;
@@ -583,9 +600,54 @@ impl App {
             return;
         }
         self.over_budget = 0;
-        if let Some(worst) = self.needs().costliest() {
-            self.withheld.push(worst);
+
+        // What the optional sources could plausibly account for, against what
+        // has to be explained. Everything mandatory — the process table walk,
+        // `/proc/stat`, the net and disk counters — is in `took` too, and none
+        // of it can be given up.
+        //
+        // Without this check a box whose *baseline* exceeds the budget drops
+        // IO, stays over, drops threads, stays over, and is left permanently
+        // missing both with a banner blaming them for something neither did.
+        let excess = took.saturating_sub(budget).as_nanos() as u64;
+        let size = self.size();
+        match self
+            .needs()
+            .costliest(size)
+            .filter(|s| s.total_nanos(size) * 2 >= excess)
+        {
+            Some(worst) => {
+                // The view goes with it. Leaving it on would put "not collected
+                // here" — the wording for a platform that never collects it —
+                // beside a note saying poptop stopped, and would make the first
+                // press of the key turn the view *off* rather than ask for the
+                // source back.
+                match worst {
+                    Source::Io => self.show_io = false,
+                    Source::Threads => self.show_threads = false,
+                    Source::ClockPolicies => {}
+                }
+                self.withheld.push(worst);
+            }
+            // Nothing optional is big enough to be the reason. Saying so, with
+            // the thing that would actually help, rather than dismantling the
+            // tool one column at a time in pursuit of a target it cannot reach.
+            None => self.baseline_over = true,
         }
+    }
+
+    /// Roughly how big this machine is, from the last sample.
+    fn size(&self) -> Size {
+        let s = self.history.iter().last();
+        Size {
+            procs: s.map_or(0, |s| s.procs.len() as u64),
+            tasks: s.map_or(0, |s| s.tasks.as_ref().map_or(0, Vec::len) as u64),
+        }
+    }
+
+    /// Whether sampling is over budget for reasons nothing optional explains.
+    pub fn baseline_over_budget(&self) -> bool {
+        self.baseline_over
     }
 
     /// Sources the budget gave up, for the panel to say so.
