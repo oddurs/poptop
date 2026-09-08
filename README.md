@@ -257,6 +257,32 @@ Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
 
+### Whether the box is busy, or not being given a box
+
+`/proc/stat`'s CPU line has ten fields and poptop was reading four of them. The
+rest were one parse away in a file it reads every sample:
+
+**`STL`** — time the hypervisor took for something else. On a cloud instance
+this is the difference between *the box is busy* and *the box is not being given
+a box*: every other figure on the header looks healthy while the machine gets
+less done, and nothing else can say so. It appears **only when it is over 1%** —
+on bare metal it is zero forever, and a figure present on every frame is one
+nobody reads by the second day. It sits next to `CLK` because both *qualify*
+CPU rather than adding to it.
+
+**`guest`, `irq`, `softirq`** — reported by `--once`. A network-heavy box's
+softirq share is the answer to why user time looks low while nothing is idle,
+and on a hypervisor guest time is the work rather than the overhead.
+
+**Context switches and interrupts a second** — a box thrashing between threads
+looks identical to a busy one without them. Rates, not the since-boot counters
+`/proc` publishes, and **absent on the first sample** rather than reporting a
+boot's worth of switches as one second's.
+
+None of this costs anything: the file was already being read and parsed, and
+`--bench` is unchanged. `guest` is deliberately outside the busy total — the
+kernel counts it inside `user` already, and adding it would double it.
+
 ### What a process is costing you
 
 atop shows around seventy fields across its process views. The memory view (`v`)

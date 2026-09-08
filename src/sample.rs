@@ -729,6 +729,23 @@ pub struct Sample {
     /// is what distinguishes "this box has nothing to do" from "this box
     /// cannot get on with anything".
     pub iowait: Option<f32>,
+    /// Time the hypervisor took for something else, as a share of the interval.
+    ///
+    /// The figure that separates "the box is busy" from "the box is not being
+    /// given a box". On a cloud instance nothing else on screen can say it:
+    /// every other number looks healthy while the machine gets less done.
+    pub steal: Option<f32>,
+    /// Time given to guests. On a hypervisor this is the work, not the
+    /// overhead.
+    pub guest: Option<f32>,
+    /// Hard and soft interrupt time, kept apart. A network-heavy box's softirq
+    /// share is the answer to why user time looks low while nothing is idle.
+    pub irq: Option<f32>,
+    pub softirq: Option<f32>,
+    /// Context switches and interrupts a second. A box thrashing between
+    /// threads looks identical to a busy one without them.
+    pub ctxt: Option<u64>,
+    pub intr: Option<u64>,
     /// Tasks runnable at the instant of the sample — vmstat's `r`.
     ///
     /// Load average smoothed; this is the unsmoothed truth, and poptop has a
@@ -888,6 +905,12 @@ impl Sample {
             cpu_total: 0.0,
             cpu_per_core: Vec::new(),
             iowait: None,
+            steal: None,
+            guest: None,
+            irq: None,
+            softirq: None,
+            ctxt: None,
+            intr: None,
             running: None,
             blocked: None,
             mem: MemStat::default(),
@@ -910,7 +933,7 @@ impl Sample {
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
@@ -941,6 +964,12 @@ mod tests {
         let s = Sample::unknown();
         let claims: Vec<&str> = [
             ("iowait", s.iowait.is_some()),
+            ("steal", s.steal.is_some()),
+            ("guest", s.guest.is_some()),
+            ("irq", s.irq.is_some()),
+            ("softirq", s.softirq.is_some()),
+            ("ctxt", s.ctxt.is_some()),
+            ("intr", s.intr.is_some()),
             ("running", s.running.is_some()),
             ("blocked", s.blocked.is_some()),
             ("forks", s.forks.is_some()),

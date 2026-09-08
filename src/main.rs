@@ -602,6 +602,31 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
         );
     }
     outln!("load    {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]);
+    // The CPU line's other classes, each absent rather than zero where the
+    // platform does not publish it. `steal` first: on a cloud instance it is
+    // the difference between a busy box and a box that is not being given one.
+    for (label, v) in [
+        ("steal", s.steal),
+        ("guest", s.guest),
+        ("irq", s.irq),
+        ("softirq", s.softirq),
+    ] {
+        match v {
+            Some(v) => outln!("{label:<7} {v:.1}%  of wall clock"),
+            None => outln!("{label:<7} —  not published here"),
+        }
+    }
+    // Each says its own absence. Collapsing the pair into one line claimed the
+    // platform published neither when it had only withheld one.
+    let rate_of = |v: Option<u64>| match v {
+        Some(n) => format!("{n}/s"),
+        None => "—".to_string(),
+    };
+    outln!(
+        "switch  {} context, {} interrupts",
+        rate_of(s.ctxt),
+        rate_of(s.intr)
+    );
     outln!("procs   {}", s.procs.len());
     // The processes that lived and died inside the interval — the ones a
     // sample of `/proc` at an instant cannot see at all. An em dash where the

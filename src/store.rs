@@ -438,6 +438,15 @@ mod tests {
                 },
             ]),
             iowait: Some(61.25),
+            // Distinct values, so a codec that swapped two of them cannot
+            // round-trip cleanly. `guest` is deliberately zero and `intr`
+            // absent: the pair a reader has to be able to tell apart.
+            steal: Some(12.5),
+            guest: Some(0.0),
+            irq: Some(3.25),
+            softirq: Some(7.75),
+            ctxt: Some(48_000),
+            intr: None,
             running: Some(3),
             blocked: Some(17),
             mem: MemStat {
@@ -472,6 +481,15 @@ mod tests {
         assert_eq!(a.mem.swap_used, b.mem.swap_used);
         assert_eq!(a.load, b.load);
         assert_eq!(a.iowait, b.iowait);
+        // The rest of the CPU line. Compared as `Option`s and given real values
+        // in the fixture: with every one of them `None` on both sides, a codec
+        // that dropped or reordered them round-trips green.
+        assert_eq!(a.steal, b.steal);
+        assert_eq!(a.guest, b.guest);
+        assert_eq!(a.irq, b.irq);
+        assert_eq!(a.softirq, b.softirq);
+        assert_eq!(a.ctxt, b.ctxt);
+        assert_eq!(a.intr, b.intr);
         assert_eq!(a.running, b.running);
         assert_eq!(a.blocked, b.blocked);
         assert_eq!(a.uptime, b.uptime);
@@ -1239,6 +1257,12 @@ mod tests_support {
             net: None,
             filesystems: None,
             iowait: None,
+            steal: None,
+            guest: None,
+            irq: None,
+            softirq: None,
+            ctxt: None,
+            intr: None,
             running: None,
             blocked: None,
             mem: MemStat::default(),

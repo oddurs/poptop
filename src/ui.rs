@@ -442,6 +442,28 @@ struct Figure<'a> {
 ///
 /// So the thresholds are stated here, in the units of the thing being measured,
 /// and mapped onto the theme's own scale so a user's colours still apply.
+fn steal_heat(pct: f32, theme: &Theme) -> f32 {
+    /// A twentieth of the machine going somewhere else. Noticeable, and worth
+    /// knowing before it is worth panicking about.
+    const WARN: f32 = 5.0;
+    /// A fifth. At this point the instance is doing meaningfully less work than
+    /// its size claims, and no other figure on the header will say so.
+    const CRITICAL: f32 = 20.0;
+    if pct >= CRITICAL {
+        theme.critical_pct
+    } else if pct >= WARN {
+        theme.warn_pct
+    } else {
+        0.0
+    }
+}
+
+/// Where a steal percentage sits on the utilisation scale — same argument as
+/// [`stall_heat`], same reason it cannot use the raw figure.
+///
+/// A CPU at 30% is unremarkable; a guest losing 30% of its time to the
+/// hypervisor is the condition this figure exists to expose, and
+/// `figure_style` would draw it in the calm colour until it reached half.
 fn stall_heat(pct: f32, theme: &Theme) -> f32 {
     /// Half a second in every ten with nothing running.
     const WARN: f32 = 5.0;
@@ -533,6 +555,29 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                 Span::styled(
                     format!("{clock:>5.1}%"),
                     app.theme.figure_style(100.0 - clock),
+                ),
+            ],
+        });
+    }
+
+    // Only when the hypervisor is actually taking time. On bare metal it is
+    // zero forever and a permanent `STL 0.0%` is a figure nobody reads by the
+    // second day — the same rule as the clock ceiling above.
+    //
+    // Ranked with it, and for the same reason: this is the other figure that
+    // *qualifies* CPU rather than adding to it. `CPU 40%` with `STL 55%` is a
+    // machine working as hard as it is being allowed to, and nothing else on
+    // this header can say so. A tenth of a percent is scheduling noise on any
+    // shared host; a whole percent is somebody else's workload.
+    if let Some(steal) = s.steal.filter(|v| *v >= 1.0) {
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: 6,
+            spans: vec![
+                Span::styled("STL ", dim),
+                Span::styled(
+                    format!("{steal:>5.1}%"),
+                    app.theme.figure_style(steal_heat(steal, &app.theme)),
                 ),
             ],
         });
@@ -1556,6 +1601,11 @@ pub fn series_names() -> &'static [&'static str] {
 }
 
 /// Exposed for tests: where a stall percentage lands on the theme's scale.
+#[cfg(test)]
+pub fn steal_heat_for_test(pct: f32, theme: &Theme) -> f32 {
+    steal_heat(pct, theme)
+}
+
 #[cfg(test)]
 pub fn stall_heat_for_test(pct: f32, theme: &Theme) -> f32 {
     stall_heat(pct, theme)
