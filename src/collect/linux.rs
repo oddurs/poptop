@@ -1524,7 +1524,9 @@ struct VmCounters {
     pgout: u64,
     swin: u64,
     swout: u64,
-    oom: u64,
+    /// `None` where the kernel does not publish the key at all — pre-4.13, or
+    /// a build without it. Zero would be poptop saying nothing was killed.
+    oom: Option<u64>,
 }
 
 /// Read them, or `None` if the file is not there.
@@ -1542,11 +1544,11 @@ fn read_vmstat(buf: &mut Vec<u8>) -> Option<VmCounters> {
 /// `pgpgout` are in kilobytes while the swap pair is in *pages*, so one
 /// conversion applied to both reports swap at a four-thousandth of its size.
 fn parse_vmstat(text: &str) -> VmCounters {
-    let get = |key: &str| -> u64 {
+    let find = |key: &str| -> Option<u64> {
         text.lines()
             .find_map(|l| l.strip_prefix(key)?.trim().parse::<u64>().ok())
-            .unwrap_or(0)
     };
+    let get = |key: &str| -> u64 { find(key).unwrap_or(0) };
     VmCounters {
         // In their own units, and turned into bytes by the caller — the only
         // place that knows the page size.
@@ -1556,7 +1558,11 @@ fn parse_vmstat(text: &str) -> VmCounters {
         swout: get("pswpout "),
         // Every OOM kill since boot. The delta is what happened in this
         // interval, which is the only form of it worth showing.
-        oom: get("oom_kill "),
+        // `None` where the key is missing rather than the zero `get` gives. A
+        // counter that exists at zero and a counter that does not exist are
+        // different answers, and this is the one figure here where the
+        // difference is the whole point.
+        oom: find("oom_kill "),
     }
 }
 
@@ -2198,7 +2204,14 @@ impl Collector for ProcFs {
         let secs = elapsed.as_secs_f64();
         let vm_rate = |f: fn(&VmCounters) -> u64, unit: u64| -> Option<u64> {
             let (now, before) = (vm?, was_vm?);
-            (secs > 0.0).then(|| ((f(&now).saturating_sub(f(&before)) as f64 / secs) as u64) * unit)
+            // Multiplied by the unit *before* the divide. Truncating to an
+            // integer first reports anything under one unit a second as exactly
+            // zero, so a box steadily swapping out a page or two an interval
+            // reads as quiet — and the constraint rule keys on `> 0`, so that
+            // would silence the signal this change exists to add.
+            (secs > 0.0).then(|| {
+                (f(&now).saturating_sub(f(&before)).saturating_mul(unit) as f64 / secs) as u64
+            })
         };
         // Taken and stored together with the read, before anything else
         // fallible — the same discipline as `prev_at` above, and for the same
@@ -2244,7 +2257,9 @@ impl Collector for ProcFs {
             // is the fact, and dividing it by seconds would make one kill in a
             // one-second interval indistinguishable from none.
             oom_kills: match (vm, was_vm) {
-                (Some(now), Some(before)) => Some(now.oom.saturating_sub(before.oom)),
+                (Some(now), Some(before)) => {
+                    now.oom.zip(before.oom).map(|(n, b)| n.saturating_sub(b))
+                }
                 _ => None,
             },
             io_collected: needs.wants(Source::Io) && self.io_supported,
@@ -2764,7 +2779,7 @@ mod tests {
         assert_eq!(v.pgout, 524_288);
         assert_eq!(v.swin, 4_096, "pages, unconverted");
         assert_eq!(v.swout, 8_192);
-        assert_eq!(v.oom, 3);
+        assert_eq!(v.oom, Some(3));
     }
 
     #[test]
@@ -2775,11 +2790,17 @@ mod tests {
         // a comment claiming a guard the test does not hold up. It is cheap
         // insurance against a kernel that adds one, not a current defence.
         let v = parse_vmstat("pgpgin 10\npgpgout 20\noom_kill 1\n");
-        assert_eq!((v.pgin, v.pgout, v.oom), (10, 20, 1));
-        // A file without the line reports zero, which for a counter that only
-        // ever goes up is the same as "nothing has happened yet" — the rate is
-        // where the absence is expressed, and it needs two readings anyway.
-        assert_eq!(parse_vmstat("").oom, 0);
+        assert_eq!((v.pgin, v.pgout, v.oom), (10, 20, Some(1)));
+        // A kernel that does not publish the key at all — pre-4.13, or a build
+        // without it — says nothing rather than "none were killed". This is the
+        // one figure here where the difference is the whole point: a confident
+        // `oomkill 0` is poptop answering a question it cannot see.
+        assert_eq!(parse_vmstat("").oom, None, "an absent key was read as zero");
+        assert_eq!(
+            parse_vmstat("oom_kill 0\n").oom,
+            Some(0),
+            "a real zero was lost"
+        );
     }
 
     #[test]

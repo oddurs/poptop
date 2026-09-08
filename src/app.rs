@@ -1099,11 +1099,16 @@ impl App {
         // rather than in one sample because a constant two gigabytes of swap is
         // an idle Mac and says nothing.
         let (first, last) = (window.first()?, window.last()?);
-        // The rate first, where the platform gives one. Swapping *now* is the
-        // fact; the level is what cannot distinguish a thrashing box from one
-        // sitting on four idle gigabytes, which is why this rule had to infer
-        // it from growth across a window in the first place.
-        if last.swout.is_some_and(|v| v > 0) {
+        // The rate, where the platform gives one — but held across the window
+        // like everything else here, not read off the last sample.
+        //
+        // Any Linux box with a non-zero swappiness pages an idle daemon out now
+        // and then, so a single frame of ordinary reclaim would flip the
+        // suggestion to memory, re-sort the table, and flip back on the next
+        // frame. That is the flicker this whole function is built to prevent,
+        // and it would also have let four kilobytes a second preempt a
+        // sustained, genuine CPU constraint.
+        if window.iter().all(|s| s.swout.is_some_and(|v| v > 0)) {
             return Some(Constraint::Memory);
         }
         // The inference, still, for a platform that publishes no rate. Across a

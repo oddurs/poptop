@@ -874,11 +874,17 @@ pub struct Sample {
     /// rather than nested under each `ProcSample` so a sample carries one
     /// optional list instead of four hundred, and so the task-level figures in
     /// the header can be itemised without walking the process table.
-    /// Pages read from and written to disk in the interval — the file-backed
+    pub tasks: Option<Vec<ThreadSample>>,
+    /// **Bytes a second** read from and written to disk — the file-backed
     /// traffic, not swap.
+    ///
+    /// Bytes rather than pages, and a rate rather than a total, because that is
+    /// what the collector produces and what the panel renders. The kernel
+    /// publishes `pgpgin`/`pgpgout` in kilobytes and the swap pair in pages;
+    /// both are converted where the page size is known.
     pub pgin: Option<u64>,
     pub pgout: Option<u64>,
-    /// Pages swapped in and out in the interval.
+    /// **Bytes a second** swapped in and out.
     ///
     /// The figure the swap *level* cannot give: a machine that swapped four
     /// gigabytes in and out during the interval and one sitting on four idle
@@ -893,7 +899,6 @@ pub struct Sample {
     /// the process table from the instant before is a thing no live-only
     /// monitor can do.
     pub oom_kills: Option<u64>,
-    pub tasks: Option<Vec<ThreadSample>>,
     /// Processes that lived and died inside this interval.
     ///
     /// The gap this closes is the substantive one against atop: poptop reads

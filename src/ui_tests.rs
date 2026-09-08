@@ -9938,3 +9938,65 @@ fn the_memory_constraint_reads_the_swap_rate_rather_than_inferring_it() {
         "a box swapping 64MB a second at a steady level was called unconstrained"
     );
 }
+
+#[test]
+fn a_night_of_oom_kills_is_not_attributed_to_one_second() {
+    // The count is a raw since-boot delta, not a rate: the paging figures
+    // divide by elapsed time and survive a sleep, but this does not. The first
+    // sample after a laptop suspend carries every kill from the whole gap.
+    let mut app = App::new(600);
+    app.push(sample_at(1.0, 3600));
+    let mut back = sample_at(1.0, 0);
+    back.oom_kills = Some(37);
+    app.push(back);
+    let shown = rows(&app, 200, 10).join("\n");
+    assert!(
+        !shown.contains("killed for memory"),
+        "an hour of kills was attributed to one second:\n{shown}"
+    );
+
+    // …and across an ordinary interval it is still reported.
+    let mut app = App::new(600);
+    app.push(sample_at(1.0, 1));
+    let mut now = sample_at(1.0, 0);
+    now.oom_kills = Some(2);
+    app.push(now);
+    assert!(
+        rows(&app, 200, 10)
+            .join("\n")
+            .contains("2 processes killed for memory")
+    );
+}
+
+#[test]
+fn one_frame_of_ordinary_reclaim_does_not_flip_the_advice() {
+    use crate::app::Constraint;
+    // Any Linux box with a non-zero swappiness pages an idle daemon out now and
+    // then. Reading the rate off the last sample alone would re-sort the table
+    // on that frame and flip back on the next — the flicker the window exists
+    // to prevent.
+    let mut app = App::new(600);
+    let quiet = |swout| {
+        let mut s = sample(10.0);
+        s.mem.swap_total = 8 << 30;
+        s.mem.swap_used = 4 << 30;
+        s.swout = Some(swout);
+        s
+    };
+    for _ in 0..12 {
+        app.push(quiet(0));
+    }
+    app.push(quiet(4 << 10));
+    assert_ne!(
+        app.constraint(),
+        Some(Constraint::Memory),
+        "one frame of reclaim named a memory constraint"
+    );
+
+    // A box that is swapping every sample of the window is a different matter.
+    let mut app = App::new(600);
+    for _ in 0..13 {
+        app.push(quiet(64 << 20));
+    }
+    assert_eq!(app.constraint(), Some(Constraint::Memory));
+}
