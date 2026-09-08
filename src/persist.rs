@@ -250,10 +250,15 @@ impl Codec for SystemTime {
         Codec::write(&d.as_secs(), out);
         Codec::write(&d.subsec_nanos(), out);
     }
+    /// Checked the whole way, because `at` is the first field of a `Sample` and
+    /// a panic here is a crash at startup rather than an empty buffer.
+    /// `Duration::new` panics when the nanosecond carry overflows the seconds
+    /// counter, and adding a large enough `Duration` to `UNIX_EPOCH` panics
+    /// too — both reachable from a file with intact magic and a corrupt body.
     fn read(r: &mut In<'_>) -> Option<Self> {
-        let secs = u64::read(r)?;
-        let nanos = u32::read(r)?;
-        Some(UNIX_EPOCH + Duration::new(secs, nanos))
+        let secs = Duration::from_secs(u64::read(r)?);
+        let nanos = Duration::from_nanos(u64::from(u32::read(r)?));
+        UNIX_EPOCH.checked_add(secs.checked_add(nanos)?)
     }
 }
 

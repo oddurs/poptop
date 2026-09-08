@@ -97,13 +97,10 @@ pub fn path_from(
     Some(base.join("poptop").join("history"))
 }
 
-/// A little-endian writer. Hand-rolled for the same reason the `/proc` parser
-/// is: the format is a dozen scalars and a string table, and `serde` would be
-/// the largest dependency in the project by an order of magnitude.
-/// Bytes the file carries beyond the sample bodies: magic, version, and the
-/// two counts.
 use crate::persist::{Codec, In, Out};
 
+/// Bytes the file carries beyond the sample bodies: magic, version, and the
+/// two counts.
 const HEADER_BYTES: usize = MAGIC.len() + 4 + 4 + 4;
 
 /// Serialise samples, oldest first, dropping the oldest to fit [`MAX_BYTES`].
@@ -152,6 +149,12 @@ fn encode_within(samples: &[&Sample], max_bytes: usize) -> Vec<u8> {
     file
 }
 
+/// Parse a store, or `None` if it is not one this version understands.
+///
+/// Every failure mode lands here rather than propagating: a wrong magic, a
+/// version that is not exactly [`VERSION`], a truncated body, a string index
+/// with no table entry. This is a cache, and the honest outcome for all of them
+/// is starting with an empty buffer.
 pub fn decode(bytes: &[u8]) -> Option<Vec<Sample>> {
     let mut r = In::new(bytes, 0, Vec::new());
     if r.take(MAGIC.len())? != MAGIC || u32::read(&mut r)? != VERSION {
@@ -521,6 +524,60 @@ mod tests {
             Some(None),
             "an absent string did not decode"
         );
+    }
+
+    /// A file with intact magic and version, whose body is `at` and nothing
+    /// else, with the seconds set as high as the field goes.
+    fn a_file_claiming_a_timestamp_of(secs: u64, nanos: u32) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(MAGIC);
+        f.extend_from_slice(&VERSION.to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes()); // no strings
+        f.extend_from_slice(&1u32.to_le_bytes()); // one sample
+        f.extend_from_slice(&secs.to_le_bytes());
+        f.extend_from_slice(&nanos.to_le_bytes());
+        f
+    }
+
+    #[test]
+    fn an_impossible_timestamp_empties_the_buffer_instead_of_killing_the_program() {
+        // `at` is the first field of a sample, so this is the first thing read
+        // out of a corrupt file — and a panic here is a crash on startup, from
+        // a cache, which is the one place the program has no reason to fail.
+        //
+        // Two ways to overflow: the seconds alone, and a nanosecond carry that
+        // tips a seconds count that would otherwise have fit. `Duration::new`
+        // panics on the second and `UNIX_EPOCH + d` on the first.
+        for (secs, nanos) in [
+            (u64::MAX, 0),
+            (u64::MAX, 999_999_999),
+            (u64::MAX - 1, 999_999_999),
+        ] {
+            assert!(
+                decode(&a_file_claiming_a_timestamp_of(secs, nanos)).is_none(),
+                "a timestamp of {secs}s {nanos}ns was not refused"
+            );
+        }
+    }
+
+    #[test]
+    fn no_single_corrupt_byte_can_panic_the_reader() {
+        // The targeted test above covers the field this was found in. This
+        // covers the ones nobody has thought of: every byte of a real store,
+        // flipped, must still land in "not a store I understand" rather than
+        // taking the process down.
+        let mut s = sample_of(7.5, 2);
+        s.procs.truncate(1);
+        let good = encode(&[&s]);
+        for i in 0..good.len() {
+            for mask in [0xFF, 0x80, 0x01] {
+                let mut bad = good.clone();
+                bad[i] ^= mask;
+                // The result is uninteresting — a flipped byte may still decode
+                // to a valid, wrong sample. Not panicking is the assertion.
+                let _ = decode(&bad);
+            }
+        }
     }
 
     #[test]
