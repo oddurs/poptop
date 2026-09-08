@@ -1,4 +1,5 @@
 const { chromium } = require("playwright-core");
+const BASE = process.env.BASE || "http://127.0.0.1:3000";
 
 // playwright-core drives a browser rather than shipping one. `channel` finds
 // the installed Chrome on any platform; CHROME overrides it where the binary is
@@ -8,7 +9,6 @@ const LAUNCH = process.env.CHROME
   : { channel: "chrome" };
 const fs = require("fs");
 
-const BASE = process.env.BASE || "http://127.0.0.1:3000";
 const OUT = process.env.OUT || ".";
 
 const PAGES = [

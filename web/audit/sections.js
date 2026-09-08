@@ -4,6 +4,7 @@
    to draw is not an empty state — it is a section making a claim with nothing
    behind it. These are the assertions that would fail if one broke. */
 const { chromium } = require("playwright-core");
+const BASE = process.env.BASE || "http://127.0.0.1:3000";
 
 // playwright-core drives a browser rather than shipping one. `channel` finds
 // the installed Chrome on any platform; CHROME overrides it where the binary is
@@ -12,7 +13,6 @@ const LAUNCH = process.env.CHROME
   ? { executablePath: process.env.CHROME }
   : { channel: "chrome" };
 
-const BASE = process.env.BASE || BASE;
 
 let failures = 0;
 const ok = (label, cond, extra = "") => {
