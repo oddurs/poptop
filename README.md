@@ -20,14 +20,14 @@ WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤
    0 ⣿⣿⣿⣿⣿⣿⣷⣤⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⣀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣄⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣤⣾⣿⣿⣿⣿
                                               CPU 89.2%  WAIT 26.7% ▐
 2m25s shown, 1s/slot — ←/→ scrub, +/- zoom
-── processes (4) — sort: CPU · io: panel too narrow ──────────────────────────
-PID     USER       CPU%         RSS           S  THR  HISTORY    COMMAND
-824     root       88.4   ███▌  512.0M   ▏    S  1    ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ postgres
-1190    root       12.5   ▌     32.0M         S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ nginx
-2077    root       4.2    ▏     148.0M        S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ node
-1       root       0.1          12.0M         S  1    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀ systemd
+── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
+  CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
+  88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿     824 postgres
+  12.5 ▌        32.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    1190 nginx
+   4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node
+   0.1          12.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀       1 systemd
 
-q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · t tree · i
+q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · / filter
 ```
 
 The gutter names each graph and anchors its scale; the dashed lines are the
@@ -217,8 +217,9 @@ can read.
 `i` still overrides whichever way the probe went. Someone with partial access
 may well want the column for the processes they can see.
 
-The `HISTORY` sparkline is drawn against **one axis shared by every row**, and
-the section title names it whenever it leaves one core — `history ≤800%`.
+The sparkline column is drawn against **one axis shared by every row**, and its
+own header names it — `HIST ≤800%`. A legend belongs with the thing it explains,
+so the scale sits over the column rather than in the section title.
 Scaling each row to its own peak instead would make a process oscillating
 between 11% and 13% look exactly like one spiking to 90%, which defeats the only
 reason to put the shapes in a column together.

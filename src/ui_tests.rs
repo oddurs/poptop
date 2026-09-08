@@ -5831,7 +5831,11 @@ fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
         let title = frame.iter().find(|l| l.contains("processes")).unwrap();
         let text = title.trim_end_matches(['─', ' ']);
         // Nothing is ever cut mid-clause.
-        for tail in ["too narr", "need roo", "histor ", "sort: C "] {
+        // Prefixes of clauses that are actually drawn. `"histor "` sat here
+        // after the axis moved to the column header: a sentinel for a clause
+        // that no longer exists can never match, so that quarter of the loop
+        // was guaranteeing nothing.
+        for tail in ["too narr", "need roo", "all roo", "sort: C "] {
             assert!(!text.ends_with(tail), "clipped mid-clause at {w}: {text:?}");
         }
         assert!(
@@ -5842,7 +5846,7 @@ fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
         // rather than as one more fact behind an identical `·`.
         if w >= 100 {
             assert!(
-                text.contains("⚠ 3/4 need root"),
+                text.contains("! io: 3/4 need root"),
                 "the io warning went missing at {w}: {text:?}"
             );
         }
@@ -5978,7 +5982,7 @@ fn a_warning_in_the_title_does_not_look_like_a_legend() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let y = (0..20u16)
-        .find(|y| (0..150u16).any(|x| buf[(x, *y)].symbol() == "⚠"))
+        .find(|y| (0..150u16).any(|x| buf[(x, *y)].symbol() == "!"))
         .expect("the warning is not on screen");
 
     let style_at = |pat: &str| {
@@ -5986,7 +5990,7 @@ fn a_warning_in_the_title_does_not_look_like_a_legend() {
         let col = line.find(pat).map(|b| line[..b].chars().count()).unwrap() as u16;
         buf[(col, y)].style()
     };
-    let warned = style_at("7/9 need root");
+    let warned = style_at("io: 7/9 need root");
     let plain = style_at("processes (");
     assert_ne!(
         warned, plain,
@@ -6019,7 +6023,123 @@ fn a_warning_in_the_title_does_not_look_like_a_legend() {
         .find(|l| l.contains("processes ("))
         .unwrap();
     assert!(
-        !title.contains("io") && !title.contains('⚠'),
+        !title.contains("io") && !title.contains('!'),
         "a readable box is being told about io it can already see: {title:?}"
     );
+}
+
+#[test]
+fn the_sparkline_column_keeps_its_name_on_a_many_core_box() {
+    // The ceiling doubles past one core, so a busy process on a sixteen-core
+    // box gives 1600 and `HIST ≤1600%` is eleven columns against ten. Falling
+    // straight back to the bare scale left nothing on screen saying that column
+    // was history — on exactly the machines where the sparkline matters most,
+    // and the section title no longer says it either.
+    for ceiling in [10.0f32, 50.0, 100.0, 200.0, 800.0, 1600.0, 3200.0, 12800.0] {
+        let h = ui::spark_header_for_test(ceiling);
+        assert!(
+            h.chars().count() <= ui::SPARK_W,
+            "the header overflows its column at {ceiling}: {h:?} is {} wide",
+            h.chars().count()
+        );
+        assert!(
+            h.contains(&format!("{ceiling:.0}")) || ceiling >= 10000.0,
+            "the scale is missing at {ceiling}: {h:?}"
+        );
+        if ceiling <= 3200.0 {
+            assert!(
+                h.starts_with('H'),
+                "the column lost its name at {ceiling}: {h:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_marker_the_chrome_draws_is_one_column_wide() {
+    // Every width in `ui` is counted in `chars`, so a glyph a terminal draws
+    // two columns wide runs the rule past its panel. `⚠` was the one that
+    // prompted this: several terminals give the warning sign emoji
+    // presentation. This is the byte-versus-column mistake one layer up.
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        s.io_collected = true;
+        s.io_denied = 3;
+        s.procs = (0..4)
+            .map(|i| proc_named(101 + i, "postgres", 20.0 - i as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    app.show_io = true;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for w in [80u16, 100, 140] {
+        for line in rows(&app, w, 20) {
+            for ch in line.chars() {
+                assert!(
+                    !matches!(ch, '⚠' | '⛔' | '❗' | '✅' | '❌'),
+                    "an emoji-presentation glyph reached the frame at {w}: {ch:?} in {line:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_readme_shows_the_table_this_version_draws() {
+    // The sample output went stale in exactly the way the change that made it
+    // stale was about: it showed the old split identity and the old column
+    // headers, so anyone comparing the README to a running instance saw a
+    // different table.
+    let readme = include_str!("../README.md");
+    let mut app = App::new(60);
+    for _ in 0..App::CONSTANT_FOR {
+        let mut s = sample(10.0);
+        // The README's own four, so the count in the title matches too.
+        s.procs = vec![
+            ProcSample {
+                cpu: 88.4,
+                rss: 512 << 20,
+                ..proc_named(824, "postgres", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 12.5,
+                rss: 32 << 20,
+                ..proc_named(1190, "nginx", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 4.2,
+                rss: 148 << 20,
+                ..proc_named(2077, "node", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 0.1,
+                rss: 12 << 20,
+                ..proc_named(1, "systemd", 0.0, 0)
+            },
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let drawn = rows(&app, 78, 24);
+
+    for pat in [
+        "processes (",
+        "CPU%",
+        "824 postgres",
+        "1190 nginx",
+        "2077 node",
+        "1 systemd",
+    ] {
+        let line = drawn
+            .iter()
+            .find(|l| l.contains(pat))
+            .unwrap_or_else(|| panic!("{pat:?} is not drawn at all"))
+            .trim_end();
+        assert!(
+            readme.contains(line),
+            "the README does not show what poptop draws:\n  drawn:  {line:?}"
+        );
+    }
 }

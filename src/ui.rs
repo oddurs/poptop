@@ -1670,9 +1670,6 @@ fn min_width_for_io(show_user: bool) -> u16 {
 /// actually drawn at.
 const MIN_COMMAND_W: u16 = 10;
 
-/// How much of the line is left for the command name.
-///
-/// The identity column is the one that takes what nothing else claimed, so it
 /// The header over the sparkline column, carrying its scale.
 ///
 /// The scale used to be a clause in the section title, three metres from the
@@ -1689,14 +1686,27 @@ const MIN_COMMAND_W: u16 = 10;
 /// Named as well as scaled when both fit in [`SPARK_W`], and scaled alone when
 /// they do not — the scale is the part that cannot be guessed from a column of
 /// braille.
+#[cfg(test)]
+pub fn spark_header_for_test(ceiling: f32) -> String {
+    spark_header(ceiling)
+}
+
 fn spark_header(ceiling: f32) -> String {
     let scale = format!("≤{ceiling:.0}%");
-    let named = format!("HIST {scale}");
-    if named.chars().count() <= SPARK_W {
-        named
-    } else {
-        scale
+    // Three tiers, because the ceiling doubles past one core and the name is
+    // the part that runs out of room first. On a sixteen-core box a busy
+    // process gives a ceiling of 1600, and `HIST ≤1600%` is eleven columns
+    // against ten — which used to leave the bare scale and nothing anywhere on
+    // screen saying that column was history, on exactly the machines where the
+    // sparkline matters most. `H` is a stub, but it is a stub of a name.
+    for candidate in [format!("HIST {scale}"), format!("H {scale}"), scale] {
+        if candidate.chars().count() <= SPARK_W {
+            return candidate;
+        }
     }
+    // A ceiling wide enough to crowd out even `≤N%` would need a machine with
+    // hundreds of cores and a process using all of them.
+    format!("≤{:.0}", ceiling / 100.0)
 }
 
 /// Width of the `USER` column, and the width `COMMAND` gets back when it is
@@ -1938,7 +1948,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 ))
                 .style(app.theme.dim_style()),
             );
-            // Identity, all of it together. See `IDENTITY_LAST`.
+            // Identity, all of it together — see the note above `rows`.
             cells.push(num(p.pid.to_string()));
             // Dropped, not blanked: an empty cell still occupies its ten
             // columns, and giving them to `COMMAND` is the whole point.
@@ -2125,7 +2135,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Width of the per-process history sparkline, in cells.
-const SPARK_W: usize = 10;
+pub const SPARK_W: usize = 10;
 
 /// One process's CPU history as a sparkline.
 ///
@@ -2222,8 +2232,11 @@ fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
     // Asked for but not drawn. Without this the key is a silent no-op on a
     // narrow panel: the columns do not appear, nothing says why, and the
     // obvious conclusion is that the feature is broken.
+    // A warning, not a legend: widening the terminal fixes it, which is the
+    // test the two are split on. It is also the one message this panel goes out
+    // of its way to guarantee — without it the `i` key is a silent no-op.
     if !show_io {
-        return (" · io: panel too narrow".into(), false);
+        return (" ! io: panel too narrow".into(), true);
     }
     // A kernel question rather than a permission one, and they want different
     // words: nothing the user does will make this appear.
@@ -2251,7 +2264,16 @@ fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
     // two are different numbers the moment a filter is active, and `90/2 need
     // root` is not a ratio of anything.
     let eligible = s.procs.iter().filter(|p| !p.is_kernel_thread()).count();
-    (format!(" ⚠ {}/{eligible} need root", s.io_denied), true)
+    // Says what needs root. Without the subject the clause read
+    // `processes (312) — sort: CPU ⚠ 41/298 need root` with nothing tying it to
+    // the disk columns it is about.
+    //
+    // `!` rather than `⚠`: the warning sign is given emoji presentation by
+    // several terminals and drawn two columns wide, while every width in this
+    // file is counted in `chars`. A rule that runs one column past its panel is
+    // the byte-versus-column mistake again, one layer up. The style carries the
+    // severity; the marker only has to be visible.
+    (format!(" ! io: {}/{eligible} need root", s.io_denied), true)
 }
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
