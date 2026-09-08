@@ -2,7 +2,7 @@
 id: 63
 title: cgroup v2 utilisation and pressure, per cgroup
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 58
@@ -45,8 +45,40 @@ model in 0060 exists for, and it should not be built before it.
 
 ## Acceptance criteria
 
-- [ ] Per-cgroup CPU, memory, IO and pressure, where the kernel publishes them
-- [ ] A stalled cgroup is identifiable from the pressure figure, not inferred
-- [ ] Depth bounded, with the bound stated
-- [ ] Cost measured on a tree of a thousand cgroups, and gated
-- [ ] cgroup v1 says it is unsupported rather than showing an empty tree
+- [x] Per-cgroup CPU, memory, IO and pressure, where the kernel publishes them
+- [x] A stalled cgroup is identifiable from the pressure figure, not inferred
+- [x] Depth bounded, with the bound stated
+- [x] Cost measured on a tree of a thousand cgroups, and gated
+- [x] cgroup v1 says it is unsupported rather than showing an empty tree
+
+## How it was resolved
+
+PR #81. `C` shows cgroups instead of processes: CPU, quota, memory, IO and
+pressure per node, most pressured first.
+
+**Depth four, and a cap of 512 nodes.** Four reaches a container on a Kubernetes
+node, which is the level somebody is looking for; atop's default of seven is
+every process's own scope. The walk is breadth-first, so hitting the cap leaves
+whole levels rather than one branch followed to the bottom, and a truncated tree
+renders `cgroups (first 512 of more)` — a reader hunting a stalled cgroup must
+not be handed a list that silently does not contain it.
+
+**The kernel's figures, not poptop's arithmetic.** In cgroup v2 `cpu.stat` and
+`memory.current` are already subtree totals, so a parent reads higher than any
+one child. Verified live: a spinner in `/demo.slice/busy.scope` reads 100.0%,
+its parent 100.0%, the root 100.1%.
+
+**A view, not a grouping** — it is a table of different things, and atop makes
+the same call with `G`. It does not add a fourth exclusive mode to the process
+table, so the deeper question 0070 asks stays open.
+
+**Measured on a real 1017-cgroup tree: 7.26ms a sample against 150us without
+it** — fifty times everything else combined. Collected only while the view is
+open, and the first thing the budget takes away.
+
+**Review caught the feature being dead.** `Source::Cgroups` was never added to
+the Linux backend's `SUPPORTED` list, and `needs()` strips anything not in it —
+so the key set a bit cleared on every tick and `C` showed "not collected here"
+forever. The test that should have caught it began with an early return on that
+same list, so it passed by not running. A cadence of two samples was the root of
+three more bugs and is gone; the gate is the view being open.
