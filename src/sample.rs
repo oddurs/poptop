@@ -718,6 +718,12 @@ impl Sample {
     /// so overwriting them is not optional. Add a non-optional field that some
     /// platform cannot fill and this base will hand it a fabricated zero, which
     /// is the one thing this codebase does not do.
+    // Only macOS reaches this today. `linux.rs` answers every field it
+    // declares, so on a Linux build nothing constructs a partial `Sample` and
+    // the compiler sees an unused function. That is a fact about what Linux can
+    // currently answer, not a property of the design: the first metric only
+    // macOS can supply puts a `..Sample::unknown()` in `linux.rs` too.
+    #[allow(dead_code)]
     pub fn unknown() -> Self {
         Self {
             at: std::time::UNIX_EPOCH,
