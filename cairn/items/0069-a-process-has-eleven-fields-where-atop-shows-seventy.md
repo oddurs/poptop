@@ -2,7 +2,7 @@
 id: 69
 title: A process has eleven fields where atop shows seventy
 type: feature
-status: backlog
+status: done
 milestone: v2.1
 depends_on:
 - 58
@@ -49,8 +49,44 @@ belongs behind the cost model.
 
 ## Acceptance criteria
 
-- [ ] Fields already in `/proc/<pid>/stat` are collected without new reads
-- [ ] `PSIZE` behind the cost model, and 0050's memory caveat resolved by it
-- [ ] Growth figures are correct across a scrub, or absent there
-- [ ] macOS reports what sysinfo gives and is absent elsewhere
-- [ ] Measured with `--bench`
+- [x] Fields already in `/proc/<pid>/stat` are collected without new reads
+- [x] `PSIZE` behind the cost model, and 0050's memory caveat resolved by it
+- [x] Growth figures are correct across a scrub, or absent there
+- [x] macOS reports what sysinfo gives and is absent elsewhere
+- [x] Measured with `--bench`
+
+## How it was resolved
+
+PR #84. Not seventy fields — the ones that answer a question poptop could not,
+in the memory view 0070 built.
+
+**`MAJF/s`** answers *why is this slow*: a process being paged in from disk
+while its CPU looks low and its state looks ordinary. A rate over the interval,
+not the lifetime total `/proc` publishes.
+
+**`PSS`** is the measurement 0050's caveat asks for. Grouped RSS is an upper
+bound because forked workers share pages copy-on-write; PSS divides a shared
+page among its sharers, so six renderers sum to what they cost. Measured at
+**4.2us a process** — 0.85ms a sample becomes 1.77ms at 218 — so it is read only
+while the memory view is open.
+
+**`VSZ` and `NICE`** are free: fields in a `stat` line already parsed.
+
+**`GROW` is derived, not stored** — a growth figure in every retained sample is
+a field carried forever to describe one interval. An em dash across a seam,
+using `history::gap_limit` so the timeline and the column cannot disagree about
+which samples are adjacent.
+
+**Which are worth the buffer:** a retained process goes 70 -> 103 bytes and the
+store 15.8 MB -> 24.9 MB at 600 samples of 400 processes. The window is
+unchanged at a 64 MB cap, but it is the largest increase any field here has
+cost, and every optional pays its tag byte whether or not the platform answers.
+
+**Review found the item's headline column reading zero forever.** The write-back
+that makes the fault counters a rate was never applied, so the baseline was
+empty on every sample. The test that should have caught it asserted on the map
+the parser is handed — the very thing being discarded — so the assertion now
+lives on the collector. Also: the elision arithmetic counted the columns the
+view drops but not the four it adds; a rate was styled against a percentage
+threshold; a group borrowed one member's growth where the platform reports no
+start time; and a `u32` of faults a second overflows across a large group.
