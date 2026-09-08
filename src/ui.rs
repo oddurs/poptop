@@ -1012,8 +1012,11 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     //
     // `WAIT` is absent where the platform will not say, and then memory takes
     // the row back rather than the graph carrying an empty one.
-    let mut candidates: Vec<(&str, Vec<f32>)> =
-        vec![("CPU", window.iter().map(|s| s.cpu_total).collect())];
+    let mut candidates: Vec<(&str, Vec<f32>, Unit)> = vec![(
+        "CPU",
+        window.iter().map(|s| s.cpu_total).collect(),
+        Unit::Percent,
+    )];
     if app.history.current().is_some_and(|s| s.iowait.is_some()) {
         // `unwrap_or` is safe rather than fabricating: whether the platform
         // publishes iowait is a property of the platform, not of the moment,
@@ -1021,9 +1024,14 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         candidates.push((
             "WAIT",
             window.iter().map(|s| s.iowait.unwrap_or(0.0)).collect(),
+            Unit::Percent,
         ));
     }
-    candidates.push(("MEM", window.iter().map(|s| s.mem.used_pct()).collect()));
+    candidates.push((
+        "MEM",
+        window.iter().map(|s| s.mem.used_pct()).collect(),
+        Unit::Percent,
+    ));
 
     // Disk utilisation, from whichever device was worst in each sample. Not a
     // series per device: the graph block has room for three or four rows and a
@@ -1044,6 +1052,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .map(|s| s.busiest_disk().map_or(0.0, |d| d.util))
                 .collect(),
+            Unit::Percent,
         ));
     }
 
@@ -1060,18 +1069,35 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 .iter()
                 .map(|s| s.pressure.map_or(0.0, |p| p.worst().1))
                 .collect(),
+            Unit::Percent,
         ));
     }
 
-    // No network row. The timeline draws percentages of a fixed denominator —
-    // it prints `100` at the top, rules the warn and critical thresholds across
-    // the graph, and reads out `NET 100.0%` under the cursor. Bytes per second
-    // has no such denominator, and normalising to the window's own peak makes
-    // the busiest sample 100 by construction: an idle laptop moving 8 B/s of
-    // loopback painted a full-scale graph through the critical rule.
+    // Throughput of the busiest interface, in bytes a second. It was left out
+    // while every series had to be a percentage: normalising to the window's
+    // own peak makes the busiest sample 100 by construction, so an idle laptop
+    // moving 8 B/s of loopback painted a full-scale graph through the critical
+    // rule. With its own unit it carries a byte axis and no rules, and says
+    // what it is.
     //
-    // The header figure carries the number until the timeline can draw a series
-    // with a scale of its own — cairn 0032.
+    // The busiest link rather than the sum, matching the header figure and for
+    // the same reason: a machine can have a dozen interfaces and the panel has
+    // room for one row, so the one carrying the most is the honest summary.
+    if app.history.current().is_some_and(|s| s.net.is_some()) {
+        candidates.push((
+            "NET",
+            window
+                .iter()
+                .map(|s| {
+                    s.net
+                        .as_ref()
+                        .and_then(|n| n.busiest())
+                        .map_or(0.0, |l| (l.rx + l.tx) as f32)
+                })
+                .collect(),
+            Unit::Rate,
+        ));
+    }
 
     // Swapped wholesale rather than merged: a panel showing one process's CPU
     // beside the machine's memory would be two subjects in one graph. Before
@@ -1080,7 +1106,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         candidates = series
             .rows
             .iter()
-            .map(|r| (r.name, r.values.clone()))
+            .map(|r| (r.name, r.values.clone(), r.unit))
             .collect();
     }
 
@@ -1126,7 +1152,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let labelled = gutter > 0 && row_split.iter().all(|&r| r >= MIN_ROWS_FOR_LABEL);
 
     let mut lines: Vec<Line> = Vec::with_capacity(inner_h);
-    for (i, (name, raw)) in candidates.iter().enumerate() {
+    for (i, (name, raw, unit)) in candidates.iter().enumerate() {
         let rows = row_split[i];
         let slots_for = history::peak_slots(raw, zoom, slots);
         let values = &slots_for;
@@ -1143,7 +1169,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // Each graph scales to its own peak: memory at 78% and CPU at 16% are
         // different questions and deserve different axes.
         let peak = values.iter().flatten().copied().fold(0.0_f32, f32::max);
-        let ceiling = glyphs::ceiling_for(peak);
+        let ceiling = unit.ceiling(peak);
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
@@ -1154,7 +1180,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // means "half of everything there is". It is wrong for per-process CPU
         // too: a process at 283% gets a ceiling of 400, and "critical" lands at
         // 80% of one core.
-        let rules: Vec<(usize, usize)> = if subject.is_some() {
+        let rules: Vec<(usize, usize)> = if subject.is_some() || !unit.takes_thresholds() {
             Vec::new()
         } else {
             [app.theme.warn_pct, app.theme.critical_pct]
@@ -1176,6 +1202,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 &app.theme,
                 labelled.then_some(name),
                 ceiling,
+                *unit,
             );
             spans.extend(
                 glyph_row(
@@ -1230,7 +1257,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 "{} — ",
                 candidates
                     .iter()
-                    .map(|(n, _)| n.to_lowercase())
+                    .map(|(n, _, _)| n.to_lowercase())
                     .collect::<Vec<_>>()
                     .join(" · ")
             )
@@ -1538,6 +1565,7 @@ pub fn axis_label_for_test(row: usize, rows: usize, name: Option<&str>) -> Strin
         &Theme::new(crate::theme::Palette::Safe, Theme::default().tier),
         name,
         100.0,
+        Unit::Percent,
     )
     .iter()
     .map(|s| s.content.as_ref())
@@ -1550,6 +1578,73 @@ pub fn axis_label_for_test(row: usize, rows: usize, name: Option<&str>) -> Strin
 /// anything they could not assume — what they do is anchor the *geometry*, so
 /// a bar's height can be read as a value rather than only compared to its
 /// neighbours.
+/// What a series is measured in, which decides its axis, its rules and whether
+/// a threshold means anything to it.
+///
+/// The panel used to assume every series was a percentage of a fixed
+/// denominator: it printed a bare ceiling, ruled the warn and critical
+/// thresholds across the graph, and any row not measured that way had to be
+/// left out. Bytes per second have no denominator — a link's capacity is not
+/// portably knowable, and normalising to the window's own peak makes the
+/// busiest sample 100 by construction, so an idle laptop moving 8 B/s of
+/// loopback drew a full-scale graph through the critical rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// A share of a fixed whole. The axis prints a number and the warn and
+    /// critical rules apply, because those are percentages.
+    Percent,
+    /// Bytes a second. The axis prints `4.0M`, and no rule is drawn: there is
+    /// no threshold at which a number of bytes is "critical".
+    Rate,
+    /// A plain count, like threads. An axis, and no rules for the same reason.
+    Count,
+}
+
+#[cfg(test)]
+impl Unit {
+    pub fn takes_thresholds_for_test(self) -> bool {
+        self.takes_thresholds()
+    }
+    pub fn axis_for_test(self, ceiling: f32) -> String {
+        self.axis(ceiling)
+    }
+    pub fn ceiling_for_test(self, peak: f32) -> f32 {
+        self.ceiling(peak)
+    }
+}
+
+impl Unit {
+    /// How the axis writes this series' ceiling.
+    fn axis(self, ceiling: f32) -> String {
+        match self {
+            Unit::Percent | Unit::Count => format!("{ceiling:.0}"),
+            Unit::Rate => fmt_bytes(ceiling as u64),
+        }
+    }
+
+    /// Whether the machine's warn and critical percentages mean anything here.
+    fn takes_thresholds(self) -> bool {
+        self == Unit::Percent
+    }
+
+    /// A ceiling in this series' own units, rounded to something legible.
+    fn ceiling(self, peak: f32) -> f32 {
+        match self {
+            Unit::Percent => glyphs::ceiling_for(peak),
+            // Powers of two from a kilobyte. A byte rate has no natural
+            // hundred, and a ladder in its own base is what makes `4.0M`
+            // readable where `3.7M` is arithmetic.
+            Unit::Rate | Unit::Count => {
+                let mut c = if self == Unit::Rate { 1024.0 } else { 1.0 };
+                while c < peak {
+                    c *= 2.0;
+                }
+                c
+            }
+        }
+    }
+}
+
 fn axis_label(
     row: usize,
     rows: usize,
@@ -1557,6 +1652,7 @@ fn axis_label(
     theme: &Theme,
     series: Option<&str>,
     ceiling: f32,
+    unit: Unit,
 ) -> Vec<Span<'static>> {
     if gutter == 0 {
         return Vec::new();
@@ -1577,8 +1673,9 @@ fn axis_label(
         String::new()
     } else if row == 0 {
         // The ceiling, not a fixed 100 — the axis has to say what it is, or
-        // scaling it would be the misleading kind of clever.
-        format!("{ceiling:.0}")
+        // scaling it would be the misleading kind of clever. In the series'
+        // own units, because `4194304` is arithmetic and `4.0M` is a scale.
+        unit.axis(ceiling)
     } else if row + 1 == rows {
         "0".to_string()
     } else if row == 1 {

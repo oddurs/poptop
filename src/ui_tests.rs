@@ -3204,32 +3204,85 @@ fn a_retransmitting_network_says_so_loudly() {
 }
 
 #[test]
-fn the_network_gets_no_timeline_row_because_it_has_no_denominator() {
-    // The timeline draws percentages of a fixed denominator: it prints `100` at
-    // the top, rules the warn and critical thresholds across the graph, and
-    // reads out `NET 100.0%` under the cursor. Bytes per second has no such
-    // denominator, and normalising to the window's own peak makes the busiest
-    // sample 100 by construction — an idle laptop moving 8 B/s of loopback
-    // painted a full-scale graph straight through the critical rule.
+fn the_network_row_is_drawn_on_an_axis_of_its_own_units() {
+    // It was left out while every series had to be a percentage of a fixed
+    // denominator. Bytes a second has no such denominator, and normalising to
+    // the window's own peak makes the busiest sample 100 by construction — an
+    // idle laptop moving 8 B/s of loopback painted a full-scale graph straight
+    // through the critical rule. With a unit of its own it carries a byte axis
+    // and no rules.
     let mut app = App::new(60);
     for _ in 0..20 {
         // Two orders of magnitude apart, so a peak-relative scale would put the
-        // larger one at the top of the graph whatever its absolute size.
+        // smaller one at the top of the graph whatever its absolute size.
         app.push(with_net(8, 8, Some(0), Some(0)));
-        app.push(with_net(1 << 30, 1 << 30, Some(0), Some(0)));
+        app.push(with_net(1 << 20, 1 << 20, Some(0), Some(0)));
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let drawn = rows(&app, 200, 48)
-        .iter()
+
+    let timeline: Vec<String> = rows(&app, 200, 48)
+        .into_iter()
         .skip_while(|l| !l.contains("── timeline"))
         .take_while(|l| !l.contains("shown,"))
-        .any(|l| l.contains("NET"));
+        .collect();
     assert!(
-        !drawn,
-        "a network row was drawn on an axis that cannot mean anything"
+        timeline.iter().any(|l| l.contains("NET")),
+        "the network row is still missing:\n{}",
+        timeline.join("\n")
     );
-    // The header still carries the figure, which is where the number lives.
+    // Its axis is in bytes, not a bare percentage. 2 MiB a second at the peak,
+    // so the ceiling is a byte figure and never `100`.
+    let axis = timeline
+        .iter()
+        .find(|l| l.contains('M') && !l.contains("MEM"))
+        .unwrap_or_else(|| panic!("no byte axis:\n{}", timeline.join("\n")));
+    assert!(
+        axis.contains("2.0M"),
+        "the axis is not in the series' own units: {axis:?}"
+    );
+
+    // The header still carries the figure too, which is where the number lives.
     assert!(render(&app, 200, 30).contains("en0"));
+}
+
+#[test]
+fn a_series_that_is_not_a_percentage_carries_no_threshold_rules() {
+    // The warn and critical percentages are shares of a whole. There is no
+    // number of bytes a second at which a link is "critical", and ruling one
+    // across the row says there is.
+    //
+    // Asserted on the decision rather than on a rendered frame, and the reason
+    // is worth stating: a byte ceiling starts at a kilobyte, so fifty *bytes*
+    // maps to the bottom five percent of the row — where the data already is,
+    // and where the rule yields to it. The guard is there because the claim
+    // would be false, not because it currently moves a pixel, and a rendered
+    // test would pass with the guard removed and prove nothing. That is the
+    // honest coverage available.
+    assert!(
+        ui::Unit::Percent.takes_thresholds_for_test(),
+        "a share of a whole is exactly what warn and critical are about"
+    );
+    for unit in [ui::Unit::Rate, ui::Unit::Count] {
+        assert!(
+            !unit.takes_thresholds_for_test(),
+            "a percentage threshold was applied to a series that is not one"
+        );
+    }
+
+    // And the axes really do differ, which is the visible half.
+    assert_eq!(ui::Unit::Percent.axis_for_test(100.0), "100");
+    assert_eq!(ui::Unit::Count.axis_for_test(128.0), "128");
+    assert_eq!(ui::Unit::Rate.axis_for_test(4.0 * 1024.0 * 1024.0), "4.0M");
+
+    // A byte ceiling is a power of two from a kilobyte, so an idle link reads
+    // as idle rather than being normalised to its own peak — the failure that
+    // kept this row out of the panel.
+    assert_eq!(ui::Unit::Rate.ceiling_for_test(8.0), 1024.0);
+    assert_eq!(
+        ui::Unit::Rate.ceiling_for_test(1_500_000.0),
+        2.0 * 1024.0 * 1024.0
+    );
+    assert_eq!(ui::Unit::Count.ceiling_for_test(9.0), 16.0);
 }
 
 #[test]
