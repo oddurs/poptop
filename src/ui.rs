@@ -107,7 +107,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_header(f, chunks[0], app, sample);
     draw_timeline(f, chunks[1], app);
-    draw_procs(f, chunks[2], app);
+    if app.show_cgroups {
+        draw_cgroups(f, chunks[2], app);
+    } else {
+        draw_procs(f, chunks[2], app);
+    }
     draw_help(f, chunks[3], app);
 }
 
@@ -2243,6 +2247,135 @@ fn last_row_to_keep(rows: &[crate::tree::TreeRow<'_>], selected: usize) -> usize
     last
 }
 
+/// The cgroup table.
+///
+/// A view rather than a set of columns, because it is a table of different
+/// things — atop makes the same call with `G`. Sorted by pressure, deepest
+/// first: the reason to open it is to find what is stalled, and the figure that
+/// answers that is the one nothing else on screen can give.
+fn draw_cgroups(f: &mut Frame, area: Rect, app: &App) {
+    let rows_data: &[crate::sample::CgroupStat] = app
+        .history
+        .current()
+        .and_then(|s| s.cgroups.as_deref())
+        .unwrap_or(&[]);
+
+    let psi = |p: Option<crate::sample::Pressure>, pick: fn(&crate::sample::Pressure) -> f32| {
+        match p {
+            // The `—` is the point: a node whose `cgroup.pressure` is switched
+            // off is not a node that never stalls.
+            None => num("—"),
+            Some(p) => {
+                let v = pick(&p);
+                num(format!("{v:.1}")).style(app.theme.heat_style(v))
+            }
+        }
+    };
+
+    let rows: Vec<Row> = rows_data
+        .iter()
+        .take(area.height.saturating_sub(2) as usize)
+        .map(|c| {
+            Row::new(vec![
+                match c.cpu {
+                    Some(v) => num(format!("{v:.1}")).style(app.theme.heat_style(v)),
+                    None => num("—").style(app.theme.dim_style()),
+                },
+                num(match c.cpu_max {
+                    Some(v) => format!("{v:.0}"),
+                    // Unlimited, which is not the same as a limit of zero.
+                    None => "∞".into(),
+                }),
+                num(c.mem.map_or("—".to_string(), fmt_bytes)),
+                num(c.read.map_or("—".to_string(), fmt_bytes)),
+                num(c.write.map_or("—".to_string(), fmt_bytes)),
+                psi(c.pressure, |p| p.cpu.some),
+                psi(c.pressure, |p| p.io.some),
+                psi(c.pressure, |p| p.memory.some),
+                num(c.procs.map_or("—".to_string(), |n| n.to_string())),
+                Cell::from(Line::from(vec![
+                    Span::styled("  ".repeat(c.depth as usize), app.theme.chrome_style()),
+                    Span::raw(elide_middle(short_cgroup(&c.path), 48)),
+                ])),
+            ])
+        })
+        .collect();
+
+    let right = |s: &str| num(s.to_string()).style(app.theme.table_header_style());
+    let header = Row::new(vec![
+        right("CPU%"),
+        right("MAX%"),
+        right("MEM"),
+        right("READ"),
+        right("WRITE"),
+        right("PSI CPU"),
+        right("PSI IO"),
+        right("PSI MEM"),
+        right("PROCS"),
+        Cell::from("CGROUP".to_string()).style(app.theme.table_header_style()),
+    ]);
+    let widths = [
+        Constraint::Length(6),
+        Constraint::Length(5),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(7),
+        Constraint::Length(8),
+        Constraint::Length(6),
+        Constraint::Min(20),
+    ];
+    let title = match app.history.current().map(|s| s.cgroups.is_some()) {
+        // The distinction this codebase never collapses: a machine with no
+        // unified hierarchy, versus one with no cgroups.
+        Some(false) | None => " cgroups — not collected here".to_string(),
+        // A truncated tree says so. Reaching the cap and reporting the count
+        // as if it were the whole hierarchy is the one thing this panel must
+        // not do: a reader looking for a stalled cgroup would be looking at a
+        // list that does not contain it.
+        Some(true) if rows_data.len() >= crate::collect::CGROUP_MAX_NODES => format!(
+            " cgroups (first {} of more) — depth {}, sorted by pressure",
+            rows_data.len(),
+            crate::collect::CGROUP_DEPTH
+        ),
+        Some(true) => format!(
+            " cgroups ({}) — depth {}, sorted by pressure",
+            rows_data.len(),
+            crate::collect::CGROUP_DEPTH
+        ),
+    };
+    let title = vec![Span::styled(title, app.theme.title_style())];
+    f.render_widget(
+        Paragraph::new(divider_of(title, area.width, &app.theme)),
+        Rect { height: 1, ..area },
+    );
+    f.render_widget(
+        Table::new(rows, widths).header(header),
+        Rect {
+            y: area.y + 1,
+            height: area.height.saturating_sub(1),
+            ..area
+        },
+    );
+}
+
+/// The part of a cgroup path worth showing.
+///
+/// A Kubernetes path is `/kubepods.slice/kubepods-burstable.slice/…-pod<uuid>
+/// .slice/cri-containerd-<64 hex>.scope`, and the indent already carries the
+/// ancestry — so the row shows the last component, which is the only part that
+/// differs between siblings.
+fn short_cgroup(path: &str) -> &str {
+    if path == "/" {
+        return path;
+    }
+    path.rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(path)
+}
+
 fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
@@ -2905,6 +3038,7 @@ pub const KEY_HINTS: &[&str] = &[
     "t tree",
     "i io",
     "y threads",
+    "C cgroups",
     "K kernel",
     "g group",
     "d detail",

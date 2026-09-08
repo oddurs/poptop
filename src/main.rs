@@ -293,30 +293,40 @@ fn main() -> io::Result<()> {
                     .with(Source::Io)
                     .with(Source::Threads)
                     .with(Source::Exited),
+                Needs::NONE
+                    .with(Source::Io)
+                    .with(Source::Threads)
+                    .with(Source::Exited)
+                    .with(Source::Cgroups),
             ] {
                 collector.sample(needs)?;
                 let t0 = std::time::Instant::now();
                 let mut count = 0;
                 let mut tasks = 0;
                 let mut exited = 0;
+                let mut groups = 0;
                 for _ in 0..n {
                     let s = collector.sample(needs)?;
                     count = s.procs.len();
                     tasks = s.tasks.as_ref().map_or(0, Vec::len);
                     exited += s.exited.as_ref().map_or(0, Vec::len);
+                    groups = s.cgroups.as_ref().map_or(0, Vec::len);
                 }
                 let label = match (
                     needs.asked(Source::Io),
                     needs.asked(Source::Threads),
                     needs.asked(Source::Exited),
+                    needs.asked(Source::Cgroups),
                 ) {
-                    (false, ..) => "io off, threads off, exits off",
-                    (true, false, _) => "io on,  threads off, exits off",
-                    (true, true, false) => "io on,  threads on,  exits off",
-                    (true, true, true) => "io on,  threads on,  exits on ",
+                    (false, ..) => "io off, threads off, exits off, cgroups off",
+                    (true, false, ..) => "io on,  threads off, exits off, cgroups off",
+                    (true, true, false, _) => "io on,  threads on,  exits off, cgroups off",
+                    (true, true, true, false) => "io on,  threads on,  exits on,  cgroups off",
+                    (true, true, true, true) => "io on,  threads on,  exits on,  cgroups on ",
                 };
                 outln!(
-                    "{label}: {count} procs, {tasks} threads, {exited} exits, {:?}/sample",
+                    "{label}: {count} procs, {tasks} threads, {exited} exits, \
+                     {groups} cgroups, {:?}/sample",
                     t0.elapsed() / n
                 );
             }
@@ -503,7 +513,10 @@ fn clock_line(s: &sample::Sample) -> Option<String> {
 }
 
 fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
-    let needs = Needs::NONE.with(Source::Io).with(Source::Exited);
+    let needs = Needs::NONE
+        .with(Source::Io)
+        .with(Source::Exited)
+        .with(Source::Cgroups);
     collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
@@ -583,6 +596,19 @@ fn once(collector: &mut impl Collector, interval: Duration) -> io::Result<()> {
     // sample of `/proc` at an instant cannot see at all. An em dash where the
     // kernel would not let poptop listen, never a zero: "none exited" and "I
     // was not allowed to look" are opposite answers.
+    match &s.cgroups {
+        Some(g) => {
+            outln!("cgroups {}  walked", g.len());
+            for c in g.iter().take(3) {
+                let psi = c.pressure.map_or("—".to_string(), |p| {
+                    format!("{:.1}", p.io.some.max(p.cpu.some))
+                });
+                let cpu = c.cpu.map_or("—".to_string(), |v| format!("{v:.1}%"));
+                outln!("        {} cpu {cpu} psi {psi}", c.path);
+            }
+        }
+        None => outln!("cgroups —  not collected"),
+    }
     match &s.exited {
         Some(e) => {
             outln!("exited  {}  in the last interval", e.len());
@@ -786,6 +812,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::Char('i') => app.toggle_io(),
         // atop's key for the same thing.
         KeyCode::Char('y') => app.toggle_threads(),
+        // atop shows cgroups on G. C here, because g is already grouping and
+        // G is not free either.
+        KeyCode::Char('C') => app.toggle_cgroups(),
         KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
         KeyCode::Char('t') => {
             app.tree = !app.tree;

@@ -175,6 +175,11 @@ pub struct App {
     /// as processes, and a table that grew ninefold on a keypress would answer
     /// "which thread is spinning" by making it harder to find anything at all.
     pub show_threads: bool,
+    /// Whether the table shows cgroups instead of processes.
+    ///
+    /// A view, not a column: it is a table of different things. atop makes the
+    /// same call with `G`.
+    pub show_cgroups: bool,
     /// Show kernel threads — `kworker/*`, `ksoftirqd/*`, `irq/*` — in the
     /// table.
     ///
@@ -278,6 +283,7 @@ impl App {
             // `probe_io`.
             show_io: true,
             show_threads: false,
+            show_cgroups: false,
             show_kernel: false,
             group: false,
             detail: false,
@@ -311,6 +317,13 @@ impl App {
         if self.thread_ratchet {
             n = n.with(Source::Threads);
         }
+        // Only while the view is open. Six files a node against a thousand
+        // nodes is not something to collect for a panel nobody is looking at,
+        // and unlike threads there is no per-row history to keep continuous —
+        // a cgroup's figures are the cgroup's, whenever you ask.
+        if self.show_cgroups {
+            n = n.with(Source::Cgroups);
+        }
         // Nothing this backend does not read. Otherwise `y` on macOS starts a
         // collection that will never produce a row, and the budget can spend
         // three strikes giving up a source that was costing nothing.
@@ -343,6 +356,14 @@ impl App {
     /// as [`App::toggle_io`]: a reader who turns the view off, scrubs back, and
     /// turns it on again should find the threads that were there, not a gap
     /// shaped like the moment they lost interest.
+    /// Show cgroups instead of processes, or stop.
+    pub fn toggle_cgroups(&mut self) {
+        self.show_cgroups = !self.show_cgroups;
+        if self.show_cgroups {
+            self.insist(Source::Cgroups);
+        }
+    }
+
     pub fn toggle_threads(&mut self) {
         self.show_threads = !self.show_threads;
         self.thread_ratchet |= self.show_threads;
@@ -637,6 +658,7 @@ impl App {
                 match worst {
                     Source::Io => self.show_io = false,
                     Source::Threads => self.show_threads = false,
+                    Source::Cgroups => self.show_cgroups = false,
                     // Neither has a view to turn off: exit records go into the
                     // table beside live rows, and the clock ceiling is a header
                     // figure. The withheld clause is what says they stopped.
@@ -658,6 +680,7 @@ impl App {
             procs: s.map_or(0, |s| s.procs.len() as u64),
             tasks: s.map_or(0, |s| s.tasks.as_ref().map_or(0, Vec::len) as u64),
             exited: s.map_or(0, |s| s.exited.as_ref().map_or(0, Vec::len) as u64),
+            cgroups: s.map_or(0, |s| s.cgroups.as_ref().map_or(0, Vec::len) as u64),
         }
     }
 

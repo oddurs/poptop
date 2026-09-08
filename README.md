@@ -128,6 +128,7 @@ cargo build --release
 | `K` | show kernel threads, which are hidden by default on Linux |
 | `i` | toggle per-process disk IO columns |
 | `y` | expand the selected process into its threads |
+| `C` | show cgroups instead of processes |
 | `/` | filter — a substring, or a small query language |
 
 `d` is the one worth trying first. The buffer already holds every retained
@@ -252,6 +253,45 @@ process was inspected.
 Not on macOS. sysinfo, the backend there, exposes no per-thread accounting;
 mach's `task_threads` would, and poptop does not call it yet. The panel says
 `threads: not read on macOS` rather than showing one thread per process.
+
+### Which cgroup is stalled
+
+poptop reports PSI for the machine. On a container host that answers *something
+is stalled on IO* and not *the thing stalled on IO is this pod*, which is the
+question. `C` shows cgroups instead of processes — CPU, its quota, memory, IO
+and **pressure per cgroup**, sorted with the most pressured first, because the
+reason to open it is to find what is stalled.
+
+```text
+── cgroups (14) — depth 4, sorted by pressure ──────────────────────
+  CPU%  MAX%      MEM     READ    WRITE  PSI CPU  PSI IO  PSI MEM  PROCS CGROUP
+   1.0   200    64.0M    1.2M       0B      0.0    61.5      0.0      3     pod-b.slice
+   4.0     ∞    64.0M       0B       0B      0.0     0.1      0.0      3     pod-a.slice
+```
+
+Per-cgroup pressure is the single most useful thing atop has that poptop did
+not, because it is the only metric that *attributes* a stall.
+
+**CPU and memory are subtree totals**, because that is what cgroup v2 publishes:
+a parent reads higher than any one child rather than equal to the sum of the
+rows beneath it. The rollup is the kernel's arithmetic, not poptop's — which is
+the only version that can be right about a cgroup holding both processes and
+children.
+
+**Bounded, and it says so.** Four levels below the root, which reaches a
+container on a Kubernetes node, and at most 512 nodes a sample. A tree bigger
+than that reads `cgroups (first 512 of more)` rather than reporting the count as
+if it were the whole hierarchy — a reader hunting a stalled cgroup must not be
+handed a list that silently does not contain it.
+
+**Only while the view is open.** Six files a node, and a thousand-cgroup tree
+measured at **7.3 ms a sample** against 150 µs without it. That is the most
+expensive thing poptop reads by a factor of fifty, so it is not collected for a
+panel nobody is looking at, and it is the first thing the budget takes away.
+
+A `—` in a pressure column is a node whose `cgroup.pressure` is switched off,
+not a node that never stalls. cgroup v1 has no unified tree and no PSI, so
+poptop says so rather than showing an empty table.
 
 ### What it costs to watch
 
