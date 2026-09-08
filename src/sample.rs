@@ -39,12 +39,48 @@ pub struct MemStat {
     pub swap_used: u64,
 }
 
+/// A process this reader knows nothing about, as the base a schema merge fills
+/// in. Never a real process: `pid` 0 belongs to no task and `state` is the `?`
+/// an unrecognised state already renders as.
+impl Default for ProcSample {
+    fn default() -> Self {
+        Self {
+            pid: 0,
+            ppid: 0,
+            name: Arc::from(""),
+            user: Arc::from(""),
+            cpu: 0.0,
+            rss: 0,
+            threads: None,
+            state: '?',
+            started: None,
+            cmd: None,
+            io: None,
+        }
+    }
+}
+
+/// The blank a schema merge starts from — see [`Sample::unknown`], which is the
+/// same thing said for collectors.
+impl Default for Sample {
+    fn default() -> Self {
+        Self::unknown()
+    }
+}
+
+// Every record whose schema the file carries. A record reachable from `Sample`
+// but missing here has no schema in the file and cannot be read back, which
+// `every_reachable_record_has_a_schema` asserts rather than assumes.
+crate::persist::records! {
+    MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ProcSample, Sample
+}
+
 // The wire order for each retained struct, listed beside it. The list cannot
 // fall behind the struct: both halves are generated from it, so a field added
 // above and left out here is a compile error naming the field — the reader
 // cannot build the struct, and the writer cannot destructure it. Neither is a
 // silent stop-retaining-this. See `crate::persist`.
-crate::persist::codec! { MemStat { total, used, available, free, swap_total, swap_used } }
+crate::persist::codec! { MemStat { total: u64, used: u64, available: u64, free: Option<u64>, swap_total: u64, swap_used: u64 } }
 
 impl ProcSample {
     /// How this process is followed from one sample to the next.
@@ -170,7 +206,7 @@ pub struct Stall {
     pub full: f32,
 }
 
-crate::persist::codec! { Stall { some, full } }
+crate::persist::codec! { Stall { some: f32, full: f32 } }
 
 /// Pressure Stall Information, where the kernel publishes it.
 ///
@@ -189,7 +225,7 @@ pub struct Pressure {
     pub memory: Stall,
 }
 
-crate::persist::codec! { Pressure { cpu, io, memory } }
+crate::persist::codec! { Pressure { cpu: Stall, io: Stall, memory: Stall } }
 
 impl Pressure {
     /// The resource that stopped the machine most, and by how much.
@@ -218,7 +254,7 @@ impl Pressure {
 /// also the only one that is a *threshold* rather than a rate — nobody scrubs
 /// back forty seconds to see the disk was a fifth of a percent emptier — which
 /// is why it earns a header figure and no graph row.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FsStat {
     /// Where it is mounted, which is what a reader recognises it by.
     pub mount: Arc<str>,
@@ -230,7 +266,7 @@ pub struct FsStat {
     pub avail: u64,
 }
 
-crate::persist::codec! { FsStat { mount, total, avail } }
+crate::persist::codec! { FsStat { mount: Arc<str>, total: u64, avail: u64 } }
 
 impl FsStat {
     pub fn used_pct(&self) -> f32 {
@@ -243,7 +279,7 @@ impl FsStat {
 }
 
 /// One network interface's traffic over the interval.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Link {
     /// Kernel name — `en0`, `eth0`, `wlan0`.
     pub name: Arc<str>,
@@ -255,7 +291,7 @@ pub struct Link {
     pub tx_packets: u64,
 }
 
-crate::persist::codec! { Link { name, rx, tx, rx_packets, tx_packets } }
+crate::persist::codec! { Link { name: Arc<str>, rx: u64, tx: u64, rx_packets: u64, tx_packets: u64 } }
 
 impl Link {
     /// Bytes per second in both directions, which is what "busiest" means here.
@@ -292,7 +328,7 @@ pub struct NetStat {
     pub listen_drops: Option<u64>,
 }
 
-crate::persist::codec! { NetStat { links, errors, drops, retrans, listen_drops } }
+crate::persist::codec! { NetStat { links: Vec<Link>, errors: Option<u64>, drops: Option<u64>, retrans: Option<u64>, listen_drops: Option<u64> } }
 
 impl NetStat {
     /// The interface carrying the most traffic, if any is known.
@@ -348,7 +384,7 @@ impl NetStat {
 /// device, and how badly*, and the per-process columns answer a different one.
 /// A device at 100% utilisation with 40ms service times is slow for everyone on
 /// it, including processes issuing almost no IO of their own.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DiskStat {
     /// Kernel name — `nvme0n1`, `vda`, `dm-0`. Whole devices only; partitions
     /// are excluded because their IO is already counted in their disk's.
@@ -382,7 +418,7 @@ pub struct DiskStat {
     pub queue: f32,
 }
 
-crate::persist::codec! { DiskStat { name, read, write, reads, writes, util, await_ms, queue } }
+crate::persist::codec! { DiskStat { name: Arc<str>, read: u64, write: u64, reads: u64, writes: u64, util: f32, await_ms: Option<f32>, queue: f32 } }
 
 impl Sample {
     /// The filesystem closest to full, if any is known.
@@ -503,7 +539,7 @@ pub struct IoRates {
     pub write: u64,
 }
 
-crate::persist::codec! { IoRates { read, write } }
+crate::persist::codec! { IoRates { read: u64, write: u64 } }
 
 /// One process as it appeared in a single sample.
 #[derive(Debug, Clone)]
@@ -577,7 +613,7 @@ pub struct ProcSample {
     pub io: Option<IoRates>,
 }
 
-crate::persist::codec! { ProcSample { pid, ppid, name, user, cpu, rss, threads, state, started, cmd, io } }
+crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates> } }
 
 /// A complete snapshot of the machine at one instant.
 #[derive(Debug, Clone)]
@@ -749,7 +785,7 @@ impl Sample {
     }
 }
 
-crate::persist::codec! { Sample { at, cpu_total, cpu_per_core, iowait, running, blocked, mem, load, procs, uptime, forks, io_supported, io_collected, io_denied, disks, pressure, clock_ceiling, net, filesystems } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
