@@ -140,18 +140,39 @@ impl Query {
                     || p.pid.to_string().contains(needle)
             }
             Term::Number { field, op, value } => match number_of(p, *field) {
-                Some(have) => compare(have, *op, *value),
+                Some(have) => compare(have, *op, *value, *field),
                 None => false,
             },
             Term::Text { field, op, value } => {
-                let have = text_of(p, *field).to_lowercase();
+                let hit = match field {
+                    // Identity, so `=` means equality. `user = root` matching
+                    // `rootless` and `root-ci` is not what anyone typing it
+                    // means, and `user != root` excluding them is worse.
+                    Field::User => p.user.to_lowercase() == *value,
+                    // One letter, compared as one letter. A lookup table over
+                    // the states this tool happens to have seen collapses `t`,
+                    // `W`, `X`, `K` and `P` into a single `?`, so a traced
+                    // process could never be found and unrelated states
+                    // compared equal to each other.
+                    Field::State => {
+                        value.chars().count() == 1
+                            && p.state
+                                .eq_ignore_ascii_case(&value.chars().next().unwrap_or(' '))
+                    }
+                    // Containment, because `name = node` should find
+                    // `node /srv/api/server.js` — which is what anyone typing
+                    // it means, and the reason the command line is worth
+                    // showing at all.
+                    _ => p.command().to_lowercase().contains(value),
+                };
                 match op {
-                    // Text is matched by containment, not equality: `name =
-                    // node` should find `node /srv/api/server.js`, which is what
-                    // anyone typing it means.
-                    Op::Eq => have.contains(value),
-                    Op::Ne => !have.contains(value),
-                    _ => have.as_str() > value.as_str(),
+                    Op::Eq => hit,
+                    Op::Ne => !hit,
+                    // `parse_term` refuses an ordering on a text field, so this
+                    // cannot fire. Stated rather than left to a lexicographic
+                    // fallback: if an operator is ever added, `state < x`
+                    // should be an error and not a nonsense answer.
+                    _ => false,
                 }
             }
         })
@@ -175,34 +196,36 @@ fn number_of(p: &ProcSample, f: Field) -> Option<f64> {
     })
 }
 
-fn text_of(p: &ProcSample, f: Field) -> &str {
-    match f {
-        Field::User => &p.user,
-        Field::Name => p.command(),
-        // A `char` needs somewhere to live; the states are all ASCII.
-        Field::State => match p.state {
-            'R' => "r",
-            'S' => "s",
-            'D' => "d",
-            'T' => "t",
-            'Z' => "z",
-            'I' => "i",
-            _ => "?",
-        },
-        _ => "",
-    }
-}
-
-fn compare(have: f64, op: Op, want: f64) -> bool {
+fn compare(have: f64, op: Op, want: f64, field: Field) -> bool {
+    let band = eq_band(field, want);
     match op {
         Op::Gt => have > want,
         Op::Ge => have >= want,
         Op::Lt => have < want,
         Op::Le => have <= want,
-        // Floats, so equality is a band rather than a point: `cpu = 5` should
-        // find a process at 5.04, which is what the column renders as `5.0`.
-        Op::Eq => (have - want).abs() < 0.05,
-        Op::Ne => (have - want).abs() >= 0.05,
+        Op::Eq => (have - want).abs() <= band,
+        Op::Ne => (have - want).abs() > band,
+    }
+}
+
+/// How close counts as equal, which depends on how the column is written.
+///
+/// A single band does not work across these fields. Half a unit of the last
+/// displayed digit is right for a CPU percentage, and on a byte quantity the
+/// same number is exact-byte equality — so `mem = 512m` found nothing unless
+/// the RSS was 536870912 exactly, and `mem != 512m` was true of every process
+/// on the machine.
+fn eq_band(field: Field, want: f64) -> f64 {
+    match field {
+        // The column shows one decimal, so anything that rounds to the same
+        // figure is the same figure.
+        Field::Cpu => 0.05,
+        // Bytes are shown to three or four significant figures in whichever
+        // unit fits, so half a percent is comfortably inside the last digit
+        // drawn and comfortably outside "a different process".
+        Field::Rss | Field::Read | Field::Write => (want * 0.005).max(1.0),
+        // Counts. A pid is exact or it is a different process.
+        _ => 0.0,
     }
 }
 
@@ -227,6 +250,11 @@ pub fn parse(input: &str) -> Result<Query, String> {
 ///
 /// Otherwise `/android` would parse as two empty terms, and the commonest thing
 /// anyone types — a bare word — would be the thing most likely to break.
+///
+/// A split that leaves nothing on either side is not a split either: `/and` on
+/// its own is somebody a third of the way through typing `android`, and
+/// unfiltering the table under them is a worse answer than matching the letters
+/// they have typed so far.
 fn split_and(input: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = input;
@@ -235,22 +263,33 @@ fn split_and(input: &str) -> Vec<&str> {
         rest = &rest[i + 3..];
     }
     out.push(rest);
+    if out.iter().all(|s| s.trim().is_empty()) {
+        return vec![input];
+    }
     out
 }
 
+/// The byte offset of a standalone `and`, ignoring ASCII case.
+///
+/// Searched over the original string, never over `to_lowercase()`. Lowercasing
+/// can change a string's length — `İ` is one char and two bytes, and its
+/// lowercase is two chars and three — so a byte offset found in the lowered
+/// copy and used to slice the original runs past the end or lands mid-char. It
+/// panicked: four keystrokes into the filter box took the whole tool down, and
+/// on the panic path the terminal is left in raw mode.
 fn find_and(s: &str) -> Option<usize> {
-    let lower = s.to_lowercase();
-    let mut from = 0;
-    while let Some(i) = lower[from..].find("and") {
-        let at = from + i;
-        let before = s[..at].chars().next_back();
-        let after = s[at + 3..].chars().next();
-        if before.is_none_or(char::is_whitespace) && after.is_none_or(char::is_whitespace) {
-            return Some(at);
-        }
-        from = at + 3;
-    }
-    None
+    let bytes = s.as_bytes();
+    let boundary = |i: usize| -> bool {
+        // Byte-indexed, but every check is on an ASCII neighbour or on being
+        // at an edge, so a multi-byte char can only ever answer "not
+        // whitespace", which is the safe answer.
+        let before = s[..i].chars().next_back();
+        let after = s[i + 3..].chars().next();
+        before.is_none_or(char::is_whitespace) && after.is_none_or(char::is_whitespace)
+    };
+    (0..bytes.len().saturating_sub(2))
+        .filter(|i| s.is_char_boundary(*i) && s.is_char_boundary(i + 3))
+        .find(|i| bytes[*i..*i + 3].eq_ignore_ascii_case(b"and") && boundary(*i))
 }
 
 fn parse_term(term: &str) -> Result<Term, String> {
@@ -268,10 +307,23 @@ fn parse_term(term: &str) -> Result<Term, String> {
     let value = term[i + len..].trim();
 
     let Some(field) = Field::parse(&field_word) else {
-        return Err(format!(
-            "no field called `{field_word}` — try {}",
-            field_names()
-        ));
+        // Not a field, so this was never a comparison. Command lines are full
+        // of `=`: `chrome --type=renderer`, `java -Dconfig=/etc/app.conf`,
+        // `node --inspect=9229`. Reading those as a malformed query and
+        // refusing to filter is a regression on the thing the filter is most
+        // used for — finding which of four node processes is the API server,
+        // and the answer being in the arguments.
+        //
+        // A word that *is* a field still gets a real error, so `cpu > lots`
+        // says what is wrong rather than silently searching for `cpu > lots` as
+        // text and finding nothing.
+        if looks_like_a_field(&field_word) {
+            return Err(format!(
+                "no field called `{field_word}` — try {}",
+                field_names()
+            ));
+        }
+        return Ok(Term::Substring(term.to_lowercase()));
     };
     if value.is_empty() {
         return Err(format!("`{field_word}` is compared to nothing"));
@@ -299,6 +351,26 @@ fn parse_term(term: &str) -> Result<Term, String> {
         field,
         op,
         value: n,
+    })
+}
+
+/// Whether a word was plausibly *meant* as a field name.
+///
+/// The line between "you misspelled a field" and "that is an argument with an
+/// equals sign in it" has to fall somewhere, and neither extreme is right.
+/// Erroring on every unknown word refuses `--type=renderer`, which is the thing
+/// the filter is most used for. Never erroring makes `cpuu > 5` search silently
+/// for the literal text and find nothing, which on a one-line filter box means
+/// the reader has no way to learn the field names at all.
+///
+/// So: a near miss is a misspelling and gets the error; anything else is text.
+/// Near enough means one is a prefix of the other with at least three letters
+/// in common, which catches the typos people actually make — `cpuu`, `memm`,
+/// `thread`, `stat` — and lets `lang=en` and `type=renderer` through.
+fn looks_like_a_field(word: &str) -> bool {
+    FIELDS.iter().any(|(name, _)| {
+        let shared = name.starts_with(word) || word.starts_with(name);
+        shared && word.len().min(name.len()) >= 3
     })
 }
 
@@ -486,5 +558,170 @@ mod tests {
         assert!(keeps("name = server.js", &p));
         assert!(!keeps("name = postgres", &p));
         assert!(keeps("name != postgres", &p));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::sample::IoRates;
+    use std::sync::Arc;
+
+    fn proc_of(name: &str, user: &str, state: char) -> ProcSample {
+        ProcSample {
+            pid: 4821,
+            ppid: 1,
+            name: Arc::from(name),
+            user: Arc::from(user),
+            cpu: 12.5,
+            rss: 512 << 20,
+            threads: Some(41),
+            state,
+            started: Some(1),
+            cmd: Some(Arc::from(name)),
+            io: Some(IoRates { read: 0, write: 0 }),
+        }
+    }
+
+    #[test]
+    fn no_filter_text_can_panic() {
+        // `find_and` searched `to_lowercase()` and sliced the original.
+        // Lowercasing can change a string's length — `İ` is one char and two
+        // bytes, its lowercase two chars and three — so the offset ran past the
+        // end. Four keystrokes into the filter box took the whole tool down,
+        // and on the panic path the terminal is left in raw mode.
+        let nasty = [
+            "İand",
+            "İ and",
+            "İİ and",
+            "ẞand",
+            "ǅ and x",
+            "\u{130}\u{130}\u{130}and",
+            "and",
+            "AND",
+            " and ",
+            "aNd",
+            "андроид",
+            "日本語 and cpu > 1",
+            "…and…",
+            "\u{0}and",
+            "a\u{300}nd",
+        ];
+        for s in nasty {
+            // Every prefix, because the filter is parsed on every keystroke.
+            for i in 0..=s.len() {
+                if !s.is_char_boundary(i) {
+                    continue;
+                }
+                let _ = parse(&s[..i]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_command_line_with_an_equals_sign_is_still_searched_for() {
+        // Command lines are full of them, and reading those as a malformed
+        // query and refusing to filter is a regression on the thing the filter
+        // is most used for.
+        let p = proc_of("chrome --type=renderer --lang=en-US", "deploy", 'S');
+        for q in [
+            "--type=renderer",
+            "-Dconfig=/etc/app.conf",
+            "--inspect=9229",
+            "lang=en",
+        ] {
+            let parsed = parse(q).unwrap_or_else(|e| panic!("`{q}` was refused: {e}"));
+            assert!(
+                !parsed.is_empty(),
+                "`{q}` parsed to nothing and filters nothing"
+            );
+        }
+        assert!(parse("--type=renderer").unwrap().matches(&p));
+        assert!(!parse("--type=gpu").unwrap().matches(&p));
+
+        // …and a near miss is still a real error, so `cpuu > 5` says so rather
+        // than searching for it as text and finding nothing. That is the whole
+        // discovery mechanism a one-line filter box has.
+        for typo in ["cpuu > 5", "memm > 1g", "thread > 4", "stat = D"] {
+            assert!(parse(typo).is_err(), "`{typo}` was read as text");
+        }
+    }
+
+    #[test]
+    fn a_size_is_equal_at_the_precision_the_column_draws() {
+        // The 0.05 band is right for a percentage and is exact-byte equality on
+        // a byte field: `mem = 512m` found nothing unless the RSS was
+        // 536870912 exactly, and `mem != 512m` was true of every process.
+        let mut p = proc_of("node", "deploy", 'S');
+        p.rss = (512 << 20) + (400 << 10); // 512.4 MiB
+        assert!(
+            parse("mem = 512m").unwrap().matches(&p),
+            "a process the column draws as 512.4M does not equal 512m"
+        );
+        assert!(!parse("mem != 512m").unwrap().matches(&p));
+        // Still not equal to a different figure.
+        assert!(!parse("mem = 600m").unwrap().matches(&p));
+
+        // A pid is exact or it is a different process.
+        assert!(parse("pid = 4821").unwrap().matches(&p));
+        assert!(!parse("pid = 4822").unwrap().matches(&p));
+        // …and so is a thread count.
+        assert!(parse("threads = 41").unwrap().matches(&p));
+        assert!(!parse("threads = 42").unwrap().matches(&p));
+    }
+
+    #[test]
+    fn every_state_the_kernel_can_report_is_queryable() {
+        // A lookup table over the states this tool happens to have seen
+        // collapsed `t`, `W`, `X`, `K` and `P` into one `?`, so a traced
+        // process could never be found and unrelated states compared equal.
+        for s in ['R', 'S', 'D', 'T', 't', 'Z', 'I', 'W', 'X', 'K', 'P', '?'] {
+            let p = proc_of("x", "deploy", s);
+            let q = format!("state = {s}");
+            assert!(
+                parse(&q).unwrap().matches(&p),
+                "`{q}` does not match a process in state {s}"
+            );
+            for other in ['R', 'D', 'Z'] {
+                if other.eq_ignore_ascii_case(&s) {
+                    continue;
+                }
+                assert!(
+                    !parse(&format!("state = {other}")).unwrap().matches(&p),
+                    "state {s} compared equal to state {other}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_identity_field_is_matched_exactly() {
+        // `user = root` matching `rootless` is not what anyone typing it means,
+        // and `user != root` excluding them is worse.
+        let root = proc_of("x", "root", 'S');
+        let other = proc_of("x", "rootless", 'S');
+        assert!(parse("user = root").unwrap().matches(&root));
+        assert!(!parse("user = root").unwrap().matches(&other));
+        assert!(parse("user != root").unwrap().matches(&other));
+
+        // A name is still containment, which is why the command line is worth
+        // showing at all.
+        let node = proc_of("node /srv/api/server.js", "deploy", 'S');
+        assert!(parse("name = node").unwrap().matches(&node));
+        assert!(parse("name = server.js").unwrap().matches(&node));
+    }
+
+    #[test]
+    fn a_bare_and_is_someone_typing_android() {
+        // Unfiltering the table a third of the way through a word is a worse
+        // answer than matching the letters typed so far.
+        let p = proc_of("android-studio", "deploy", 'S');
+        let other = proc_of("postgres", "deploy", 'S');
+        for q in ["and", "AND", " and "] {
+            let parsed = parse(q).unwrap();
+            assert!(!parsed.is_empty(), "`{q}` unfiltered the table");
+            assert!(parsed.matches(&p), "`{q}` does not match android-studio");
+            assert!(!parsed.matches(&other), "`{q}` matched postgres");
+        }
     }
 }

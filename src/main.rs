@@ -152,6 +152,10 @@ KEYS:
 ON MACOS:
     Some figures are Linux-only and simply do not appear:
 
+    state = D          macOS reports no uninterruptible-sleep state, so that
+                       query finds nothing here even on a machine stuck on IO.
+                       The states it does report are R, S, I, T and Z.
+
     per-device disk    reading them costs 12ms a sample against a whole sample
                        of about four, so poptop does not read them rather than
                        pay it or show a stale number
