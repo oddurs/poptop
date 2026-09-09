@@ -2,10 +2,10 @@
 id: 77
 title: The comparison table will be wrong the moment this lands
 type: docs
-status: backlog
+status: done
 milestone: v2.2
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 priority: p2
 area: docs
 ---
@@ -42,8 +42,8 @@ present and marked — is what should be applied again.
 
 ## Acceptance criteria
 
-- [ ] Re-verified against atop's source or man page at the time of writing, not
+- [x] Re-verified against atop's source or man page at the time of writing, not
       from this plan
-- [ ] Rows where poptop still loses are present and marked
-- [ ] The zero-setup claim is stated without "nothing else does this"
-- [ ] Dated, so the next reader knows what it was checked against
+- [x] Rows where poptop still loses are present and marked
+- [x] The zero-setup claim is stated without "nothing else does this"
+- [x] Dated, so the next reader knows what it was checked against

@@ -44,10 +44,16 @@ poptop is not the first tool to let you look backwards, and it is not the most
 capable one.
 
 **[atop](https://www.atoptool.nl/)** has recorded historical per-process data
-for years. It writes compressed daily logfiles and keeps 28 days by default,
-which poptop does not. It also captures processes that started *and finished*
-between two samples — and so, now, does poptop: see **Processes that came and
-went** below. On logging and retention atop is still the better tool.
+for years, and it remains the tool to install if you are running a fleet. It
+keeps 28 days by default where poptop keeps seven; `atopsar` prints twenty-four
+kinds of report where poptop prints four; it reaches GPUs, Infiniband and
+per-process network through daemons poptop declines to require; and it is a
+system service, which is a different thing from a program you run.
+
+Several things it used to do alone, poptop now does too — capturing processes
+that lived and died between two samples, surviving a restart, jumping to a
+timestamp, summarising a period, machine-readable output. The table below is
+where that is set out, and it also carries the rows poptop loses.
 
 **[zenith](https://github.com/bvaisvil/zenith)** has zoomable scroll-back charts
 and saves data between runs. Its scrollback is aggregate-only, though: its
@@ -58,8 +64,8 @@ the charts but not the table.
 **htop, btop and bottom** keep no history at all. They render the current
 instant.
 
-What poptop offers is narrower than "nobody else does this", and it is a usability
-claim rather than a capability one:
+What poptop offers is one claim, and it is worth stating as narrowly as it is
+true. It is not that nobody else does this:
 
 - **Nothing has to have been running.** atop can only replay what its daemon
   already recorded. The common case — you connect to a machine that is slow
@@ -70,19 +76,31 @@ claim rather than a capability one:
 - **The process table follows the cursor.** Scrub to a spike and the table below
   it is the one from that instant.
 
-If you are running a fleet and want history you can rely on after the fact,
-install atop. If you want to know what this box is doing right now and what it
-was doing a few minutes ago, that is what poptop is for.
+When this was first written the honest summary was "a usability position, not a
+capability one — atop does more". The first half still holds and the second no
+longer does, which is a change that invites overstating. So, precisely: on the
+box you have just connected to, poptop answers questions atop cannot, because
+atop was not running. On a fleet you administer, atop answers questions poptop
+cannot, because it *was*. Install atop if you want history you can rely on after
+the fact across many machines. Use poptop when you want to know what this box is
+doing now and what it was doing a few minutes ago — including on the several
+thousand machines where nobody installed anything in advance.
 
-|                                        | poptop | htop | btop | bottom | zenith | atop |
-| -------------------------------------- | :--: | :--: | :--: | :----: | :----: | :--: |
-| Live view                              |  ●   |  ●   |  ●   |   ●    |   ●    |  ●   |
-| Rolling graph of recent values         |  ●   |  ◐¹  |  ●   |   ●    |   ●    |  ○   |
-| Move backwards through time            |  ●   |  ○   |  ○   |   ◐²   |   ●    |  ●³  |
-| Process table follows the time cursor  |  ●   |  ○   |  ○   |   ○    |   ○⁴   |  ●   |
-| Captures processes that exited between samples | ○ | ○ | ○ |   ○    |   ○    |  ●   |
-| History survives a restart             |  ○   |  ○   |  ○   |   ○    |   ●    |  ●   |
-| Needs something running beforehand     |  ○   |  ○   |  ○   |   ○    |   ○    |  ●⁵  |
+|                                                | poptop | htop | btop | bottom | zenith | atop |
+| ---------------------------------------------- | :--: | :--: | :--: | :----: | :----: | :--: |
+| Live view                                      |  ●   |  ●   |  ●   |   ●    |   ●    |  ●   |
+| Rolling graph of recent values                 |  ●   |  ◐¹  |  ●   |   ●    |   ●    |  ○   |
+| Move backwards through time                    |  ●   |  ○   |  ○   |   ◐²   |   ●    |  ●³  |
+| Process table follows the time cursor          |  ●   |  ○   |  ○   |   ○    |   ○⁴   |  ●   |
+| Jump to a timestamp                            |  ●   |  ○   |  ○   |   ○    |   ○    |  ●⁵  |
+| Captures processes that exited between samples |  ●⁶  |  ○   |  ○   |   ○    |   ○    |  ●   |
+| History survives a restart                     |  ●⁷  |  ○   |  ○   |   ○    |   ●    |  ●   |
+| **Needs something running beforehand**         |  ○   |  ○   |  ○   |   ○    |   ○    |  ●⁸  |
+| Summarise a period without watching it         |  ●   |  ○   |  ○   |   ○    |   ○    |  ●⁹  |
+| Machine-readable output                        |  ●   |  ○   |  ○   |   ○    |   ○    |  ●¹⁰ |
+| Kept for weeks by default                      |  ○¹¹ |  ○   |  ○   |   ○    |   ●    |  ●¹² |
+| Send a signal to a process                     |  ◐¹³ |  ●   |  ●   |   ●    |   ●    |  ●   |
+| GPU, Infiniband, per-process network           |  ○   |  ○   |  ◐   |   ○    |   ◐    |  ◐¹⁴ |
 
 ● yes · ◐ partial · ○ no
 
@@ -93,15 +111,47 @@ was doing a few minutes ago, that is what poptop is for.
    (`if !app.data_store.is_frozen()`, `lib.rs`) rather than letting you look
    backwards. poptop keeps sampling while you scrub.
 3. atop steps through intervals when replaying a logfile (`atop -r`), which is
-   a separate mode rather than the live view.
+   a separate mode rather than the live view — although `atop -t` ("twin mode:
+   live measurement with possibility to review earlier samples") narrows that.
 4. zenith's `HistogramKind` holds only aggregate series; its process table
    renders from a live map that runs
    `.retain(|&k, _| current_pids.contains(&k))`.
-5. atop's history requires its daemon to have been recording in advance. This
-   row is the whole of poptop's argument.
+5. `atop -r file -b [YYYYMMDD]hhmm[ss]`. poptop's `b` takes the same absolute
+   form and a relative one, and says so when nothing was recorded at the moment
+   asked for rather than showing the nearest sample as though it were.
+6. Over `taskstats` exit records, which need `CAP_NET_ADMIN` and the initial
+   PID namespace. Where they cannot be registered the panel says so; it does
+   not silently report fewer.
+7. Two ways, both off by default: a buffer written on a clean exit (`store`),
+   and a daily log appended while running (`log`).
+8. atop's history requires its daemon to have been recording in advance. **This
+   row is the whole of poptop's argument**, and it is the only one that has not
+   moved.
+9. `atopsar`, whose report list is far longer than poptop's — twenty-four
+   report types against poptop's four, including per-protocol IP, ICMP, UDP and
+   TCP for both address families.
+10. `atop -P label[,label]` and `-J` for JSON. poptop emits its schema as well,
+    which atop does not.
+11. Seven days and 512 MB, against atop's twenty-eight generations
+    (`LOGGENERATIONS=28` in `/etc/default/atop`). poptop keeps whole process
+    tables in every entry, so the same retention would cost far more; the
+    figures are in **Opening yesterday**.
+12. `LOGGENERATIONS=28`, `LOGINTERVAL=600`, `LOGPATH=/var/log/atop`.
+13. Off unless `signals = on`, and `TERM`/`KILL` only. See **Doing something
+    about it** — poptop refuses more cases than the others do, and one of them
+    is a hazard only poptop has.
+14. `atop -k` connects to an external `atopgpud` daemon for GPU, and `-K` to
+    `netatop`/`netatop-bpf` for per-process network. Both are separate things
+    to install and run, which is the line poptop draws in **What poptop will
+    read, and what it will not**.
 
-Every cell above was checked against the tool's source or official
-documentation rather than from memory; the footnotes name where.
+Every cell was checked against the tool's source or official documentation
+rather than from memory; the footnotes name where. **atop's column was
+re-verified on 2026-09-09 against atop 2.11.1** — `atop -h`, `atopsar`'s report
+list and `/etc/default/atop` on a Debian install — because most of what changed
+in this table changed on poptop's side, and a comparison that overstates is
+worse than none. The other four columns stand as originally checked and were
+not re-run.
 
 ## Build
 
@@ -2044,22 +2094,31 @@ auditing this UI against data-visualisation practice. Start with
 
 ## Status
 
-Early. What works: both backends, the timeline with scrubbing and zoom, the
-process tree (`t`), grouping (`g`), the per-process history panel (`d`), sorting
-including by whatever is constrained (`S`), the query filter, per-process disk
-throughput, clock-ceiling reporting, configurable intervals, persisting history
-across restarts (`store`), themes with colour-vision validation, and `--once`.
+What works: both backends; the timeline with scrubbing, zoom and jumping to a
+timestamp (`b`); the process tree (`t`); grouping (`g`); the per-process history
+panel (`d`); sorting including by whatever is constrained (`S`); the query
+filter; per-process disk throughput; clock-ceiling reporting; NUMA nodes;
+cgroup v2 utilisation and pressure; NFS; processes that lived and died between
+two samples; configurable intervals; history across restarts (`store`) and a
+daily log addressable by date (`log`, `--read`, `--days`); a report over a
+period (`--report`); machine-readable output with its schema (`--export`,
+`--schema`); signals behind an opt-in (`signals`); themes with colour-vision
+validation; and `--once`.
 
-Not there yet: per-process network attribution, which needs `/proc/net` inode
-matching or eBPF and is its own project; renicing processes; mouse
-support; and capturing processes that live and die entirely between two samples,
-where the `taskstats` exit-record path cannot be verified in the environment
-available here. Registering as an exit listener returns `EINVAL` while per-pid
-queries on the same socket work; the mask parses (the `ERANGE` boundary sits
-exactly at `nr_cpu_ids`) and is refused after parsing, which is the kernel
-declining exit-listener registration from anything but the initial PID
-namespace. Every Linux here is a container, which is by definition not that. It
-needs a host, not a better kernel.
+Not there yet, and each for a stated reason rather than a shrug:
+
+- **Per-process network attribution.** Needs `/proc/net` inode matching or eBPF,
+  and is its own project. atop reaches it through a separate `netatop` module.
+- **GPU, Infiniband and last-level cache.** Declined, with the reasoning in
+  **What poptop will read, and what it will not** — the first needs a vendor
+  library or a daemon, the third a privileged interface. Infiniband is out on
+  scope rather than principle and would qualify under the same rule.
+- **Renicing.** Signals landed and this did not: `TERM` and `KILL` answer a
+  question somebody is asking in an incident, and a priority is a decision made
+  at leisure in a shell.
+- **Mouse support.**
+- **Merging two buffers.** Two poptop windows with `store = on` are fine, but
+  the second to exit replaces the first's history rather than merging it.
 
 ## Attribution
 
