@@ -5,6 +5,12 @@
 > produced each decision. They are worth keeping and worth reading, and they are
 > no longer where you look to see what is open.
 >
+> They are also **records of what was true when they were written**. Several
+> describe gaps that have since been filled — exit-record capture, replay by
+> date, machine-readable output — and they are left as they were rather than
+> quietly updated, because the argument is the point and an argument edited to
+> match the outcome is not one.
+>
 > `cairn board` for the current state, `cairn next` for what is ready, or
 > [ROADMAP.md](../../ROADMAP.md) rendered from the same files.
 >
