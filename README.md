@@ -909,11 +909,11 @@ poptop --report 2026-09-08   # a recorded day
 ```text
 period  03:00:00 to 10:50:00, 48 samples every 10m00s
 cpu     peak 99.0% at 09:40:00 (backup)
-        above 50% for 2h10m of 8h00m, worst run 74.0% from 06:20:00 (cc1plus)
+        above 50% for 2h10m of 8h00m, worst 30m00s run 74.0% from 06:20:00 (cc1plus)
 memory  peak 78.0% at 06:20:00 (cc1plus)
-        above 50% for 4h40m of 8h00m, worst run 78.0% from 06:20:00 (cc1plus)
+        above 50% for 4h40m of 8h00m, worst 30m00s run 78.0% from 06:20:00 (cc1plus)
 iowait  peak 61.0% at 09:40:00
-        above 50% for 10m00s of 8h00m, worst run 21.0% from 09:20:00
+        above 50% for 10m00s of 8h00m, worst 30m00s run 21.0% from 09:20:00
 ```
 
 Two things make this more than atopsar's version.
@@ -933,6 +933,17 @@ each answering its own question: the highest it reached and when, how long it
 spent above your `warn` threshold, and the worst five-minute run. A period
 shorter than that window reports no run at all rather than calling its whole
 length "the worst five minutes".
+
+**The run's window is stated because it is not always five minutes.** A run
+needs at least three samples to be a run rather than a pair, so on a log written
+every ten minutes it widens to thirty — which is why the example above says
+`worst 30m00s run`. Left at five it would have been one sample, and every report
+would have printed its peak twice under a second name.
+
+**A run never spans a hole.** Sliding a window over indices rather than over
+time would assert a five-minute run whose last sample was two hours after its
+first, on the same report whose second line says which stretches were not
+recorded.
 
 **Time above the threshold is counted in samples**, not by subtracting
 timestamps: a machine switched off for two hours between a busy sample and the

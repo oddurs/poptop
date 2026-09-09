@@ -92,6 +92,20 @@ pub struct Finding {
     pub peak: Option<Peak>,
     pub sustained: Sustained,
     pub threshold: f32,
+    /// The window the run was measured over, which is not always the one
+    /// asked for — see [`run_window`].
+    pub window: Duration,
+}
+
+/// The window a run is actually measured over.
+///
+/// The one asked for, unless the samples are too far apart to describe it. A
+/// run needs at least three samples to be a run rather than a pair, and at the
+/// shipped defaults — a ten-minute log against a five-minute window — there
+/// are not two. Widening is better than saying nothing, and the report prints
+/// the length it used so the widening is visible rather than assumed.
+pub fn run_window(asked: Duration, every: Duration) -> Duration {
+    asked.max(every.saturating_mul(3))
 }
 
 /// The highest value of `f`, and the process `blame` names at that moment.
@@ -178,15 +192,34 @@ pub fn worst_window(
         return None;
     }
     let n = (len.as_secs_f64() / every.as_secs_f64()).round() as usize;
-    let n = n.max(1);
+    // At least two samples, or this is not a run. `round` gave one for any
+    // spacing at or above the window length — and at the shipped defaults, a
+    // ten-minute log against a five-minute window, that made every report's
+    // "worst run" the single maximum sample, printing the peak line twice
+    // under a different name. A run shorter than one sample cannot be
+    // described by those samples, and saying nothing is the honest answer.
+    if n < 2 {
+        return None;
+    }
     // A period shorter than the window has no window in it. Reporting the
     // whole period as "the worst five minutes" of a two-minute recording would
     // be a mean wearing a sustained figure's name.
     if samples.len() < n {
         return None;
     }
+    let limit = crate::history::gap_limit(every);
     let mut best: Option<(SystemTime, f32)> = None;
     for w in samples.windows(n) {
+        // A window with a hole in it is not a run of `len`. `sustained_of`
+        // takes care never to credit a hole as time spent busy; sliding over
+        // indices here would have asserted a five-minute run whose last sample
+        // was two hours after its first, on the same report that says at the
+        // top which stretches were not recorded.
+        if w.windows(2)
+            .any(|p| p[1].at.duration_since(p[0].at).is_ok_and(|d| d >= limit))
+        {
+            continue;
+        }
         let vals: Vec<f32> = w.iter().filter_map(&f).filter(|v| v.is_finite()).collect();
         if vals.len() < n {
             // A window that is not fully measured is not a window. Averaging
@@ -255,7 +288,8 @@ pub fn render(samples: &[Sample], warn: f32, window: Duration, nominal: Duration
 
 /// Every figure a report covers, in the order "why was this slow" walks
 /// through — the same order the header's groups are in.
-fn findings(samples: &[Sample], span: &Span, warn: f32, window: Duration) -> Vec<Finding> {
+fn findings(samples: &[Sample], span: &Span, warn: f32, asked: Duration) -> Vec<Finding> {
+    let window = run_window(asked, span.every);
     let mem_pct = |s: &Sample| Some(s.mem.used_pct());
     let mut out = vec![
         Finding {
@@ -275,6 +309,7 @@ fn findings(samples: &[Sample], span: &Span, warn: f32, window: Duration) -> Vec
                 |s| top_by(s, |p| (p.cpu * 1000.0) as u64),
             ),
             threshold: warn,
+            window,
         },
         Finding {
             name: "memory",
@@ -284,6 +319,7 @@ fn findings(samples: &[Sample], span: &Span, warn: f32, window: Duration) -> Vec
                 top_by(s, |p| p.rss)
             }),
             threshold: warn,
+            window,
         },
     ];
     // Only where the platform reports them. A report is read by somebody who
@@ -307,6 +343,7 @@ fn findings(samples: &[Sample], span: &Span, warn: f32, window: Duration) -> Vec
                 |s| top_by(s, |p| p.io.map_or(0, |i| i.read + i.write)),
             ),
             threshold: warn,
+            window,
         });
     }
     if samples.iter().any(|s| s.pressure.is_some()) {
@@ -319,6 +356,7 @@ fn findings(samples: &[Sample], span: &Span, warn: f32, window: Duration) -> Vec
                 top_by(s, |p| u64::from(p.state == 'D'))
             }),
             threshold: warn,
+            window,
         });
     }
     out
@@ -328,8 +366,11 @@ fn findings(samples: &[Sample], span: &Span, warn: f32, window: Duration) -> Vec
 fn one(f: &Finding, span: &Span) -> String {
     let who = |w: &Option<Arc<str>>| match w {
         Some(n) => format!(" ({n})"),
-        // An em dash rather than a guess. A peak with nothing running that
-        // could account for it is itself worth seeing.
+        // Nothing at all, rather than a guess or a placeholder. A figure with
+        // no process that could account for it — `iowait` on a machine whose
+        // per-process IO could not be read — has nothing to name, and a `(—)`
+        // on the end of every such line would be punctuation pretending to be
+        // information.
         None => String::new(),
     };
     let peak = match &f.peak {
@@ -350,8 +391,13 @@ fn one(f: &Finding, span: &Span) -> String {
         format!("never above {:.0}{}", f.threshold, f.unit)
     } else {
         let win = match s.window {
+            // The window's actual length, not the one that was asked for. It
+            // is widened where the samples are too far apart to describe five
+            // minutes, and a line that said "worst run" without saying a run
+            // of what would be describing half an hour as five minutes.
             Some((at, mean)) => format!(
-                ", worst run {:.1}{} from {}",
+                ", worst {} run {:.1}{} from {}",
+                crate::ui::fmt_lag(f.window),
                 mean,
                 f.unit,
                 crate::log::clock_string(at)
@@ -379,6 +425,12 @@ mod tests {
 
     fn at(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    /// The instant of `s(n, ..)`, so a test can name one without repeating the
+    /// base offset and getting it wrong.
+    fn at_secs(n: u64) -> SystemTime {
+        at(1_800_000_000 + n)
     }
 
     /// A sample at second `n` with a given CPU total, and one process holding
@@ -556,6 +608,77 @@ mod tests {
         assert_eq!(span.gaps, 1);
         assert!(
             render(&day, 50.0, Duration::from_secs(2), Duration::from_secs(1)).contains("gaps")
+        );
+    }
+
+    #[test]
+    fn a_run_needs_more_than_one_sample_to_be_a_run() {
+        // `round` gave one sample for any spacing at or above the window, so
+        // at the shipped defaults — a ten-minute log against a five-minute
+        // window — every report's "worst run" was the single maximum sample,
+        // printing the peak line twice under a different name.
+        let day: Vec<Sample> = (0..20).map(|i| s(i * 600, 50.0 + i as f32, "x")).collect();
+        assert!(
+            worst_window(
+                &day,
+                Duration::from_secs(600),
+                Duration::from_secs(300),
+                |s| Some(s.cpu_total)
+            )
+            .is_none(),
+            "a ten-minute log described a five-minute run"
+        );
+
+        // And the window a report actually uses is widened rather than lost,
+        // with its real length printed — a line saying "worst run" without
+        // saying a run of *what* would call half an hour five minutes.
+        assert_eq!(
+            run_window(Duration::from_secs(300), Duration::from_secs(600)),
+            Duration::from_secs(1800)
+        );
+        assert_eq!(
+            run_window(Duration::from_secs(300), Duration::from_secs(1)),
+            Duration::from_secs(300)
+        );
+        let out = render(
+            &day,
+            50.0,
+            Duration::from_secs(300),
+            Duration::from_secs(600),
+        );
+        assert!(out.contains("worst 30m00s run"), "{out}");
+    }
+
+    #[test]
+    fn a_run_does_not_span_a_hole() {
+        // `sustained_of` takes care never to credit a hole as time spent busy.
+        // Sliding over indices here asserted a three-second run whose last
+        // sample was two hours after its first — on the same report that says
+        // at the top which stretches were not recorded.
+        let mut day: Vec<Sample> = (0..3).map(|i| s(i, 95.0, "x")).collect();
+        day.extend((0..3).map(|i| s(7_200 + i, 95.0, "x")));
+        // Quieter samples on each side of the hole, so a window that refuses
+        // to cross it still has somewhere honest to land.
+        day.insert(3, s(3, 10.0, "x"));
+
+        let every = Duration::from_secs(1);
+        let run = worst_window(&day, every, Duration::from_secs(3), |s| Some(s.cpu_total));
+        let (at, mean) = run.expect("there are three adjacent busy samples");
+        assert_eq!(mean, 95.0);
+        assert_eq!(
+            at,
+            at_secs(0),
+            "the run started across the hole rather than before it"
+        );
+
+        // With nothing three-adjacent anywhere, there is no run at all.
+        let sparse = [s(0, 95.0, "x"), s(7_200, 95.0, "x"), s(14_400, 95.0, "x")];
+        assert!(
+            worst_window(&sparse, every, Duration::from_secs(3), |s| Some(
+                s.cpu_total
+            ))
+            .is_none(),
+            "a run was found across two holes"
         );
     }
 
