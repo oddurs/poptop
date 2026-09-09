@@ -139,6 +139,15 @@ HEADER:
 KEYS:
     q               quit
     Left/Right      scrub through history (Shift for 10 at a time)
+    b               jump to a moment, as atop's -b does. Takes a distance or
+                    a time: `-2h`,
+                    `03:00`, `2026-09-08 03:00`. Local time, and a relative
+                    jump is measured from the end of what is retained — in a
+                    day opened with --read that is not today.
+
+                    Landing where nothing was recorded says so, with how far
+                    away the nearest sample is, rather than showing it as
+                    though it were the moment asked for.
     + / -           zoom the timeline in and out
     Space           pause on the current sample, or resume live
     Home/End        jump to oldest / live
@@ -1116,6 +1125,30 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         }
         return;
     }
+    if app.editing_jump {
+        match code {
+            // Enter acts, Esc abandons. Unlike the filter, which applies as it
+            // is typed: a filter narrows a table you are already looking at,
+            // and a jump moves the cursor — doing that on every keystroke
+            // would walk the reader through `0`, `03`, `03:0` before arriving.
+            KeyCode::Enter => {
+                app.editing_jump = false;
+                app.jump_to(std::time::SystemTime::now());
+            }
+            KeyCode::Esc => {
+                app.editing_jump = false;
+                app.jump_note = None;
+            }
+            KeyCode::Backspace => {
+                app.jump.pop();
+            }
+            KeyCode::Char(c) => {
+                app.jump.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
 
     match code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
@@ -1227,6 +1260,15 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         KeyCode::Char('/') => {
             app.editing_filter = true;
             app.filter.clear();
+        }
+        // `b` for the beginning of a moment, which is atop's `-b`. Not `j`:
+        // that is already "select the next process", the vim binding beside
+        // `k`, and a key that quietly stopped moving the selection would be a
+        // worse trade than an unfamiliar letter.
+        KeyCode::Char('b') => {
+            app.editing_jump = true;
+            app.jump.clear();
+            app.jump_note = None;
         }
         _ => {}
     }

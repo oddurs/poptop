@@ -88,6 +88,7 @@ struct Tm {
 
 unsafe extern "C" {
     fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
+    fn mktime(tm: *mut Tm) -> i64;
 }
 
 /// The local civil date of an instant.
@@ -109,6 +110,118 @@ pub fn date_of(at: SystemTime) -> Option<Date> {
         month: tm.mon as u32 + 1,
         day: tm.mday as u32,
     })
+}
+
+/// A moment somebody typed, resolved against the moment they typed it.
+///
+/// Two forms, because both are how the question is asked. An incident has a
+/// time — `03:00` — and it also has a distance — `-2h`. Scrubbing to either by
+/// pressing the left arrow six hundred times is not a workflow.
+///
+/// - `-2h`, `-30m`, `-90s`, `+5m` — relative to `now`.
+/// - `03:00`, `03:00:15` — today, in local time.
+/// - `2026-09-08 03:00` — a date and a time, in local time.
+///
+/// Local, not UTC, for the reason the daily file is: `03:00` means 03:00 where
+/// the machine is. `Err` carries what to say, because a jump box that rejects
+/// what you typed without saying which forms it takes is a box you type into
+/// twice.
+pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
+    const FORMS: &str = "try -2h, 03:00, or 2026-09-08 03:00";
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(format!("nothing to jump to — {FORMS}"));
+    }
+    if let Some(sign) = text.chars().next().filter(|c| *c == '-' || *c == '+') {
+        let span =
+            parse_span(&text[1..]).ok_or_else(|| format!("`{text}` is not a span — {FORMS}"))?;
+        return if sign == '-' {
+            now.checked_sub(span)
+                .ok_or_else(|| format!("{text} is before the epoch"))
+        } else {
+            now.checked_add(span)
+                .ok_or_else(|| format!("{text} is past the end of time"))
+        };
+    }
+
+    // An optional date, then a time. Split on whitespace rather than guessing
+    // from the shape: `2026-09-08` alone is a date with no time, which is
+    // midnight, and `03:00` alone is a time today.
+    let (date, clock) = match text.split_once(char::is_whitespace) {
+        Some((d, c)) => (Some(d), c.trim()),
+        None if text.contains('-') => (Some(text), "00:00"),
+        None => (None, text),
+    };
+    let date = match date {
+        Some(d) => Date::parse(d).ok_or_else(|| format!("`{d}` is not a date — {FORMS}"))?,
+        None => date_of(now).ok_or("this machine's clock is before the epoch")?,
+    };
+    let (h, m, s) =
+        parse_clock(clock).ok_or_else(|| format!("`{clock}` is not a time — {FORMS}"))?;
+    at_local(date, h, m, s).ok_or_else(|| format!("`{text}` is not a moment on this machine"))
+}
+
+/// `2h`, `30m`, `90s`, `1h30m` is not accepted — one unit, deliberately.
+///
+/// A span language that takes `1h30m` has to decide what `1h30` means, and the
+/// jump box is one line with no room to explain. Two jumps are not a hardship.
+fn parse_span(text: &str) -> Option<std::time::Duration> {
+    let (digits, scale) = match text.as_bytes().last()? {
+        b's' => (&text[..text.len() - 1], 1.0),
+        b'm' => (&text[..text.len() - 1], 60.0),
+        b'h' => (&text[..text.len() - 1], 3600.0),
+        b'd' => (&text[..text.len() - 1], 86_400.0),
+        _ => (text, 1.0),
+    };
+    let n: f64 = digits.trim().parse().ok()?;
+    // A year, which is past anything a buffer or a day's log can hold and far
+    // short of what `from_secs_f64` panics on.
+    (n.is_finite() && (0.0..=366.0 * 86_400.0).contains(&n))
+        .then(|| std::time::Duration::from_secs_f64(n * scale))
+}
+
+/// `03:00` or `03:00:15`, as hours, minutes and seconds.
+fn parse_clock(text: &str) -> Option<(i32, i32, i32)> {
+    let mut parts = text.split(':');
+    let h: i32 = parts.next()?.trim().parse().ok()?;
+    let m: i32 = parts.next()?.trim().parse().ok()?;
+    let s: i32 = match parts.next() {
+        Some(s) => s.trim().parse().ok()?,
+        None => 0,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    // 24:00 is a real way to write the end of a day, and the C library
+    // normalises it. Anything past that is a typo rather than a convention.
+    ((0..=24).contains(&h) && (0..60).contains(&m) && (0..=60).contains(&s)).then_some((h, m, s))
+}
+
+/// A local wall-clock moment as an instant.
+///
+/// Through `mktime`, which is the only thing on either platform that knows
+/// what the offset was on *that* date. Computing it as midnight plus seconds
+/// would be an hour out for half the year, and would be an hour out in the
+/// other direction on the two nights a year somebody is most likely to be
+/// reading a log.
+fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<SystemTime> {
+    let mut tm = Tm {
+        sec,
+        min,
+        hour,
+        mday: date.day as i32,
+        mon: date.month as i32 - 1,
+        year: date.year - 1900,
+        // "Work it out": whether summer time was in force on that date, which
+        // is the whole reason this goes through the C library.
+        isdst: -1,
+        ..Tm::default()
+    };
+    // SAFETY: `mktime` reads and normalises the caller's `struct tm`, which is
+    // a stack local of the right layout. It is not reentrant only with respect
+    // to the timezone, which poptop never sets.
+    let t = unsafe { mktime(&mut tm) };
+    (t >= 0).then(|| UNIX_EPOCH + std::time::Duration::from_secs(t as u64))
 }
 
 /// Where the daily files live.
@@ -754,6 +867,151 @@ mod tests {
             "a reboot inside a recorded day passed unmentioned: {notes:?}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_moment_is_typed_as_a_distance_or_as_a_time() {
+        // Both, because both are how the question is asked: an incident has a
+        // time and it also has a distance.
+        let now = at(1_800_003_600);
+        let secs = |r: Result<SystemTime, String>| {
+            r.unwrap().duration_since(UNIX_EPOCH).unwrap().as_secs()
+        };
+
+        assert_eq!(secs(parse_when("-1h", now)), 1_800_000_000);
+        assert_eq!(secs(parse_when("-30m", now)), 1_800_001_800);
+        assert_eq!(secs(parse_when("-90s", now)), 1_800_003_510);
+        assert_eq!(secs(parse_when("-2d", now)), 1_800_003_600 - 172_800);
+        assert_eq!(secs(parse_when("+5m", now)), 1_800_003_900);
+        // A bare number is seconds, as everywhere else in poptop.
+        assert_eq!(secs(parse_when("-45", now)), 1_800_003_555);
+
+        // A clock time is today, in local time — whatever local is here.
+        let today = date_of(now).unwrap();
+        assert_eq!(
+            parse_when("03:00", now).unwrap(),
+            at_local(today, 3, 0, 0).unwrap()
+        );
+        assert_eq!(
+            parse_when("03:00:15", now).unwrap(),
+            at_local(today, 3, 0, 15).unwrap()
+        );
+        // With a date, that date.
+        let other = Date {
+            year: 2026,
+            month: 3,
+            day: 4,
+        };
+        assert_eq!(
+            parse_when("2026-03-04 03:00", now).unwrap(),
+            at_local(other, 3, 0, 0).unwrap()
+        );
+        // A date alone is its midnight, which is a moment somebody may well
+        // mean — "the start of that day".
+        assert_eq!(
+            parse_when("2026-03-04", now).unwrap(),
+            at_local(other, 0, 0, 0).unwrap()
+        );
+
+        // Local, not UTC, and through the C library: the offset on a date is
+        // not a constant, and the two nights a year it changes are exactly the
+        // ones somebody is most likely to be reading a log.
+        let summer = at_local(
+            Date {
+                year: 2026,
+                month: 7,
+                day: 1,
+            },
+            12,
+            0,
+            0,
+        )
+        .unwrap();
+        let winter = at_local(
+            Date {
+                year: 2026,
+                month: 1,
+                day: 1,
+            },
+            12,
+            0,
+            0,
+        )
+        .unwrap();
+        let noon_to_noon = winter.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+            - summer.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        // Both are local noon, so the gap is a whole number of days give or
+        // take one hour of summer time — never an arbitrary offset.
+        let slack = (noon_to_noon.rem_euclid(86_400)).min(86_400 - noon_to_noon.rem_euclid(86_400));
+        assert!(
+            slack == 0 || slack == 3_600,
+            "local noon was not local noon: {noon_to_noon}s apart"
+        );
+    }
+
+    /// The local wall clock at an instant, for the round trip below.
+    fn local_clock(at: SystemTime) -> (i32, i32, i32) {
+        let secs = at.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let mut tm = Tm::default();
+        // SAFETY: as `date_of`. A stack local of the right layout, and the
+        // reentrant form takes no lock and returns no shared buffer.
+        assert!(!unsafe { localtime_r(&secs, &mut tm) }.is_null());
+        (tm.hour, tm.min, tm.sec)
+    }
+
+    #[test]
+    fn a_typed_time_is_the_time_the_clock_showed() {
+        // `03:00` in July and `03:00` in January are different offsets from
+        // UTC wherever summer time is observed, and `mktime` is the only thing
+        // on either platform that knows which. Asserted as a round trip rather
+        // than against a fixed offset, because the answer depends on the zone
+        // this happens to run in.
+        //
+        // On a machine set to UTC — CI is — both branches agree and this
+        // cannot fail. It is still the property, and it holds anywhere a zone
+        // with summer time is configured.
+        for month in 1..=12 {
+            let d = Date {
+                year: 2026,
+                month,
+                day: 15,
+            };
+            let at = at_local(d, 3, 0, 0).expect("a real moment");
+            assert_eq!(
+                local_clock(at),
+                (3, 0, 0),
+                "03:00 in month {month} came back as another time"
+            );
+            assert_eq!(date_of(at), Some(d), "03:00 landed on another day");
+        }
+    }
+
+    #[test]
+    fn a_jump_box_that_rejects_says_what_it_takes() {
+        // A one-line box has nowhere else to teach its forms, and one that
+        // rejects what you typed without saying which forms it accepts is one
+        // you type into twice.
+        let now = at(1_800_003_600);
+        for bad in [
+            "", "  ", "tuesday", "3pm", "-2y", "25:00", "03:60", "1:2:3:4", "-", "03",
+        ] {
+            let why = parse_when(bad, now).expect_err(&format!("`{bad}` was accepted"));
+            assert!(
+                why.contains("-2h") || why.contains("epoch"),
+                "`{bad}` was rejected without saying what is accepted: {why}"
+            );
+        }
+        // …and the forms that do work are not rejected.
+        for good in [
+            "-2h",
+            "+5m",
+            "03:00",
+            "24:00",
+            "2026-09-08 03:00",
+            "2026-09-08",
+        ] {
+            assert!(parse_when(good, now).is_ok(), "`{good}` was rejected");
+        }
     }
 
     #[test]

@@ -2,12 +2,12 @@
 id: 73
 title: There is no way to open yesterday
 type: feature
-status: backlog
+status: done
 milestone: v2.2
 depends_on:
 - 72
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 priority: p0
 area: ui
 ---
@@ -48,8 +48,8 @@ times is not a workflow.
 
 ## Acceptance criteria
 
-- [ ] A recorded day can be opened by date and scrubbed like the live buffer
-- [ ] Jump to a timestamp, absolute or relative
-- [ ] Live recording continues while reviewing history
-- [ ] Landing in a gap says so rather than showing the nearest sample as if it
+- [x] A recorded day can be opened by date and scrubbed like the live buffer
+- [x] Jump to a timestamp, absolute or relative
+- [x] Live recording continues while reviewing history
+- [x] Landing in a gap says so rather than showing the nearest sample as if it
       were the one asked for
