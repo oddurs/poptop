@@ -2,10 +2,10 @@
 id: 76
 title: Nothing can be done to a process, only watched
 type: feature
-status: backlog
+status: done
 milestone: v2.2
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 priority: p3
 area: ui
 ---
@@ -43,6 +43,6 @@ the pid gets mistyped.
 
 ## Acceptance criteria
 
-- [ ] Decided in writing, either way, with the reasoning
-- [ ] If built: the process is named, not just numbered, in the confirmation
-- [ ] If declined: the README says so and why, rather than listing it as missing
+- [x] Decided in writing, either way, with the reasoning
+- [x] If built: the process is named, not just numbered, in the confirmation
+- [x] If declined: the README says so and why, rather than listing it as missing

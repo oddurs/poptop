@@ -80,6 +80,15 @@ pub struct Settings {
     /// laptop does at the same settings — a rule in days alone is a different
     /// rule on every machine.
     pub log_bytes: u64,
+    /// Whether poptop may send a signal to a process.
+    ///
+    /// Off unless asked for, once, and that is the positioning rather than
+    /// caution: a monitor that cannot change the machine is a monitor that
+    /// cannot break it, and poptop's entire privileged surface is otherwise
+    /// reading files. Somebody who wants the one-gesture workflow every other
+    /// monitor has says so, and everybody else keeps a tool they can hand to
+    /// anyone without a thought about what a mis-key does.
+    pub signals: bool,
 }
 
 /// How often a sample reaches the log, unless asked otherwise.
@@ -118,6 +127,7 @@ impl Settings {
             log_interval: DEFAULT_LOG_INTERVAL,
             log_days: DEFAULT_LOG_DAYS,
             log_bytes: DEFAULT_LOG_BYTES,
+            signals: false,
         }
     }
 
@@ -167,6 +177,7 @@ impl Settings {
             log_interval: DEFAULT_LOG_INTERVAL,
             log_days: DEFAULT_LOG_DAYS,
             log_bytes: DEFAULT_LOG_BYTES,
+            signals: false,
         }
     }
 }
@@ -270,6 +281,14 @@ pub const KEYS: &[(&str, Apply)] = &[
     }),
     ("log-bytes", |s, v| {
         s.log_bytes = bytes(v)?;
+        Ok(())
+    }),
+    ("signals", |s, v| {
+        s.signals = match v {
+            "on" | "true" | "yes" => true,
+            "off" | "false" | "no" => false,
+            _ => return Err("on or off"),
+        };
         Ok(())
     }),
     ("theme", |s, v| {

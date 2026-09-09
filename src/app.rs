@@ -350,6 +350,12 @@ pub struct App {
     /// 03:00" is the whole point of asking, and a message that vanished with
     /// the prompt would be one nobody read.
     pub jump_note: Option<String>,
+    /// Whether poptop may send a signal at all. See `config::Settings::signals`.
+    pub signals: bool,
+    /// A signal asked for and not yet confirmed.
+    pub pending: Option<crate::signal::Pending>,
+    /// What the last signal did, or why it did not.
+    pub signal_note: Option<String>,
     pub should_quit: bool,
     pub tree: bool,
     /// Whether the IO columns are shown.
@@ -480,6 +486,9 @@ impl App {
             replaying: false,
             jump: String::new(),
             jump_note: None,
+            signals: false,
+            pending: None,
+            signal_note: None,
             should_quit: false,
             tree: false,
             // On by default. The header may have just told the user their
@@ -591,6 +600,84 @@ impl App {
                 )),
             },
         };
+    }
+
+    /// Ask to signal the selected process, if signalling is allowed at all.
+    ///
+    /// Opens a question rather than acting: the number is the part that gets
+    /// misread, and poptop knows the name and the command line, so it can name
+    /// what it is about to stop.
+    pub fn ask_to_signal(&mut self, signal: crate::signal::Signal) {
+        self.signal_note = None;
+        if !self.signals {
+            self.signal_note =
+                Some("signals are off — `signals = on` in the config, or --signals=on".into());
+            return;
+        }
+        // Refused here as well as at the moment of sending, so the reader is
+        // told before typing `y` rather than after: this table is history, and
+        // the pid on a row from four minutes ago may belong to something else.
+        if !self.history.is_live() {
+            let dummy = crate::signal::Pending {
+                pid: 0,
+                started: None,
+                name: std::sync::Arc::from(""),
+                cmd: None,
+                signal,
+            };
+            self.signal_note = Some(crate::signal::Refused::Scrubbing.why(&dummy));
+            return;
+        }
+        let Some(p) = self.selected_process() else {
+            self.signal_note = Some("nothing selected — the arrow keys pick a process".into());
+            return;
+        };
+        self.pending = Some(crate::signal::Pending::new(&p, signal));
+    }
+
+    /// The process under the cursor in the sample under the cursor.
+    fn selected_process(&self) -> Option<ProcSample> {
+        // A *process*, not a group. `g` folds rows together and a folded row
+        // is several processes; signalling "the one under the cursor" there
+        // would mean picking one of them, and picking which is not a decision
+        // a confirmation could describe.
+        let Watched::Process { pid, started, .. } = self.selected.as_ref()? else {
+            return None;
+        };
+        let now = self.history.current()?;
+        now.procs
+            .iter()
+            .find(|p| p.pid == *pid && p.started == *started)
+            .cloned()
+    }
+
+    /// Answer the question. Anything but `y` cancels.
+    ///
+    /// Checked against the *newest* sample rather than the one on screen, and
+    /// only ever while live: the identity poptop uses everywhere is `(pid,
+    /// started)`, and it is what stops a recycled pid being signalled by
+    /// number.
+    pub fn confirm_signal(&mut self, yes: bool) {
+        let Some(p) = self.pending.take() else {
+            return;
+        };
+        if !yes {
+            self.signal_note = Some(format!("nothing sent to {}", p.name));
+            return;
+        }
+        let live = self.history.newest();
+        self.signal_note = Some(
+            match crate::signal::check(&p, live, !self.history.is_live()) {
+                Err(why) => why.why(&p),
+                Ok(()) => match crate::signal::send(&p) {
+                    // The operating system's own words. `Operation not permitted`
+                    // for somebody else's process is the answer, and dressing it
+                    // up would hide which of several reasons it was.
+                    Err(e) => format!("could not signal {} (pid {}): {e}", p.name, p.pid),
+                    Ok(()) => format!("sent {} to {} (pid {})", p.signal.name(), p.name, p.pid),
+                },
+            },
+        );
     }
 
     /// Show or hide the IO columns. Showing them starts collection; hiding them

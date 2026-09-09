@@ -940,6 +940,165 @@ fn the_jump_box_and_its_answer_reach_the_footer() {
     );
 }
 
+/// An app with one process selected and signalling allowed.
+fn ready_to_signal() -> App {
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(4823, "postgres", 20.0, 1 << 20)];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.signals = true;
+    app.select_delta(1);
+    app
+}
+
+#[test]
+#[ignore]
+fn show_signal_prompt() {
+    let mut app = ready_to_signal();
+    let foot = |a: &App| rows(a, 120, 20).last().unwrap().clone();
+    println!("closed   |{}|", foot(&app));
+    handle_key_for_test(&mut app, KeyCode::Char('x'));
+    println!("asking   |{}|", foot(&app));
+    handle_key_for_test(&mut app, KeyCode::Char('n'));
+    println!("cancelled|{}|", foot(&app));
+    let mut off = ready_to_signal();
+    off.signals = false;
+    handle_key_for_test(&mut off, KeyCode::Char('x'));
+    println!("off      |{}|", foot(&off));
+    let mut back = ready_to_signal();
+    for _ in 0..5 {
+        back.push(sample(10.0));
+    }
+    back.history.scrub(-3);
+    handle_key_for_test(&mut back, KeyCode::Char('x'));
+    println!("scrubbed |{}|", foot(&back));
+}
+
+#[test]
+fn a_signal_asks_first_and_names_the_process() {
+    let mut app = ready_to_signal();
+    let footer = |a: &App| rows(a, 160, 30).last().unwrap().clone();
+
+    handle_key_for_test(&mut app, KeyCode::Char('x'));
+    let q = footer(&app);
+    assert!(q.contains("postgres"), "the question did not name it: {q}");
+    assert!(q.contains("4823"), "{q}");
+    assert!(q.contains("TERM"), "{q}");
+    assert!(app.pending.is_some());
+
+    // Anything but `y` cancels, and says so.
+    handle_key_for_test(&mut app, KeyCode::Char('n'));
+    assert!(app.pending.is_none());
+    assert!(footer(&app).contains("nothing sent"), "{}", footer(&app));
+
+    // `X` asks the harder question.
+    handle_key_for_test(&mut app, KeyCode::Char('X'));
+    assert!(footer(&app).contains("KILL"), "{}", footer(&app));
+}
+
+#[test]
+fn a_confirmation_takes_every_key() {
+    // A question that let other keys through is one somebody dismisses by
+    // reflex while meaning to scroll — and here the reflex would be a signal.
+    for key in [
+        KeyCode::Down,
+        KeyCode::Left,
+        KeyCode::Char('s'),
+        KeyCode::Esc,
+    ] {
+        let mut app = ready_to_signal();
+        handle_key_for_test(&mut app, KeyCode::Char('x'));
+        let before = app.sort;
+        handle_key_for_test(&mut app, key);
+        assert!(app.pending.is_none(), "{key:?} left the question open");
+        assert_eq!(app.sort, before, "{key:?} acted while a question was open");
+        assert!(
+            app.signal_note
+                .as_deref()
+                .is_some_and(|n| n.contains("nothing sent")),
+            "{key:?} dismissed the question silently"
+        );
+    }
+}
+
+#[test]
+fn signals_are_off_until_asked_for_and_the_key_says_so() {
+    // The positioning, enforced: a monitor that cannot change the machine is a
+    // monitor that cannot break it, and poptop reads files and nothing else
+    // until somebody says otherwise.
+    let mut app = ready_to_signal();
+    app.signals = false;
+    handle_key_for_test(&mut app, KeyCode::Char('x'));
+    assert!(app.pending.is_none(), "a signal was offered while off");
+    let said = app.signal_note.clone().unwrap_or_default();
+    assert!(said.contains("signals = on"), "{said}");
+    // Written as one line. A multi-line literal whose continuation backslash
+    // rustfmt has eaten reaches the reader with a fourteen-space hole in it,
+    // which has happened twice in this project already.
+    assert!(
+        !said.contains("  "),
+        "a run of spaces in a message: {said:?}"
+    );
+    assert!(
+        rows(&app, 160, 30)
+            .last()
+            .unwrap()
+            .contains("signals are off"),
+        "the key did nothing and said nothing"
+    );
+}
+
+#[test]
+fn nothing_is_offered_while_scrubbing() {
+    // Said before the reader types `y` rather than after. This table is
+    // history, and the pid on a row from four minutes ago may belong to
+    // something else now.
+    let mut app = ready_to_signal();
+    for _ in 0..5 {
+        app.push(sample(10.0));
+    }
+    app.history.scrub(-3);
+    handle_key_for_test(&mut app, KeyCode::Char('x'));
+    assert!(app.pending.is_none(), "a signal was offered from history");
+    let said = app.signal_note.clone().unwrap_or_default();
+    assert!(said.contains("scrubbing"), "{said}");
+    assert!(said.contains("Space or End"), "{said}");
+    assert!(
+        !said.contains("  "),
+        "a run of spaces in a message: {said:?}"
+    );
+}
+
+#[test]
+fn a_folded_row_is_not_one_process_to_signal() {
+    // `g` folds several processes into a row. Signalling "the one under the
+    // cursor" there means picking one of them, and which is not a decision a
+    // confirmation could describe.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        proc_named(10, "worker", 5.0, 1 << 20),
+        proc_named(11, "worker", 5.0, 1 << 20),
+    ];
+    app.push(s);
+    app.signals = true;
+    app.group = crate::app::Grouping::Name;
+    app.select_delta(1);
+    handle_key_for_test(&mut app, KeyCode::Char('x'));
+    assert!(
+        app.pending.is_none(),
+        "a folded row was offered as a process"
+    );
+    assert!(
+        app.signal_note
+            .as_deref()
+            .is_some_and(|n| n.contains("nothing selected")),
+        "{:?}",
+        app.signal_note
+    );
+}
+
 #[test]
 fn renders_without_panicking() {
     let mut app = App::new(60);

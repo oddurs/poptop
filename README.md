@@ -117,6 +117,7 @@ cargo build --release
 | `q` | quit |
 | `←` / `→` | scrub through history (hold `Shift` for ten at a time) |
 | `b` | jump to a moment: `-2h`, `03:00`, `2026-09-08 03:00` (atop's `-b`) |
+| `x` / `X` | send `TERM` / `KILL` to the selected process (needs `signals = on`) |
 | `+` / `-` | zoom the timeline in and out |
 | `Space` | pause on the current sample, or resume live |
 | `Home` / `End` | jump to oldest / live |
@@ -893,6 +894,55 @@ the same call `ps` uses for `lstart`, and the figure is 0 of 623.
 Two poptop windows with `store = on` are fine — each writes through its own
 temporary file — but the second to exit replaces the first's history rather
 than merging it. Merging two buffers is a different feature.
+
+### Doing something about it
+
+Every other monitor can kill a process. poptop could not, and the argument for
+leaving it that way was a real one: **a monitor that cannot change the machine
+is a monitor that cannot break it.** poptop's entire privileged surface is
+otherwise reading files, and that is worth something — it can be handed to
+anyone, on anything, without a thought about what a mis-key does.
+
+So the property is kept. `x` and `X` do nothing until you say otherwise, once:
+
+```ini
+signals = on
+```
+
+The reason for building it at all is that the alternative is not "nothing
+happens". It is somebody reading a pid off one screen and typing it into another
+terminal, which is exactly where a pid gets mistyped — and by the time it is
+typed, the number may belong to something else. poptop knows the name and the
+command line, so the question names what it is about to stop:
+
+```text
+ send TERM to postgres — /usr/local/pgsql/bin/postgres -D /var/db (pid 4823)?  y to confirm, anything else cancels
+```
+
+`x` sends `TERM`, `X` sends `KILL`, and there is no third option. A picker of
+thirty-one signals is a list of ways to get it wrong, and anybody who needs
+`SIGUSR1` is already in a shell.
+
+**Two rules poptop can offer and the others cannot.** Every other monitor's
+process table is the present. poptop's may be four minutes old, which is a
+hazard none of them have — and the identity poptop already uses everywhere,
+`(pid, start time)`, is exactly what fixes it:
+
+- **Nothing is sent while scrubbing.** That table is history. The key says so
+  and says how to get back to one it will act on.
+- **The pair is rechecked against the newest sample as the signal is sent**, not
+  against the row you selected. A process that has exited is named as gone; a
+  pid the kernel has since handed to something else is refused *by name* —
+  `pid 4823 is sshd now, not postgres — nothing was sent`.
+
+A process whose start time the platform would not report is never signalled at
+all, because without it a recycled pid cannot be told from the one you picked.
+Nor is a folded row (`g`): that is several processes, and which of them to stop
+is not a decision a confirmation could describe.
+
+Failures are the operating system's own words. `Operation not permitted` for
+somebody else's process is the answer, and dressing it up would only hide which
+of the several reasons it was.
 
 ### What happened while you were asleep
 
@@ -1990,7 +2040,7 @@ throughput, clock-ceiling reporting, configurable intervals, persisting history
 across restarts (`store`), themes with colour-vision validation, and `--once`.
 
 Not there yet: per-process network attribution, which needs `/proc/net` inode
-matching or eBPF and is its own project; killing or renicing processes; mouse
+matching or eBPF and is its own project; renicing processes; mouse
 support; and capturing processes that live and die entirely between two samples,
 where the `taskstats` exit-record path cannot be verified in the environment
 available here. Registering as an exit listener returns `EINVAL` while per-pid
