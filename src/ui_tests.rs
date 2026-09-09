@@ -8,6 +8,8 @@ use crate::app::App;
 use crate::sample::{MemStat, ProcSample, Sample, ThreadSample};
 use crate::theme::{Palette, Theme, Tier};
 use crate::ui;
+use crate::{handle_key_for_test, handle_key_with_mods_for_test};
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -656,6 +658,286 @@ fn a_log_that_stopped_says_so_on_the_panel_and_not_only_at_exit() {
     // And it goes when the reason does.
     app.log_note = None;
     assert!(!rows(&app, 160, 30).iter().any(|r| r.contains("size limit")));
+}
+
+#[test]
+#[ignore]
+fn show_jump_box() {
+    let mut app = App::new(600);
+    for i in (0..60).rev() {
+        app.history.push(sample_at(5.0, 660 + i));
+    }
+    for i in (0..60).rev() {
+        app.history.push(sample_at(90.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let now = std::time::SystemTime::now();
+    let foot = |a: &App| rows(a, 120, 20).last().unwrap().clone();
+
+    println!("closed  |{}|", foot(&app));
+    app.editing_jump = true;
+    app.jump.push_str("03:0");
+    for w in [160u16, 100, 80, 60, 44] {
+        println!("open {w:<4}|{}|", rows(&app, w, 20).last().unwrap());
+    }
+    app.editing_jump = false;
+    for what in ["-30s", "-5m", "-2d", "+5m", "tuesday", "25:00"] {
+        app.jump.clear();
+        app.jump.push_str(what);
+        app.jump_to(now);
+        println!("{what:<8}|{}|", foot(&app));
+    }
+}
+
+#[test]
+fn the_answer_to_a_jump_retires_when_the_reader_moves_on() {
+    // A sentence describing a moment the reader has scrubbed away from is
+    // worse than no sentence, and it kept the key hints hidden for the rest of
+    // the run.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.history.push(sample_at(5.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let footer = |a: &App| rows(a, 160, 30).last().unwrap().clone();
+
+    app.jump_note = Some("nothing recorded at 03:00 — nearest sample is 4m20s away".into());
+    assert!(footer(&app).contains("nothing recorded"));
+
+    // Any key that is not the jump key retires it.
+    for key in [
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Char(' '),
+        KeyCode::Down,
+        KeyCode::Char('s'),
+    ] {
+        app.jump_note = Some("nothing recorded at 03:00".into());
+        handle_key_for_test(&mut app, key);
+        assert_eq!(
+            app.jump_note, None,
+            "{key:?} left the last jump's answer on screen"
+        );
+    }
+    assert!(footer(&app).contains("b jump"), "the hints never came back");
+}
+
+#[test]
+fn a_modal_box_does_not_swallow_the_only_way_out() {
+    // `Ctrl-C` is the only quit-on-interrupt path there is: poptop installs no
+    // SIGINT handler, and raw mode means the terminal will not deliver one. A
+    // box that took it as a literal `c` left the reflexive escape from a
+    // full-screen program doing nothing at all.
+    for open in ["filter", "jump"] {
+        let mut app = App::new(600);
+        app.push(sample(5.0));
+        match open {
+            "filter" => app.editing_filter = true,
+            _ => app.editing_jump = true,
+        }
+        handle_key_with_mods_for_test(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.should_quit, "Ctrl-C in the {open} box did not quit");
+        assert!(
+            !app.filter.contains('c') && !app.jump.contains('c'),
+            "Ctrl-C in the {open} box was typed into it"
+        );
+    }
+}
+
+#[test]
+fn the_jump_box_gives_up_its_hint_rather_than_clipping() {
+    // The forms are what the box is for. A fixed tail is seventy-six columns
+    // before a single character is typed, so on an eighty-column terminal it
+    // clipped to `Esc to c` after four keystrokes — the box stopping saying
+    // what it takes exactly where it has to.
+    let mut app = App::new(600);
+    app.push(sample(5.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.editing_jump = true;
+    app.jump.push_str("2026-09-08 03:00");
+
+    for w in [40u16, 60, 80, 100, 120, 160] {
+        let footer = rows(&app, w, 20).last().unwrap().clone();
+        let drawn = footer.trim_end();
+        assert!(
+            drawn.chars().count() <= w as usize,
+            "width {w} overflowed: {drawn}"
+        );
+        assert!(
+            drawn.contains("2026-09-08 03:00"),
+            "width {w} clipped what was typed: {drawn}"
+        );
+        // Whatever hint survives is a whole one, never half of one.
+        for cut in ["(Enter", "Esc to"] {
+            assert_eq!(
+                drawn.contains(cut),
+                drawn.contains("(Enter to jump, Esc to cancel)"),
+                "width {w} drew half a hint: {drawn}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_jump_lands_where_it_says_it_landed() {
+    // The whole point of asking "was anything recorded at 03:00" is the
+    // answer. poptop draws seams for intervals it did not observe; jumping
+    // into one and showing the nearest sample as though it were the moment
+    // asked for is the same lie the seam exists to prevent, with the reader's
+    // own question attached to it.
+    let mut app = App::new(600);
+    // A minute of samples, then a ten-minute hole, then another minute.
+    for i in (0..60).rev() {
+        app.history.push(sample_at(5.0, 660 + i));
+    }
+    for i in (0..60).rev() {
+        app.history.push(sample_at(90.0, i));
+    }
+    let now = std::time::SystemTime::now();
+
+    // A moment that is in the buffer: no note at all, and the cursor moves.
+    app.jump.clear();
+    app.jump.push_str("-30s");
+    app.jump_to(now);
+    assert_eq!(app.jump_note, None, "a jump that landed said something");
+    assert!(!app.history.is_live(), "a jump into history stayed live");
+    let landed = app.history.current().unwrap().cpu_total;
+    assert_eq!(landed, 90.0);
+
+    // A moment inside the hole: said, with how far away the nearest is.
+    app.jump.clear();
+    app.jump.push_str("-5m");
+    app.jump_to(now);
+    let note = app
+        .jump_note
+        .clone()
+        .expect("landing in a gap said nothing");
+    assert!(note.contains("nothing recorded"), "{note}");
+    assert!(
+        note.contains("-5m"),
+        "the note does not repeat what was asked: {note}"
+    );
+
+    // A moment before anything retained: also a miss, not the oldest sample
+    // presented as the answer.
+    app.jump.clear();
+    app.jump.push_str("-2d");
+    app.jump_to(now);
+    assert!(
+        app.jump_note
+            .as_deref()
+            .is_some_and(|n| n.contains("nothing recorded")),
+        "a moment before the buffer starts was answered with its oldest sample"
+    );
+
+    // A moment in the future is a miss like any other. Treating every future
+    // moment as "keep up" answered the likeliest typo there is — a live
+    // session at 10:00, the incident was last night, the user types `23:00` —
+    // by resolving it to tonight and reporting `23:00 is now`.
+    app.jump.clear();
+    app.jump.push_str("+5m");
+    app.jump_to(now);
+    assert!(
+        app.jump_note
+            .as_deref()
+            .is_some_and(|n| n.contains("nothing recorded")),
+        "a moment in the future was answered with the present: {:?}",
+        app.jump_note
+    );
+
+    // Only "now" itself resumes the live tail.
+    app.jump.clear();
+    app.jump.push_str("+0s");
+    app.jump_to(now);
+    assert!(app.history.is_live(), "jumping to now did not resume live");
+    assert!(app.jump_note.as_deref().is_some_and(|n| n.contains("live")));
+
+    // And in a recorded day there is no live tail to resume: the buffer never
+    // receives a sample, and `LIVE` over a week-old day would be the worst
+    // thing this header could say.
+    let mut replay = App::new(30);
+    let week = std::time::Duration::from_secs(7 * 86_400);
+    for i in (0..30).rev() {
+        let mut s = sample(7.0);
+        s.at = now - week - std::time::Duration::from_secs(i);
+        replay.history.push(s);
+    }
+    replay.replaying = true;
+    replay.jump.push_str("+0s");
+    replay.jump_to(now);
+    assert!(
+        !replay.history.is_live(),
+        "a recorded day was put into live tailing"
+    );
+    assert!(
+        replay
+            .jump_note
+            .as_deref()
+            .is_some_and(|n| n.contains("end of this day")),
+        "{:?}",
+        replay.jump_note
+    );
+
+    // A relative jump is measured from the end of what is retained, not from
+    // the wall clock. In a day opened with `--read` those are a week apart,
+    // and `-2h` there means two hours before the end of the day being read.
+    let mut old = App::new(600);
+    let week = std::time::Duration::from_secs(7 * 86_400);
+    for i in (0..60).rev() {
+        let mut s = sample(7.0);
+        s.at = now - week - std::time::Duration::from_secs(i);
+        old.history.push(s);
+    }
+    old.jump.push_str("-30s");
+    old.jump_to(now);
+    assert_eq!(
+        old.jump_note, None,
+        "a relative jump in a recorded day was measured from the wall clock"
+    );
+
+    // And what it could not read is said, not swallowed.
+    app.jump.clear();
+    app.jump.push_str("tuesday");
+    app.jump_to(now);
+    assert!(
+        app.jump_note.as_deref().is_some_and(|n| n.contains("-2h")),
+        "an unparseable jump did not say what the box takes"
+    );
+}
+
+#[test]
+fn the_jump_box_and_its_answer_reach_the_footer() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.history.push(sample_at(5.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let footer = |a: &App| rows(a, 160, 30).last().unwrap().clone();
+
+    // Closed: the key hints, including the one that opens it.
+    assert!(footer(&app).contains("b jump"), "{}", footer(&app));
+
+    // Open: the forms, because a one-line box has nowhere else to say them.
+    app.editing_jump = true;
+    app.jump.push_str("03:0");
+    let open = footer(&app);
+    assert!(open.contains("jump to: 03:0"), "{open}");
+    assert!(
+        open.contains("-2h"),
+        "the box does not say what it takes: {open}"
+    );
+
+    // Closed again, with an answer: the answer, not the hints.
+    app.editing_jump = false;
+    app.jump_note = Some("nothing recorded at 03:00 — nearest sample is 4m20s away".into());
+    let answered = footer(&app);
+    assert!(answered.contains("nothing recorded at 03:00"), "{answered}");
+    assert!(
+        !answered.contains("b jump"),
+        "the answer was buried under the key hints: {answered}"
+    );
 }
 
 #[test]
@@ -6422,10 +6704,35 @@ fn the_footer_gives_up_the_least_useful_key_first() {
     let at_100 = ui::fit_hints_for_test(100);
     assert!(at_100.contains("/ filter"), "{at_100:?}");
     assert!(!at_100.contains("K kernel"), "{at_100:?}");
+    // `b jump` was added to the ladder above `t tree`, which pushed everything
+    // below it ten columns right — so the width at which `K kernel` appears
+    // moved with it. The number is measured rather than assumed: a ladder test
+    // whose width is a guess passes for the wrong reason.
+    let widest: usize = ui::KEY_HINTS
+        .iter()
+        .map(|h| h.chars().count() + 3)
+        .sum::<usize>()
+        .saturating_sub(3);
     assert!(
-        ui::fit_hints_for_test(140).contains("K kernel"),
-        "a wide terminal lost a hint it had room for"
+        ui::fit_hints_for_test(widest as u16).contains("K kernel"),
+        "a terminal wide enough for every hint lost one"
     );
+    assert!(
+        !ui::fit_hints_for_test(widest as u16 - 1).contains("S constraint"),
+        "one column short of everything still drew everything"
+    );
+
+    // And the jump key is above the niche ones: an incident has a time, and
+    // reaching it by pressing the left arrow six hundred times is the workflow
+    // this replaces.
+    let jump = ui::KEY_HINTS
+        .iter()
+        .position(|h| h.starts_with("b "))
+        .unwrap();
+    for niche in ["t tree", "i io", "K kernel", "S constraint"] {
+        let k = ui::KEY_HINTS.iter().position(|h| *h == niche).unwrap();
+        assert!(jump < k, "`b jump` is given up before `{niche}`");
+    }
 }
 
 #[test]

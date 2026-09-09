@@ -153,6 +153,15 @@ impl History {
         }
     }
 
+    /// The newest retained sample, wherever the cursor is.
+    ///
+    /// Distinct from [`History::current`], which follows the cursor. This is
+    /// "the end of what is on screen", which is the origin a relative jump is
+    /// measured from — in a replayed day that is last week, not now.
+    pub fn newest(&self) -> Option<&Sample> {
+        self.samples.back()
+    }
+
     /// Jump to the oldest retained sample.
     pub fn goto_oldest(&mut self) {
         if !self.samples.is_empty() {
@@ -160,10 +169,89 @@ impl History {
         }
     }
 
+    /// Pin the cursor to the newest retained sample.
+    ///
+    /// Not the same as [`History::goto_live`], which *unpins* it. In a replayed
+    /// day there is no live tail to resume — the buffer never receives a
+    /// sample — so "the end" has to be an index rather than an absence.
+    pub fn goto_newest(&mut self) {
+        if !self.samples.is_empty() {
+            self.cursor = Some(self.samples.len() - 1);
+        }
+    }
+
     /// Resume live tailing.
     pub fn goto_live(&mut self) {
         self.cursor = None;
     }
+
+    /// Put the cursor on the sample nearest a moment, and say what was found.
+    ///
+    /// Nearest, not "the one at or before": a request half a second after a
+    /// sample means that sample, and rounding always downwards would answer
+    /// `03:00` with 02:59 on a one-second buffer for no reason.
+    ///
+    /// The answer is [`Landing`] rather than a bare index because landing
+    /// somewhere has to be honest about *where*. poptop draws seams for
+    /// intervals it did not observe; jumping into one of those and showing the
+    /// nearest sample as though it were the moment asked for is the same lie
+    /// the seam exists to prevent, with the reader's own question attached to
+    /// it.
+    pub fn seek(&mut self, at: std::time::SystemTime, nominal: std::time::Duration) -> Landing {
+        if self.samples.is_empty() {
+            return Landing::Empty;
+        }
+        let distance = |s: &Sample| match s.at.duration_since(at) {
+            Ok(d) => d,
+            Err(e) => e.duration(),
+        };
+        let (i, best) = self
+            .samples
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, s)| distance(s))
+            .expect("the buffer is not empty");
+        let off = distance(best);
+        // Half a nominal interval either side *is* the sample: at one second a
+        // request at 03:00:00.4 belongs to 03:00:00, and calling that a miss
+        // would make every jump a warning.
+        let newest = self.samples.back().expect("the buffer is not empty");
+        if at >= newest.at && off <= nominal / 2 {
+            // The present. Resuming the live tail is what "now" means.
+            self.cursor = None;
+            return Landing::Live;
+        }
+        self.cursor = Some(i);
+        // Anything else past the newest sample is a *miss*, not the present.
+        // Treating every future moment as "keep up" answered the likeliest
+        // typo there is — a live session at 10:00, the incident was last night,
+        // the user types `23:00` — by resolving it to tonight, resetting to
+        // live and reporting `23:00 is now`. That is precisely the thing this
+        // feature exists to stop: a question about a moment answered with
+        // something that is not that moment.
+        if off <= nominal / 2 {
+            Landing::On
+        } else {
+            Landing::Nearest(off)
+        }
+    }
+}
+
+/// Where a [`History::seek`] put the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landing {
+    /// Nothing is retained, so there is nowhere to go.
+    Empty,
+    /// The moment asked for is at or past the newest sample: the live view.
+    Live,
+    /// A sample covers the moment asked for.
+    On,
+    /// The nearest sample is this far from the moment asked for.
+    ///
+    /// A number rather than a boolean, because "nothing was recorded then" is
+    /// only worth saying with how far away the nearest thing is. Four seconds
+    /// is a hiccup; four hours is a machine that was switched off.
+    Nearest(std::time::Duration),
 }
 
 /// CPU history for a set of processes, over the newest `window` samples.

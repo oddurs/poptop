@@ -236,7 +236,7 @@ pub fn fmt_lag_for_test(d: Duration) -> String {
     fmt_lag(d)
 }
 
-fn fmt_lag(d: Duration) -> String {
+pub fn fmt_lag(d: Duration) -> String {
     // Both ends matter now that the interval is configurable. Whole seconds
     // rendered a 100ms slot as `0s/slot` — the exact mode sub-second sampling
     // exists for — and a day-long window as `1440m00s buffered`, which is a
@@ -3598,6 +3598,39 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("█", app.theme.cursor_style()),
             tail,
         ])
+    } else if app.editing_jump {
+        // The forms, where the moment is being typed. A one-line box has
+        // nowhere else to say what it takes, and a prompt that rejects what you
+        // typed without saying which forms it accepts is one you type into
+        // twice.
+        //
+        // Fitted, like the key hints, and given up from the least useful end. A
+        // fixed tail is seventy-six columns before a single character is typed,
+        // so on an eighty-column terminal it clipped to `Esc to c` after four
+        // keystrokes — the box stopping saying what it takes exactly where it
+        // has to.
+        let typed = cols(&app.jump) + cols("jump to: ") + 1;
+        let tail = [
+            "   -2h · 03:00 · 2026-09-08 03:00   (Enter to jump, Esc to cancel)",
+            "   -2h · 03:00 · 2026-09-08 03:00",
+            "   -2h · 03:00",
+            "   -2h",
+            "",
+        ]
+        .into_iter()
+        .find(|t| typed + cols(t) <= area.width as usize)
+        .unwrap_or("");
+        Line::from(vec![
+            Span::styled("jump to: ", app.theme.cursor_style()),
+            Span::raw(&app.jump),
+            Span::styled("█", app.theme.cursor_style()),
+            Span::styled(tail, app.theme.dim_style()),
+        ])
+    } else if let Some(note) = app.jump_note.as_deref() {
+        // What the last jump did, after the box has closed. Whether anything
+        // was recorded at 03:00 is the whole point of asking, and a message
+        // that vanished with the prompt would be one nobody read.
+        Line::from(Span::styled(format!(" {note}"), app.theme.warning_style()))
     } else {
         Line::from(Span::styled(
             fit_hints(KEY_HINTS, area.width),
@@ -3622,6 +3655,7 @@ pub fn fit_hints_for_test(width: u16) -> String {
 pub const KEY_HINTS: &[&str] = &[
     "q quit",
     "←/→ scrub",
+    "b jump",
     "+/- zoom",
     "Space live",
     "↑/↓ select",

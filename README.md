@@ -27,7 +27,7 @@ WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤
    4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node
    0.1          12.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀       1 systemd
 
-q quit · ←/→ scrub · +/- zoom · Space live · ↑/↓ select · s sort · / filter
+q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select · s sort
 ```
 
 The gutter names each graph and anchors its scale; the dashed lines are the
@@ -116,6 +116,7 @@ cargo build --release
 | --- | --- |
 | `q` | quit |
 | `←` / `→` | scrub through history (hold `Shift` for ten at a time) |
+| `b` | jump to a moment: `-2h`, `03:00`, `2026-09-08 03:00` (atop's `-b`) |
 | `+` / `-` | zoom the timeline in and out |
 | `Space` | pause on the current sample, or resume live |
 | `Home` / `End` | jump to oldest / live |
@@ -923,6 +924,50 @@ same buffer — the cursor, the process table that follows it, the detail view a
 the filter at the cursor all work on a buffer and none of them cares where the
 buffer came from. It opens paused on the oldest sample: somebody who opened a
 day meant to look at the day.
+
+**`b` jumps to a moment**, as atop's `-b` does. An incident has a time, and reaching it by pressing
+the left arrow six hundred times is not a workflow — it is the one thing atop's
+`-b` does that poptop had no answer for. The box takes both forms the question
+is asked in:
+
+```text
+jump to: 03:00   -2h · 03:00 · 2026-09-08 03:00   (Enter to jump, Esc to cancel)
+```
+
+Local time, not UTC, and through the C library rather than arithmetic: the
+offset on a date is not a constant, and the two nights a year it changes are
+exactly the ones somebody is most likely to be reading a log. A relative jump is
+measured from the **end of what is retained**, not from the wall clock — in a
+day opened with `--read` those are a week apart, and `-2h` there means two hours
+before the end of the day you are reading.
+
+**Landing in a gap says so.** poptop already draws a seam wherever an interval
+went unobserved; answering "what was happening at 03:00" with the nearest sample
+as though it were the one asked for is the same lie the seam exists to prevent,
+with your own question attached to it:
+
+```text
+nothing recorded at 03:00 — nearest sample is 4m20s away
+```
+
+The distance is there because "nothing was recorded then" is only worth saying
+with how far away the nearest thing is: four seconds is a hiccup, four hours is
+a machine that was switched off. A moment in the **future** is a miss like any other. Treating every future
+moment as "keep up" answered the likeliest typo there is: a live session at
+10:00, the incident was last night, you type `23:00` — that resolves to tonight,
+and reporting `23:00 is now` would be the exact failure this feature exists to
+prevent. Only "now" itself resumes the live tail, and in a recorded day nothing
+does, because there is no live tail there to resume.
+
+A date that is not on the calendar is refused rather than rounded. `mktime`
+normalises `2026-02-30` to 2 March and `24:30` to half past midnight the next
+morning, and answering against the text you typed would make a typo read as a
+real answer about a day you never asked for. (`24:00` still works: it is a real
+way to write the end of a day.)
+
+**Live recording continues while you review.** Sampling does not stop in
+`--read`: the collector keeps running and, with `log = on`, today's file keeps
+being written while you read last Tuesday's.
 
 Three things follow from that and are easy to get wrong:
 

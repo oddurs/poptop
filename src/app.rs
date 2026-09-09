@@ -330,6 +330,26 @@ pub struct App {
     last_row: std::cell::Cell<usize>,
     pub filter: String,
     pub editing_filter: bool,
+    /// Whether the jump box is open, and what has been typed into it.
+    ///
+    /// An incident has a time. Scrubbing to it by pressing the left arrow six
+    /// hundred times is not a workflow, and it is the one thing atop's `-b`
+    /// does that poptop had no answer for.
+    pub editing_jump: bool,
+    /// Whether the buffer holds a recorded day rather than live history.
+    ///
+    /// Read by the jump: a replayed buffer never receives a live sample, so
+    /// resuming the live tail there would leave the header claiming `LIVE` over
+    /// a week-old day. In replay the honest landing is the newest *recorded*
+    /// sample, pinned.
+    pub replaying: bool,
+    pub jump: String,
+    /// What the last jump did, or why it could not.
+    ///
+    /// Kept after the box closes: the answer to "was there anything recorded at
+    /// 03:00" is the whole point of asking, and a message that vanished with
+    /// the prompt would be one nobody read.
+    pub jump_note: Option<String>,
     pub should_quit: bool,
     pub tree: bool,
     /// Whether the IO columns are shown.
@@ -456,6 +476,10 @@ impl App {
             last_row: std::cell::Cell::new(0),
             filter: String::new(),
             editing_filter: false,
+            editing_jump: false,
+            replaying: false,
+            jump: String::new(),
+            jump_note: None,
             should_quit: false,
             tree: false,
             // On by default. The header may have just told the user their
@@ -530,6 +554,43 @@ impl App {
             n = n.without(*s);
         }
         n
+    }
+
+    /// Act on what is in the jump box.
+    ///
+    /// The whole of it, so the outcome can be tested without a terminal: parse
+    /// what was typed, move the cursor, and leave behind a sentence saying what
+    /// happened. Landing in a gap says so rather than showing the nearest
+    /// sample as though it were the one asked for — poptop draws seams for
+    /// intervals it did not observe, and answering a question with the nearest
+    /// thing to it is the same lie the seam exists to prevent.
+    pub fn jump_to(&mut self, now: std::time::SystemTime) {
+        let text = self.jump.trim().to_string();
+        // A relative jump is measured from the end of what is retained, not
+        // from the wall clock. In a live buffer those are the same moment; in
+        // a day opened with `--read` they are a week apart, and `-2h` there
+        // means two hours before the end of the day being read rather than two
+        // hours before lunchtime today.
+        let origin = self.history.newest().map_or(now, |s| s.at);
+        self.jump_note = match crate::log::parse_when(&text, origin) {
+            Err(why) => Some(why),
+            Ok(at) => match self.history.seek(at, self.interval) {
+                crate::history::Landing::Empty => Some("nothing is retained yet".into()),
+                // In a recorded day there is no live tail to resume: the
+                // buffer never receives a sample, and `LIVE` over a week-old
+                // day would be the worst thing this header could say.
+                crate::history::Landing::Live if self.replaying => {
+                    self.history.goto_newest();
+                    Some(format!("{text} is the end of this day"))
+                }
+                crate::history::Landing::Live => Some(format!("{text} is now — live")),
+                crate::history::Landing::On => None,
+                crate::history::Landing::Nearest(off) => Some(format!(
+                    "nothing recorded at {text} — nearest sample is {} away",
+                    crate::ui::fmt_lag(off)
+                )),
+            },
+        };
     }
 
     /// Show or hide the IO columns. Showing them starts collection; hiding them
