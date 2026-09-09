@@ -169,6 +169,17 @@ impl History {
         }
     }
 
+    /// Pin the cursor to the newest retained sample.
+    ///
+    /// Not the same as [`History::goto_live`], which *unpins* it. In a replayed
+    /// day there is no live tail to resume — the buffer never receives a
+    /// sample — so "the end" has to be an index rather than an absence.
+    pub fn goto_newest(&mut self) {
+        if !self.samples.is_empty() {
+            self.cursor = Some(self.samples.len() - 1);
+        }
+    }
+
     /// Resume live tailing.
     pub fn goto_live(&mut self) {
         self.cursor = None;
@@ -201,17 +212,23 @@ impl History {
             .min_by_key(|(_, s)| distance(s))
             .expect("the buffer is not empty");
         let off = distance(best);
-        // Past the newest sample is not a miss, it is the present: asking for
-        // `+5m` means "keep up", and the answer is the live view.
+        // Half a nominal interval either side *is* the sample: at one second a
+        // request at 03:00:00.4 belongs to 03:00:00, and calling that a miss
+        // would make every jump a warning.
         let newest = self.samples.back().expect("the buffer is not empty");
-        if at >= newest.at {
+        if at >= newest.at && off <= nominal / 2 {
+            // The present. Resuming the live tail is what "now" means.
             self.cursor = None;
             return Landing::Live;
         }
         self.cursor = Some(i);
-        // Half a nominal interval either side is the sample: at one second a
-        // request at 03:00:00.4 belongs to 03:00:00, and calling that a miss
-        // would make every jump a warning.
+        // Anything else past the newest sample is a *miss*, not the present.
+        // Treating every future moment as "keep up" answered the likeliest
+        // typo there is — a live session at 10:00, the incident was last night,
+        // the user types `23:00` — by resolving it to tonight, resetting to
+        // live and reporting `23:00 is now`. That is precisely the thing this
+        // feature exists to stop: a question about a moment answered with
+        // something that is not that moment.
         if off <= nominal / 2 {
             Landing::On
         } else {

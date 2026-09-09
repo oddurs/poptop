@@ -158,7 +158,20 @@ pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
     };
     let (h, m, s) =
         parse_clock(clock).ok_or_else(|| format!("`{clock}` is not a time — {FORMS}"))?;
-    at_local(date, h, m, s).ok_or_else(|| format!("`{text}` is not a moment on this machine"))
+    let at =
+        at_local(date, h, m, s).ok_or_else(|| format!("`{text}` is before the epoch — {FORMS}"))?;
+    // `mktime` normalises rather than rejects: `2026-02-30` is 2 March and
+    // `24:30` is 00:30 the next morning. Answering with a different day is
+    // exactly what "landing in a gap says so" exists to prevent — the note
+    // reports the landing against the text that was *typed*, so a typo would
+    // read as a real answer about a day nobody asked for.
+    //
+    // `24:00` is the exception, and a real way to write the end of a day: it
+    // normalises to the next midnight on purpose.
+    if h != 24 && date_of(at) != Some(date) {
+        return Err(format!("`{date}` is not a date on the calendar"));
+    }
+    Ok(at)
 }
 
 /// `2h`, `30m`, `90s`, `1h30m` is not accepted — one unit, deliberately.
@@ -193,8 +206,12 @@ fn parse_clock(text: &str) -> Option<(i32, i32, i32)> {
         return None;
     }
     // 24:00 is a real way to write the end of a day, and the C library
-    // normalises it. Anything past that is a typo rather than a convention.
-    ((0..=24).contains(&h) && (0..60).contains(&m) && (0..=60).contains(&s)).then_some((h, m, s))
+    // normalises it to the next midnight on purpose. `24:30` is not a
+    // convention, it is a typo, and `mktime` would answer it with half past
+    // midnight the following morning.
+    let hour = (0..24).contains(&h) || (h == 24 && m == 0 && s == 0);
+    // Sixty is a leap second, which is a real second in a real minute.
+    (hour && (0..60).contains(&m) && (0..=60).contains(&s)).then_some((h, m, s))
 }
 
 /// A local wall-clock moment as an instant.
@@ -993,15 +1010,33 @@ mod tests {
         // you type into twice.
         let now = at(1_800_003_600);
         for bad in [
-            "", "  ", "tuesday", "3pm", "-2y", "25:00", "03:60", "1:2:3:4", "-", "03",
+            "",
+            "  ",
+            "tuesday",
+            "3pm",
+            "-2y",
+            "25:00",
+            "03:60",
+            "1:2:3:4",
+            "-",
+            "03",
+            // `mktime` normalises rather than rejects, so these used to answer
+            // a question nobody asked: 30 February is 2 March and `24:30` is
+            // half past midnight the next morning — reported against the text
+            // that was typed, so the wrong answer read as a real one.
+            "2026-02-30 03:00",
+            "2025-02-29 03:00",
+            "2026-04-31 03:00",
+            "24:30",
         ] {
             let why = parse_when(bad, now).expect_err(&format!("`{bad}` was accepted"));
             assert!(
-                why.contains("-2h") || why.contains("epoch"),
+                why.contains("-2h") || why.contains("not a date on the calendar"),
                 "`{bad}` was rejected without saying what is accepted: {why}"
             );
         }
-        // …and the forms that do work are not rejected.
+        // …and the forms that do work are not rejected, including the leap day
+        // of a year that has one and the last day of a thirty-one-day month.
         for good in [
             "-2h",
             "+5m",
@@ -1009,6 +1044,8 @@ mod tests {
             "24:00",
             "2026-09-08 03:00",
             "2026-09-08",
+            "2024-02-29 03:00",
+            "2026-01-31 03:00",
         ] {
             assert!(parse_when(good, now).is_ok(), "`{good}` was rejected");
         }

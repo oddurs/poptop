@@ -952,8 +952,18 @@ nothing recorded at 03:00 — nearest sample is 4m20s away
 
 The distance is there because "nothing was recorded then" is only worth saying
 with how far away the nearest thing is: four seconds is a hiccup, four hours is
-a machine that was switched off. Jumping *forward* past the newest sample is not
-a miss — `+5m` means "keep up", and the answer is the live view.
+a machine that was switched off. A moment in the **future** is a miss like any other. Treating every future
+moment as "keep up" answered the likeliest typo there is: a live session at
+10:00, the incident was last night, you type `23:00` — that resolves to tonight,
+and reporting `23:00 is now` would be the exact failure this feature exists to
+prevent. Only "now" itself resumes the live tail, and in a recorded day nothing
+does, because there is no live tail there to resume.
+
+A date that is not on the calendar is refused rather than rounded. `mktime`
+normalises `2026-02-30` to 2 March and `24:30` to half past midnight the next
+morning, and answering against the text you typed would make a typo read as a
+real answer about a day you never asked for. (`24:00` still works: it is a real
+way to write the end of a day.)
 
 **Live recording continues while you review.** Sampling does not stop in
 `--read`: the collector keeps running and, with `log = on`, today's file keeps

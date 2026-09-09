@@ -336,6 +336,13 @@ pub struct App {
     /// hundred times is not a workflow, and it is the one thing atop's `-b`
     /// does that poptop had no answer for.
     pub editing_jump: bool,
+    /// Whether the buffer holds a recorded day rather than live history.
+    ///
+    /// Read by the jump: a replayed buffer never receives a live sample, so
+    /// resuming the live tail there would leave the header claiming `LIVE` over
+    /// a week-old day. In replay the honest landing is the newest *recorded*
+    /// sample, pinned.
+    pub replaying: bool,
     pub jump: String,
     /// What the last jump did, or why it could not.
     ///
@@ -470,6 +477,7 @@ impl App {
             filter: String::new(),
             editing_filter: false,
             editing_jump: false,
+            replaying: false,
             jump: String::new(),
             jump_note: None,
             should_quit: false,
@@ -568,6 +576,13 @@ impl App {
             Err(why) => Some(why),
             Ok(at) => match self.history.seek(at, self.interval) {
                 crate::history::Landing::Empty => Some("nothing is retained yet".into()),
+                // In a recorded day there is no live tail to resume: the
+                // buffer never receives a sample, and `LIVE` over a week-old
+                // day would be the worst thing this header could say.
+                crate::history::Landing::Live if self.replaying => {
+                    self.history.goto_newest();
+                    Some(format!("{text} is the end of this day"))
+                }
                 crate::history::Landing::Live => Some(format!("{text} is now — live")),
                 crate::history::Landing::On => None,
                 crate::history::Landing::Nearest(off) => Some(format!(

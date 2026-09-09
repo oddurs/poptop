@@ -551,6 +551,7 @@ fn main() -> io::Result<()> {
         }
     }
     let replaying = opened.is_some();
+    app.replaying = replaying;
     if let Some(samples) = opened {
         let n = samples.len();
         // The interval the day was *recorded* at, not the live one. Almost
@@ -1111,7 +1112,30 @@ fn run(
     }
 }
 
+/// The key handler, for tests that need to press a key rather than set a flag.
+///
+/// Exposed because the modal boxes are state machines: what `Ctrl-C` does while
+/// the jump box is open, and what an arrow key does to the last jump's answer,
+/// are properties of the handler and cannot be checked by poking the `App`.
+#[cfg(test)]
+pub fn handle_key_for_test(app: &mut App, code: KeyCode) {
+    handle_key(app, code, KeyModifiers::NONE);
+}
+
+#[cfg(test)]
+pub fn handle_key_with_mods_for_test(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+    handle_key(app, code, mods);
+}
+
 fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+    // Before the modal boxes, not after. `Ctrl-C` is the only quit-on-interrupt
+    // path there is — poptop installs no SIGINT handler, and raw mode means the
+    // terminal will not deliver one — so a box that swallowed it as a literal
+    // `c` left the reflexive escape from a full-screen program doing nothing.
+    if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+        app.should_quit = true;
+        return;
+    }
     if app.editing_filter {
         match code {
             KeyCode::Enter | KeyCode::Esc => app.editing_filter = false,
@@ -1150,6 +1174,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         return;
     }
 
+    // The answer to the last jump belongs to the last jump. Left standing it
+    // described nothing on screen as soon as the reader scrubbed away, and it
+    // kept the key hints hidden for the rest of the run.
+    if code != KeyCode::Char('b') {
+        app.jump_note = None;
+    }
     match code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
         KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
