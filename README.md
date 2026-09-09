@@ -928,17 +928,28 @@ process table is the present. poptop's may be four minutes old, which is a
 hazard none of them have — and the identity poptop already uses everywhere,
 `(pid, start time)`, is exactly what fixes it:
 
-- **Nothing is sent while scrubbing.** That table is history. The key says so
-  and says how to get back to one it will act on.
-- **The pair is rechecked against the newest sample as the signal is sent**, not
-  against the row you selected. A process that has exited is named as gone; a
-  pid the kernel has since handed to something else is refused *by name* —
-  `pid 4823 is sshd now, not postgres — nothing was sent`.
+- **Nothing is sent while scrubbing**, and nothing at all from a day opened
+  with `--read`. That table is history — in the second case somebody else's
+  history — and the key says so rather than waiting for you to type `y`.
+- **The pair is rechecked against the newest sample**, not against the row you
+  selected. A process that has exited is named as gone; a pid the kernel has
+  since handed to something else is refused *by name* — `pid 4823 is sshd now,
+  not postgres — nothing was sent`. "Newest" is the honest word: that sample is
+  at most one `--interval` old, so a process that exits inside that window and
+  has its pid handed on is a gap this cannot close. At the default it is one
+  second.
 
 A process whose start time the platform would not report is never signalled at
 all, because without it a recycled pid cannot be told from the one you picked.
 Nor is a folded row (`g`): that is several processes, and which of them to stop
 is not a decision a confirmation could describe.
+
+The prompt fits the terminal it is drawn on, giving up the command line first
+and then the sentence explaining `y`, down to `y/n`. The name and the pid are
+what the question *is*, and clipping took the pid — while every key was being
+swallowed by a modal state with no visible way out. Only a bare `y` confirms:
+`Ctrl-Y` cancels like everything else, since one accidental chord should not be
+the only thing that sends a signal.
 
 Failures are the operating system's own words. `Operation not permitted` for
 somebody else's process is the answer, and dressing it up would only hide which

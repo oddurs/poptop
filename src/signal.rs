@@ -89,19 +89,57 @@ impl Pending {
         }
     }
 
-    /// The question, naming the process.
-    pub fn question(&self) -> String {
-        // The command line where there is one, because two `python` processes
-        // are told apart by their arguments and by nothing else on the row.
-        let what = match self.cmd.as_deref().filter(|c| !c.is_empty()) {
-            Some(cmd) => format!("{} — {}", self.name, first_words(cmd, 60)),
-            None => self.name.to_string(),
-        };
-        format!(
-            "send {} to {what} (pid {})?  y to confirm, anything else cancels",
-            self.signal.name(),
-            self.pid
-        )
+    /// The question, naming the process, within `width` columns.
+    ///
+    /// A ladder, like the key hints and the jump box. Rendered raw it was
+    /// simply clipped, and what an eighty-column terminal lost was the *end*:
+    /// the pid, which is the whole reason this prompt exists, and the words
+    /// saying how to answer — while every key is being swallowed by a modal
+    /// state the reader has no visible way out of.
+    ///
+    /// So the parts give way in order of what the question can do without. The
+    /// command line first: it is the most useful part when there is room and
+    /// the only droppable one when there is not. Then the sentence explaining
+    /// `y`, down to `y/n`. The name and the pid are what the question *is*.
+    pub fn question(&self, width: usize) -> String {
+        let sig = self.signal.name();
+        let cmd = self.cmd.as_deref().filter(|c| !c.is_empty());
+        // Strictly less: the footer draws a leading space of its own.
+        let fits = |s: &str| s.chars().count() < width;
+
+        // Room for the command line is whatever the rest of the line does not
+        // need, and it is only worth having if a few words of it survive.
+        let bare = format!(
+            "send {sig} to {} (pid {})?  y to confirm, anything else cancels",
+            self.name, self.pid
+        );
+        if let Some(cmd) = cmd {
+            let room = width.saturating_sub(bare.chars().count() + 4);
+            if room >= 12 {
+                let with = format!(
+                    "send {sig} to {} — {} (pid {})?  y to confirm, anything else cancels",
+                    self.name,
+                    first_words(cmd, room),
+                    self.pid
+                );
+                if fits(&with) {
+                    return with;
+                }
+            }
+        }
+        for line in [
+            bare,
+            format!("send {sig} to {} (pid {})? y/n", self.name, self.pid),
+            format!("{sig} {} (pid {})? y/n", self.name, self.pid),
+        ] {
+            if fits(&line) {
+                return line;
+            }
+        }
+        // Narrower than the name and the pid together. Nothing here is worth
+        // dropping to fit a terminal that cannot show a process's name, so this
+        // is the one case that is allowed to be clipped.
+        format!("{sig} {} (pid {})? y/n", self.name, self.pid)
     }
 }
 
@@ -126,6 +164,15 @@ pub enum Refused {
     /// present; poptop's may be four minutes old, and the pid on a row from
     /// then may belong to something else now.
     Scrubbing,
+    /// The buffer is a recorded day, not this machine's present at all.
+    ///
+    /// Distinct from [`Refused::Scrubbing`] because `History::is_live` means
+    /// only "the cursor is untethered", and in a day opened with `--read` it
+    /// says `true` the moment somebody presses `End`. The recycle check would
+    /// then compare a pid against last Tuesday's process table, match, and
+    /// signal whatever holds that number on the machine today — the exact
+    /// hazard this whole module claims to have removed.
+    Recorded,
     /// The process is not in the newest sample.
     Gone,
     /// A process with that pid is, and it is not the one that was selected.
@@ -133,37 +180,64 @@ pub enum Refused {
     /// The platform would not say when it started, so it cannot be told apart
     /// from a later process on the same pid.
     Unidentifiable,
+    /// A pid that is not one process.
+    ///
+    /// `kill(0, …)` signals poptop's whole process group — the reader's shell
+    /// included — and a negative pid signals a group by number. Nothing routes
+    /// one here, and this is the one `unsafe` call in the feature, so it is
+    /// checked rather than reasoned about.
+    NotAProcess,
 }
 
 impl Refused {
-    pub fn why(&self, p: &Pending) -> String {
+    /// Why, naming the process where there is one to name.
+    ///
+    /// `Option`, because two of these are refused before a process has been
+    /// chosen — and a placeholder `Pending` built to satisfy a signature is a
+    /// zero pid waiting to reach [`send`].
+    pub fn why(&self, p: Option<&Pending>) -> String {
+        let name = p.map_or("that process", |p| &*p.name);
+        let pid = p.map_or(0, |p| p.pid);
         match self {
-            Refused::Scrubbing => {
-                "not while scrubbing — this table is history, and the pid may since \
-                 have been reused. Space or End to go live"
-                    .to_string()
+            Refused::Scrubbing => "not while scrubbing — this table is history, and the pid may since have been reused. Space or End to go live".to_string(),
+            Refused::Recorded => "not in a recorded day — those rows are last week's, and their pids belong to other processes now".to_string(),
+            Refused::Gone => format!("{name} (pid {pid}) is no longer running"),
+            Refused::Recycled(now) => {
+                format!("pid {pid} is {now} now, not {name} — nothing was sent")
             }
-            Refused::Gone => format!("{} (pid {}) is no longer running", p.name, p.pid),
-            Refused::Recycled(now) => format!(
-                "pid {} is {now} now, not {} — nothing was sent",
-                p.pid, p.name
-            ),
-            Refused::Unidentifiable => format!(
-                "this platform did not say when {} started, so pid {} cannot be told \
-                 apart from a later process — nothing was sent",
-                p.name, p.pid
-            ),
+            Refused::Unidentifiable => format!("this platform did not say when {name} started, so its pid cannot be told apart from a later process"),
+            Refused::NotAProcess => format!("pid {pid} is not one process — nothing was sent"),
         }
     }
 }
 
-/// Check the pending signal against what is running now.
+/// Check the pending signal against the newest sample.
 ///
 /// Split from the sending so the whole decision is testable without a process
-/// to kill. `live` is the newest sample, not the one under the cursor.
-pub fn check(p: &Pending, live: Option<&Sample>, scrubbing: bool) -> Result<(), Refused> {
+/// to kill. `live` is the newest sample, not the one under the cursor — and
+/// "newest" is the honest word: it is at most one sample interval old, so a
+/// process that exited within that interval and had its pid handed on is a gap
+/// this cannot close. At the default one-second interval that gap is a second;
+/// at `--interval=60s` it is a minute, and the confirmation is worth answering
+/// promptly.
+pub fn check(
+    p: &Pending,
+    live: Option<&Sample>,
+    scrubbing: bool,
+    replaying: bool,
+) -> Result<(), Refused> {
+    // Before anything else. `History::is_live` means "the cursor is
+    // untethered", which in a recorded day is true the moment somebody
+    // presses `End` — and every check below would then be made against last
+    // Tuesday's process table.
+    if replaying {
+        return Err(Refused::Recorded);
+    }
     if scrubbing {
         return Err(Refused::Scrubbing);
+    }
+    if p.pid <= 0 {
+        return Err(Refused::NotAProcess);
     }
     let Some(started) = p.started else {
         return Err(Refused::Unidentifiable);
@@ -186,8 +260,15 @@ pub fn check(p: &Pending, live: Option<&Sample>, scrubbing: bool) -> Result<(), 
 /// for somebody else's process is the answer, and dressing it up would only
 /// hide which of the several reasons it was.
 pub fn send(p: &Pending) -> std::io::Result<()> {
+    // `check` refuses these already; this is the one `unsafe` call in the
+    // feature and `kill(0, SIGKILL)` signals poptop's whole process group,
+    // the reader's shell included. Worth a second line rather than an argument
+    // about which caller could reach it.
+    if p.pid <= 0 {
+        return Err(std::io::Error::other("not one process"));
+    }
     // SAFETY: `kill` takes two integers and touches nothing of ours. The pid
-    // is one poptop read from a live sample moments ago and has just checked
+    // is positive, was read from a live sample, and has just been checked
     // against the newest one.
     let rc = unsafe { kill(p.pid, p.signal.number()) };
     if rc == 0 {
@@ -226,10 +307,10 @@ mod tests {
         // from then may belong to something else now.
         let p = Pending::new(&proc(42, "postgres", Some(7)), Signal::Term);
         let now = live(vec![proc(42, "postgres", Some(7))]);
-        assert_eq!(check(&p, Some(&now), true), Err(Refused::Scrubbing));
-        assert_eq!(check(&p, Some(&now), false), Ok(()));
+        assert_eq!(check(&p, Some(&now), true, false), Err(Refused::Scrubbing));
+        assert_eq!(check(&p, Some(&now), false, false), Ok(()));
         // And it says how to get back to a table it will act on.
-        assert!(Refused::Scrubbing.why(&p).contains("Space or End"));
+        assert!(Refused::Scrubbing.why(None).contains("Space or End"));
     }
 
     #[test]
@@ -240,9 +321,9 @@ mod tests {
         // else — and `kill 4823` would then stop whatever that is.
         let p = Pending::new(&proc(42, "postgres", Some(7)), Signal::Kill);
         let now = live(vec![proc(42, "sshd", Some(900))]);
-        let refused = check(&p, Some(&now), false).unwrap_err();
+        let refused = check(&p, Some(&now), false, false).unwrap_err();
         assert_eq!(refused, Refused::Recycled(Arc::from("sshd")));
-        let why = refused.why(&p);
+        let why = refused.why(Some(&p));
         assert!(why.contains("sshd") && why.contains("postgres"), "{why}");
         assert!(why.contains("nothing was sent"), "{why}");
     }
@@ -251,11 +332,16 @@ mod tests {
     fn a_process_that_has_gone_is_said_so_rather_than_signalled() {
         let p = Pending::new(&proc(42, "postgres", Some(7)), Signal::Term);
         assert_eq!(
-            check(&p, Some(&live(vec![proc(1, "init", Some(0))])), false),
+            check(
+                &p,
+                Some(&live(vec![proc(1, "init", Some(0))])),
+                false,
+                false
+            ),
             Err(Refused::Gone)
         );
         // And with no sample at all, which is the first frame.
-        assert_eq!(check(&p, None, false), Err(Refused::Gone));
+        assert_eq!(check(&p, None, false, false), Err(Refused::Gone));
     }
 
     #[test]
@@ -266,8 +352,11 @@ mod tests {
         // guessing costs somebody else's work.
         let p = Pending::new(&proc(42, "postgres", None), Signal::Kill);
         let now = live(vec![proc(42, "postgres", None)]);
-        assert_eq!(check(&p, Some(&now), false), Err(Refused::Unidentifiable));
-        assert!(p.question().contains("postgres"));
+        assert_eq!(
+            check(&p, Some(&now), false, false),
+            Err(Refused::Unidentifiable)
+        );
+        assert!(p.question(120).contains("postgres"));
     }
 
     #[test]
@@ -279,7 +368,7 @@ mod tests {
         p.cmd = Some(Arc::from(
             "python3 /srv/app/manage.py runworker --queue=email",
         ));
-        let q = Pending::new(&p, Signal::Term).question();
+        let q = Pending::new(&p, Signal::Term).question(160);
         assert!(q.contains("python3"), "{q}");
         assert!(q.contains("runworker"), "{q}");
         assert!(q.contains("pid 4823"), "{q}");
@@ -294,10 +383,64 @@ mod tests {
             "java -Xmx8g -cp /opt/service/lib/one.jar:/opt/service/lib/two.jar \
              com.example.Service --config /etc/service/production.yaml",
         ));
-        let q = Pending::new(&long, Signal::Kill).question();
+        let q = Pending::new(&long, Signal::Kill).question(160);
         assert!(q.contains('…'), "a long command line was not cut: {q}");
         assert!(!q.contains("production.yaml"), "{q}");
-        assert!(q.chars().count() < 140, "{}", q.chars().count());
+        assert!(q.chars().count() <= 160, "{}", q.chars().count());
+    }
+
+    #[test]
+    fn the_question_gives_up_the_command_line_before_the_pid() {
+        // Rendered raw it was clipped, and what an eighty-column terminal lost
+        // was the end — the pid, which is the whole reason this prompt exists,
+        // and the words saying how to answer, while every key is being
+        // swallowed by a modal state with no visible way out.
+        let mut p = proc(4823, "postgres", Some(7));
+        p.cmd = Some(Arc::from(
+            "/usr/local/pgsql/bin/postgres -D /var/db/postgres/data -c log_line_prefix=%m",
+        ));
+        let pending = Pending::new(&p, Signal::Term);
+
+        for width in [40usize, 60, 80, 100, 140, 200] {
+            let q = pending.question(width);
+            assert!(q.contains("pid 4823"), "width {width} lost the pid: {q}");
+            assert!(
+                q.contains("y to confirm") || q.contains("y/n"),
+                "width {width} lost how to answer: {q}"
+            );
+            assert!(q.contains("postgres"), "width {width} lost the name: {q}");
+            assert!(q.contains("TERM"), "width {width}: {q}");
+        }
+        // Where there is room the command line is there, because two `python3`
+        // processes are told apart by their arguments and by nothing else.
+        assert!(pending.question(200).contains("log_line_prefix"));
+        // Where there is not, it is the part that gives way.
+        assert!(!pending.question(80).contains("log_line_prefix"));
+
+        // And the whole line fits, which is what a clipped prompt did not.
+        for width in [60usize, 80, 100, 140, 200] {
+            let n = pending.question(width).chars().count();
+            assert!(n <= width, "width {width} produced {n} columns");
+        }
+    }
+
+    #[test]
+    fn a_non_process_pid_never_reaches_kill() {
+        // `kill(0, SIGKILL)` signals poptop's whole process group — the
+        // reader's shell included — and a negative pid signals a group by
+        // number. Nothing routes one here, and this is the one `unsafe` call
+        // in the feature, so it is checked rather than reasoned about.
+        for pid in [0, -1, -4823] {
+            let p = Pending::new(&proc(pid, "shell", Some(7)), Signal::Kill);
+            let now = live(vec![proc(pid, "shell", Some(7))]);
+            assert_eq!(
+                check(&p, Some(&now), false, false),
+                Err(Refused::NotAProcess),
+                "pid {pid} was accepted"
+            );
+            // And again in `send`, which is the call that would do it.
+            assert!(send(&p).is_err(), "pid {pid} reached kill");
+        }
     }
 
     #[test]

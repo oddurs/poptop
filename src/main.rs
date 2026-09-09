@@ -1333,7 +1333,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     // A pending signal takes every key: a confirmation that let other keys
     // through is one somebody dismisses by reflex while meaning to scroll.
     if app.pending.is_some() {
-        app.confirm_signal(code == KeyCode::Char('y'));
+        // Bare `y`, with no modifier. Crossterm reports `Ctrl-Y` as `Char('y')`
+        // with `CONTROL`, and every other key here cancels — so ignoring the
+        // modifier made one accidental chord the *only* one that sends a
+        // signal, which is exactly the wrong asymmetry.
+        let plain = mods.difference(KeyModifiers::SHIFT).is_empty();
+        app.confirm_signal(plain && code == KeyCode::Char('y'));
         return;
     }
     if app.editing_jump {

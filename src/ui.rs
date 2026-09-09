@@ -3604,7 +3604,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         // a pid off one screen and typing it into another — carries across.
         Line::from(vec![
             Span::styled(" ", app.theme.warning_style()),
-            Span::styled(p.question(), app.theme.warning_style()),
+            Span::styled(p.question(area.width as usize), app.theme.warning_style()),
         ])
     } else if app.editing_jump {
         // The forms, where the moment is being typed. A one-line box has

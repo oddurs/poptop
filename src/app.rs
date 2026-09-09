@@ -607,6 +607,11 @@ impl App {
     /// Opens a question rather than acting: the number is the part that gets
     /// misread, and poptop knows the name and the command line, so it can name
     /// what it is about to stop.
+    ///
+    /// Every reason poptop would refuse is checked here as well as at the
+    /// moment of sending, so the reader is told before typing `y` rather than
+    /// after. A prompt that can only be answered "no" is worse than the key
+    /// saying why.
     pub fn ask_to_signal(&mut self, signal: crate::signal::Signal) {
         self.signal_note = None;
         if !self.signals {
@@ -614,33 +619,49 @@ impl App {
                 Some("signals are off — `signals = on` in the config, or --signals=on".into());
             return;
         }
-        // Refused here as well as at the moment of sending, so the reader is
-        // told before typing `y` rather than after: this table is history, and
-        // the pid on a row from four minutes ago may belong to something else.
-        if !self.history.is_live() {
-            let dummy = crate::signal::Pending {
-                pid: 0,
-                started: None,
-                name: std::sync::Arc::from(""),
-                cmd: None,
-                signal,
-            };
-            self.signal_note = Some(crate::signal::Refused::Scrubbing.why(&dummy));
+        // `replaying` before `is_live`: that method means "the cursor is
+        // untethered", which in a day opened with `--read` is true the moment
+        // somebody presses `End` — and every check below would then be made
+        // against last Tuesday's process table.
+        let refused = if self.replaying {
+            Some(crate::signal::Refused::Recorded)
+        } else if !self.history.is_live() {
+            Some(crate::signal::Refused::Scrubbing)
+        } else {
+            None
+        };
+        if let Some(why) = refused {
+            self.signal_note = Some(why.why(None));
             return;
         }
         let Some(p) = self.selected_process() else {
-            self.signal_note = Some("nothing selected — the arrow keys pick a process".into());
+            // Distinguished, because the remedies differ and one of them is not
+            // "press the arrow keys": a folded row *is* selected, and moving to
+            // another folded row would say the same thing again.
+            self.signal_note = Some(match self.selected {
+                Some(Watched::Group { .. }) => {
+                    "that row is several processes — `g` again to unfold them".to_string()
+                }
+                _ => "nothing selected — the arrow keys pick a process".to_string(),
+            });
             return;
         };
-        self.pending = Some(crate::signal::Pending::new(&p, signal));
+        let pending = crate::signal::Pending::new(&p, signal);
+        // A process poptop cannot identify is one it will never signal, so the
+        // question is not worth asking.
+        if pending.started.is_none() {
+            self.signal_note = Some(crate::signal::Refused::Unidentifiable.why(Some(&pending)));
+            return;
+        }
+        self.pending = Some(pending);
     }
 
     /// The process under the cursor in the sample under the cursor.
     fn selected_process(&self) -> Option<ProcSample> {
-        // A *process*, not a group. `g` folds rows together and a folded row
-        // is several processes; signalling "the one under the cursor" there
-        // would mean picking one of them, and picking which is not a decision
-        // a confirmation could describe.
+        // A *process*, not a group. `g` folds rows together and a folded row is
+        // several processes; signalling "the one under the cursor" there would
+        // mean picking one of them, and which is not a decision a confirmation
+        // could describe.
         let Watched::Process { pid, started, .. } = self.selected.as_ref()? else {
             return None;
         };
@@ -653,10 +674,9 @@ impl App {
 
     /// Answer the question. Anything but `y` cancels.
     ///
-    /// Checked against the *newest* sample rather than the one on screen, and
-    /// only ever while live: the identity poptop uses everywhere is `(pid,
-    /// started)`, and it is what stops a recycled pid being signalled by
-    /// number.
+    /// Checked again against the *newest* sample rather than the one on
+    /// screen: the identity poptop uses everywhere is `(pid, started)`, and it
+    /// is what stops a recycled pid being signalled by number.
     pub fn confirm_signal(&mut self, yes: bool) {
         let Some(p) = self.pending.take() else {
             return;
@@ -666,18 +686,17 @@ impl App {
             return;
         }
         let live = self.history.newest();
-        self.signal_note = Some(
-            match crate::signal::check(&p, live, !self.history.is_live()) {
-                Err(why) => why.why(&p),
-                Ok(()) => match crate::signal::send(&p) {
-                    // The operating system's own words. `Operation not permitted`
-                    // for somebody else's process is the answer, and dressing it
-                    // up would hide which of several reasons it was.
-                    Err(e) => format!("could not signal {} (pid {}): {e}", p.name, p.pid),
-                    Ok(()) => format!("sent {} to {} (pid {})", p.signal.name(), p.name, p.pid),
-                },
+        let checked = crate::signal::check(&p, live, !self.history.is_live(), self.replaying);
+        self.signal_note = Some(match checked {
+            Err(why) => why.why(Some(&p)),
+            Ok(()) => match crate::signal::send(&p) {
+                // The operating system's own words. `Operation not permitted`
+                // for somebody else's process is the answer, and dressing it up
+                // would hide which of several reasons it was.
+                Err(e) => format!("could not signal {} (pid {}): {e}", p.name, p.pid),
+                Ok(()) => format!("sent {} to {} (pid {})", p.signal.name(), p.name, p.pid),
             },
-        );
+        });
     }
 
     /// Show or hide the IO columns. Showing them starts collection; hiding them
