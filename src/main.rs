@@ -12,6 +12,7 @@ mod check;
 mod collect;
 mod config;
 mod cvd;
+mod export;
 mod glyphs;
 mod history;
 mod log;
@@ -41,6 +42,10 @@ USAGE:
     poptop --read DATE
                     open a recorded day (YYYY-MM-DD) instead of live
     poptop --days     list the recorded days and their sizes
+    poptop --export=json|line [DATE]
+                    every metric, by name, for a script. With a date, the whole
+                    of that recorded day rather than the machine now.
+    poptop --schema   what --export reports: every record, field, type and unit
     poptop --bench    time 20 collection passes (development)
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
@@ -247,6 +252,20 @@ macro_rules! outln {
     }};
 }
 
+/// The same, without the newline, for output that carries its own.
+///
+/// `--export` and `--schema` used bare `print!` and so panicked on a broken
+/// pipe — `| head`, `| grep -m1`, `| jq … | head` — which is precisely what
+/// `outln!` exists to prevent, on the formats most likely to be piped.
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if write!(std::io::stdout(), $($arg)*).is_err() {
+            return Ok(());
+        }
+    }};
+}
+
 /// Print what could not be used.
 ///
 /// Held rather than printed where it was found, because config is read before
@@ -302,6 +321,82 @@ fn main() -> io::Result<()> {
         .with_overrides(&settings.overrides);
 
     match args.first().map(String::as_str) {
+        Some("--schema") => {
+            flush(&warnings);
+            out!("{}", export::schema_json());
+            return Ok(());
+        }
+        // Both spellings. `--export=json` is what the help shows and what
+        // every other flag here looks like; `--export json` is what a hand
+        // reaches for. Neither is worth an error message.
+        Some(a) if a == "--export" || a.starts_with("--export=") => {
+            let inline = a.strip_prefix("--export=").filter(|s| !s.is_empty());
+            let how = inline.or_else(|| args.get(1).map(String::as_str));
+            let Some(how @ ("json" | "line")) = how else {
+                flush(&warnings);
+                eprintln!("poptop: --export takes `json` or `line`");
+                std::process::exit(2);
+            };
+            // A day, if one was named; otherwise the machine now. Reading
+            // history is not a separate feature — it is the same output over a
+            // different buffer, which is the whole reason the store carries a
+            // schema.
+            let day = args.get(if inline.is_some() { 1 } else { 2 });
+            flush(&warnings);
+            let samples = match day {
+                Some(text) => {
+                    let Some(date) = log::Date::parse(text) else {
+                        eprintln!("poptop: `{text}` is not a date. Write it as YYYY-MM-DD");
+                        std::process::exit(2);
+                    };
+                    let Some(dir) = log::dir() else {
+                        eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
+                        std::process::exit(2);
+                    };
+                    match log::open_day(&dir, date) {
+                        Ok((s, said)) => {
+                            for note in said {
+                                eprintln!("poptop: {note}");
+                            }
+                            s
+                        }
+                        Err(why) => {
+                            eprintln!("poptop: {why}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                None => {
+                    // Two samples, as `--once` takes: every rate here is a
+                    // difference, and one reading has nothing to difference
+                    // against.
+                    //
+                    // Every optional source, unlike the interactive path where
+                    // each is gated on a view being open. A script asking for
+                    // "every metric by name" means it, and `null` because
+                    // poptop chose not to ask is indistinguishable from `null`
+                    // because the kernel does not publish it — which is the one
+                    // distinction this whole format exists to keep.
+                    let needs = Source::ALL.into_iter().fold(Needs::NONE, |n, s| n.with(s));
+                    collector.sample(needs)?;
+                    std::thread::sleep(settings.interval);
+                    vec![collector.sample(needs)?]
+                }
+            };
+            // One object per sample for JSON, newline-delimited, so a day is
+            // streamable and `head` on it is not a parse error. For the line
+            // format one stream, so the header block is written once for the
+            // whole day rather than once a sample.
+            match how {
+                "json" => {
+                    for s in &samples {
+                        out!("{}", export::sample_json(s));
+                    }
+                }
+                _ => out!("{}", export::lines_of(&samples)),
+            }
+            return Ok(());
+        }
         Some("--days") => {
             flush(&warnings);
             let Some(dir) = log::dir() else {

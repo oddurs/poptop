@@ -343,6 +343,20 @@ macro_rules! codec {
             }
         }
 
+        impl $crate::persist::Emit for $name {
+            const NESTED: bool = true;
+            /// Generated from the same field list as the codec, and with the
+            /// same exhaustive destructure: a field added to the struct and
+            /// not to the list is a compile error, so machine-readable output
+            /// cannot quietly stop mentioning a metric.
+            fn emit(&self, name: &str, v: &mut dyn $crate::persist::Visit) {
+                let Self { $($field),* } = self;
+                v.open(name, false);
+                $( $crate::persist::Emit::emit($field, stringify!($field), v); )*
+                v.close();
+            }
+        }
+
         impl $crate::persist::Codec for $name {
             fn write(&self, out: &mut $crate::persist::Out) {
                 let Self { $($field),* } = self;
@@ -414,6 +428,150 @@ macro_rules! records {
     };
 }
 pub(crate) use records;
+
+/// Somewhere a walk over a sample's fields can put them.
+///
+/// Object-safe on purpose: the walk is generated once by [`codec!`] and the
+/// formats are visitors over it, so a field added to a struct reaches every
+/// output or fails to compile. A second hand-written list of what to print is
+/// exactly the drift the codec's exhaustive destructure exists to prevent, and
+/// machine-readable output that silently stops mentioning a metric is worse
+/// than none.
+pub trait Visit {
+    fn num(&mut self, name: &str, v: f64);
+    fn int(&mut self, name: &str, v: i128);
+    fn text(&mut self, name: &str, v: &str);
+    fn flag(&mut self, name: &str, v: bool);
+    /// A field the platform did not report. Never a zero: "nobody said" and
+    /// "none happened" are opposite answers, and every format here has to keep
+    /// them apart.
+    fn absent(&mut self, name: &str);
+    /// A *nested* field — a record or a list — the platform did not report.
+    ///
+    /// Distinct from [`Visit::absent`] because a present one contributes no
+    /// column to its parent, it opens a table of its own. A format that wrote
+    /// one column for the absent case and none for the present one produced
+    /// rows that disagreed with their own header, and every field after the
+    /// gap read as its neighbour.
+    fn absent_nested(&mut self, name: &str) {
+        self.absent(name);
+    }
+    /// A nested record or list. `end` closes the most recent one.
+    fn open(&mut self, name: &str, list: bool);
+    fn close(&mut self);
+}
+
+/// A value that knows how to announce itself to a [`Visit`].
+pub trait Emit {
+    /// Whether this opens a table of its own — a record, or a list.
+    const NESTED: bool = false;
+    fn emit(&self, name: &str, v: &mut dyn Visit);
+}
+
+macro_rules! emit_int {
+    ($($t:ty),*) => {$(
+        impl Emit for $t {
+            fn emit(&self, name: &str, v: &mut dyn Visit) {
+                v.int(name, *self as i128);
+            }
+        }
+    )*};
+}
+emit_int!(u8, u16, u32, u64, i32, i64, usize);
+
+macro_rules! emit_num {
+    ($($t:ty),*) => {$(
+        impl Emit for $t {
+            fn emit(&self, name: &str, v: &mut dyn Visit) {
+                v.num(name, *self as f64);
+            }
+        }
+    )*};
+}
+emit_num!(f64);
+
+impl Emit for f32 {
+    /// Widened through its own shortest representation, not by a cast.
+    ///
+    /// `51.7083f32 as f64` is 51.70830535888672 — ten digits of arithmetic
+    /// that were never measured. Every percentage poptop reports is an `f32`,
+    /// and a consumer reading those digits is reading the width of a float.
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        let exact = format!("{self}").parse::<f64>().unwrap_or(*self as f64);
+        v.num(name, exact);
+    }
+}
+
+impl Emit for bool {
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        v.flag(name, *self);
+    }
+}
+
+impl Emit for char {
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        v.text(name, &self.to_string());
+    }
+}
+
+impl Emit for Arc<str> {
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        v.text(name, self);
+    }
+}
+
+impl Emit for SystemTime {
+    /// Seconds since the epoch, with fractional part. A wall-clock string is a
+    /// timezone decision, and a consumer that wants one can make it.
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        match self.duration_since(UNIX_EPOCH) {
+            Ok(d) => v.num(name, d.as_secs_f64()),
+            Err(_) => v.absent(name),
+        }
+    }
+}
+
+impl Emit for Duration {
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        v.num(name, self.as_secs_f64());
+    }
+}
+
+impl<T: Emit> Emit for Option<T> {
+    const NESTED: bool = T::NESTED;
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        match self {
+            Some(x) => x.emit(name, v),
+            // Which kind of absence matters: a missing *record* is a table
+            // that is not there, not a blank column in the row above it.
+            None if T::NESTED => v.absent_nested(name),
+            None => v.absent(name),
+        }
+    }
+}
+
+impl<T: Emit> Emit for Vec<T> {
+    const NESTED: bool = true;
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        v.open(name, true);
+        for (i, x) in self.iter().enumerate() {
+            // Positional, so a consumer reading the line format can count.
+            x.emit(&i.to_string(), v);
+        }
+        v.close();
+    }
+}
+
+impl<T: Emit, const N: usize> Emit for [T; N] {
+    const NESTED: bool = true;
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        v.open(name, true);
+        for (i, x) in self.iter().enumerate() {
+            x.emit(&i.to_string(), v);
+        }
+        v.close();
+    }
+}
 
 /// A struct that is written as a record: it has a name and a field list.
 pub trait Record: Sized {
