@@ -171,8 +171,13 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     // so without this a short `log-interval` fills the disk in a day and the
     // retention rule watches it happen. Measured on this laptop at 87 KB a
     // sample, a one-second interval is seven gigabytes a day.
+    // Weighed against the whole directory, not against today's file alone. One
+    // budget, one meaning: `log-bytes` is what poptop's logs may occupy, and a
+    // cap that applied per-file while the retention rule applied across files
+    // was two different limits wearing one name — a single day reaching the
+    // budget would have made the next prune delete every other day at once.
     let path = dir.join(file_name(date));
-    if fs::metadata(&path).is_ok_and(|m| m.len() >= cap) {
+    if total_bytes(dir) >= cap {
         return Ok(false);
     }
     let block = store::encode(samples);
@@ -190,6 +195,21 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     f.write_all(&framed)?;
     f.flush()?;
     Ok(true)
+}
+
+/// What poptop's logs occupy, in bytes.
+///
+/// Only poptop's own files. A state directory somebody else also writes into is
+/// not this tool's budget to spend.
+pub fn total_bytes(dir: &Path) -> u64 {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_str().and_then(date_in_name).is_some())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 /// Every sample recorded on a date, oldest first.
@@ -210,6 +230,17 @@ pub fn read_day(dir: &Path, date: Date) -> (Vec<Sample>, Vec<String>) {
     while at + LEN <= bytes.len() {
         let len = u32::from_le_bytes(bytes[at..at + LEN].try_into().unwrap()) as usize;
         let from = at + LEN;
+        if len == 0 {
+            // A run of zeroes: a sparse region, or a file the filesystem
+            // extended and never filled. Named as what it is rather than
+            // counted with the entries a different version wrote — that
+            // message sends somebody chasing an upgrade that never happened.
+            notes.push(format!(
+                "{}: a run of empty bytes; the file was read only as far as it",
+                file_name(date)
+            ));
+            break;
+        }
         let Some(to) = from.checked_add(len).filter(|to| *to <= bytes.len()) else {
             // A block whose length runs past the end of the file: the write was
             // cut short. Everything before it is still good.
@@ -239,7 +270,7 @@ pub fn read_day(dir: &Path, date: Date) -> (Vec<Sample>, Vec<String>) {
     }
     if skipped > 0 {
         notes.push(format!(
-            "{}: {skipped} entries were written by a different version of poptop              and could not be read",
+            "{}: {skipped} entries could not be read, most likely written by a different version",
             file_name(date)
         ));
     }
@@ -277,7 +308,13 @@ pub fn to_prune(files: &[(Date, u64)], keep_days: u32, max_bytes: u64, today: Da
     by_age.sort_unstable_by_key(|(date, _)| std::cmp::Reverse(*date));
     let mut drop = Vec::new();
     let mut kept = 0u64;
-    for (i, (date, size)) in by_age.into_iter().enumerate() {
+    // Once the budget is spent it stays spent. Advancing `kept` only for the
+    // files that fitted made the rule non-monotonic in age: after one large
+    // day was dropped, a smaller older one still fitted and survived, leaving
+    // retention with a hole in it — and the user told the older file was past
+    // a limit the newer one had already broken.
+    let mut full = false;
+    for (date, size) in by_age {
         // Today is never pruned, however large it is or however the clock has
         // moved: it is the file being written, and deleting it would take the
         // history of the session that is running.
@@ -285,15 +322,44 @@ pub fn to_prune(files: &[(Date, u64)], keep_days: u32, max_bytes: u64, today: Da
             kept = kept.saturating_add(size);
             continue;
         }
-        let too_old = i >= keep_days as usize;
-        let too_big = kept.saturating_add(size) > max_bytes;
-        if too_old || too_big {
+        // Days, not files. Counting positions made `log-days = 7` mean "the
+        // seven newest files", which on a machine that runs poptop
+        // occasionally keeps one from last year and expires nothing.
+        // `log-days = 7` keeps seven days: today and the six before it. A
+        // file exactly `keep_days` old is the eighth.
+        let too_old = days_between(date, today) >= keep_days as i64;
+        full |= kept.saturating_add(size) > max_bytes;
+        if too_old || full {
             drop.push(date);
         } else {
             kept = kept.saturating_add(size);
         }
     }
     drop
+}
+
+/// Whole days from `then` to `now`, by the calendar.
+///
+/// Civil arithmetic, not clock arithmetic: both ends are dates already, so this
+/// needs no timezone and cannot be wrong on the night a clock changes.
+fn days_between(then: Date, now: Date) -> i64 {
+    days_from_civil(now) - days_from_civil(then)
+}
+
+/// Days from 1970-01-01 to a date, by Howard Hinnant's `days_from_civil`.
+///
+/// The standard algorithm rather than one worked out here: it is exact for
+/// every proleptic Gregorian date, leap years and centuries included, and a
+/// month-length table written by hand is the kind of code that is wrong once
+/// every four hundred years.
+fn days_from_civil(d: Date) -> i64 {
+    let (y, m, day) = (d.year as i64, d.month as i64, d.day as i64);
+    let y = y - i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// Apply the retention rule, and say what went.
@@ -327,6 +393,32 @@ pub fn prune(dir: &Path, keep_days: u32, max_bytes: u64, today: Date) -> Vec<Str
 /// The whole of what `--read` does before the buffer exists, in one place so it
 /// can be tested without a terminal: which file, whether it had anything in it,
 /// and what is worth saying about what came back.
+/// The spacing of a recorded day, as the median gap between its samples.
+///
+/// A replayed buffer is not on the live interval — entries are ten minutes
+/// apart by default, not one second — and almost everything downstream is
+/// scaled by it: the timeline draws a seam wherever a gap exceeds twice the
+/// nominal interval, the growth column refuses to divide by an unknown span,
+/// and the panel title says how much time is buffered. Left at the live
+/// interval a replayed day is drawn as nothing but seams and labelled as two
+/// minutes of history.
+///
+/// The median, not the mean: a day with one four-hour gap in it — poptop was
+/// not running — is still a ten-minute log, and averaging would call it an
+/// hourly one.
+pub fn spacing(samples: &[Sample]) -> Option<std::time::Duration> {
+    let mut gaps: Vec<std::time::Duration> = samples
+        .windows(2)
+        .filter_map(|w| w[1].at.duration_since(w[0].at).ok())
+        .filter(|d| !d.is_zero())
+        .collect();
+    if gaps.is_empty() {
+        return None;
+    }
+    gaps.sort_unstable();
+    Some(gaps[gaps.len() / 2])
+}
+
 pub fn open_day(dir: &Path, date: Date) -> Result<(Vec<Sample>, Vec<String>), String> {
     let (samples, mut notes) = read_day(dir, date);
     if samples.is_empty() {
@@ -544,6 +636,34 @@ mod tests {
         let dropped = to_prune(&files, 3, u64::MAX, today);
         assert_eq!(dropped, [d(7), d(6), d(5), d(4), d(3), d(2), d(1)]);
 
+        // Days on the calendar, not files in a list. A machine that runs
+        // poptop occasionally has gaps, and counting positions made
+        // `log-days = 3` mean "the three newest files" — which keeps one from
+        // last year and expires nothing.
+        let year = |y| Date {
+            year: y,
+            month: 9,
+            day: 10,
+        };
+        let sparse = [(today, 100), (year(2025), 100), (year(2024), 100)];
+        assert_eq!(
+            to_prune(&sparse, 3, u64::MAX, today),
+            [year(2025), year(2024)],
+            "files from previous years were kept because there were only three"
+        );
+
+        // And the rule is monotonic in age: once the budget is spent, every
+        // older file goes. Advancing the running total only for the files that
+        // fitted left retention with a hole in it — a large day dropped and a
+        // small older one kept, and the older one told it was past a limit the
+        // newer one had already broken.
+        let lopsided = [(today, 1), (d(9), 300), (d(8), 10)];
+        assert_eq!(
+            to_prune(&lopsided, u32::MAX, 200, today),
+            [d(9), d(8)],
+            "an older file survived a newer one being dropped for size"
+        );
+
         // Bytes alone: a rule in days is a different rule on every machine,
         // because a sample carries a whole process table. 250 bytes holds two
         // of these.
@@ -574,7 +694,9 @@ mod tests {
             month: 9,
             day: 10,
         };
-        for day in 1..=4 {
+        // The four days ending today, so the rule under test is the age rule
+        // rather than "everything here is from last week".
+        for day in 7..=10 {
             fs::write(dir.join(file_name(Date { day, ..today })), b"x".repeat(100)).unwrap();
         }
         // Files that are not poptop's, in poptop's directory. The second is
@@ -589,7 +711,7 @@ mod tests {
         assert!(notes.iter().all(|n| n.contains("retention limit")));
         assert_eq!(
             days(&dir),
-            [Date { day: 4, ..today }, Date { day: 3, ..today }]
+            [Date { day: 10, ..today }, Date { day: 9, ..today }]
         );
         assert!(
             dir.join("notes.txt").exists() && dir.join("20260901").exists(),
@@ -632,6 +754,80 @@ mod tests {
             "a reboot inside a recorded day passed unmentioned: {notes:?}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_calendar_is_the_real_calendar() {
+        let d = |year, month, day| Date { year, month, day };
+        assert_eq!(days_between(d(2026, 9, 8), d(2026, 9, 10)), 2);
+        assert_eq!(days_between(d(2026, 9, 10), d(2026, 9, 10)), 0);
+        // Backwards, for a file dated in the future — a clock that was wrong
+        // when it was written is not a reason to delete it.
+        assert_eq!(days_between(d(2026, 9, 12), d(2026, 9, 10)), -2);
+
+        // Month lengths, and the ones that are the whole reason this is
+        // Hinnant's algorithm rather than arithmetic worked out here.
+        assert_eq!(days_between(d(2026, 1, 31), d(2026, 2, 1)), 1);
+        assert_eq!(days_between(d(2025, 12, 31), d(2026, 1, 1)), 1);
+        // 2024 is a leap year: February has 29 days.
+        assert_eq!(days_between(d(2024, 2, 28), d(2024, 3, 1)), 2);
+        // 2026 is not.
+        assert_eq!(days_between(d(2026, 2, 28), d(2026, 3, 1)), 1);
+        // 2100 is a century that is not a leap year; 2000 was.
+        assert_eq!(days_between(d(2100, 2, 28), d(2100, 3, 1)), 1);
+        assert_eq!(days_between(d(2000, 2, 28), d(2000, 3, 1)), 2);
+        // A whole year, and a leap one.
+        assert_eq!(days_between(d(2025, 1, 1), d(2026, 1, 1)), 365);
+        assert_eq!(days_between(d(2024, 1, 1), d(2025, 1, 1)), 366);
+    }
+
+    #[test]
+    fn a_run_of_empty_bytes_is_not_a_version_mismatch() {
+        // A sparse region, or a file the filesystem extended and never filled.
+        // Counted with the entries a different version wrote, it sends
+        // somebody chasing an upgrade that never happened — the same
+        // misdiagnosis the truncation case exists to avoid.
+        let dir = scratch("zeros");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        append(&dir, day, &[&sample(1_800_000_000, 11.0)], u64::MAX).unwrap();
+        let path = dir.join(file_name(date));
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(&[0u8; 64]);
+        fs::write(&path, &bytes).unwrap();
+
+        let (back, notes) = read_day(&dir, date);
+        assert_eq!(back.len(), 1, "the entry before the zeroes was lost");
+        assert!(
+            notes.iter().any(|n| n.contains("empty bytes")),
+            "a run of zeroes was reported as something else: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.contains("different version")),
+            "a run of zeroes was blamed on an upgrade: {notes:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recorded_days_spacing_is_the_median_and_not_the_mean() {
+        // Everything downstream is scaled by the interval: the timeline draws
+        // a seam past twice it, the growth column will not divide by an
+        // unknown span, and the panel title says how much is buffered. A day
+        // replayed at the live interval is drawn as nothing but seams.
+        let ten = |n: u64| sample(1_800_000_000 + n * 600, 1.0);
+        let day: Vec<Sample> = (0..6).map(ten).collect();
+        assert_eq!(spacing(&day), Some(std::time::Duration::from_secs(600)));
+
+        // A day with a four-hour hole in it — poptop was not running — is
+        // still a ten-minute log. The mean would call it an hourly one.
+        let mut gapped: Vec<Sample> = (0..5).map(ten).collect();
+        gapped.push(sample(1_800_000_000 + 5 * 600 + 14_400, 1.0));
+        assert_eq!(spacing(&gapped), Some(std::time::Duration::from_secs(600)));
+
+        // One sample has no spacing, and neither has none.
+        assert_eq!(spacing(&day[..1]), None);
+        assert_eq!(spacing(&[]), None);
     }
 
     #[test]

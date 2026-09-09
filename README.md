@@ -924,8 +924,34 @@ the filter at the cursor all work on a buffer and none of them cares where the
 buffer came from. It opens paused on the oldest sample: somebody who opened a
 day meant to look at the day.
 
+Three things follow from that and are easy to get wrong:
+
+- **Live samples are not pushed into it.** The buffer is sized to the day
+  exactly, so a push would evict the oldest recorded sample and shift the pinned
+  cursor onto a different moment — a day left open for its own length would
+  quietly become entirely live samples. Sampling continues (the log keeps being
+  written, the collector's counters stay warm); the buffer does not change.
+- **The interval is the one the day was recorded at**, taken as the median gap
+  between its samples. Almost everything is scaled by it — the timeline draws a
+  seam past twice the nominal interval, the growth column will not divide by an
+  unknown span, the panel says how much time is buffered — so a ten-minute log
+  read at one second is drawn as nothing but seams and labelled as two minutes.
+  The median rather than the mean, because a day with a four-hour hole in it,
+  where poptop was not running, is still a ten-minute log.
+- **The restart store is never written from a replay.** With `store = on`,
+  saving a replayed day would replace your real restart history with whatever
+  day you opened, and you would get it back on the next ordinary launch.
+
+A day that spans a reboot is kept whole and says so. A process is identified by
+pid and start time, and start time only means anything within one boot, so two
+unrelated programs either side of the restart can share a pid — the `HISTORY`
+column would draw them as one line.
+
 `poptop --once --log=on` writes one sample and exits, so a day can be filled
-from cron without leaving a terminal open.
+from cron without leaving a terminal open. It applies retention too, and a log
+that cannot be written — a full disk, a read-only state directory, no `HOME` at
+all — is a line on stderr and never a reason not to print the sample. Nothing
+poptop prints depends on the log.
 
 **Appended while running, not written on exit.** That is the opposite bargain
 from the restart store, deliberately: a store that loses the buffer to `kill -9`
@@ -971,11 +997,25 @@ table: a build box with four thousand processes writes several times what a
 laptop does at the same settings, so a rule in days alone is a different rule on
 every machine.
 
+`log-days` counts **calendar days**, not files: on a machine that runs poptop
+occasionally, "the seven newest files" would keep one from last year and expire
+nothing. And once the byte budget is spent it stays spent — a large day dropped
+must not leave a smaller older one behind it, which would be retention with a
+hole in it and an older file told it was past a limit the newer one had already
+broken.
+
 It bounds the **writing**, not only the keeping. Today's file is never pruned —
 it is the history of the session that is running, and deleting it would take the
 thing you are looking at — so a rule that only decided what to keep would watch
-`log-interval = 1s` fill a disk in a day and do nothing about it. Once today's
-file reaches the limit poptop stops appending and says so, once.
+`log-interval = 1s` fill a disk in a day and do nothing about it. Once the logs
+reach the budget poptop stops appending, and says so **on the panel while it is
+true**, not only in the lines it prints when you quit: a disk that filled at
+10:00 is something you need to know at 10:00.
+
+One budget, one meaning. `log-bytes` is what poptop's logs may occupy in total —
+the write cap and the retention rule are the same number weighed the same way,
+because a cap that applied per-file while retention applied across files would
+be two limits wearing one name.
 
 Retention runs when the date changes rather than on a timer, so a poptop left
 running over midnight applies it. Files poptop did not write are never

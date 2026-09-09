@@ -422,6 +422,14 @@ pub struct App {
     /// went over budget once will go over it again, so quietly retrying would
     /// flap between a figure and an em dash. Asking for it again by name clears
     /// it, because that is a decision the reader is entitled to make.
+    /// Why the log stopped, if it has.
+    ///
+    /// On the panel while it is true, not only in the lines printed at exit: a
+    /// disk that filled at 10:00 is something the reader needs at 10:00, and a
+    /// message they see when they quit is one they see after it stopped
+    /// mattering. Same ladder as the withheld sources beside it — an omission
+    /// that does not state itself is the one thing this panel never does.
+    pub log_note: Option<String>,
     withheld: Vec<Source>,
     /// Consecutive samples that ran over budget. One slow sample is a hiccup;
     /// three in a row is the machine telling you something.
@@ -467,6 +475,7 @@ impl App {
             numa: false,
             thread_idle: 0,
             sample_count: 0,
+            log_note: None,
             withheld: Vec::new(),
             over_budget: 0,
             baseline_over: false,

@@ -317,11 +317,24 @@ fn main() -> io::Result<()> {
             // of a recorder, and `poptop --once --log=on` from cron is a
             // legitimate way to fill a day without leaving a terminal open.
             let logging = settings.log.then(log::dir).flatten();
+            if settings.log && logging.is_none() {
+                // Said here as it is said on the interactive path. A cron job
+                // with no `HOME` would otherwise exit cleanly and write to an
+                // empty log forever.
+                warnings.push(config::Warning(
+                    "no state directory to log into — set HOME or XDG_STATE_HOME".into(),
+                ));
+            }
             let r = once(
                 &mut collector,
                 settings.interval,
-                logging.as_deref(),
-                settings.log_bytes,
+                logging.as_deref().map(|dir| Logging {
+                    dir: dir.to_path_buf(),
+                    every: settings.log_interval,
+                    days: settings.log_days,
+                    bytes: settings.log_bytes,
+                }),
+                &mut warnings,
             );
             flush(&warnings);
             return r;
@@ -528,8 +541,17 @@ fn main() -> io::Result<()> {
             app.history.push(s);
         }
     }
+    let replaying = opened.is_some();
     if let Some(samples) = opened {
         let n = samples.len();
+        // The interval the day was *recorded* at, not the live one. Almost
+        // everything downstream is scaled by it — the timeline's seam
+        // threshold, the growth column's refusal to divide by an unknown span,
+        // the panel title's "of 2m23s buffered" — and a ten-minute log read at
+        // one second is drawn as nothing but seams and labelled as two minutes.
+        if let Some(every) = log::spacing(&samples) {
+            app.interval = every;
+        }
         for s in samples {
             app.history.push(s);
         }
@@ -563,6 +585,7 @@ fn main() -> io::Result<()> {
         &mut app,
         &mut collector,
         logging.as_ref(),
+        replaying,
         &mut said,
     );
     ratatui::restore();
@@ -576,7 +599,11 @@ fn main() -> io::Result<()> {
     // actually read. Written on a clean exit only: a periodic flush is what
     // turns a live tool into a recorder, which is the thing this deliberately
     // is not.
+    // Never after `--read`: the buffer holds a recorded day, and saving it
+    // would replace the user's real restart history with whatever day they
+    // opened — which they would then get back on the next ordinary launch.
     if settings.store
+        && !replaying
         && result.is_ok()
         && let Err(e) = store::save(&app.history.iter().collect::<Vec<_>>())
     {
@@ -645,8 +672,8 @@ fn clock_line(s: &sample::Sample) -> Option<String> {
 fn once(
     collector: &mut impl Collector,
     interval: Duration,
-    logging: Option<&std::path::Path>,
-    cap: u64,
+    logging: Option<Logging>,
+    warnings: &mut Vec<config::Warning>,
 ) -> io::Result<()> {
     let needs = Needs::NONE
         .with(Source::Io)
@@ -655,10 +682,28 @@ fn once(
     collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
-    if let Some(dir) = logging
-        && !log::append(dir, s.at, &[&s], cap)?
-    {
-        eprintln!("poptop: today's log is at its size limit, so this sample was not written");
+    // Nothing poptop prints depends on the log. A full disk or a read-only
+    // state directory used to propagate out of here with `?`, so
+    // `poptop --once --log=on` exited non-zero having printed nothing — the
+    // exact inversion of the rule this feature is built on.
+    if let Some(cfg) = logging {
+        match log::append(&cfg.dir, s.at, &[&s], cfg.bytes) {
+            Ok(true) => {}
+            Ok(false) => warnings.push(config::Warning(
+                "today's log is at its size limit and was not written to".into(),
+            )),
+            Err(e) => warnings.push(config::Warning(format!("could not write the log: {e}"))),
+        }
+        // Retention applies here too. A machine logged only from cron would
+        // otherwise accumulate one file a day forever, with `log-days` and
+        // `log-bytes` never reached by any code path.
+        if let Some(today) = log::date_of(s.at) {
+            warnings.extend(
+                log::prune(&cfg.dir, cfg.days, cfg.bytes, today)
+                    .into_iter()
+                    .map(config::Warning),
+            );
+        }
     }
 
     outln!(
@@ -951,6 +996,15 @@ fn run(
     app: &mut App,
     collector: &mut impl Collector,
     logging: Option<&Logging>,
+    // Whether the buffer holds a recorded day rather than live history.
+    //
+    // Sampling continues either way — the log keeps being written, and the
+    // collector's counters stay warm — but a live sample must not be pushed
+    // into a replayed buffer. The buffer is sized to the day exactly, so each
+    // push evicts the oldest recorded sample and shifts the pinned cursor onto
+    // a different moment: a day left open for its own length would become
+    // entirely live samples, silently.
+    replaying: bool,
     notes: &mut Vec<String>,
 ) -> io::Result<()> {
     let interval = app.interval;
@@ -995,25 +1049,24 @@ fn run(
             // sample rather than however many the buffer happens to hold.
             if let Some(cfg) = logging.filter(|_| Instant::now() >= next_log) {
                 let at = s.at;
-                match log::append(&cfg.dir, at, &[&s], cfg.bytes) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        let said = "today's log is at its size limit and is no longer \
-                                    being written to"
-                            .to_string();
-                        if !notes.contains(&said) {
-                            notes.push(said);
-                        }
-                    }
-                    Err(e) => {
-                        // Once. A disk that filled would otherwise put one
-                        // line on the panel every logging interval until the
-                        // tool is closed, and the first one already said it.
-                        let said = format!("could not write the log: {e}");
-                        if !notes.contains(&said) {
-                            notes.push(said);
-                        }
-                    }
+                // Onto the panel while it is true, as well as into the lines
+                // printed at exit. A disk that filled at 10:00 is something
+                // the reader needs at 10:00; a message they see when they quit
+                // is one they see after it stopped mattering.
+                let said = match log::append(&cfg.dir, at, &[&s], cfg.bytes) {
+                    Ok(true) => None,
+                    Ok(false) => Some(
+                        "the log is at its size limit and is no longer being written to"
+                            .to_string(),
+                    ),
+                    Err(e) => Some(format!("could not write the log: {e}")),
+                };
+                app.log_note = said.clone();
+                // Once in the exit lines. A disk that filled would otherwise
+                // add one every logging interval until the tool is closed, and
+                // the first already said it.
+                if let Some(said) = said.filter(|s| !notes.contains(s)) {
+                    notes.push(said);
                 }
                 next_log = Instant::now() + cfg.every;
                 // Retention is applied when the date changes, not on a timer:
@@ -1027,7 +1080,9 @@ fn run(
                     }
                 }
             }
-            app.push(s);
+            if !replaying {
+                app.push(s);
+            }
             next_sample += interval;
             // Falling a whole interval behind means the host cannot sustain
             // the rate. Resync rather than catch up: catching up would sample
