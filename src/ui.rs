@@ -3598,6 +3598,14 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("█", app.theme.cursor_style()),
             tail,
         ])
+    } else if let Some(p) = app.pending.as_ref() {
+        // The question, naming the process. The number is the part that gets
+        // misread, and it is the only thing the alternative workflow — reading
+        // a pid off one screen and typing it into another — carries across.
+        Line::from(vec![
+            Span::styled(" ", app.theme.warning_style()),
+            Span::styled(p.question(area.width as usize), app.theme.warning_style()),
+        ])
     } else if app.editing_jump {
         // The forms, where the moment is being typed. A one-line box has
         // nowhere else to say what it takes, and a prompt that rejects what you
@@ -3626,6 +3634,8 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("█", app.theme.cursor_style()),
             Span::styled(tail, app.theme.dim_style()),
         ])
+    } else if let Some(note) = app.signal_note.as_deref() {
+        Line::from(Span::styled(format!(" {note}"), app.theme.warning_style()))
     } else if let Some(note) = app.jump_note.as_deref() {
         // What the last jump did, after the box has closed. Whether anything
         // was recorded at 03:00 is the whole point of asking, and a message
@@ -3661,6 +3671,10 @@ pub const KEY_HINTS: &[&str] = &[
     "↑/↓ select",
     "s sort",
     "/ filter",
+    // Below the keys used constantly and above the niche ones. Signalling is
+    // off unless it has been asked for, so the hint is mostly there to say the
+    // key exists — which is worth less than `s sort` and more than `K kernel`.
+    "x signal",
     "t tree",
     "i io",
     "v view",

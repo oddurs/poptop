@@ -20,6 +20,7 @@ mod persist;
 mod query;
 mod report;
 mod sample;
+mod signal;
 mod store;
 mod theme;
 mod tree;
@@ -73,6 +74,13 @@ USAGE:
     --log-bytes=SIZE
                     bytes of log kept across every day (default 512M). The
                     bound that holds: a sample carries a whole process table.
+    --signals=on|off
+                    allow x and X to send TERM and KILL to the selected process
+                    (default off). A monitor that cannot change the machine is
+                    a monitor that cannot break it, so poptop reads files and
+                    nothing else until you say otherwise. Never while scrubbing,
+                    and never to a pid that has been recycled since you selected
+                    it — see the KEYS section.
     --warn=PCT      where 'getting busy' begins (default 50)
     --critical=PCT  where 'in trouble' begins (default 80). Must exceed --warn.
     --theme=NAME    a built-in (safe, classic, auto) or a file in
@@ -194,6 +202,20 @@ KEYS:
                     CAP_SYS_PTRACE for other users' processes, so on a box
                     running its services as root they would be a wall of
                     dashes, and poptop withdraws them after one sample.
+    x, X            send TERM (x) or KILL (X) to the selected process, after a
+                    confirmation that names it — the pid is the part that gets
+                    misread, and poptop knows the command line. Off unless
+                    --signals=on, and the key says so if it is not.
+
+                    Two rules poptop can offer and other monitors cannot,
+                    because their process tables are always the present and
+                    poptop's may be four minutes old:
+
+                      · nothing is sent while scrubbing. That table is history.
+                      · the (pid, start time) pair is rechecked against the
+                        newest sample as the signal is sent. A pid the kernel
+                        has since handed to something else is refused by name.
+
     /               filter. A bare word is a substring match on the name, the
                     command line, the user or the pid, as before. It is also a
                     small query language:
@@ -654,6 +676,7 @@ fn main() -> io::Result<()> {
     app.interval = settings.interval;
     app.theme = theme;
     app.glyphs = settings.glyphs;
+    app.signals = settings.signals;
 
     // Collect once before drawing so the first frame has real numbers. CPU
     // still reads zero — there is no previous counter to diff against yet.
@@ -1307,6 +1330,17 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         }
         return;
     }
+    // A pending signal takes every key: a confirmation that let other keys
+    // through is one somebody dismisses by reflex while meaning to scroll.
+    if app.pending.is_some() {
+        // Bare `y`, with no modifier. Crossterm reports `Ctrl-Y` as `Char('y')`
+        // with `CONTROL`, and every other key here cancels — so ignoring the
+        // modifier made one accidental chord the *only* one that sends a
+        // signal, which is exactly the wrong asymmetry.
+        let plain = mods.difference(KeyModifiers::SHIFT).is_empty();
+        app.confirm_signal(plain && code == KeyCode::Char('y'));
+        return;
+    }
     if app.editing_jump {
         match code {
             // Enter acts, Esc abandons. Unlike the filter, which applies as it
@@ -1337,6 +1371,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     // kept the key hints hidden for the rest of the run.
     if code != KeyCode::Char('b') {
         app.jump_note = None;
+    }
+    if !matches!(code, KeyCode::Char('x' | 'X')) {
+        app.signal_note = None;
     }
     match code {
         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
@@ -1449,6 +1486,11 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             app.editing_filter = true;
             app.filter.clear();
         }
+        // `x`, not `k`: `k` is already "select the previous process", the vim
+        // binding beside `j`, and a key that quietly stopped moving the
+        // selection would be a bad trade anywhere and an unforgivable one here.
+        KeyCode::Char('x') => app.ask_to_signal(crate::signal::Signal::Term),
+        KeyCode::Char('X') => app.ask_to_signal(crate::signal::Signal::Kill),
         // `b` for the beginning of a moment, which is atop's `-b`. Not `j`:
         // that is already "select the next process", the vim binding beside
         // `k`, and a key that quietly stopped moving the selection would be a
