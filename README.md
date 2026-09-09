@@ -906,6 +906,12 @@ poptop --export=json 2026-09-08   # the whole of a recorded day
 poptop --schema                   # every record, field, type and unit
 ```
 
+A live export collects **every** optional source, unlike the interactive view
+where each is gated on a panel being open: a script asking for every metric by
+name means it, and `null` because poptop chose not to ask is indistinguishable
+from `null` because the kernel does not publish it. It is also safe to pipe into
+`head` — a broken pipe ends the output rather than the process.
+
 **The schema is emitted, not documented.** atop's label set lives in its man
 page, which is a second thing to keep in step with the code. poptop already
 declares every record and field once — for the store's codec — and the walk over
@@ -939,7 +945,27 @@ sample.procs	0	37757	26333	postgres	postgres	2.33	615186432	40	S	…
 One label per table, not one per row — `grep '^sample.procs'` and read them.
 Nested rows carry the same `i`, so `sample.procs.io` joins back to the process
 it belongs to. The separator is a tab and never appears inside a value, whatever
-the kernel had in a process name.
+the kernel had in a process name; nor does a line ending.
+
+**Every row under a label has exactly the columns its header names.** That is
+the property the format lives or dies by, and it is the one thing a record
+*inside* another can break: a sub-record that is present opens a table of its
+own and contributes no column to the row above it, so writing a `-` for the
+absent case made rows disagree with their header and every field after the gap
+read as its neighbour. A process with no `io` is simply a process with no row
+under `sample.procs.io` — which is where a reader looks for it. JSON keeps the
+`null`, because JSON has room to.
+
+The header block is written **once per stream**, not once per sample, so a
+whole day is one column map and a hundred and forty-four rows.
+
+Two encodings worth stating, because a line format has no types: a boolean is
+`1` or `0`, and a record whose fields are all sub-records — `pressure` — has no
+row of its own, only its children's.
+
+**Floats carry no more digits than they were measured with.** Every percentage
+poptop reports is an `f32`; widening one by a cast gives `51.70830535888672`,
+ten digits of arithmetic nobody measured.
 
 **Stability.** The names are the store's field names, and the store's format is
 already versioned: a file written by another version is discarded rather than

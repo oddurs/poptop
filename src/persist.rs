@@ -344,6 +344,7 @@ macro_rules! codec {
         }
 
         impl $crate::persist::Emit for $name {
+            const NESTED: bool = true;
             /// Generated from the same field list as the codec, and with the
             /// same exhaustive destructure: a field added to the struct and
             /// not to the list is a compile error, so machine-readable output
@@ -445,6 +446,16 @@ pub trait Visit {
     /// "none happened" are opposite answers, and every format here has to keep
     /// them apart.
     fn absent(&mut self, name: &str);
+    /// A *nested* field — a record or a list — the platform did not report.
+    ///
+    /// Distinct from [`Visit::absent`] because a present one contributes no
+    /// column to its parent, it opens a table of its own. A format that wrote
+    /// one column for the absent case and none for the present one produced
+    /// rows that disagreed with their own header, and every field after the
+    /// gap read as its neighbour.
+    fn absent_nested(&mut self, name: &str) {
+        self.absent(name);
+    }
     /// A nested record or list. `end` closes the most recent one.
     fn open(&mut self, name: &str, list: bool);
     fn close(&mut self);
@@ -452,6 +463,8 @@ pub trait Visit {
 
 /// A value that knows how to announce itself to a [`Visit`].
 pub trait Emit {
+    /// Whether this opens a table of its own — a record, or a list.
+    const NESTED: bool = false;
     fn emit(&self, name: &str, v: &mut dyn Visit);
 }
 
@@ -475,7 +488,19 @@ macro_rules! emit_num {
         }
     )*};
 }
-emit_num!(f32, f64);
+emit_num!(f64);
+
+impl Emit for f32 {
+    /// Widened through its own shortest representation, not by a cast.
+    ///
+    /// `51.7083f32 as f64` is 51.70830535888672 — ten digits of arithmetic
+    /// that were never measured. Every percentage poptop reports is an `f32`,
+    /// and a consumer reading those digits is reading the width of a float.
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        let exact = format!("{self}").parse::<f64>().unwrap_or(*self as f64);
+        v.num(name, exact);
+    }
+}
 
 impl Emit for bool {
     fn emit(&self, name: &str, v: &mut dyn Visit) {
@@ -513,15 +538,20 @@ impl Emit for Duration {
 }
 
 impl<T: Emit> Emit for Option<T> {
+    const NESTED: bool = T::NESTED;
     fn emit(&self, name: &str, v: &mut dyn Visit) {
         match self {
             Some(x) => x.emit(name, v),
+            // Which kind of absence matters: a missing *record* is a table
+            // that is not there, not a blank column in the row above it.
+            None if T::NESTED => v.absent_nested(name),
             None => v.absent(name),
         }
     }
 }
 
 impl<T: Emit> Emit for Vec<T> {
+    const NESTED: bool = true;
     fn emit(&self, name: &str, v: &mut dyn Visit) {
         v.open(name, true);
         for (i, x) in self.iter().enumerate() {
@@ -533,6 +563,7 @@ impl<T: Emit> Emit for Vec<T> {
 }
 
 impl<T: Emit, const N: usize> Emit for [T; N] {
+    const NESTED: bool = true;
     fn emit(&self, name: &str, v: &mut dyn Visit) {
         v.open(name, true);
         for (i, x) in self.iter().enumerate() {

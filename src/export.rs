@@ -345,6 +345,19 @@ impl Lines {
         let _ = writeln!(self.out, "{}{SEP}{}", f.label, f.row.join(&sep));
     }
 
+    /// One more sample into the same stream.
+    ///
+    /// The same `Lines`, so the header block is written once for a whole day
+    /// rather than once a sample — a hundred and forty-four copies of it at
+    /// the default logging interval, and a reader building a column map from
+    /// the header would have to decide which copy it meant.
+    pub fn add(&mut self, s: &Sample) {
+        s.emit("sample", self);
+        while let Some(f) = self.stack.pop() {
+            self.emit_frame(f);
+        }
+    }
+
     pub fn finish(mut self) -> String {
         while let Some(f) = self.stack.pop() {
             self.emit_frame(f);
@@ -370,6 +383,14 @@ impl Visit for Lines {
     }
     fn absent(&mut self, name: &str) {
         self.push(name, ABSENT.into());
+    }
+    fn absent_nested(&mut self, _name: &str) {
+        // Nothing. A record that *is* there contributes no column to its
+        // parent either — it opens a table of its own — so writing one for the
+        // absent case made rows disagree with their own header, and every
+        // field after the gap read as its neighbour. A process with no `io` is
+        // a process with no row under `sample.procs.io`, which is where a
+        // reader looks for it.
     }
     fn open(&mut self, name: &str, list: bool) {
         // An element of a list keeps its parent's label and puts its position
@@ -410,9 +431,12 @@ pub fn sample_json(s: &Sample) -> String {
     out
 }
 
-pub fn sample_lines(s: &Sample) -> String {
+/// Many samples as one stream, with one header block for all of them.
+pub fn lines_of(samples: &[Sample]) -> String {
     let mut l = Lines::default();
-    s.emit("sample", &mut l);
+    for s in samples {
+        l.add(s);
+    }
     l.finish()
 }
 
@@ -489,7 +513,7 @@ mod tests {
         zeroed.steal = Some(0.0);
         assert!(sample_json(&zeroed).contains("\"steal\":0"));
 
-        let lines = sample_lines(&s);
+        let lines = lines_of(std::slice::from_ref(&s));
         let cpu_row = lines
             .lines()
             .find(|l| l.starts_with("sample\t"))
@@ -532,7 +556,7 @@ mod tests {
     fn the_line_format_says_what_its_columns_are() {
         // A positional format that does not name its positions is atop's, and
         // its documentation is a man page somebody has to keep in step.
-        let out = sample_lines(&fixture());
+        let out = lines_of(&[fixture()]);
         let procs: Vec<&str> = out
             .lines()
             .filter(|l| l.starts_with("sample.procs\t"))
@@ -574,7 +598,7 @@ mod tests {
                 ..ProcSample::default()
             })
             .collect();
-        let out = sample_lines(&s);
+        let out = lines_of(std::slice::from_ref(&s));
 
         let rows: Vec<&str> = out
             .lines()
@@ -604,11 +628,118 @@ mod tests {
     }
 
     #[test]
+    fn an_absent_record_does_not_widen_the_row_above_it() {
+        // The failure this format cannot have. A record that *is* there
+        // contributes no column to its parent — it opens a table of its own —
+        // so writing one for the absent case made rows disagree with their own
+        // header, and every field after the gap read as its neighbour. On this
+        // machine that was 411 rows of eighteen columns and 180 of nineteen,
+        // under one header naming eighteen.
+        let mut s = fixture();
+        s.procs = (0..4)
+            .map(|i| ProcSample {
+                pid: 40 + i,
+                name: Arc::from("p"),
+                user: Arc::from("root"),
+                // Present on some, absent on others, in one table.
+                io: (i % 2 == 0).then_some(crate::sample::IoRates { read: 1, write: 2 }),
+                ..ProcSample::default()
+            })
+            .collect();
+        let out = lines_of(std::slice::from_ref(&s));
+
+        let widths: std::collections::HashSet<usize> = out
+            .lines()
+            .filter(|l| l.starts_with("sample.procs\t"))
+            .map(|l| l.split(SEP).count())
+            .collect();
+        assert_eq!(
+            widths.len(),
+            1,
+            "rows under one label had different widths: {widths:?}\n{out}"
+        );
+
+        // The absence is not lost: it is the missing row under the nested
+        // label, which is where a reader looks for it.
+        let io: Vec<&str> = out
+            .lines()
+            .filter(|l| l.starts_with("sample.procs.io\t"))
+            .map(|l| l.split(SEP).nth(1).unwrap())
+            .collect();
+        assert_eq!(io, ["0", "2"], "{out}");
+
+        // JSON keeps it as a null, because JSON has room to.
+        assert_eq!(sample_json(&s).matches("\"io\":null").count(), 2);
+    }
+
+    #[test]
+    fn a_day_is_one_stream_with_one_header_block() {
+        // A fresh writer per sample re-emitted the whole header block for
+        // every one of them — a hundred and forty-four copies at the default
+        // logging interval, and a reader building a column map has to decide
+        // which copy it meant.
+        let day: Vec<Sample> = (0..5).map(|_| fixture()).collect();
+        let out = lines_of(&day);
+        assert_eq!(
+            out.lines().filter(|l| l.starts_with("#sample\t")).count(),
+            1,
+            "the header block was written more than once"
+        );
+        assert_eq!(out.lines().filter(|l| l.starts_with("sample\t")).count(), 5);
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.starts_with("#sample.procs\t"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_percentage_is_not_widened_into_ten_digits_of_noise() {
+        // Every percentage poptop reports is an `f32`. Cast to `f64`,
+        // `51.7083` becomes 51.70830535888672 — ten digits of arithmetic that
+        // were never measured, and a consumer reading them is reading the
+        // width of a float.
+        let mut s = fixture();
+        s.cpu_total = 51.7083;
+        s.iowait = Some(0.1);
+        let json = sample_json(&s);
+        // The exact token, with a delimiter after it: `contains` on a prefix
+        // passes happily against `51.70830154418945`, which is the artefact
+        // this exists to catch.
+        assert!(json.contains("\"cpu_total\":51.7083,"), "{json}");
+        assert!(json.contains("\"iowait\":0.1,"), "{json}");
+
+        // And no figure anywhere in a sample carries more digits than an f32
+        // has: seven is its precision, and nine is the most any shortest
+        // round-trip representation needs.
+        for tok in json.split(|c: char| !(c.is_ascii_digit() || c == '.')) {
+            if let Some((_, frac)) = tok.split_once('.') {
+                assert!(
+                    frac.len() <= 9,
+                    "a float was widened by a cast: {tok} in {json}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_row_has_exactly_the_columns_its_header_names() {
         // A positional format whose rows and header disagree is worse than no
         // format: every consumer reads the wrong column and none of them
         // notices.
-        let out = sample_lines(&fixture());
+        // Two processes, one with `io` and one without, so the shape that
+        // actually broke this is in the fixture rather than only in the test
+        // that was written for it.
+        let mut s = fixture();
+        s.procs.push(ProcSample {
+            pid: 43,
+            name: Arc::from("q"),
+            user: Arc::from("root"),
+            io: Some(crate::sample::IoRates { read: 1, write: 2 }),
+            ..ProcSample::default()
+        });
+        let out = lines_of(std::slice::from_ref(&s));
         let mut headers = std::collections::HashMap::new();
         for l in out.lines() {
             if let Some(h) = l.strip_prefix('#') {

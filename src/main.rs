@@ -252,6 +252,20 @@ macro_rules! outln {
     }};
 }
 
+/// The same, without the newline, for output that carries its own.
+///
+/// `--export` and `--schema` used bare `print!` and so panicked on a broken
+/// pipe — `| head`, `| grep -m1`, `| jq … | head` — which is precisely what
+/// `outln!` exists to prevent, on the formats most likely to be piped.
+macro_rules! out {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if write!(std::io::stdout(), $($arg)*).is_err() {
+            return Ok(());
+        }
+    }};
+}
+
 /// Print what could not be used.
 ///
 /// Held rather than printed where it was found, because config is read before
@@ -309,7 +323,7 @@ fn main() -> io::Result<()> {
     match args.first().map(String::as_str) {
         Some("--schema") => {
             flush(&warnings);
-            print!("{}", export::schema_json());
+            out!("{}", export::schema_json());
             return Ok(());
         }
         // Both spellings. `--export=json` is what the help shows and what
@@ -356,19 +370,30 @@ fn main() -> io::Result<()> {
                     // Two samples, as `--once` takes: every rate here is a
                     // difference, and one reading has nothing to difference
                     // against.
-                    collector.sample(Needs::NONE.with(Source::Io))?;
+                    //
+                    // Every optional source, unlike the interactive path where
+                    // each is gated on a view being open. A script asking for
+                    // "every metric by name" means it, and `null` because
+                    // poptop chose not to ask is indistinguishable from `null`
+                    // because the kernel does not publish it — which is the one
+                    // distinction this whole format exists to keep.
+                    let needs = Source::ALL.into_iter().fold(Needs::NONE, |n, s| n.with(s));
+                    collector.sample(needs)?;
                     std::thread::sleep(settings.interval);
-                    vec![collector.sample(Needs::NONE.with(Source::Io))?]
+                    vec![collector.sample(needs)?]
                 }
             };
-            // One object or one block of lines per sample, newline-delimited,
-            // so a day is streamable and `head` on it is not a parse error.
-            for s in &samples {
-                let text = match how {
-                    "json" => export::sample_json(s),
-                    _ => export::sample_lines(s),
-                };
-                print!("{text}");
+            // One object per sample for JSON, newline-delimited, so a day is
+            // streamable and `head` on it is not a parse error. For the line
+            // format one stream, so the header block is written once for the
+            // whole day rather than once a sample.
+            match how {
+                "json" => {
+                    for s in &samples {
+                        out!("{}", export::sample_json(s));
+                    }
+                }
+                _ => out!("{}", export::lines_of(&samples)),
             }
             return Ok(());
         }
