@@ -18,6 +18,7 @@ mod history;
 mod log;
 mod persist;
 mod query;
+mod report;
 mod sample;
 mod store;
 mod theme;
@@ -46,6 +47,9 @@ USAGE:
                     every metric, by name, for a script. With a date, the whole
                     of that recorded day rather than the machine now.
     poptop --schema   what --export reports: every record, field, type and unit
+    poptop --report [DATE]
+                    summarise a recorded day: peak and sustained, and what was
+                    responsible for each. Today unless a date is given.
     poptop --bench    time 20 collection passes (development)
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
@@ -321,6 +325,58 @@ fn main() -> io::Result<()> {
         .with_overrides(&settings.overrides);
 
     match args.first().map(String::as_str) {
+        // A report is not interactive, so it is a subcommand rather than a
+        // mode: `poptop --report` from cron is how atop is used
+        // non-interactively, and a report that needed a terminal could not be.
+        Some(a) if a == "--report" || a.starts_with("--report=") => {
+            let inline = a.strip_prefix("--report=").filter(|s| !s.is_empty());
+            let text = inline.or_else(|| args.get(1).map(String::as_str));
+            flush(&warnings);
+            let Some(dir) = log::dir() else {
+                eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
+                std::process::exit(2);
+            };
+            // Today unless a day is named. The cron case is a nightly summary
+            // of the day that has just happened, and making it spell the date
+            // out would make it a date-arithmetic problem in a crontab.
+            let date = match text {
+                Some(t) => match log::Date::parse(t) {
+                    Some(d) => d,
+                    None => {
+                        eprintln!("poptop: `{t}` is not a date. Write it as YYYY-MM-DD");
+                        std::process::exit(2);
+                    }
+                },
+                None => match log::date_of(std::time::SystemTime::now()) {
+                    Some(d) => d,
+                    None => {
+                        eprintln!("poptop: this machine's clock is before the epoch");
+                        std::process::exit(2);
+                    }
+                },
+            };
+            let (samples, said) = match log::open_day(&dir, date) {
+                Ok(pair) => pair,
+                Err(why) => {
+                    eprintln!("poptop: {why}");
+                    std::process::exit(1);
+                }
+            };
+            for note in said {
+                eprintln!("poptop: {note}");
+            }
+            outln!("poptop report for {date}");
+            out!(
+                "{}",
+                report::render(
+                    &samples,
+                    settings.warn,
+                    REPORT_WINDOW,
+                    settings.log_interval
+                )
+            );
+            return Ok(());
+        }
         Some("--schema") => {
             flush(&warnings);
             out!("{}", export::schema_json());
@@ -1084,6 +1140,13 @@ fn human(b: u64) -> String {
     }
     format!("{v:.1}{}", U[i])
 }
+
+/// How long a stretch has to be before a report calls it sustained.
+///
+/// Five minutes, which is the shortest run of trouble anybody investigates. A
+/// window that is too short reports every spike as a run, and one too long
+/// misses the incident that resolved itself before anyone was paged.
+const REPORT_WINDOW: Duration = Duration::from_secs(300);
 
 /// Where and how often the log is written, when it is written at all.
 ///

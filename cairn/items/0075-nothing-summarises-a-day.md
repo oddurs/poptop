@@ -2,12 +2,12 @@
 id: 75
 title: Nothing summarises a day
 type: feature
-status: backlog
+status: done
 milestone: v2.2
 depends_on:
 - 73
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 priority: p2
 area: ui
 ---
@@ -46,7 +46,7 @@ Replay, since a report is over recorded history rather than the live buffer.
 
 ## Acceptance criteria
 
-- [ ] A period can be summarised without watching it
-- [ ] The summary names what was responsible, not only that something was
-- [ ] Peak and sustained are distinguished, not conflated into a mean
-- [ ] Runs without a terminal, for cron
+- [x] A period can be summarised without watching it
+- [x] The summary names what was responsible, not only that something was
+- [x] Peak and sustained are distinguished, not conflated into a mean
+- [x] Runs without a terminal, for cron

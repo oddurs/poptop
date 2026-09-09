@@ -241,6 +241,31 @@ fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<SystemTime> {
     (t >= 0).then(|| UNIX_EPOCH + std::time::Duration::from_secs(t as u64))
 }
 
+/// The local wall clock at an instant, as hours, minutes and seconds.
+///
+/// The other half of [`date_of`], and local for the same reason: a report of
+/// what happened at 03:00 is read by somebody who was asleep at 03:00 where the
+/// machine is.
+pub fn local_clock(at: SystemTime) -> Option<(u32, u32, u32)> {
+    let secs = at.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let mut tm = Tm::default();
+    // SAFETY: as `date_of`. A stack local of the right layout, and the
+    // reentrant form takes no lock and returns no shared buffer.
+    if unsafe { localtime_r(&secs, &mut tm) }.is_null() {
+        return None;
+    }
+    Some((tm.hour as u32, tm.min as u32, tm.sec as u32))
+}
+
+/// `03:04:05` in local time, or `??:??:??` for an instant the C library will
+/// not place.
+pub fn clock_string(at: SystemTime) -> String {
+    match local_clock(at) {
+        Some((h, m, s)) => format!("{h:02}:{m:02}:{s:02}"),
+        None => "??:??:??".into(),
+    }
+}
+
 /// Where the daily files live.
 ///
 /// Beside the restart store rather than in `/var/log`: this is per-user state
@@ -546,7 +571,11 @@ pub fn spacing(samples: &[Sample]) -> Option<std::time::Duration> {
         return None;
     }
     gaps.sort_unstable();
-    Some(gaps[gaps.len() / 2])
+    // The lower middle where the count is even. With two gaps — three samples,
+    // one of them after a hole — the upper middle *is* the hole, and a day
+    // recorded every second would be called a two-hour log because it was
+    // interrupted once.
+    Some(gaps[(gaps.len() - 1) / 2])
 }
 
 pub fn open_day(dir: &Path, date: Date) -> Result<(Vec<Sample>, Vec<String>), String> {
@@ -966,16 +995,6 @@ mod tests {
         );
     }
 
-    /// The local wall clock at an instant, for the round trip below.
-    fn local_clock(at: SystemTime) -> (i32, i32, i32) {
-        let secs = at.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-        let mut tm = Tm::default();
-        // SAFETY: as `date_of`. A stack local of the right layout, and the
-        // reentrant form takes no lock and returns no shared buffer.
-        assert!(!unsafe { localtime_r(&secs, &mut tm) }.is_null());
-        (tm.hour, tm.min, tm.sec)
-    }
-
     #[test]
     fn a_typed_time_is_the_time_the_clock_showed() {
         // `03:00` in July and `03:00` in January are different offsets from
@@ -995,8 +1014,8 @@ mod tests {
             };
             let at = at_local(d, 3, 0, 0).expect("a real moment");
             assert_eq!(
-                local_clock(at),
-                (3, 0, 0),
+                super::local_clock(at),
+                Some((3, 0, 0)),
                 "03:00 in month {month} came back as another time"
             );
             assert_eq!(date_of(at), Some(d), "03:00 landed on another day");

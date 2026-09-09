@@ -894,6 +894,60 @@ Two poptop windows with `store = on` are fine — each writes through its own
 temporary file — but the second to exit replaces the first's history rather
 than merging it. Merging two buffers is a different feature.
 
+### What happened while you were asleep
+
+`atopsar` reads a logfile and prints reports; it is how atop is used from cron.
+poptop could show you any instant and could not describe a stretch of them —
+"what was the worst hour yesterday" is a question the buffer contains the answer
+to and the interface could not ask.
+
+```sh
+poptop --report              # today
+poptop --report 2026-09-08   # a recorded day
+```
+
+```text
+period  03:00:00 to 10:50:00, 48 samples every 10m00s
+cpu     peak 99.0% at 09:40:00 (backup)
+        above 50% for 2h10m of 8h00m, worst run 74.0% from 06:20:00 (cc1plus)
+memory  peak 78.0% at 06:20:00 (cc1plus)
+        above 50% for 4h40m of 8h00m, worst run 78.0% from 06:20:00 (cc1plus)
+iowait  peak 61.0% at 09:40:00
+        above 50% for 10m00s of 8h00m, worst run 21.0% from 09:20:00
+```
+
+Two things make this more than atopsar's version.
+
+**It names what was responsible.** poptop retains whole process tables, so the
+report can say *which* process owned the worst minute rather than only that the
+minute was bad. atop cannot produce that from its own logs at default settings,
+because its process records are per-interval. It is also why the peak and the
+run above name different processes in the example: the spike was `backup`, and
+the afternoon was `cc1plus`. Those are different answers to different questions
+and a report that gave one of them would send you after the wrong thing.
+
+**Peak and sustained are never merged into a mean.** A machine that hit 100% for
+one second and a machine that sat at 60% for an hour both average to something
+unremarkable, and only one of them was in trouble. So there are three figures,
+each answering its own question: the highest it reached and when, how long it
+spent above your `warn` threshold, and the worst five-minute run. A period
+shorter than that window reports no run at all rather than calling its whole
+length "the worst five minutes".
+
+**Time above the threshold is counted in samples**, not by subtracting
+timestamps: a machine switched off for two hours between a busy sample and the
+next one did not spend those two hours busy. Where the period has holes in it
+the report says so first, because every figure below is about the parts that
+were watched.
+
+A figure the platform never reported is absent from the report rather than a
+line of zeroes — `stall` and `iowait` simply do not appear on macOS. A report is
+read by somebody who was not there, so an invented zero costs more here than
+anywhere else.
+
+It needs no terminal, which is the point: `poptop --report | mail -s "$(hostname)
+yesterday" ops@` is the whole cron job.
+
 ### Output you can build on
 
 `--once` prints a fixed set of lines for a human who is scripting around them.
