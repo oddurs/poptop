@@ -572,6 +572,93 @@ fn a_running_server_is_named_and_an_absent_one_is_not() {
 }
 
 #[test]
+fn a_recorded_day_scrubs_like_the_live_buffer() {
+    // The claim `--read` rests on: the cursor, the process table that follows
+    // it and the timeline all work on a buffer and none of them cares where
+    // the buffer came from. Built the way `--read` builds it — capacity sized
+    // to the day, every sample pushed, the cursor left at the oldest — so a
+    // change that made replay a special case shows up here.
+    let day: Vec<Sample> = (0..40)
+        .map(|i| {
+            let mut s = sample_at((i as f32 * 2.5) % 100.0, 3600 - i * 60);
+            s.procs = vec![proc_named(4242, "postgres", i as f32, 1 << 20)];
+            s
+        })
+        .collect();
+
+    let mut app = App::new(day.len());
+    for s in day {
+        app.history.push(s);
+    }
+    app.history.goto_oldest();
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let oldest = rows(&app, 120, 30);
+    assert!(
+        oldest.iter().any(|r| r.contains("postgres")),
+        "a recorded day drew no process table:\n{}",
+        oldest.join("\n")
+    );
+    // Paused, not live: opening a day and being taken to the present would
+    // discard the thing that was asked for.
+    assert!(
+        oldest[0].contains("PAUSED"),
+        "a recorded day opened live: {}",
+        oldest[0]
+    );
+
+    // And the cursor moves through it, showing a different moment.
+    app.history.scrub(20);
+    let middle = rows(&app, 120, 30);
+    assert_ne!(
+        oldest[0], middle[0],
+        "scrubbing a recorded day changed nothing"
+    );
+    app.history.goto_oldest();
+    assert_eq!(rows(&app, 120, 30)[0], oldest[0]);
+
+    // A live sample must not be pushed into it. The buffer is sized to the day
+    // exactly, so a push evicts the oldest recorded sample and shifts the
+    // pinned cursor onto a different moment — a day left open for its own
+    // length would become entirely live samples, silently. `run` skips the
+    // push while replaying; this is the property that makes it have to.
+    app.history.push(sample(99.0));
+    assert_ne!(
+        rows(&app, 120, 30)[0],
+        oldest[0],
+        "pushing into a full replay buffer left the view alone, so this test no \
+         longer covers why `run` must not do it"
+    );
+}
+
+#[test]
+fn a_log_that_stopped_says_so_on_the_panel_and_not_only_at_exit() {
+    // A disk that filled at 10:00 is something the reader needs at 10:00. A
+    // message they see when they quit is one they see after it stopped
+    // mattering — and the claim in the README is that poptop says so, once.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let quiet = rows(&app, 160, 30);
+    assert!(
+        !quiet.iter().any(|r| r.contains("size limit")),
+        "a healthy log announced itself"
+    );
+
+    app.log_note = Some("the log is at its size limit and is no longer being written to".into());
+    let said = rows(&app, 160, 30);
+    assert!(
+        said.iter().any(|r| r.contains("size limit")),
+        "the log stopped and the panel said nothing:\n{}",
+        said.join("\n")
+    );
+
+    // And it goes when the reason does.
+    app.log_note = None;
+    assert!(!rows(&app, 160, 30).iter().any(|r| r.contains("size limit")));
+}
+
+#[test]
 fn renders_without_panicking() {
     let mut app = App::new(60);
     app.push(sample(42.0));

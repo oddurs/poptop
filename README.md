@@ -893,6 +893,135 @@ Two poptop windows with `store = on` are fine — each writes through its own
 temporary file — but the second to exit replaces the first's history rather
 than merging it. Merging two buffers is a different feature.
 
+### Opening yesterday
+
+The restart store above is a convenience. This is the other half of atop's
+argument, and the rule is worth stating before the mechanics:
+
+> **poptop logs if it is left running, and works if it was not.**
+
+The in-session buffer is untouched. A box that has never run poptop still gets
+its ten minutes from a cold start, because that is the whole position. The log
+is what accumulates when the tool happens to have been up — and it is off until
+you ask, once:
+
+```ini
+log = on
+```
+
+One file a day, `poptop-YYYYMMDD`, in `$XDG_STATE_HOME/poptop/log`. Per-user,
+no privileges: `/var/log` would need root or would silently not be written, and
+poptop is not a system service.
+
+```sh
+poptop --days              # 2026-09-08  12.2M
+poptop --read 2026-09-08   # open it, cursor on the oldest sample
+```
+
+A recorded day is scrubbed with the same keys as a live one, because it is the
+same buffer — the cursor, the process table that follows it, the detail view and
+the filter at the cursor all work on a buffer and none of them cares where the
+buffer came from. It opens paused on the oldest sample: somebody who opened a
+day meant to look at the day.
+
+Three things follow from that and are easy to get wrong:
+
+- **Live samples are not pushed into it.** The buffer is sized to the day
+  exactly, so a push would evict the oldest recorded sample and shift the pinned
+  cursor onto a different moment — a day left open for its own length would
+  quietly become entirely live samples. Sampling continues (the log keeps being
+  written, the collector's counters stay warm); the buffer does not change.
+- **The interval is the one the day was recorded at**, taken as the median gap
+  between its samples. Almost everything is scaled by it — the timeline draws a
+  seam past twice the nominal interval, the growth column will not divide by an
+  unknown span, the panel says how much time is buffered — so a ten-minute log
+  read at one second is drawn as nothing but seams and labelled as two minutes.
+  The median rather than the mean, because a day with a four-hour hole in it,
+  where poptop was not running, is still a ten-minute log.
+- **The restart store is never written from a replay.** With `store = on`,
+  saving a replayed day would replace your real restart history with whatever
+  day you opened, and you would get it back on the next ordinary launch.
+
+A day that spans a reboot is kept whole and says so. A process is identified by
+pid and start time, and start time only means anything within one boot, so two
+unrelated programs either side of the restart can share a pid — the `HISTORY`
+column would draw them as one line.
+
+`poptop --once --log=on` writes one sample and exits, so a day can be filled
+from cron without leaving a terminal open. It applies retention too, and a log
+that cannot be written — a full disk, a read-only state directory, no `HOME` at
+all — is a line on stderr and never a reason not to print the sample. Nothing
+poptop prints depends on the log.
+
+**Appended while running, not written on exit.** That is the opposite bargain
+from the restart store, deliberately: a store that loses the buffer to `kill -9`
+is right, because it must not become load-bearing, and a *log* that loses the
+day to a crash is useless — the crash is the thing you opened it to look at. A
+`kill -9` costs at most the interval since the last append.
+
+**Every entry carries its own schema**, which is what the format in
+`persist.rs` was for. Upgrade poptop halfway through a day and the morning is
+still readable; an entry this build cannot decode costs that entry and says so,
+not the day. A write cut short by a power failure costs the last entry and says
+that too.
+
+#### What it costs, measured
+
+At 571 processes on this laptop, one entry is **86.6 KB**. That is more than the
+restart store's 24 KB a sample, and the difference is the point: the store
+writes one string table for six hundred samples, and every log entry carries its
+own so that it can be read on its own.
+
+| `log-interval` | a day | seven days |
+| --- | --- | --- |
+| `10m` (default) | 12.2 MB | 85 MB |
+| `1m` | 121.8 MB | 852 MB |
+| `10s` | 730.7 MB | 5.1 GB |
+
+So the interval is the setting that matters, and the default is atop's for the
+same reason: a day of ten-minute snapshots is what an incident review reads. Ten
+minutes is a **snapshot**, not an average of the ten minutes before it — a spike
+between two entries is not in the log, exactly as it is not in atop's.
+
+#### Retention
+
+Bounded by age **and** by bytes, defaulting to seven days and 512 MB:
+
+```ini
+log-days  = 7
+log-bytes = 512M
+```
+
+The byte bound is the one that holds, because a sample carries a whole process
+table: a build box with four thousand processes writes several times what a
+laptop does at the same settings, so a rule in days alone is a different rule on
+every machine.
+
+`log-days` counts **calendar days**, not files: on a machine that runs poptop
+occasionally, "the seven newest files" would keep one from last year and expire
+nothing. And once the byte budget is spent it stays spent — a large day dropped
+must not leave a smaller older one behind it, which would be retention with a
+hole in it and an older file told it was past a limit the newer one had already
+broken.
+
+It bounds the **writing**, not only the keeping. Today's file is never pruned —
+it is the history of the session that is running, and deleting it would take the
+thing you are looking at — so a rule that only decided what to keep would watch
+`log-interval = 1s` fill a disk in a day and do nothing about it. Once the logs
+reach the budget poptop stops appending, and says so **on the panel while it is
+true**, not only in the lines it prints when you quit: a disk that filled at
+10:00 is something you need to know at 10:00.
+
+One budget, one meaning. `log-bytes` is what poptop's logs may occupy in total —
+the write cap and the retention rule are the same number weighed the same way,
+because a cap that applied per-file while retention applied across files would
+be two limits wearing one name.
+
+Retention runs when the date changes rather than on a timer, so a poptop left
+running over midnight applies it. Files poptop did not write are never
+candidates: this is the one place in the tool that deletes a user's data, and
+the rule that decides is a pure function with its own tests.
+
 ### Storage
 
 The header can already say `WAIT 26.7%` and `BLOCKED 30`, and until recently it

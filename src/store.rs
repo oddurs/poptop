@@ -62,7 +62,7 @@ pub fn same_boot(a: SystemTime, b: SystemTime) -> bool {
     let delta = a.duration_since(b).or_else(|_| b.duration_since(a));
     delta.is_ok_and(|d| d < Duration::from_secs(5))
 }
-const MAGIC: &[u8; 10] = b"poptophist";
+pub const MAGIC: &[u8; 10] = b"poptophist";
 
 /// A ceiling on the file, independent of the buffer's own bound.
 ///

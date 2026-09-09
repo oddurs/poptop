@@ -3235,6 +3235,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         ),
     };
 
+    // Why the log stopped. Ranked with the withheld sources above and for the
+    // same reason: history nobody is recording is an omission, and one the
+    // reader has to hear about while it is happening rather than when they
+    // quit.
+    let logging = match app.log_note.as_deref() {
+        Some(why) => format!(" · {why}"),
+        None => String::new(),
+    };
+
     // Why the expansion is showing nothing. An expanded process with no rows
     // under it is indistinguishable from a process with one thread, and the
     // reader who pressed the key deserves to know which.
@@ -3334,6 +3343,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         (10, all_one, plain),
         (20, hidden, plain),
         (22, afford, app.theme.warning_style()),
+        // Beside the withheld sources, and just under them. Both are poptop
+        // saying it has stopped recording something; this one is history
+        // rather than a column, and the reader can act on it — the interval,
+        // the byte budget, or the disk.
+        (23, logging, app.theme.warning_style()),
         (28, threads, plain),
         (
             40,
