@@ -894,6 +894,61 @@ Two poptop windows with `store = on` are fine — each writes through its own
 temporary file — but the second to exit replaces the first's history rather
 than merging it. Merging two buffers is a different feature.
 
+### Output you can build on
+
+`--once` prints a fixed set of lines for a human who is scripting around them.
+This is the other thing — a tool you can build on rather than one you watch.
+
+```sh
+poptop --export=json              # one sample, one JSON object, one line
+poptop --export=line              # tab-separated, one label per table
+poptop --export=json 2026-09-08   # the whole of a recorded day
+poptop --schema                   # every record, field, type and unit
+```
+
+**The schema is emitted, not documented.** atop's label set lives in its man
+page, which is a second thing to keep in step with the code. poptop already
+declares every record and field once — for the store's codec — and the walk over
+them is generated from that same list, so this is two visitors over one
+declaration. A field added to a sample reaches both formats or fails to compile.
+Machine-readable output that quietly stops mentioning a metric is worse than
+none, and a hand-written list of what to print is exactly that waiting to
+happen.
+
+The one thing not generated is the **unit** — `u64` is bytes here and a count
+there, so that is a table. It is checked against the schema by a test: a field
+with no unit is a build failure, not something a user finds.
+
+```json
+{"name": "rss", "type": "integer", "unit": "bytes", "optional": true}
+```
+
+**Absence is `null`, never zero.** The rule the whole tool is built on matters
+more here, not less: a consumer that cannot tell "nobody said" from "none
+happened" will average one into the other. The line format writes `-`, which no
+number it emits can be confused with.
+
+**The line format names its columns.** A positional format that does not say
+what its positions are is a format whose documentation is somewhere else:
+
+```text
+#sample.procs	i	pid	ppid	name	user	cpu	rss	threads	state	started	…
+sample.procs	0	37757	26333	claude	oddurs	2.33	615186432	40	S	…
+```
+
+One label per table, not one per row — `grep '^sample.procs'` and read them.
+Nested rows carry the same `i`, so `sample.procs.io` joins back to the process
+it belongs to. The separator is a tab and never appears inside a value, whatever
+the kernel had in a process name.
+
+**Stability.** The names are the store's field names, and the store's format is
+already versioned: a file written by another version is discarded rather than
+guessed at. The same promise applies here — within a version the names, units
+and shapes do not change, and `--schema` carries the version so a consumer can
+check rather than assume. Across versions fields may be added, and a consumer
+that ignores names it does not know will keep working; a field that is *removed*
+or *renamed* is a breaking change and will be one deliberately.
+
 ### Opening yesterday
 
 The restart store above is a convenience. This is the other half of atop's

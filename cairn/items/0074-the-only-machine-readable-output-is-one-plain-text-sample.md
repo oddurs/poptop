@@ -2,12 +2,12 @@
 id: 74
 title: The only machine-readable output is one plain-text sample
 type: feature
-status: backlog
+status: done
 milestone: v2.2
 depends_on:
 - 58
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-09
 priority: p1
 area: ui
 ---
@@ -49,8 +49,8 @@ metrics will drift, and the drift will be silent.
 
 ## Acceptance criteria
 
-- [ ] Every collected metric is reachable by name from a script
-- [ ] Both a line format and JSON
-- [ ] The schema is emitted, not only documented
-- [ ] Absence is distinguishable from zero in both formats
-- [ ] Output is stable across versions, or its instability is stated
+- [x] Every collected metric is reachable by name from a script
+- [x] Both a line format and JSON
+- [x] The schema is emitted, not only documented
+- [x] Absence is distinguishable from zero in both formats
+- [x] Output is stable across versions, or its instability is stated

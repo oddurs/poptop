@@ -12,6 +12,7 @@ mod check;
 mod collect;
 mod config;
 mod cvd;
+mod export;
 mod glyphs;
 mod history;
 mod log;
@@ -41,6 +42,10 @@ USAGE:
     poptop --read DATE
                     open a recorded day (YYYY-MM-DD) instead of live
     poptop --days     list the recorded days and their sizes
+    poptop --export=json|line [DATE]
+                    every metric, by name, for a script. With a date, the whole
+                    of that recorded day rather than the machine now.
+    poptop --schema   what --export reports: every record, field, type and unit
     poptop --bench    time 20 collection passes (development)
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
@@ -302,6 +307,71 @@ fn main() -> io::Result<()> {
         .with_overrides(&settings.overrides);
 
     match args.first().map(String::as_str) {
+        Some("--schema") => {
+            flush(&warnings);
+            print!("{}", export::schema_json());
+            return Ok(());
+        }
+        // Both spellings. `--export=json` is what the help shows and what
+        // every other flag here looks like; `--export json` is what a hand
+        // reaches for. Neither is worth an error message.
+        Some(a) if a == "--export" || a.starts_with("--export=") => {
+            let inline = a.strip_prefix("--export=").filter(|s| !s.is_empty());
+            let how = inline.or_else(|| args.get(1).map(String::as_str));
+            let Some(how @ ("json" | "line")) = how else {
+                flush(&warnings);
+                eprintln!("poptop: --export takes `json` or `line`");
+                std::process::exit(2);
+            };
+            // A day, if one was named; otherwise the machine now. Reading
+            // history is not a separate feature — it is the same output over a
+            // different buffer, which is the whole reason the store carries a
+            // schema.
+            let day = args.get(if inline.is_some() { 1 } else { 2 });
+            flush(&warnings);
+            let samples = match day {
+                Some(text) => {
+                    let Some(date) = log::Date::parse(text) else {
+                        eprintln!("poptop: `{text}` is not a date. Write it as YYYY-MM-DD");
+                        std::process::exit(2);
+                    };
+                    let Some(dir) = log::dir() else {
+                        eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
+                        std::process::exit(2);
+                    };
+                    match log::open_day(&dir, date) {
+                        Ok((s, said)) => {
+                            for note in said {
+                                eprintln!("poptop: {note}");
+                            }
+                            s
+                        }
+                        Err(why) => {
+                            eprintln!("poptop: {why}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                None => {
+                    // Two samples, as `--once` takes: every rate here is a
+                    // difference, and one reading has nothing to difference
+                    // against.
+                    collector.sample(Needs::NONE.with(Source::Io))?;
+                    std::thread::sleep(settings.interval);
+                    vec![collector.sample(Needs::NONE.with(Source::Io))?]
+                }
+            };
+            // One object or one block of lines per sample, newline-delimited,
+            // so a day is streamable and `head` on it is not a parse error.
+            for s in &samples {
+                let text = match how {
+                    "json" => export::sample_json(s),
+                    _ => export::sample_lines(s),
+                };
+                print!("{text}");
+            }
+            return Ok(());
+        }
         Some("--days") => {
             flush(&warnings);
             let Some(dir) = log::dir() else {
