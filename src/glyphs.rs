@@ -12,32 +12,164 @@
 /// How a value is drawn when one character cell must show two samples.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum GlyphSet {
-    /// Braille. Two samples per cell, four levels each. The default.
-    #[default]
+    /// Braille. Four sub-rows a cell, so the finest line of the three.
     Braille,
-    /// Quadrant blocks. Two samples per cell, but only two levels each — wider
-    /// font support than braille.
+    /// Half blocks — `▄▀█`. Two sub-rows a cell, one weight throughout, and
+    /// legible in any font that draws a terminal. The default.
+    #[default]
     Block,
+    /// Box drawing — `╭ ╮ ╰ ╯ ─ │`. One level a row, and the cleanest line of
+    /// the four: the corners make a stroke the eye follows without effort.
+    Line,
     /// Pure ASCII. One sample per cell; the pair is merged by taking the peak.
     Ascii,
 }
 
+/// Whether a set fills the area under a value or outlines it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Draw {
+    /// A column of ink from the baseline up to the value.
+    Bars,
+    /// The outline alone, for a series that sits high and flat.
+    Line,
+}
+
 impl GlyphSet {
+    /// The names `graph` and `glyphs` accept.
+    ///
+    /// `line` is the box-drawing set: one level a row rather than two, and the
+    /// cleanest of the four to read, at the cost of vertical resolution.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "braille" => Some(Self::Braille),
             "block" => Some(Self::Block),
+            "line" => Some(Self::Line),
             "ascii" => Some(Self::Ascii),
             _ => None,
         }
     }
 
-    /// Samples represented by one character cell.
-    pub fn samples_per_cell(self) -> usize {
+    /// Every name, for an error message that lists what it would have taken.
+    pub const NAMES: &'static str = "block, braille, line or ascii";
+
+    /// How this set puts a value on the screen.
+    ///
+    /// Three of the four fill: a column of ink from the baseline up to the
+    /// value, which is what a sparkline has always been and what the eye reads
+    /// fastest. `Line` draws the outline instead, for the case where a series
+    /// is high and flat and the fill would be a wall.
+    pub fn draws(self) -> Draw {
         match self {
-            Self::Braille | Self::Block => 2,
-            Self::Ascii => 1,
+            Self::Block | Self::Ascii | Self::Braille => Draw::Bars,
+            Self::Line => Draw::Line,
         }
+    }
+
+    /// Vertical levels one character cell can show.
+    ///
+    /// This is the set's whole resolution argument. The block elements have an
+    /// eighths ramp — `▁▂▃▄▅▆▇█` — so a cell shows eight. Braille has four dot
+    /// rows, and spends the difference on width instead: two samples a cell
+    /// against the block set's one. Ascii has `_ - ‾` and little else.
+    pub fn sub_rows(self) -> usize {
+        match self {
+            Self::Block => 8,
+            Self::Braille => 4,
+            Self::Ascii => 3,
+            // Box drawing has no part-height forms, so a cell is one level.
+            Self::Line => 1,
+        }
+    }
+
+    /// One cell of a bar, given how much of this row the value fills.
+    ///
+    /// `level` runs 0 (nothing) to [`sub_rows`] (the whole cell).
+    pub fn bar(self, level: usize) -> char {
+        let k = level.min(self.sub_rows());
+        match self {
+            Self::Block => [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][k],
+            Self::Ascii => [' ', '_', '-', '#'][k],
+            Self::Braille => {
+                // Both dot columns: a full-width bar rather than a half-width
+                // tick. The paired form, which puts two samples in one cell, is
+                // `glyph` below.
+                const UP: [u8; 4] = [0x40 | 0x80, 0x04 | 0x20, 0x02 | 0x10, 0x01 | 0x08];
+                let bits = UP[..k].iter().fold(0u8, |acc, d| acc | d);
+                char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' ')
+            }
+            Self::Line => {
+                if k > 0 {
+                    '─'
+                } else {
+                    ' '
+                }
+            }
+        }
+    }
+
+    /// Every character this set can draw a value with.
+    ///
+    /// Written down so a rule can be checked against it: a reference line
+    /// spelled like the series is a reference line nobody can find.
+    #[cfg(test)]
+    pub fn alphabet(self) -> Vec<char> {
+        let mut out: Vec<char> = (0..=self.sub_rows()).map(|k| self.bar(k)).collect();
+        // The table sparkline, which draws in the same set.
+        out.extend((0..=8).map(|k| self.spark_glyph(k)));
+        if self == Self::Line {
+            for &(from, to) in &[(0.0f32, 0.0f32), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)] {
+                for row in 0..3 {
+                    out.push(box_glyph(from, to, row, 3, 1.0));
+                }
+            }
+        }
+        if self.spark_samples_per_cell() == 2 {
+            // The paired form, which packs two samples into one cell.
+            for l in 0..=4 {
+                for r in 0..=4 {
+                    out.push(self.glyph(l, r));
+                }
+            }
+        }
+        out
+    }
+
+    /// Samples represented by one character cell.
+    /// How many samples a cell of a *one-row* sparkline covers.
+    ///
+    /// Braille packs two dot columns into a cell, so it shows twice the history
+    /// at four vertical levels. The other sets have no sub-cell columns but do
+    /// have eight sub-cell *rows* — the eighths ramp — so they trade that width
+    /// for nine distinct heights. In one row, height is what there is to read:
+    /// a ramp from idle to eight cores drew two levels under the paired
+    /// glyphs and draws the whole climb under the ramp.
+    pub fn spark_samples_per_cell(self) -> usize {
+        match self {
+            Self::Braille => 2,
+            _ => 1,
+        }
+    }
+
+    /// One cell of a one-row sparkline at `level` of eight.
+    pub fn spark_glyph(self, level: usize) -> char {
+        let ramp: [char; 9] = match self {
+            Self::Ascii => [' ', '.', '.', '-', '-', '=', '=', '#', '#'],
+            _ => [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'],
+        };
+        ramp[level.min(8)]
+    }
+
+    /// How many samples a column of the timeline covers.
+    ///
+    /// Two for every set, which used to be a property of the alphabet — braille
+    /// packed two dot columns into a cell, so it could show twice the history.
+    /// Drawing a *line* between cell peaks needs no horizontal sub-cell
+    /// resolution at all, so the density is now free: every set shows the same
+    /// window, and the cursor's half-cell marker keeps the same meaning in all
+    /// of them.
+    pub fn samples_per_cell(self) -> usize {
+        let _ = self;
+        2
     }
 
     /// Levels per sample, `0..=4`.
@@ -51,7 +183,7 @@ impl GlyphSet {
             Self::Block => BLOCK[l * Self::LEVELS + r],
             // No sub-cell resolution: show the peak so a spike is never hidden
             // by the sample next to it.
-            Self::Ascii => ASCII[l.max(r)],
+            Self::Line | Self::Ascii => ASCII[l.max(r)],
         }
     }
 
@@ -69,7 +201,18 @@ impl GlyphSet {
                 char::from_u32(0x2800 + (LEFT_DOTS[k - 1] | RIGHT_DOTS[k - 1])).unwrap_or(' ')
             }
             Self::Block => '─',
-            Self::Ascii => '-',
+            // Dashed, not `─`: that is the Line set's own stroke, so a solid
+            // rule would be the same character the series draws — a reference
+            // line indistinguishable from data at every colour tier.
+            // Dashed, not `─`: that is the Line set's own stroke, so a solid
+            // rule would be the same character the series draws — a reference
+            // line indistinguishable from data at every colour tier.
+            Self::Line => '┄',
+            // `~`, which is the only mark left. Ascii draws values with
+            // ` _ - # . : = |` across its bar and its sparkline, and a rule
+            // spelled like any of them is a rule that reads as a sample — the
+            // collision the Line set had, and older.
+            Self::Ascii => '~',
         }
     }
 
@@ -88,6 +231,11 @@ impl GlyphSet {
 
     /// Marker showing which half of a cell the scrub cursor sits on. Without
     /// this, packing two samples per cell would halve cursor precision.
+    /// The mark under the sample the cursor is on.
+    ///
+    /// A cell covers two samples, so a *half* is what the marker has to be:
+    /// `▌` for the older of the pair, `▐` for the newer. Marking the whole cell
+    /// would halve scrub precision in the one place precision is the point.
     pub fn cursor_marker(self, right_half: bool) -> char {
         match self {
             Self::Ascii => '^',
@@ -95,6 +243,76 @@ impl GlyphSet {
             _ => '▌',
         }
     }
+}
+
+/// The box-drawing glyph for a cell, given where the line enters and leaves.
+///
+/// The corners are what make this set worth having: `╭` and `╯` turn a staircase
+/// of dashes into a stroke the eye follows without effort. They need the
+/// direction of travel, which a bitmask cannot carry — hence a function of its
+/// own rather than an arm of [`GlyphSet::stroke`].
+pub fn box_glyph(from: f32, to: f32, row: usize, rows: usize, ceiling: f32) -> char {
+    if rows == 0 {
+        return ' ';
+    }
+    let place = |v: f32| {
+        let h = if ceiling > 0.0 {
+            v / ceiling * rows as f32
+        } else {
+            0.0
+        };
+        rows - 1 - (h.clamp(0.0, rows as f32 - 0.001) as usize)
+    };
+    let (a, b) = (place(from), place(to));
+    match (row == a, row == b) {
+        // Flat: the line arrives and leaves at the same height.
+        (true, true) => '─',
+        // The near end of a step. Which corner depends on which way it turns.
+        (true, false) => {
+            if a > b {
+                '╰'
+            } else {
+                '╮'
+            }
+        }
+        (false, true) => {
+            if a > b {
+                '╭'
+            } else {
+                '╯'
+            }
+        }
+        // Strictly between the two ends: the vertical part of the step.
+        _ if (a.min(b)..=a.max(b)).contains(&row) => '│',
+        _ => ' ',
+    }
+}
+
+/// How much of one row a bar reaches, in sub-rows.
+///
+/// `row` counts from the top and `rows` is the height of the graph, so the band
+/// this row covers is known; the answer is how far into it the value climbs.
+/// Zero means the bar is entirely below this row, `sub` that it is entirely
+/// above.
+///
+/// A value with *any* presence in the row lights at least one sub-row. Rounding
+/// it away would draw a running machine as a blank cell, which is the one thing
+/// this graph must never say.
+pub fn fill_in_row(v: f32, row: usize, rows: usize, sub: usize, ceiling: f32) -> usize {
+    if rows == 0 || sub == 0 || row >= rows {
+        return 0;
+    }
+    let top = (rows * sub) as f32;
+    let height = if ceiling > 0.0 {
+        (v / ceiling * top).clamp(0.0, top)
+    } else {
+        0.0
+    };
+    let floor = ((rows - 1 - row) * sub) as f32;
+    if height <= floor {
+        return 0;
+    }
+    ((height - floor).ceil() as usize).min(sub)
 }
 
 /// Braille cells are `U+2800` plus a dot bitmask:
@@ -621,5 +839,97 @@ mod composition_tests {
         assert_ne!(SEG_USED, SEG_CACHE);
         assert_ne!(SEG_CACHE, SEG_FREE);
         assert_ne!(SEG_USED, SEG_FREE);
+    }
+    #[test]
+    fn a_rule_is_never_spelled_like_the_series_it_rules() {
+        // A reference line and a row of samples have to be told apart at the
+        // mono tier, where both are dim and colour says nothing. Dashing does
+        // most of that work, but it only works if the mark itself is not one
+        // the series can draw: `─` is the Line set's own stroke, so a solid
+        // rule in that set was the picture drawing its own chrome.
+        //
+        // Braille is the documented exception. Every one of its 256 glyphs is a
+        // dot pattern the data can reach, so there is no spare character to
+        // reserve, and the separation there rests entirely on the dashing —
+        // which `the_rule_is_dashed_so_it_cannot_be_read_as_data` pins.
+        for set in [GlyphSet::Block, GlyphSet::Line, GlyphSet::Ascii] {
+            let drawn = set.alphabet();
+            for k in 1..=4 {
+                let rule = set.rule_glyph(k);
+                assert!(
+                    !drawn.contains(&rule),
+                    "{set:?} rules with {rule:?}, which is also one of its strokes"
+                );
+            }
+        }
+    }
+    #[test]
+    fn a_bar_resolves_every_level_its_set_claims() {
+        // `sub_rows` is the set's whole resolution argument, and it is easy to
+        // claim eight and draw two: the ramp is indexed by a level nothing
+        // checks the spread of. A series climbing through one row's worth of
+        // value has to pass through every height that row can draw, and each
+        // has to be a different character.
+        for set in [GlyphSet::Block, GlyphSet::Braille, GlyphSet::Ascii] {
+            let sub = set.sub_rows();
+            let seen: std::collections::BTreeSet<char> = (0..=100)
+                .map(|k| {
+                    // The bottom row of a three-row graph, so the whole sweep
+                    // lands inside one cell.
+                    let v = k as f32 / 100.0 * (100.0 / 3.0);
+                    set.bar(fill_in_row(v, 2, 3, sub, 100.0))
+                })
+                .collect();
+            assert_eq!(
+                seen.len(),
+                sub + 1,
+                "{set:?} claims {sub} levels a cell and drew {}: {seen:?}",
+                seen.len()
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_set_is_the_one_that_resolves_the_most() {
+        // `block` is the default because of this number, not because of font
+        // support alone: the eighths ramp puts eight levels in a cell where
+        // braille's dot rows put four. Braille buys width back — two samples a
+        // cell against block's one — so the information per cell is close, but
+        // in a graph three rows tall it is height that is scarce.
+        //
+        // Asserted rather than left to `a_bar_resolves_every_level_its_set_claims`,
+        // which only checks a set draws as many levels as it claims and so
+        // passes just as happily on a set that claims two.
+        assert_eq!(GlyphSet::default(), GlyphSet::Block);
+        assert_eq!(GlyphSet::Block.sub_rows(), 8);
+        for other in [GlyphSet::Braille, GlyphSet::Ascii, GlyphSet::Line] {
+            assert!(
+                GlyphSet::Block.sub_rows() > other.sub_rows(),
+                "{other:?} resolves at least as much as the default"
+            );
+        }
+    }
+
+    #[test]
+    fn a_running_machine_is_never_rounded_down_to_nothing() {
+        // The floor case of "never a fabricated zero". A sample that reaches a
+        // hundredth of the way into a row is not zero, and truncating it draws
+        // a blank cell — which in this graph means "nothing was recorded", a
+        // different and much stronger claim than "almost nothing happened".
+        for set in [GlyphSet::Block, GlyphSet::Braille, GlyphSet::Ascii] {
+            let sub = set.sub_rows();
+            for v in [0.001f32, 0.01, 0.1, 1.0] {
+                assert_eq!(
+                    fill_in_row(v, 2, 3, sub, 100.0),
+                    1,
+                    "{set:?} drew {v}% as {} sub-rows",
+                    fill_in_row(v, 2, 3, sub, 100.0)
+                );
+                assert_ne!(set.bar(fill_in_row(v, 2, 3, sub, 100.0)), ' ');
+            }
+            // And an actual zero still draws nothing, or the distinction the
+            // case above protects would be lost from the other side.
+            assert_eq!(fill_in_row(0.0, 2, 3, sub, 100.0), 0);
+        }
     }
 }

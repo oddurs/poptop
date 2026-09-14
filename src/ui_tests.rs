@@ -1335,6 +1335,37 @@ fn a_filter_that_hides_the_watched_process_does_not_claim_it_stopped() {
 }
 
 #[test]
+#[ignore]
+fn show_sets() {
+    for set in [
+        crate::glyphs::GlyphSet::Block,
+        crate::glyphs::GlyphSet::Line,
+        crate::glyphs::GlyphSet::Braille,
+        crate::glyphs::GlyphSet::Ascii,
+    ] {
+        let mut app = App::new(600);
+        for i in (0..120).rev() {
+            let mut s = sample_at(
+                if i > 70 {
+                    8.0
+                } else {
+                    55.0 + (i as f32 % 19.0)
+                },
+                i,
+            );
+            s.mem.used = (s.mem.total as f64 * 0.81) as u64;
+            app.push(s);
+        }
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        app.glyphs = set;
+        println!("\n=== {set:?} ===");
+        for l in render_lines(&app, 92, 16).iter().skip(2).take(9) {
+            println!("{l}");
+        }
+    }
+}
+
+#[test]
 #[ignore = "visual check: cargo test -- --ignored --nocapture show_frame"]
 fn show_frame() {
     let mut app = App::new(600);
@@ -1377,8 +1408,8 @@ fn show_frame() {
 
 #[test]
 fn cursor_marker_picks_the_correct_half_of_a_cell() {
-    // Braille packs two samples per cell, so the marker has to distinguish
-    // them or scrubbing loses half its precision.
+    // A cell packs two samples, so the marker has to distinguish them or
+    // scrubbing loses half its precision.
     let mut app = App::new(60);
     for i in (0..8).rev() {
         app.push(sample_at(10.0, i));
@@ -1455,11 +1486,31 @@ fn a_spike_survives_aggregation_at_every_zoom_level() {
         while app.zoom() < z {
             app.zoom_out();
         }
-        let out = render(&app, 100, 30);
-        assert!(
-            out.contains('⣿') || out.contains('⡇') || out.contains('⢸'),
-            "spike vanished at zoom {z}"
-        );
+        for set in [
+            crate::glyphs::GlyphSet::Block,
+            crate::glyphs::GlyphSet::Braille,
+            crate::glyphs::GlyphSet::Line,
+            // Not `Ascii`: its glyphs are `_ - |`, ordinary characters that a
+            // command line and a panel rule also use, so no character class can
+            // find it on a rendered frame. It is the fallback for terminals
+            // that cannot draw the others, and it is covered by the unit tests
+            // on `GlyphSet::stroke` instead.
+        ] {
+            app.glyphs = set;
+            // The spike is the peak, so it reaches the ceiling: the top row of
+            // the stack has to carry ink. Asked of the row rather than of a
+            // glyph, because each set spells "full" with a different character.
+            let lines = render_lines(&app, 100, 30);
+            let r = ui::timeline_rows_range(30);
+            let top = graph_rows(&lines[r.start as usize..r.end as usize])
+                .first()
+                .map(|l| l.to_string())
+                .unwrap_or_default();
+            assert!(
+                top.chars().any(is_graph_glyph),
+                "spike vanished at zoom {z} in {set:?}"
+            );
+        }
     }
 }
 
@@ -1484,8 +1535,16 @@ fn timeline_fills_its_panel_with_no_blank_rows() {
     // reclaimed, so a regression leaving the last row blank would have passed.
     let (w, h) = (60u16, 10u16);
     let mut app = App::new(600);
+    // A ramp, not a flat 50%. A line inks a row only where it passes through
+    // it, so a constant series leaves every row but one blank — correctly. A
+    // series that climbs across the window visits them all, which is what makes
+    // "no blank rows" a statement about the panel rather than about the data.
     for i in (0..200).rev() {
-        app.push(sample_at(50.0, i));
+        let mut s = sample_at(i as f32 / 2.0, i);
+        // Memory climbs with it: the panel stacks two series, and a flat second
+        // one would leave its own band blank for the same honest reason.
+        s.mem.used = i.min(100) * s.mem.total / 100;
+        app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
@@ -2100,21 +2159,103 @@ fn the_rule_is_dashed_so_it_cannot_be_read_as_data() {
 }
 
 #[test]
+fn a_line_draws_nothing_where_nothing_was_recorded() {
+    // The area fill got this for free: a cell with no sample is level zero and
+    // level zero is a blank glyph. A line does not — joining cell to cell, it
+    // will happily run a flat stroke along the baseline across the whole
+    // unfilled part of the buffer, which says the machine was idle then. It was
+    // not. Nothing was recorded then, and the two are the fact this tool exists
+    // to keep apart.
+    let (w, h) = (100u16, 12u16);
+    let mut app = App::new(600);
+    // Ten samples in a window that holds far more, so most of the panel is
+    // buffer that has not happened yet.
+    for i in (0..10).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for set in [
+        crate::glyphs::GlyphSet::Block,
+        crate::glyphs::GlyphSet::Braille,
+        crate::glyphs::GlyphSet::Line,
+    ] {
+        app.glyphs = set;
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| ui::draw_timeline_for_test(f, f.area(), &app))
+            .unwrap();
+        let buf = term.backend().buffer();
+        // Newest is at the right, so the recorded samples occupy the last few
+        // columns and everything to the left of them is unrecorded.
+        let drawn: Vec<u16> = (ui::GUTTER_W as u16..w)
+            .filter(|&x| {
+                (1..h - 1).any(|y| {
+                    let c = &buf[(x, y)];
+                    c.fg != app.theme.chrome && c.symbol() != " " && c.symbol() != "\u{2800}"
+                })
+            })
+            .collect();
+        let first = *drawn.first().expect("nothing drawn at all");
+        assert!(
+            first > w / 2,
+            "{set:?}: the series is drawn from column {first} of {w}, so it is \
+             drawing a baseline across a buffer that holds ten samples"
+        );
+    }
+}
+
+#[test]
 fn data_always_wins_the_cell_over_the_rule() {
     // An earlier version OR'd the rule into the bar glyph, so a cell holding a
     // spike and an idle sample lit a dot at the rule height in the data
     // colour — identical to the idle sample having crossed the threshold.
+    //
+    // Under an area fill this could be stated as "a full graph shows no rule at
+    // all", because the fill reached every cell. A line reaches one row, and
+    // the space under it is exactly where a reference line belongs — so the
+    // claim has to be made cell by cell: on the row a rule crosses, every
+    // column the line passes through is the line's, not the rule's.
     let (w, h) = (100u16, 12u16);
     let mut app = App::new(600);
+    // A flat series, so the row it occupies is known and it occupies all of it.
     for i in (0..200).rev() {
-        let mut s = sample_at(100.0, i);
-        s.mem.used = s.mem.total; // both graphs full, so no cell is empty
-        app.push(s);
+        app.push(sample_at(40.0, i));
     }
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    // The warn threshold sits *inside* the bar, not on its lip. At 40 against a
+    // series of 40 the rule lands on the boundary between the bar's top cell
+    // and the empty one above it, and which of the two it picks is a rounding
+    // question rather than the question this test is asking.
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_thresholds(20.0, 80.0);
+
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw_timeline_for_test(f, f.area(), &app))
+        .unwrap();
+    let buf = term.backend().buffer();
+
+    // The warn threshold is at 20 and the series at 40, so the rule wants a row
+    // the bar has already filled.
+    let rows = ((h as usize - 1).saturating_sub(2)).max(1) * 3 / 5;
+    // The ceiling the renderer picks, not the raw value: `ceiling_for` rounds
+    // the scale up to a readable number, and asking for the rule's row against
+    // a different ceiling puts it on a different row.
+    let ceiling = crate::glyphs::ceiling_for(40.0);
+    let (row, _) = crate::glyphs::rule_position_scaled(20.0, rows.max(1), ceiling)
+        .expect("the warn threshold is on this scale");
+    let y = 1 + row as u16;
+
+    let inked = (ui::GUTTER_W as u16..w).filter(|&x| buf[(x, y)].symbol() != " ");
+    let mut seen = 0;
+    for x in inked {
+        seen += 1;
+        assert_ne!(
+            buf[(x, y)].fg,
+            app.theme.chrome,
+            "the rule took column {x} of the row the series occupies"
+        );
+    }
     assert!(
-        rule_rows(&app, w, h).is_empty(),
-        "rule drew over cells that contain data"
+        seen > 50,
+        "the series did not draw across the row: {seen} cells"
     );
 }
 
@@ -2621,7 +2762,10 @@ fn graph_colours(app: &App, w: u16, h: u16) -> std::collections::HashSet<String>
     term.draw(|f| ui::draw_timeline_for_test(f, f.area(), app))
         .unwrap();
     let buf = term.backend().buffer();
-    let graph_rows = (h as usize - 1).saturating_sub(2).max(1);
+    // Every row between the title and the axis caption. The old bound stopped
+    // two rows short, which was invisible while an area fill inked a band of
+    // rows and load-bearing once a line inks exactly one.
+    let graph_rows = (h as usize).saturating_sub(2).max(1);
     let mut out = std::collections::HashSet::new();
     for row in 0..graph_rows {
         for x in 4..w {
@@ -2644,7 +2788,10 @@ fn timeline_colour_carries_identity_not_magnitude() {
         let mut app = App::new(600);
         for i in (0..60).rev() {
             let mut s = sample_at(cpu, i);
-            s.mem.used = ((cpu / 100.0 * 16.0) as u64) << 30;
+            // Never zero: an idle machine still holds memory, and a series at a
+            // flat zero draws no ink and so contributes no colour — which would
+            // make this pass for the wrong reason.
+            s.mem.used = ((1.0 + cpu / 100.0 * 15.0) as u64) << 30;
             app.push(s);
         }
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -2912,9 +3059,17 @@ fn the_timeline_rules_move_with_the_thresholds() {
     for i in (0..120).rev() {
         app.push(sample_at(2.0, i as u64));
     }
+    // The panel title is drawn with `─` and sits inside the row range, and the
+    // Block set rules with `─` too — so the title alone reads as sixty-four
+    // rules unless it is dropped.
     let graph = |app: &App| {
         let rows = ui::timeline_rows_range(40);
-        render_lines(app, 100, 40)[rows.start as usize..rows.end as usize].join("\n")
+        render_lines(app, 100, 40)[rows.start as usize..rows.end as usize]
+            .iter()
+            .filter(|l| !l.starts_with("──"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     // The glyphs the rule is actually drawn with, asked of the same glyph set
     // that draws it rather than transcribed.
@@ -3422,12 +3577,7 @@ fn present_at(app: &App, w: u16, h: u16) -> Present {
         graph: timeline.clone().any(|y| {
             (0..w).any(|x| {
                 let s = buf[(x, y.min(h - 1))].symbol();
-                s.starts_with('⠀')
-                    || (s
-                        .chars()
-                        .next()
-                        .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
-                        && s != "⠀")
+                s.starts_with('⠀') || (s.chars().next().is_some_and(is_graph_glyph) && s != "⠀")
             })
         }),
         table_rows: all.contains("postgres") || all.contains("nginx"),
@@ -3725,21 +3875,98 @@ fn app_with_shapes() -> App {
 }
 
 /// The sparkline drawn for a named process.
+/// Whether a character is one a graph draws with, in any of the glyph sets.
+///
+/// Tests used to find a graph by asking for the braille range, which made every
+/// one of them a test of braille rather than of the graph — and they all went
+/// blank the day the default became the block elements.
+/// The rows of a rendered frame that carry a series, not chrome.
+///
+/// Panel titles and rules are drawn with `─` too, so character class alone
+/// cannot tell a graph from a border. What separates them is the gutter: an
+/// axis label owns the first `GUTTER_W` columns of every graph row, and chrome
+/// starts at column zero. That is the test.
+pub fn graph_rows(lines: &[String]) -> Vec<&String> {
+    lines
+        .iter()
+        .filter(|l| {
+            l.chars().take(ui::GUTTER_W).all(|c| !is_graph_glyph(c))
+                && l.chars().any(is_graph_glyph)
+        })
+        .collect()
+}
+
+pub fn is_graph_glyph(c: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&c)          // braille
+        || ('\u{2580}'..='\u{259f}').contains(&c)   // block elements
+        || "─│╭╮╰╯".contains(c) // box drawing
+    // Deliberately not the ASCII set (`_ - |`). Those are ordinary characters
+    // in a command line and a panel rule, so counting them as graph ink made
+    // every row-scanning test pick up two extra cells from the text beside it.
+    // The ASCII set is a fallback nothing needs to locate by character class.
+}
+
+/// How much ink a graph string carries, 0..8 a character.
+///
+/// One measure across the sets, so a test can say "this drew almost nothing"
+/// without knowing which alphabet drew it.
+pub fn ink_of(s: &str) -> u32 {
+    s.chars()
+        .map(|c| match c {
+            // Braille: one unit a raised dot.
+            '\u{2800}'..='\u{28ff}' => (c as u32 - 0x2800).count_ones(),
+            // The eighths ramps, horizontal and vertical. `▁`..`█` climb from
+            // the bottom; `▏`..`▉` grow from the left and run the other way.
+            '\u{2581}'..='\u{2588}' => c as u32 - 0x2580,
+            '\u{2589}'..='\u{258f}' => 0x2590 - c as u32,
+            '▀' | '▐' => 4,
+            // Quadrants. Two units a quarter, so they sit on the same scale as
+            // the eighths above.
+            '▖' | '▗' | '▘' | '▝' => 2,
+            '▚' | '▞' => 4,
+            '▙' | '▛' | '▜' | '▟' => 6,
+            // Box drawing carries a stroke, not a quantity: one weight for all
+            // of it, so a line's ink counts its length rather than its height.
+            '─' | '│' | '╭' | '╮' | '╰' | '╯' => 2,
+            _ => 0,
+        })
+        .sum()
+}
+
 fn spark_for(app: &App, name: &str) -> String {
     let mut term = Terminal::new(TestBackend::new(110, 24)).unwrap();
     term.draw(|f| ui::draw(f, app)).unwrap();
     let buf = term.backend().buffer();
-    let row = (0..24u16)
+    let lines: Vec<String> = (0..24u16)
         .map(|y| {
             (0..110u16)
                 .map(|x| buf[(x, y)].symbol())
                 .collect::<String>()
         })
+        .collect();
+    let row = lines
+        .iter()
         .find(|r| r.contains(name))
         .unwrap_or_else(|| panic!("{name} not on screen"));
-    row.chars()
-        .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
-        .collect()
+    // Sliced by column, not filtered by character class. The CPU and memory
+    // columns carry block-element micro-bars, so once the sparkline stopped
+    // being the only braille on the row there was nothing to tell the two
+    // apart, and every count came out wrong by two.
+    //
+    // The column is found from the header rather than assumed: `HIST` moves
+    // when the IO columns are shown, and it shortens to `HIS`, `HI` or `H` when
+    // the ceiling label beside it is long — `H ≤1600%`. The `≤` is the part
+    // that never degrades, so the label is whatever word sits in front of it.
+    let header = lines
+        .iter()
+        .find(|r| r.contains('≤'))
+        .expect("no history column on screen — the frame is too narrow for one");
+    let before = &header[..header.find('≤').expect("just found it")];
+    let at = before[..before.trim_end().len()]
+        .rfind(' ')
+        .map(|b| header[..b + 1].chars().count())
+        .expect("the history column has a label");
+    row.chars().skip(at).take(ui::SPARK_W).collect()
 }
 
 #[test]
@@ -3769,7 +3996,7 @@ fn sparklines_share_one_scale_so_rows_can_be_compared() {
     let ink = |name: &str| {
         spark_for(&app, name)
             .chars()
-            .map(|c| (c as u32 - 0x2800).count_ones())
+            .map(|c| ink_of(&c.to_string()))
             .sum::<u32>()
     };
     assert!(
@@ -3803,10 +4030,7 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
     // The live process started at 222 and has only ever been at 2%. Its
     // sparkline must not show the 90% the previous occupant of that pid had.
     let spark = spark_for(&app, "recycled");
-    let ink: u32 = spark
-        .chars()
-        .map(|c| (c as u32 - 0x2800).count_ones())
-        .sum();
+    let ink: u32 = spark.chars().map(|c| ink_of(&c.to_string())).sum();
     let full: u32 = spark.chars().count() as u32 * 8;
     assert!(
         ink * 3 < full,
@@ -5835,22 +6059,31 @@ fn every_graph_row_starts_at_the_same_column() {
     stalled_history(&mut app, 200);
     let rows = ui::timeline_rows_range(50);
     let lines = render_lines(&app, 64, 50);
-    let graph_rows: Vec<&String> = lines[rows.start as usize..rows.end as usize]
-        .iter()
-        .filter(|l| l.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)))
-        .collect();
+    let graph_rows = graph_rows(&lines[rows.start as usize..rows.end as usize]);
     assert!(graph_rows.len() >= 6, "expected a stack of graphs");
     for line in &graph_rows {
+        // The gutter is a *reservation*, so the test is that nothing crosses
+        // into it — not that every row starts drawing at its edge. A line
+        // leaves the first column blank whenever it does not pass through that
+        // row there, which an area fill never did.
         let first = line
             .char_indices()
-            .find(|(_, c)| ('\u{2800}'..='\u{28ff}').contains(c))
-            .map(|(i, _)| line[..i].chars().count());
-        assert_eq!(
-            first,
-            Some(ui::GUTTER_W),
-            "a graph row began at a different column: {line:?}"
+            .find(|(_, c)| is_graph_glyph(*c))
+            .map(|(i, _)| line[..i].chars().count())
+            .expect("a graph row with no graph on it");
+        assert!(
+            first >= ui::GUTTER_W,
+            "a graph row crossed into the gutter: {line:?}"
         );
     }
+    // And the reservation is not merely wide enough — it is exactly the width
+    // every label needs. `WAIT` is four characters against a three-wide gutter,
+    // and a format width is a minimum, so the overflow was silent.
+    assert_eq!(
+        ui::GUTTER_W,
+        ui::SERIES_NAMES.iter().map(|n| n.len()).max().unwrap() + 1,
+        "the gutter no longer fits the longest series name plus its padding"
+    );
 }
 
 #[test]
@@ -8846,14 +9079,35 @@ fn a_key_opens_the_selected_process_history_at_full_width() {
     // line with no braille on it at all, which then reads as "zero columns
     // wide" and fails for the wrong reason.
     let r = ui::timeline_rows_range(24);
-    let graph = detail[r.start as usize..r.end as usize]
+    // Two claims, because "full width" used to be measured in a way that could
+    // not fail. The old count included braille's blank — a character, not a
+    // space — so it returned the width of the panel whether anything was drawn
+    // in it or not, and would have passed against an empty graph.
+    //
+    // What the panel actually promises is the timeline's resolution rather than
+    // the table's: one cell per pair of samples across the whole buffer, where
+    // the row this replaced compressed the same buffer into ten cells.
+    let band = graph_rows(&detail[r.start as usize..r.end as usize]);
+    let columns = band
         .iter()
-        .find(|l| l.contains("CPU"))
-        .expect("no cpu row in the timeline block");
-    let drawn = graph.chars().filter(|c| ('⠀'..='⣿').contains(c)).count();
+        .flat_map(|l| {
+            l.char_indices()
+                .filter(|(_, c)| is_graph_glyph(*c))
+                .map(|(i, _)| l[..i].chars().count())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let buffered = 40 / crate::glyphs::GlyphSet::default().samples_per_cell();
     assert!(
-        drawn > 60,
-        "the history is {drawn} columns wide, not full width"
+        columns.len() > ui::SPARK_W,
+        "the history is {} columns wide — no wider than the table row it \
+         replaced, which showed {} of the same {buffered} the buffer holds",
+        columns.len(),
+        ui::SPARK_W
+    );
+    // And it is a panel, not a row: the series has room to have a shape.
+    assert!(
+        band.len() > 1,
+        "the history is one row tall, so it is still a sparkline"
     );
 }
 
@@ -9022,9 +9276,14 @@ fn the_graph_draws_the_processs_figures_not_the_machines() {
     // the ramp does not — the first version of this assertion compared fill
     // and had it exactly backwards. A ramp is told from a flat line by
     // *variety*: many levels against one.
+    // Counted as distinct *heights*, not distinct characters. Each alphabet
+    // spells a height differently, and one of them — box drawing — spells a
+    // rise and a fall with different glyphs at the same height, so counting
+    // characters would call a flat line varied in one set and not another.
     let levels = |l: &str| {
         l.chars()
-            .filter(|c| ('⠀'..='⣿').contains(c))
+            .filter(|c| is_graph_glyph(*c))
+            .map(|c| ink_of(&c.to_string()))
             .collect::<std::collections::HashSet<_>>()
             .len()
     };

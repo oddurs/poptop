@@ -12,20 +12,23 @@ nothing that had to be running before you noticed the problem.
 CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒▒░░░░░
   4 cores ▇▄▁█
 ── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
- 100 ⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣆⠀⣴⠀⣰⡀⢠⡆⢀⣆⠤⣴⠤⣰⡀⢰⡆⢀⣆⠀⣶⠀⣰⡀⢰⡆⢀⣆⠤⣶⠤⣰⡀⢰⡆⢀⣆⠀⣶
- CPU ⣿⡇⣾⣇⢸⣿⢰⣿⡀⣿⡇⣾⣇⢸⣷⢰⣿⠀⣿⡆⣾⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿
-   0 ⣿⣇⣿⣿⣾⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿
- 100 ⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤
-WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣤⣀⡀⠀⠤⠀⠤⠀⢀⣀⣤⣤⣶⣦⣤⣄⣀⠀⠤⠀⠤⠀⢀⣀⣤⣤⣶⣦⣤⣄⣀⠀⠤⠀⠤⠀⠤⣀⣠⣤⣴
-   0 ⣿⣿⣿⣿⣿⣿⣷⣤⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⣀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣄⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣤⣾⣿⣿⣿⣿
-                                              CPU 89.2%  WAIT 26.7% ▐
-2m25s shown, 1s/slot — ←/→ scrub, +/- zoom
+  100 ─▆▄▂▇ ▆ ▇ ▆▃▃▆─▆─▆─▇▃▃▆ ▇ ▆ ▇▂▄▆─▇─▆─▇▁▄▆ ▇ ▆ ▇▁▅▆─▇─▅─▇─▅▅ ▇ ▅ ▇ ▅▅─▇─▅
+  CPU ▅████▃█ █▅████▄█─█▄████▅█ █▃████▅█─█▂████▆█ █▁████▇█─█─██████ █ ██████▁█
+      ███████▄████████▃████████▄████████▅████████▆████████▇███████████████████
+    0 ████████████████████████████████████████████████████████████████████████
+   50 ▄▄▃▂─ ─ ─ ─ ─ ─▂▃▄▄▃▂▁─ ─ ─ ─ ─ ▁▃▃▄▄▃▂ ─ ─ ─ ─ ─ ▂▃▄▄▃▂▁ ─ ─ ─ ─ ─▁▃▃▄▄
+ WAIT █████▆▃     ▃▆████████▇▄▂    ▂▅▇████████▆▃     ▃▆████████▇▄▁    ▂▅▇█████
+    0 ████████▅▁▅██████████████▆▃▃▇██████████████▅▂▅██████████████▆▃▄▇████████
+   50 ─▅█████▅▂ ─ ─ ─ ▂▅█████▅▂ ─ ─ ─ ▂▅████▅▂─ ─ ─ ─ ▂█████▅▂─ ─ ─ ─▂▅█████▅▂
+  MEM ▇████████▇▄▁▁▁▄▇█████████▄▁▁▁▁▄▇████████▇▄▁▁▁▁▄▇████████▇▄▁▁▁▁▄█████████
+    0 ████████████████████████████████████████████████████████████████████████
+past                      2m23s shown, 1s/slot                      ▐      now
 ── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
   CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
-  88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿     824 postgres
-  12.5 ▌        32.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    1190 nginx
-   4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node
-   0.1          12.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀       1 systemd
+  88.4 ███▌    512.0M ▏    S     1      █████     824 postgres
+  12.5 ▌        32.0M      S     1      ▁▁▁▁▁    1190 nginx
+   4.2 ▏       148.0M      S     1      ▁▁▁▁▁    2077 node
+   0.1          12.0M      S     1      ▁▁▁▁▁       1 systemd
 
 q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select · s sort
 ```
@@ -33,7 +36,8 @@ q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select ·
 The gutter names each graph and anchors its scale; the dashed lines are the
 warn and critical thresholds, drawn so the boundary is readable without relying
 on colour. Bars absorb the rule where they cross it. The `▐` marks which sample
-the cursor is on, down to which half of a braille cell.
+the cursor is on, down to which half of a cell — a cell covers two samples in
+every set, so the half is what keeps scrubbing precise.
 
 The process table below the timeline is the real one from the moment under the
 cursor, not an interpolation. Sampling continues while you are scrubbing.
@@ -620,10 +624,33 @@ per-op statistics are scanned rather than collected for the same reason —
 NFSv4.2 writes seventy-odd lines a mount and three numbers are wanted, and a
 vector per line was most of the cost.
 
-`--glyphs=braille|block|ascii` picks how the timeline is drawn. Braille packs
-two samples into every character cell and stacks cells vertically for twelve
-distinct heights; `block` needs less font support; `ascii` needs none. A Linux
-console (`TERM=linux`) selects `ascii` automatically.
+`--graph=block|braille|line|ascii` picks how the timeline is drawn, and
+`graph = block` in the config file makes the choice stick.
+
+`block` is the default and draws bars — the classic sparkline, a column of ink
+from the baseline to the value, using the eighths ramp `▁▂▃▄▅▆▇█`. Eight levels
+in a character cell, against braille's four, and every font that can draw a
+progress bar already has them.
+
+`braille` spends the difference the other way: four levels a cell, but two
+samples a cell, so it shows twice the history at half the vertical resolution.
+In a graph three rows tall it is height that is scarce, which is why it is no
+longer the default — but it is one setting away.
+
+`line` draws the outline instead of filling under it. Worth reaching for when a
+series sits high and flat: a machine at 80% memory fills four rows in five with
+solid ink under any of the bar sets, and the fill is the part that carries no
+information. Box drawing has no part-height forms, so it trades every level of
+vertical resolution for that — one a cell — and its corners are what make the
+trade pay.
+
+`ascii` needs no Unicode at all. A Linux console (`TERM=linux`) selects it
+automatically.
+
+The per-process sparkline in the table follows the same setting, with one
+difference: outside braille it spends its single row on the eighths ramp rather
+than on packing two samples a cell. In one row height is all there is to read,
+and nine levels beat five.
 
 Zooming aggregates samples into slots by **peak, never mean** — averaging a
 100% spike with three idle samples would render 25% and hide the exact event
@@ -852,7 +879,7 @@ as an idle one.
 ```ini
 # ~/.config/poptop/poptop.conf
 theme    = classic
-glyphs   = block    # comments run to the end of the line
+graph    = block    # comments run to the end of the line
 color    = 256
 warn     = 65       # a build box is busy at 50% and perfectly fine
 critical = 90
