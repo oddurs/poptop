@@ -162,7 +162,7 @@ impl Settings {
     /// the test.
     fn fixed() -> Self {
         Self {
-            glyphs: GlyphSet::Braille,
+            glyphs: GlyphSet::default(),
             tier: Tier::TrueColor,
             theme: Palette::Safe.name().to_string(),
             theme_origin: None,
@@ -207,8 +207,16 @@ const MIN_WINDOW: Duration = Duration::from_secs(10);
 /// needs. See [`Settings::history_len`].
 const MAX_SAMPLES: usize = 24 * 60 * 60 + 1;
 
-/// Braille unless we are on a real Linux console, whose font has no braille
-/// glyphs. btop makes the same check (`btop.cpp:815`).
+/// The set poptop draws with when nothing has asked for one.
+///
+/// [`GlyphSet::default`] everywhere except a real Linux console, whose font has
+/// neither braille nor the block elements. btop makes the same check
+/// (`btop.cpp:815`).
+///
+/// Deferring to `GlyphSet::default` rather than naming a set here is the whole
+/// point: this function *is* the default as far as the running program is
+/// concerned, and when it named one itself, changing the derived default
+/// changed nothing a user could see.
 fn default_glyphs() -> GlyphSet {
     default_glyphs_for(std::env::var("TERM").ok().as_deref())
 }
@@ -217,7 +225,7 @@ fn default_glyphs() -> GlyphSet {
 fn default_glyphs_for(term: Option<&str>) -> GlyphSet {
     match term {
         Some("linux") => GlyphSet::Ascii,
-        _ => GlyphSet::Braille,
+        _ => GlyphSet::default(),
     }
 }
 
@@ -1077,7 +1085,11 @@ mod tests {
     #[test]
     fn a_wrong_value_says_what_was_expected() {
         let (s, w) = apply("glyphs = crayon\n");
-        assert_eq!(s.glyphs, GlyphSet::Braille, "a rejected value was applied");
+        assert_eq!(
+            s.glyphs,
+            GlyphSet::default(),
+            "a rejected value was applied"
+        );
         assert_eq!(w.len(), 1);
         assert!(
             w[0].contains("crayon") && w[0].contains("braille"),
@@ -1131,14 +1143,32 @@ mod tests {
 
     #[test]
     fn a_linux_console_gets_ascii() {
-        // A real console has no braille glyphs. This moved out of `main` with
-        // the rest of the defaults and arrived here untested.
+        // A real console has neither braille nor the block elements. This moved
+        // out of `main` with the rest of the defaults and arrived here untested.
         assert_eq!(default_glyphs_for(Some("linux")), GlyphSet::Ascii);
-        assert_eq!(
-            default_glyphs_for(Some("xterm-256color")),
-            GlyphSet::Braille
-        );
-        assert_eq!(default_glyphs_for(None), GlyphSet::Braille);
+    }
+
+    #[test]
+    fn the_default_a_terminal_gets_is_the_declared_default() {
+        // The one that got away. `GlyphSet::default()` said `Block`, a test
+        // asserted it, the whole suite passed — and every terminal still drew
+        // braille, because this is the function the running program asks and it
+        // named a set of its own. A default declared in one place and decided in
+        // another is not a default; it is two.
+        //
+        // Asserted against `GlyphSet::default()` rather than against `Block`, so
+        // the next change to the default needs one edit rather than a hunt.
+        for term in ["xterm-256color", "screen", "alacritty", "xterm-kitty", ""] {
+            assert_eq!(
+                default_glyphs_for(Some(term)),
+                GlyphSet::default(),
+                "TERM={term} got a set nobody asked for"
+            );
+        }
+        assert_eq!(default_glyphs_for(None), GlyphSet::default());
+        // And the whole settings path agrees, not just the helper: this is what
+        // `poptop` with no flags and no config file actually runs with.
+        assert_eq!(Settings::fixed().glyphs, GlyphSet::default());
     }
 
     #[test]
@@ -1232,7 +1262,11 @@ mod precedence {
         // not cost you the tool. A flag was typed for this run, and ignoring
         // it would silently do something other than what was asked.
         let (s, _) = run(Some("glyphs = crayon\n"), false, &[]);
-        assert_eq!(s.glyphs, GlyphSet::Braille, "a rejected value was applied");
+        assert_eq!(
+            s.glyphs,
+            GlyphSet::default(),
+            "a rejected value was applied"
+        );
 
         let args = vec!["--glyphs=crayon".to_string()];
         assert!(
