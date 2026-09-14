@@ -137,3 +137,78 @@ Good ideas without a date yet.
 - [x] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 - [x] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
 
+
+## v3.0 — It explains
+
+`          ` 0% · 0 of 7 done · due 2028-01-01
+
+poptop can show you any instant and it makes you do the joining.
+
+### backlog
+
+- [ ] `0081` The timeline fills, where it should draw a line <sup>bug · p0</sup>
+- [ ] `0082` Nothing says why the worst moment was the worst <sup>feature · p0</sup>
+- [ ] `0083` Two moments cannot be compared <sup>feature · p1</sup>
+- [ ] `0084` Nothing knows what normal looks like for this machine <sup>feature · p1</sup>
+- [ ] `0085` A finding cannot leave the terminal it was found in <sup>feature · p2</sup>
+- [ ] `0091` The layout is three fixed stacks, not a dashboard <sup>feature · p0</sup>
+- [ ] `0092` Nothing can be zoomed into <sup>feature · p0</sup>
+
+## v3.1 — It knows why
+
+`          ` 0% · 0 of 2 done · due 2028-04-01
+
+poptop can name the process; it cannot say what that process is waiting on.
+
+### backlog
+
+- [ ] `0086` A blocked process is a dead end <sup>feature · p1</sup>
+- [ ] `0087` Why a process is hot needs a different tool <sup>feature · p2</sup>
+
+## v3.2 — It is navigable
+
+`          ` 0% · 0 of 3 done · due 2028-07-01
+
+Six hundred samples retained, and no way to search them.
+
+### backlog
+
+- [ ] `0088` The buffer can be addressed but not searched <sup>feature · p1</sup>
+- [ ] `0089` One machine at a time <sup>feature · p2</sup>
+- [ ] `0090` The first run teaches nothing <sup>feature · p3</sup>
+
+## v4.0 — It recognises
+
+`          ` 0% · 0 of 4 done · due 2028-10-01
+
+A machine has a rhythm. An operator learns it over a year and then leaves.
+
+### backlog
+
+- [ ] `0096` The machine has a rhythm and poptop cannot see it <sup>feature · p0</sup>
+- [ ] `0097` There is no way to say "find me another one like this" <sup>feature · p1</sup>
+- [ ] `0098` poptop does not know what the machine is for <sup>feature · p1</sup>
+- [ ] `0104` Waiting has no profile <sup>feature · p2</sup>
+
+## v4.1 — It decides
+
+`          ` 0% · 0 of 3 done · due 2029-01-01
+
+What would I get back, what happens if I do nothing, and what is wrong with this box.
+
+### backlog
+
+- [ ] `0101` There is no one-sentence answer <sup>feature · p0</sup>
+- [ ] `0099` Nothing says what you would get back <sup>feature · p1</sup>
+- [ ] `0100` Nothing says what happens next <sup>feature · p2</sup>
+
+## v5.0 — One language under everything
+
+`          ` 0% · 0 of 2 done · due 2029-06-01
+
+Five ways to ask a question, each with its own grammar, sharing no code.
+
+### backlog
+
+- [ ] `0102` Five features grew five query dialects <sup>feature · p0</sup>
+- [ ] `0103` Nothing can be watched for <sup>feature · p1</sup>
