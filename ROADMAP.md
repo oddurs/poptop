@@ -176,3 +176,39 @@ Six hundred samples retained, and no way to search them.
 - [ ] `0088` The buffer can be addressed but not searched <sup>feature · p1</sup>
 - [ ] `0089` One machine at a time <sup>feature · p2</sup>
 - [ ] `0090` The first run teaches nothing <sup>feature · p3</sup>
+
+## v4.0 — It recognises
+
+`          ` 0% · 0 of 4 done · due 2028-10-01
+
+A machine has a rhythm. An operator learns it over a year and then leaves.
+
+### backlog
+
+- [ ] `0096` The machine has a rhythm and poptop cannot see it <sup>feature · p0</sup>
+- [ ] `0097` There is no way to say "find me another one like this" <sup>feature · p1</sup>
+- [ ] `0098` poptop does not know what the machine is for <sup>feature · p1</sup>
+- [ ] `0104` Waiting has no profile <sup>feature · p2</sup>
+
+## v4.1 — It decides
+
+`          ` 0% · 0 of 3 done · due 2029-01-01
+
+What would I get back, what happens if I do nothing, and what is wrong with this box.
+
+### backlog
+
+- [ ] `0101` There is no one-sentence answer <sup>feature · p0</sup>
+- [ ] `0099` Nothing says what you would get back <sup>feature · p1</sup>
+- [ ] `0100` Nothing says what happens next <sup>feature · p2</sup>
+
+## v5.0 — One language under everything
+
+`          ` 0% · 0 of 2 done · due 2029-06-01
+
+Five ways to ask a question, each with its own grammar, sharing no code.
+
+### backlog
+
+- [ ] `0102` Five features grew five query dialects <sup>feature · p0</sup>
+- [ ] `0103` Nothing can be watched for <sup>feature · p1</sup>
