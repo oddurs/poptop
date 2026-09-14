@@ -226,8 +226,15 @@ type Apply = fn(&mut Settings, &str) -> Result<(), &'static str>;
 
 /// Every setting, named once.
 pub const KEYS: &[(&str, Apply)] = &[
+    // How the graphs are drawn. `graph` is the name; `glyphs` is what it was
+    // called when the sets differed only in alphabet, and it is kept because it
+    // is in the README, in `--help` and in people's config files.
+    ("graph", |s, v| {
+        s.glyphs = GlyphSet::parse(v).ok_or(GlyphSet::NAMES)?;
+        Ok(())
+    }),
     ("glyphs", |s, v| {
-        s.glyphs = GlyphSet::parse(v).ok_or("braille, block or ascii")?;
+        s.glyphs = GlyphSet::parse(v).ok_or(GlyphSet::NAMES)?;
         Ok(())
     }),
     ("color", |s, v| {
@@ -1109,11 +1116,11 @@ mod tests {
         let bad = apply_one("glyphs", "crayon");
         assert_eq!(
             bad.as_flag(),
-            "--glyphs=crayon: expected braille, block or ascii"
+            "--glyphs=crayon: expected block, braille, line or ascii"
         );
         assert_eq!(
             bad.to_string(),
-            "`glyphs`: expected braille, block or ascii, found `crayon`"
+            "`glyphs`: expected block, braille, line or ascii, found `crayon`"
         );
     }
 

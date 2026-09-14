@@ -1307,6 +1307,11 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     };
     let graph_w = inner_w.saturating_sub(gutter);
 
+    // One sample a cell. The old packing put two side by side to double the
+    // horizontal resolution of an *area*; a line has one stroke a column, and two
+    // values sharing a cell would be a smear rather than two readings. The trade
+    // is real — half as many samples on screen — and `+`/`-` answers it, since
+    // zoom aggregates by peak so a spike survives the compression.
     let spc = app.glyphs.samples_per_cell();
     let slots = graph_w * spc;
     let samples: Vec<&Sample> = app.history.iter().collect();
@@ -1715,6 +1720,15 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(all), area);
 }
 
+/// A peak that is a value, or `None` for a cell no sample landed in.
+///
+/// `peak` folds with `f32::max` from `NEG_INFINITY`, so an empty cell comes back
+/// as that rather than as a number. Passing it on as zero is the one thing this
+/// tool must never do.
+fn finite(v: f32) -> Option<f32> {
+    v.is_finite().then_some(v)
+}
+
 /// One row of graph. `row` counts from the top of a `rows`-tall graph.
 /// Everything one graph row needs to draw itself. Bundled because seven
 /// positional parameters had become eight and the call site was unreadable.
@@ -1775,10 +1789,39 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             {
                 return Span::styled(set.gap_glyph().to_string(), theme.chrome_style());
             }
-            let pcts: Vec<f32> = cell.iter().map(|v| v.unwrap_or(0.0)).collect();
-            let left = glyphs::level_in_row_scaled(pcts[0], row, rows, ceiling);
-            let right =
-                glyphs::level_in_row_scaled(*pcts.get(1).unwrap_or(&pcts[0]), row, rows, ceiling);
+            // This cell's value and the next one, so the stroke can join them.
+            // The peak within a cell, matching how zoom aggregates: a line drawn
+            // through the mean would smooth away the spike the tool exists to
+            // catch.
+            let peak = |c: &[Option<f32>]| {
+                c.iter()
+                    .filter_map(|v| *v)
+                    .fold(f32::NEG_INFINITY, f32::max)
+            };
+            let here = finite(peak(cell));
+            // A cell with no sample draws nothing. An area fill got this for
+            // free — level zero is a blank glyph — but a line does not: it
+            // would draw a flat stroke along the baseline across the part of
+            // the buffer that has not been filled yet, which says the machine
+            // was idle then. It was not. Nothing was recorded then.
+            let Some(here) = here else {
+                return Span::raw(" ");
+            };
+            // Joined to the next cell only if there is one. Running the stroke
+            // into an empty cell invents the same zero at one remove.
+            let next = values
+                .get((i + 1) * spc..((i + 2) * spc).min(values.len()))
+                .map(peak)
+                .and_then(finite)
+                .unwrap_or(here);
+            let mask = glyphs::stroke_in_row(here, next, row, rows, set.sub_rows(), ceiling);
+            // Box drawing needs the direction of travel to pick a corner, which
+            // a mask cannot carry.
+            let glyph = if set == GlyphSet::Line {
+                glyphs::box_glyph(here, next, row, rows, ceiling)
+            } else {
+                set.stroke(mask)
+            };
             // Colour is identity here, not magnitude — see `Theme::series_style`.
             // The threshold rules now carry "is this bad", which is what the
             // heat ramp was doing redundantly on top of the bar height.
@@ -1790,16 +1833,15 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // bar does not reach this row. Drawing the rule across the part of
             // the buffer that has not been filled yet is noise about a region
             // where there is nothing to reference.
-            let has_data = cell.iter().any(|v| v.is_some());
-            let empty = left.max(right) == 0;
             match rule_level {
-                Some(lvl) if has_data && empty && i % 2 == 0 => {
+                // Every fourth cell, not every second. The rule used to fill the
+                // space *above* an area, a minority of the graph; against a line
+                // nearly every cell is empty, so the old spacing painted half the
+                // panel in chrome and the reference competed with the signal.
+                Some(lvl) if glyph == ' ' && i % 4 == 0 => {
                     Span::styled(set.rule_glyph(lvl).to_string(), theme.chrome_style())
                 }
-                _ => Span::styled(
-                    set.glyph(left, right).to_string(),
-                    theme.series_style(series),
-                ),
+                _ => Span::styled(glyph.to_string(), theme.series_style(series)),
             }
         })
         .collect::<Vec<_>>();
@@ -3457,10 +3499,20 @@ fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling
     let Some(series) = series else {
         return " ".repeat(SPARK_W);
     };
-    let spc = set.samples_per_cell();
+    let spc = set.spark_samples_per_cell();
     let slots = SPARK_W * spc;
     let values: Vec<f32> = series.iter().map(|v| v.unwrap_or(0.0)).collect();
     let agg = history::peak_slots(&values, zoom.max(1), slots);
+    if spc == 1 {
+        // The eighths ramp: one sample a cell, nine heights.
+        return agg
+            .iter()
+            .map(|v| match v {
+                None => ' ',
+                Some(v) => set.spark_glyph(eighths(*v, ceiling)),
+            })
+            .collect();
+    }
     agg.chunks(spc)
         .map(|cell| {
             let a = cell[0].unwrap_or(0.0);
@@ -3470,6 +3522,18 @@ fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling
             set.glyph(l, r)
         })
         .collect()
+}
+
+/// A value as eighths of a ceiling, 0..=8.
+///
+/// Anything above zero rounds *up* to at least one eighth. A process using 0.4%
+/// of the machine is running, and a blank cell says it was not there at all —
+/// the same distinction the gap above is drawing.
+fn eighths(v: f32, ceiling: f32) -> usize {
+    if v <= 0.0 || !v.is_finite() || ceiling <= 0.0 {
+        return 0;
+    }
+    ((v / ceiling * 8.0).ceil() as usize).clamp(1, 8)
 }
 
 /// Width of a process-table bar. Four cells at eight sub-steps is thirty-two
