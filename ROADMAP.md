@@ -140,7 +140,7 @@ Good ideas without a date yet.
 
 ## v3.0 — It explains
 
-`          ` 0% · 0 of 5 done · due 2028-01-01
+`          ` 0% · 0 of 7 done · due 2028-01-01
 
 poptop can show you any instant and it makes you do the joining.
 
@@ -151,6 +151,8 @@ poptop can show you any instant and it makes you do the joining.
 - [ ] `0083` Two moments cannot be compared <sup>feature · p1</sup>
 - [ ] `0084` Nothing knows what normal looks like for this machine <sup>feature · p1</sup>
 - [ ] `0085` A finding cannot leave the terminal it was found in <sup>feature · p2</sup>
+- [ ] `0091` The layout is three fixed stacks, not a dashboard <sup>feature · p0</sup>
+- [ ] `0092` Nothing can be zoomed into <sup>feature · p0</sup>
 
 ## v3.1 — It knows why
 
