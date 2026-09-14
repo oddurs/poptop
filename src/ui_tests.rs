@@ -2221,17 +2221,25 @@ fn data_always_wins_the_cell_over_the_rule() {
     for i in (0..200).rev() {
         app.push(sample_at(40.0, i));
     }
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_thresholds(40.0, 80.0);
+    // The warn threshold sits *inside* the bar, not on its lip. At 40 against a
+    // series of 40 the rule lands on the boundary between the bar's top cell
+    // and the empty one above it, and which of the two it picks is a rounding
+    // question rather than the question this test is asking.
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_thresholds(20.0, 80.0);
 
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| ui::draw_timeline_for_test(f, f.area(), &app))
         .unwrap();
     let buf = term.backend().buffer();
 
-    // The warn threshold and the series are both at 40, so the rule wants
-    // exactly the row the line is drawn on.
+    // The warn threshold is at 20 and the series at 40, so the rule wants a row
+    // the bar has already filled.
     let rows = ((h as usize - 1).saturating_sub(2)).max(1) * 3 / 5;
-    let (row, _) = crate::glyphs::rule_position_scaled(40.0, rows.max(1), 40.0)
+    // The ceiling the renderer picks, not the raw value: `ceiling_for` rounds
+    // the scale up to a readable number, and asking for the rule's row against
+    // a different ceiling puts it on a different row.
+    let ceiling = crate::glyphs::ceiling_for(40.0);
+    let (row, _) = crate::glyphs::rule_position_scaled(20.0, rows.max(1), ceiling)
         .expect("the warn threshold is on this scale");
     let y = 1 + row as u16;
 
@@ -2780,7 +2788,10 @@ fn timeline_colour_carries_identity_not_magnitude() {
         let mut app = App::new(600);
         for i in (0..60).rev() {
             let mut s = sample_at(cpu, i);
-            s.mem.used = ((cpu / 100.0 * 16.0) as u64) << 30;
+            // Never zero: an idle machine still holds memory, and a series at a
+            // flat zero draws no ink and so contributes no colour — which would
+            // make this pass for the wrong reason.
+            s.mem.used = ((1.0 + cpu / 100.0 * 15.0) as u64) << 30;
             app.push(s);
         }
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);

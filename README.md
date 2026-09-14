@@ -12,16 +12,16 @@ nothing that had to be running before you noticed the problem.
 CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒▒░░░░░
   4 cores ▇▄▁█
 ── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
-  100 ██▄████████▄████████▄████████▄████████▄█████████▀████████▀████████▀████▀
-  CPU ▀   ████▀▀  ─██████ ─ ▀▀████─  ▀▀████   ▀▀████  ─▀▀████▀▀ ▀▀████▀▀ ▀▀██
-            ██       ██       ██       ▀▀       ▀▀       ▀▀▀▀     ▀▀▀▀
-    0
-   50 ▄▄▄▄─   ─   ─ ▄▄▄▄▄▄▄▄  ─   ─  ▄▄▄▄▄▄▄▄ ─   ─   ─▄▄▄▄▄▄▄▄   ─   ─ ▄▄▄▄▄▄
- WAIT    ▀▀█▄    ▄█▀▀      ▀█▄▄   ▄█▀▀      ▀▀█▄    ▄█▀▀      ▀█▄▄   ▄█▀▀
-    0       ▀▀██▀▀            ▀█▄█▀            ▀▀██▀▀            ▀█▄█▀
-   50 █▀▀▀▀▀▀█▄   ─  ▄█▀▀▀▀▀▀█▄   ─  ▄█▀▀▀▀▀█▄─   ─  ▄█▀▀▀▀▀█▄─   ─ ▄█▀▀▀▀▀▀█▄
-  MEM ▀       ▀▀█▄▄█▀▀        ▀█▄▄▄█▀▀       ▀▀█▄▄▄█▀▀       ▀▀█▄▄▄█▀
-    0
+  100 ─▆▄▂▇ ▆ ▇ ▆▃▃▆─▆─▆─▇▃▃▆ ▇ ▆ ▇▂▄▆─▇─▆─▇▁▄▆ ▇ ▆ ▇▁▅▆─▇─▅─▇─▅▅ ▇ ▅ ▇ ▅▅─▇─▅
+  CPU ▅████▃█ █▅████▄█─█▄████▅█ █▃████▅█─█▂████▆█ █▁████▇█─█─██████ █ ██████▁█
+      ███████▄████████▃████████▄████████▅████████▆████████▇███████████████████
+    0 ████████████████████████████████████████████████████████████████████████
+   50 ▄▄▃▂─ ─ ─ ─ ─ ─▂▃▄▄▃▂▁─ ─ ─ ─ ─ ▁▃▃▄▄▃▂ ─ ─ ─ ─ ─ ▂▃▄▄▃▂▁ ─ ─ ─ ─ ─▁▃▃▄▄
+ WAIT █████▆▃     ▃▆████████▇▄▂    ▂▅▇████████▆▃     ▃▆████████▇▄▁    ▂▅▇█████
+    0 ████████▅▁▅██████████████▆▃▃▇██████████████▅▂▅██████████████▆▃▄▇████████
+   50 ─▅█████▅▂ ─ ─ ─ ▂▅█████▅▂ ─ ─ ─ ▂▅████▅▂─ ─ ─ ─ ▂█████▅▂─ ─ ─ ─▂▅█████▅▂
+  MEM ▇████████▇▄▁▁▁▄▇█████████▄▁▁▁▁▄▇████████▇▄▁▁▁▁▄▇████████▇▄▁▁▁▁▄█████████
+    0 ████████████████████████████████████████████████████████████████████████
 past                      2m23s shown, 1s/slot                      ▐      now
 ── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
   CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
@@ -625,26 +625,32 @@ NFSv4.2 writes seventy-odd lines a mount and three numbers are wanted, and a
 vector per line was most of the cost.
 
 `--graph=block|braille|line|ascii` picks how the timeline is drawn, and
-`graph = block` in the config file makes the choice stick. All four draw a
-**line** through the samples rather than filling the area under it. That is not
-a style preference: a machine sitting at 80% memory fills four rows in five with
-solid ink, and every one of those cells carries the same information as the one
-row where the line actually is. The fill is the part that says nothing, and it
-is the part that makes a busy machine unreadable.
+`graph = block` in the config file makes the choice stick.
 
-`block` is the default — half-blocks and eighths, which every font that can draw
-a progress bar already has. `line` uses box drawing, which is the cleanest of the
-four where the font has it: corners turn a staircase of dashes into a stroke the
-eye follows. `braille` packs two samples into a cell for four times the vertical
-resolution, which is worth less than it sounds — memory drifting from 72% to 81%
-is flat, and braille draws that as wandering noise where box drawing draws it as
-a line with one step in it. `ascii` needs no Unicode at all. A Linux console
-(`TERM=linux`) selects `ascii` automatically.
+`block` is the default and draws bars — the classic sparkline, a column of ink
+from the baseline to the value, using the eighths ramp `▁▂▃▄▅▆▇█`. Eight levels
+in a character cell, against braille's four, and every font that can draw a
+progress bar already has them.
+
+`braille` spends the difference the other way: four levels a cell, but two
+samples a cell, so it shows twice the history at half the vertical resolution.
+In a graph three rows tall it is height that is scarce, which is why it is no
+longer the default — but it is one setting away.
+
+`line` draws the outline instead of filling under it. Worth reaching for when a
+series sits high and flat: a machine at 80% memory fills four rows in five with
+solid ink under any of the bar sets, and the fill is the part that carries no
+information. Box drawing has no part-height forms, so it trades every level of
+vertical resolution for that — one a cell — and its corners are what make the
+trade pay.
+
+`ascii` needs no Unicode at all. A Linux console (`TERM=linux`) selects it
+automatically.
 
 The per-process sparkline in the table follows the same setting, with one
-difference: outside braille it spends its single row on the eighths ramp
-(`▁▂▃▄▅▆▇█`) rather than on packing two samples a cell. In one row height is all
-there is to read, and nine of them beat five.
+difference: outside braille it spends its single row on the eighths ramp rather
+than on packing two samples a cell. In one row height is all there is to read,
+and nine levels beat five.
 
 Zooming aggregates samples into slots by **peak, never mean** — averaging a
 100% spike with three idle samples would render 25% and hide the exact event

@@ -1814,13 +1814,21 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
                 .map(peak)
                 .and_then(finite)
                 .unwrap_or(here);
-            let mask = glyphs::stroke_in_row(here, next, row, rows, set.sub_rows(), ceiling);
-            // Box drawing needs the direction of travel to pick a corner, which
-            // a mask cannot carry.
-            let glyph = if set == GlyphSet::Line {
-                glyphs::box_glyph(here, next, row, rows, ceiling)
-            } else {
-                set.stroke(mask)
+            let glyph = match set.draws() {
+                // A bar from the baseline to the value. Every cell below the
+                // value is full, the cell the value lands in is part-full, and
+                // everything above is empty — the shape a sparkline has always
+                // had, read as height rather than traced as a path.
+                glyphs::Draw::Bars => set.bar(glyphs::fill_in_row(
+                    here,
+                    row,
+                    rows,
+                    set.sub_rows(),
+                    ceiling,
+                )),
+                // Box drawing needs the direction of travel to pick a corner,
+                // which a height cannot carry.
+                glyphs::Draw::Line => glyphs::box_glyph(here, next, row, rows, ceiling),
             };
             // Colour is identity here, not magnitude — see `Theme::series_style`.
             // The threshold rules now carry "is this bad", which is what the
@@ -1833,12 +1841,17 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // bar does not reach this row. Drawing the rule across the part of
             // the buffer that has not been filled yet is noise about a region
             // where there is nothing to reference.
+            // How often the rule shows through depends on how much of the panel
+            // the series leaves empty. A bar leaves the space *above* it, a
+            // minority on a busy machine; a line leaves nearly every cell, so
+            // the same spacing would paint half the panel in chrome and the
+            // reference would compete with the signal.
+            let every = match set.draws() {
+                glyphs::Draw::Bars => 2,
+                glyphs::Draw::Line => 4,
+            };
             match rule_level {
-                // Every fourth cell, not every second. The rule used to fill the
-                // space *above* an area, a minority of the graph; against a line
-                // nearly every cell is empty, so the old spacing painted half the
-                // panel in chrome and the reference competed with the signal.
-                Some(lvl) if glyph == ' ' && i % 4 == 0 => {
+                Some(lvl) if glyph == ' ' && i % every == 0 => {
                     Span::styled(set.rule_glyph(lvl).to_string(), theme.chrome_style())
                 }
                 _ => Span::styled(glyph.to_string(), theme.series_style(series)),

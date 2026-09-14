@@ -55,11 +55,12 @@ USAGE:
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
 
-    --graph=SET     how the timeline is drawn: block (default), braille,
-                    line, or ascii. All four draw a line through the samples;
-                    they differ in the characters they use and so in how many
-                    terminals and fonts render them. `--glyphs` is the old name
-                    and still works. Falls back to ascii on a Linux console.
+    --graph=SET     how the timeline is drawn. `block` (default) draws bars
+                    with the eighths ramp, eight levels a cell; `braille` draws
+                    bars at four levels but two samples a cell; `line` draws the
+                    outline instead of filling under it; `ascii` needs no
+                    Unicode. `--glyphs` is the old name and still works. Falls
+                    back to ascii on a Linux console.
     --color=TIER    auto (default), mono, 16, 256, or true. Honours NO_COLOR.
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
     --window=SPAN   history retained, as time not samples (default 10m)
