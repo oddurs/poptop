@@ -34,6 +34,128 @@ pub enum Draw {
     Line,
 }
 
+/// The range a graph's rows cover: what the bottom means and what the top does.
+///
+/// The ceiling has always adapted to the data. The floor did not — it was zero,
+/// always — so a series living between 72% and 85% was drawn across a panel
+/// spanning 0 to 100, and the 72 points below the signal were rows of ink that
+/// never changed whatever the machine did. Three rows, one of them informative.
+///
+/// Fitting the floor to the data reclaims them. It also creates the classic
+/// misleading chart if it is done to bars, because a bar's *area* encodes its
+/// magnitude and truncating the axis makes 74 look like a third of 84. So the
+/// form follows the scale rather than the other way round: an axis at zero is
+/// drawn as bars, and a fitted axis is drawn as a line, which encodes change
+/// and for which a truncated axis is both standard and honest. See
+/// [`Scale::fitted`] and its one caller in `glyph_row`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Scale {
+    /// The value at the bottom of the bottom row.
+    pub floor: f32,
+    /// The value at the top of the top row.
+    pub ceiling: f32,
+    /// Whether the floor was moved off zero to fit the data.
+    pub fitted: bool,
+}
+
+impl Scale {
+    /// The old behaviour, and still the right one for a series that uses its
+    /// range: everything from zero to a legible ceiling.
+    pub fn zero(ceiling: f32) -> Self {
+        Self {
+            floor: 0.0,
+            ceiling,
+            fitted: false,
+        }
+    }
+
+    /// The scale for a series spanning `min..=max`, given the ceiling its unit
+    /// would pick for a zero-based axis.
+    ///
+    /// Fitted only when the zero-based view would spend less than a third of
+    /// the panel on the data — below that the rows below the signal outnumber
+    /// the rows carrying it, which is the case worth spending the extra
+    /// machinery on. Above it, zero is both honest and no worse.
+    ///
+    /// The bounds land on a round step rather than on the raw minimum and
+    /// maximum, which does three jobs at once: it keeps the series off the
+    /// edges of its own panel, it gives the axis a number a person can read,
+    /// and it is the hysteresis — as the window slides, `min` and `max` move
+    /// continuously while the bounds only move when they cross a step, so the
+    /// axis does not flap and neither does the form that follows it.
+    pub fn pick(min: f32, max: f32, zero_ceiling: f32) -> Self {
+        let span = max - min;
+        if !span.is_finite()
+            || !min.is_finite()
+            || zero_ceiling <= 0.0
+            || max <= 0.0
+            // Fitting only pays when the zero-based view would spend most of
+            // the panel below the signal.
+            || span * 3.0 >= zero_ceiling
+            // And only when there is a signal. A series that does not move has
+            // no variation to reclaim rows for, and fitting it produces a
+            // degenerate band — a flat 22% drawn between 22 and 23, which reads
+            // as a value pinned to a floor rather than as a value not moving.
+            // Zero-based, "22 out of 25" says it at a glance.
+            || span * 20.0 < zero_ceiling
+        {
+            return Self::zero(zero_ceiling);
+        }
+        let step = nice_step(span / 3.0);
+        let floor = ((min / step).floor() * step).max(0.0);
+        let mut ceiling = (max / step).ceil() * step;
+        // A series that never moves lands both bounds on the same step. One
+        // step of range keeps it a graph rather than a division by zero.
+        if ceiling <= floor {
+            ceiling = floor + step;
+        }
+        // Fitting to a floor of zero is just the zero-based axis, and saying it
+        // is fitted would switch the form for no gain.
+        if floor <= 0.0 {
+            return Self::zero(ceiling.max(zero_ceiling.min(ceiling)));
+        }
+        Self {
+            floor,
+            ceiling,
+            fitted: true,
+        }
+    }
+
+    /// Where `v` sits between the floor and the ceiling: 0.0 at the bottom of
+    /// the graph, 1.0 at the top. Outside that range if `v` is off the scale,
+    /// which is how a threshold rule knows it has nowhere to go.
+    pub fn frac(self, v: f32) -> f32 {
+        let span = self.ceiling - self.floor;
+        if span <= 0.0 {
+            return 0.0;
+        }
+        (v - self.floor) / span
+    }
+}
+
+/// A step a person can read: 1, 2 or 5 times a power of ten.
+///
+/// The axis is for humans, and 70 to 85 in fives is legible where 71.6 to 84.9
+/// is arithmetic.
+fn nice_step(rough: f32) -> f32 {
+    // NaN included, which the negation would have swallowed.
+    if !rough.is_finite() || rough <= 0.0 {
+        return 1.0;
+    }
+    let magnitude = 10f32.powf(rough.log10().floor());
+    let n = rough / magnitude;
+    let m = if n <= 1.0 {
+        1.0
+    } else if n <= 2.0 {
+        2.0
+    } else if n <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    m * magnitude
+}
+
 impl GlyphSet {
     /// The names `graph` and `glyphs` accept.
     ///
@@ -107,6 +229,26 @@ impl GlyphSet {
         }
     }
 
+    /// One cell of an outline, given where the line enters and leaves.
+    ///
+    /// Box drawing wherever the font has it: the corners are what turn a
+    /// staircase of dashes into a stroke the eye follows. Ascii gets the
+    /// nearest thing it has, since a fitted axis must not be drawn as bars in
+    /// any set and `ascii` is the set that has no box drawing.
+    pub fn line(self, from: f32, to: f32, row: usize, rows: usize) -> char {
+        let c = box_glyph(from, to, row, rows);
+        match self {
+            Self::Ascii => match c {
+                '─' => '-',
+                '│' => '|',
+                '╭' | '╮' => '.',
+                '╰' | '╯' => '\'',
+                other => other,
+            },
+            _ => c,
+        }
+    }
+
     /// Every character this set can draw a value with.
     ///
     /// Written down so a rule can be checked against it: a reference line
@@ -119,7 +261,7 @@ impl GlyphSet {
         if self == Self::Line {
             for &(from, to) in &[(0.0f32, 0.0f32), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)] {
                 for row in 0..3 {
-                    out.push(box_glyph(from, to, row, 3, 1.0));
+                    out.push(box_glyph(from, to, row, 3));
                 }
             }
         }
@@ -194,6 +336,22 @@ impl GlyphSet {
     /// lit a dot at the rule height in the *data* colour — pixel-identical to
     /// the idle sample having reached the threshold. Half the samples in the
     /// row could be misread. The rule now yields wherever data is present.
+    /// The set whose alphabet is actually in force, given how the graph draws.
+    ///
+    /// A fitted axis is drawn as a line in every set (see `Scale`), and the line
+    /// is box drawing wherever the font has it. So a `block` panel drawing a
+    /// fitted series is spelling its data in the `Line` set's characters, and
+    /// must take that set's rule too — `block` rules with `─`, which is exactly
+    /// what box drawing draws a flat stretch of series with.
+    pub fn drawn_as(self, draws: Draw) -> Self {
+        match (draws, self) {
+            // Ascii has no box drawing and keeps its own marks throughout.
+            (Draw::Line, Self::Ascii) => Self::Ascii,
+            (Draw::Line, _) => Self::Line,
+            (Draw::Bars, _) => self,
+        }
+    }
+
     pub fn rule_glyph(self, level: usize) -> char {
         let k = level.clamp(1, 4);
         match self {
@@ -251,13 +409,15 @@ impl GlyphSet {
 /// of dashes into a stroke the eye follows without effort. They need the
 /// direction of travel, which a bitmask cannot carry — hence a function of its
 /// own rather than an arm of [`GlyphSet::stroke`].
-pub fn box_glyph(from: f32, to: f32, row: usize, rows: usize, ceiling: f32) -> char {
+pub fn box_glyph(from: f32, to: f32, row: usize, rows: usize) -> char {
     if rows == 0 {
         return ' ';
     }
-    let place = |v: f32| {
-        let h = if ceiling > 0.0 {
-            v / ceiling * rows as f32
+    // `from` and `to` are fractions of the graph's `Scale`, so the ceiling has
+    // already been divided out and a fitted axis needs no special case here.
+    let place = |frac: f32| {
+        let h = if frac.is_finite() {
+            frac * rows as f32
         } else {
             0.0
         };
@@ -290,21 +450,22 @@ pub fn box_glyph(from: f32, to: f32, row: usize, rows: usize, ceiling: f32) -> c
 
 /// How much of one row a bar reaches, in sub-rows.
 ///
-/// `row` counts from the top and `rows` is the height of the graph, so the band
-/// this row covers is known; the answer is how far into it the value climbs.
+/// `frac` is where the value sits on the graph's [`Scale`] — 0.0 at the floor,
+/// 1.0 at the ceiling. `row` counts from the top and `rows` is the height, so
+/// the band this row covers is known; the answer is how far into it it climbs.
 /// Zero means the bar is entirely below this row, `sub` that it is entirely
 /// above.
 ///
 /// A value with *any* presence in the row lights at least one sub-row. Rounding
 /// it away would draw a running machine as a blank cell, which is the one thing
 /// this graph must never say.
-pub fn fill_in_row(v: f32, row: usize, rows: usize, sub: usize, ceiling: f32) -> usize {
+pub fn fill_in_row(frac: f32, row: usize, rows: usize, sub: usize) -> usize {
     if rows == 0 || sub == 0 || row >= rows {
         return 0;
     }
     let top = (rows * sub) as f32;
-    let height = if ceiling > 0.0 {
-        (v / ceiling * top).clamp(0.0, top)
+    let height = if frac.is_finite() {
+        (frac * top).clamp(0.0, top)
     } else {
         0.0
     };
@@ -353,23 +514,25 @@ fn braille_bits(left: usize, right: usize) -> u32 {
 /// `None` when the threshold sits above the ceiling — the common case on an
 /// idle machine, and why the rules stop dashing a hundred dots of noise across
 /// an otherwise empty graph.
-pub fn rule_position_scaled(pct: f32, rows: usize, ceiling: f32) -> Option<(usize, usize)> {
-    if !(0.0..=ceiling).contains(&pct) || rows == 0 {
+pub fn rule_position(scale: Scale, pct: f32, rows: usize) -> Option<(usize, usize)> {
+    let frac = scale.frac(pct);
+    if !(0.0..=1.0).contains(&frac) || rows == 0 {
         return None;
     }
     let rows_f = rows as f32;
     for row in 0..rows {
-        let high = ceiling * (rows_f - row as f32) / rows_f;
-        let low = ceiling * (rows_f - row as f32 - 1.0) / rows_f;
-        // Top row owns its upper bound so a 100% threshold has somewhere to go.
-        let in_band = if row == 0 { pct <= high } else { pct < high };
-        if in_band && pct >= low {
+        let high = (rows_f - row as f32) / rows_f;
+        let low = (rows_f - row as f32 - 1.0) / rows_f;
+        // Top row owns its upper bound so a threshold at the ceiling has
+        // somewhere to go.
+        let in_band = if row == 0 { frac <= high } else { frac < high };
+        if in_band && frac >= low {
             // Must use the same mapping the bars use. With `ceil` here and
             // `round` there, the rule sat a dot above where a bar of the same
             // percentage lands: at six graph rows an 80% bar had to reach
             // 81.25% before it touched its own 80% line, while `heat_style`
             // already coloured it critical. Two signals, contradicting.
-            let level = level_in_row_scaled(pct, row, rows, ceiling).max(1);
+            let level = level_in_row_scaled(frac, row, rows, 1.0).max(1);
             return Some((row, level));
         }
     }
@@ -679,7 +842,7 @@ mod tests {
         // touched its own 80% line, while heat_style already called it
         // critical. Two signals, contradicting each other.
         for rows in 1..=12 {
-            let (row, level) = rule_position_scaled(80.0, rows, 100.0).unwrap();
+            let (row, level) = rule_position(Scale::zero(100.0), 80.0, rows).unwrap();
             let bar = level_in_row_scaled(80.0, row, rows, 100.0);
             assert_eq!(
                 level,
@@ -692,22 +855,22 @@ mod tests {
     #[test]
     fn rule_position_lands_in_the_right_band() {
         // 80% of a 3-row graph is in the top row, which spans 66.7..100.
-        let (row, level) = rule_position_scaled(80.0, 3, 100.0).unwrap();
+        let (row, level) = rule_position(Scale::zero(100.0), 80.0, 3).unwrap();
         assert_eq!(row, 0);
         assert!((1..=4).contains(&level));
         // 50% of a 2-row graph is the boundary between the bands. It resolves
         // to the bottom dot of the upper row, which is that boundary drawn.
-        assert_eq!(rule_position_scaled(50.0, 2, 100.0), Some((0, 1)));
+        assert_eq!(rule_position(Scale::zero(100.0), 50.0, 2), Some((0, 1)));
         // Extremes stay inside the graph.
-        assert_eq!(rule_position_scaled(100.0, 3, 100.0).unwrap().0, 0);
-        assert_eq!(rule_position_scaled(0.0, 3, 100.0).unwrap().0, 2);
+        assert_eq!(rule_position(Scale::zero(100.0), 100.0, 3).unwrap().0, 0);
+        assert_eq!(rule_position(Scale::zero(100.0), 0.0, 3).unwrap().0, 2);
     }
 
     #[test]
     fn rule_position_refuses_the_impossible() {
-        assert_eq!(rule_position_scaled(120.0, 3, 100.0), None);
-        assert_eq!(rule_position_scaled(-1.0, 3, 100.0), None);
-        assert_eq!(rule_position_scaled(50.0, 0, 100.0), None);
+        assert_eq!(rule_position(Scale::zero(100.0), 120.0, 3), None);
+        assert_eq!(rule_position(Scale::zero(100.0), -1.0, 3), None);
+        assert_eq!(rule_position(Scale::zero(100.0), 50.0, 0), None);
     }
 
     #[test]
@@ -715,7 +878,7 @@ mod tests {
         // Whatever the panel height, the threshold must land somewhere.
         for rows in 1..=8 {
             assert!(
-                rule_position_scaled(80.0, rows, 100.0).is_some(),
+                rule_position(Scale::zero(100.0), 80.0, rows).is_some(),
                 "{rows} rows lost the rule"
             );
         }
@@ -877,7 +1040,7 @@ mod composition_tests {
                     // The bottom row of a three-row graph, so the whole sweep
                     // lands inside one cell.
                     let v = k as f32 / 100.0 * (100.0 / 3.0);
-                    set.bar(fill_in_row(v, 2, 3, sub, 100.0))
+                    set.bar(fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub))
                 })
                 .collect();
             assert_eq!(
@@ -920,16 +1083,143 @@ mod composition_tests {
             let sub = set.sub_rows();
             for v in [0.001f32, 0.01, 0.1, 1.0] {
                 assert_eq!(
-                    fill_in_row(v, 2, 3, sub, 100.0),
+                    fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub),
                     1,
                     "{set:?} drew {v}% as {} sub-rows",
-                    fill_in_row(v, 2, 3, sub, 100.0)
+                    fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub)
                 );
-                assert_ne!(set.bar(fill_in_row(v, 2, 3, sub, 100.0)), ' ');
+                assert_ne!(
+                    set.bar(fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub)),
+                    ' '
+                );
             }
             // And an actual zero still draws nothing, or the distinction the
             // case above protects would be lost from the other side.
-            assert_eq!(fill_in_row(0.0, 2, 3, sub, 100.0), 0);
+            assert_eq!(fill_in_row(Scale::zero(100.0).frac(0.0), 2, 3, sub), 0);
+        }
+    }
+    #[test]
+    fn a_high_narrow_band_gets_the_whole_panel() {
+        // The case this exists for: memory between 72% and 85% on a panel that
+        // spanned 0 to 100, so 72 of the 100 points were rows of ink that never
+        // changed. The reclaimed rows are the whole feature.
+        let s = Scale::pick(72.0, 85.0, 100.0);
+        assert!(
+            s.fitted,
+            "a 13-point band on a 100-point axis was not fitted"
+        );
+        assert!(s.floor >= 70.0 && s.floor <= 72.0, "floor {}", s.floor);
+        assert!(
+            s.ceiling >= 85.0 && s.ceiling <= 90.0,
+            "ceiling {}",
+            s.ceiling
+        );
+        // The data lands inside the panel rather than on its edges, and uses
+        // most of it: that ratio *is* the reclaimed resolution.
+        assert!(s.frac(72.0) >= 0.0 && s.frac(85.0) <= 1.0);
+        assert!(
+            s.frac(85.0) - s.frac(72.0) > 0.6,
+            "the band uses only {:.0}% of the panel",
+            (s.frac(85.0) - s.frac(72.0)) * 100.0
+        );
+    }
+
+    #[test]
+    fn a_series_that_uses_its_range_is_left_at_zero() {
+        // Fitting is for the wasted-panel case and nothing else. A series that
+        // spans most of its axis is already spending its rows on the signal,
+        // and moving its floor would truncate it for no gain — and, because the
+        // form follows the axis, would turn honest bars into a line.
+        for (min, max) in [(0.0f32, 95.0f32), (2.0, 60.0), (0.0, 40.0)] {
+            let s = Scale::pick(min, max, ceiling_for(max));
+            assert!(!s.fitted, "{min}..{max} was fitted");
+            assert_eq!(s.floor, 0.0);
+        }
+    }
+
+    #[test]
+    fn a_series_that_does_not_move_is_left_at_zero() {
+        // A flat series has no variation to reclaim rows for, and fitting it
+        // gives a degenerate band — 22% drawn between 22 and 23, which reads as
+        // a value pinned to a floor rather than as a value not moving. It also
+        // made the axis label its own ceiling `23`, which is true and useless.
+        for v in [2.0f32, 22.0, 78.0, 99.0] {
+            let s = Scale::pick(v, v, ceiling_for(v));
+            assert!(!s.fitted, "a flat {v}% was fitted to {s:?}");
+        }
+        // And the near-flat case, which is the same problem one step along:
+        // a band too narrow to label distinguishably.
+        assert!(!Scale::pick(78.0, 78.4, 100.0).fitted);
+    }
+
+    #[test]
+    fn the_bounds_move_in_steps_so_the_axis_cannot_flap() {
+        // The hysteresis. `min` and `max` slide continuously as the window
+        // moves; if the bounds tracked them the axis would be relabelled every
+        // frame — and because the form follows the axis, a series hovering at
+        // the fitting threshold would alternate between bars and a line.
+        // Rounding to a readable step is what stops both.
+        let base = Scale::pick(72.0, 85.0, 100.0);
+        for drift in [0.0f32, 0.3, 0.7, 1.1, 1.9] {
+            let s = Scale::pick(72.0 + drift, 85.0 - drift, 100.0);
+            assert_eq!(
+                (s.floor, s.ceiling),
+                (base.floor, base.ceiling),
+                "a drift of {drift} moved the axis"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fitted_axis_is_never_drawn_as_bars() {
+        // The honesty rule, and the reason the form is not a free choice. A
+        // bar's area encodes its magnitude, so on an axis starting at 70 a bar
+        // for 74 is a quarter the height of one for 85 — 74 rendered as a
+        // quarter of 85. A line encodes change, for which a truncated axis is
+        // both standard and honest.
+        //
+        // Stated here as the invariant rather than only in `glyph_row`, so the
+        // next person to add a set has to satisfy it.
+        let fitted = Scale::pick(72.0, 85.0, 100.0);
+        assert!(fitted.fitted);
+        for set in [
+            GlyphSet::Block,
+            GlyphSet::Braille,
+            GlyphSet::Line,
+            GlyphSet::Ascii,
+        ] {
+            let draws = if fitted.fitted {
+                Draw::Line
+            } else {
+                set.draws()
+            };
+            assert_eq!(
+                draws,
+                Draw::Line,
+                "{set:?} would draw a fitted axis as bars"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_is_never_spelled_like_the_series_in_the_form_being_drawn() {
+        // `a_rule_is_never_spelled_like_the_series_it_rules` checks the set
+        // against its own alphabet. It is not enough: a fitted axis is drawn as
+        // a line in *every* set, so a `block` panel can be spelling its data in
+        // box characters while still ruling with `block`'s `─` — which is the
+        // box character for a flat stretch of series. Two marks, one glyph, and
+        // the reference line reads as data.
+        for set in [GlyphSet::Block, GlyphSet::Braille, GlyphSet::Ascii] {
+            let effective = set.drawn_as(Draw::Line);
+            let drawn = effective.alphabet();
+            for k in 1..=4 {
+                let rule = effective.rule_glyph(k);
+                assert!(
+                    !drawn.contains(&rule),
+                    "{set:?} drawing a fitted axis rules with {rule:?}, \
+                     which is one of the strokes it draws"
+                );
+            }
         }
     }
 }

@@ -2079,10 +2079,14 @@ fn the_rules_land_on_exactly_the_threshold_rows() {
 
     let mut expected: Vec<usize> = Vec::new();
     for pct in [app.theme.warn_pct, app.theme.critical_pct] {
-        if let Some((r, _)) = crate::glyphs::rule_position_scaled(pct, cpu_rows, cpu_ceiling) {
+        if let Some((r, _)) =
+            crate::glyphs::rule_position(crate::glyphs::Scale::zero(cpu_ceiling), pct, cpu_rows)
+        {
             expected.push(r);
         }
-        if let Some((r, _)) = crate::glyphs::rule_position_scaled(pct, mem_rows, mem_ceiling) {
+        if let Some((r, _)) =
+            crate::glyphs::rule_position(crate::glyphs::Scale::zero(mem_ceiling), pct, mem_rows)
+        {
             expected.push(cpu_rows + r);
         }
     }
@@ -2135,10 +2139,10 @@ fn the_rule_is_dashed_so_it_cannot_be_read_as_data() {
         .unwrap();
     let buf = term.backend().buffer();
 
-    let rule_y = 1 + crate::glyphs::rule_position_scaled(
+    let rule_y = 1 + crate::glyphs::rule_position(
+        crate::glyphs::Scale::zero(100.0),
         app.theme.critical_pct,
         (((h as usize - 1).saturating_sub(2)).max(1) * 3 / 5).max(1),
-        100.0,
     )
     .unwrap()
     .0 as u16;
@@ -2239,8 +2243,9 @@ fn data_always_wins_the_cell_over_the_rule() {
     // the scale up to a readable number, and asking for the rule's row against
     // a different ceiling puts it on a different row.
     let ceiling = crate::glyphs::ceiling_for(40.0);
-    let (row, _) = crate::glyphs::rule_position_scaled(20.0, rows.max(1), ceiling)
-        .expect("the warn threshold is on this scale");
+    let (row, _) =
+        crate::glyphs::rule_position(crate::glyphs::Scale::zero(ceiling), 20.0, rows.max(1))
+            .expect("the warn threshold is on this scale");
     let y = 1 + row as u16;
 
     let inked = (ui::GUTTER_W as u16..w).filter(|&x| buf[(x, y)].symbol() != " ");
@@ -11511,5 +11516,101 @@ fn an_unresolvable_owner_is_not_folded_into_one_user() {
         labels,
         vec!["alice"],
         "two processes with unlookupable owners were folded into one user"
+    );
+}
+
+#[test]
+fn a_high_flat_series_stops_being_a_wall() {
+    // Reported twice as "the graphs look like a wall", and read twice as a
+    // question about the character set — first braille, then the fill. It was
+    // neither. A series between 72% and 85% on an axis pinned to zero puts 72
+    // of its 100 points below the signal, and those rows are solid whatever the
+    // machine does.
+    let mut app = App::new(600);
+    for i in 0..200 {
+        let mut s = sample_at(50.0, 200 - i);
+        let pct = 78.0 + ((i as f32) * 0.11).sin() * 6.0;
+        s.mem.used = ((pct / 100.0 * 16.0 * 1024.0) as u64) << 20;
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let r = ui::timeline_rows_range(22);
+    let lines = render_lines(&app, 92, 22);
+    let band: Vec<&String> = lines[r.start as usize..r.end as usize]
+        .iter()
+        .skip_while(|l| !l.contains("MEM"))
+        .take(2)
+        .collect();
+    assert!(!band.is_empty(), "no memory band on screen");
+
+    // Not solid. The specific failure was a row of `█` from edge to edge, and
+    // it is the one thing that must not come back.
+    for line in &band {
+        let ink: String = line.chars().skip(ui::GUTTER_W).collect();
+        let solid = ink.chars().filter(|&c| c == '█').count();
+        assert!(
+            solid * 2 < ink.chars().count(),
+            "the memory band is still a wall: {line:?}"
+        );
+    }
+
+    // And *this band's* axis says where its own bottom is, because a floor that
+    // moved without saying so would be the misleading kind of clever.
+    //
+    // Read from the memory band specifically, not from the frame: an earlier
+    // version asked whether any gutter label was between zero and the floor,
+    // and the CPU panel's own ceiling satisfied it — so the assertion held with
+    // the memory floor labelled `0`.
+    let panel = &lines[r.start as usize..r.end as usize];
+    let gutter = |l: &String| {
+        l.chars()
+            .take(ui::GUTTER_W)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    let mem_row = panel
+        .iter()
+        .position(|l| gutter(l) == "MEM")
+        .expect("no memory band on screen");
+    let floor_row = mem_row
+        + 1
+        + panel[mem_row + 1..]
+            .iter()
+            .position(|l| gutter(l).parse::<f32>().is_ok())
+            .expect("the memory band states no floor at all");
+    let floor: f32 = gutter(&panel[floor_row]).parse().expect("just parsed it");
+    assert!(
+        floor > 0.0,
+        "the memory band is fitted and still labels its floor {floor}"
+    );
+
+    // The rule belongs to the alphabet in force. A fitted panel is drawn as a
+    // line in box characters whatever the set, and `block`'s own rule is `─` —
+    // the box character for a flat stretch of series. Ruling with it would put
+    // a reference line and a run of samples in the same glyph.
+    let mut term = Terminal::new(TestBackend::new(92, 22)).unwrap();
+    term.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = term.backend().buffer();
+    // The whole band, which starts one row above the label: `axis_label` puts
+    // the ceiling on the band's first row and the name on its second.
+    let mut chrome_marks = 0;
+    for y in r.start + mem_row as u16 - 1..=r.start + floor_row as u16 {
+        for x in ui::GUTTER_W as u16..92 {
+            let c = &buf[(x, y)];
+            if c.fg == app.theme.chrome && c.symbol() != " " {
+                chrome_marks += 1;
+                assert_ne!(
+                    c.symbol(),
+                    "─",
+                    "the rule is spelled like the line the series is drawn with"
+                );
+            }
+        }
+    }
+    assert!(
+        chrome_marks > 0,
+        "no rule was drawn, so this proves nothing about which glyph it uses"
     );
 }

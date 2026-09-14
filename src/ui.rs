@@ -1499,10 +1499,18 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         } else {
             app.theme.series_mem
         };
-        // Each graph scales to its own peak: memory at 78% and CPU at 16% are
-        // different questions and deserve different axes.
+        // Each graph scales to its own data: memory at 78% and CPU at 16% are
+        // different questions and deserve different axes. The floor moves too —
+        // a series living in a narrow band high up gets an axis fitted to that
+        // band, because a zero-based panel would spend most of its rows on ink
+        // that never changes. See `glyphs::Scale`.
         let peak = values.iter().flatten().copied().fold(0.0_f32, f32::max);
-        let ceiling = unit.ceiling(peak);
+        let trough = values
+            .iter()
+            .flatten()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let scale = glyphs::Scale::pick(trough, peak, unit.ceiling(peak));
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
@@ -1518,7 +1526,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         } else {
             [app.theme.warn_pct, app.theme.critical_pct]
                 .iter()
-                .filter_map(|&pct| glyphs::rule_position_scaled(pct, rows, ceiling))
+                .filter_map(|&pct| glyphs::rule_position(scale, pct, rows))
                 .collect()
         };
         // A figure this row could not read joins the gaps, for this row only.
@@ -1534,7 +1542,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 gutter,
                 &app.theme,
                 labelled.then_some(name),
-                ceiling,
+                scale,
                 *unit,
             );
             spans.extend(
@@ -1547,7 +1555,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                         spc,
                         rule_level,
                         series,
-                        ceiling,
+                        scale,
                         gaps: &row_gaps,
                     },
                     &app.theme,
@@ -1745,15 +1753,15 @@ struct GraphRow<'a> {
     rule_level: Option<usize>,
     /// Identity of the series — never a judgement about its value.
     series: Color,
-    /// Top of the y-axis for this graph.
-    ceiling: f32,
+    /// The range this graph's rows cover, floor to ceiling.
+    scale: glyphs::Scale,
     /// Per-slot flags marking where time is missing from the buffer.
     gaps: &'a [bool],
 }
 
 /// Draw one row of a graph.
 fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
-    let (set, values, row, rows, spc, rule_level, series, ceiling, gaps) = (
+    let (set, values, row, rows, spc, rule_level, series, scale, gaps) = (
         g.set,
         g.values,
         g.row,
@@ -1761,7 +1769,7 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
         g.spc,
         g.rule_level,
         g.series,
-        g.ceiling,
+        g.scale,
         g.gaps,
     );
     let spans = values
@@ -1814,21 +1822,30 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
                 .map(peak)
                 .and_then(finite)
                 .unwrap_or(here);
-            let glyph = match set.draws() {
+            // The form follows the axis, not the setting. Bars encode
+            // magnitude by area, so a truncated axis makes 74 look like a third
+            // of 84 — the classic misleading chart. A line encodes change, for
+            // which a fitted axis is standard and honest, and the gutter states
+            // the floor either way.
+            let draws = if scale.fitted {
+                glyphs::Draw::Line
+            } else {
+                set.draws()
+            };
+            let glyph = match draws {
                 // A bar from the baseline to the value. Every cell below the
                 // value is full, the cell the value lands in is part-full, and
                 // everything above is empty — the shape a sparkline has always
                 // had, read as height rather than traced as a path.
                 glyphs::Draw::Bars => set.bar(glyphs::fill_in_row(
-                    here,
+                    scale.frac(here),
                     row,
                     rows,
                     set.sub_rows(),
-                    ceiling,
                 )),
                 // Box drawing needs the direction of travel to pick a corner,
                 // which a height cannot carry.
-                glyphs::Draw::Line => glyphs::box_glyph(here, next, row, rows, ceiling),
+                glyphs::Draw::Line => set.line(scale.frac(here), scale.frac(next), row, rows),
             };
             // Colour is identity here, not magnitude — see `Theme::series_style`.
             // The threshold rules now carry "is this bad", which is what the
@@ -1846,13 +1863,17 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // minority on a busy machine; a line leaves nearly every cell, so
             // the same spacing would paint half the panel in chrome and the
             // reference would compete with the signal.
-            let every = match set.draws() {
+            let every = match draws {
                 glyphs::Draw::Bars => 2,
                 glyphs::Draw::Line => 4,
             };
             match rule_level {
                 Some(lvl) if glyph == ' ' && i % every == 0 => {
-                    Span::styled(set.rule_glyph(lvl).to_string(), theme.chrome_style())
+                    // The rule belongs to the alphabet in force, not to the
+                    // setting: a `block` panel drawing a fitted series draws it
+                    // in box characters, and `block`'s own rule is one of them.
+                    let mark = set.drawn_as(draws).rule_glyph(lvl);
+                    Span::styled(mark.to_string(), theme.chrome_style())
                 }
                 _ => Span::styled(glyph.to_string(), theme.series_style(series)),
             }
@@ -1959,7 +1980,7 @@ pub fn axis_label_for_test(row: usize, rows: usize, name: Option<&str>) -> Strin
         GUTTER_W,
         &Theme::new(crate::theme::Palette::Safe, Theme::default().tier),
         name,
-        100.0,
+        glyphs::Scale::zero(100.0),
         Unit::Percent,
     )
     .iter()
@@ -2080,7 +2101,7 @@ fn axis_label(
     gutter: usize,
     theme: &Theme,
     series: Option<&str>,
-    ceiling: f32,
+    scale: glyphs::Scale,
     unit: Unit,
 ) -> Vec<Span<'static>> {
     if gutter == 0 {
@@ -2104,9 +2125,12 @@ fn axis_label(
         // The ceiling, not a fixed 100 — the axis has to say what it is, or
         // scaling it would be the misleading kind of clever. In the series'
         // own units, because `4194304` is arithmetic and `4.0M` is a scale.
-        unit.axis(ceiling)
+        unit.axis(scale.ceiling)
     } else if row + 1 == rows {
-        "0".to_string()
+        // The floor, not a fixed `0`. A fitted axis that labelled its bottom
+        // row zero would be the misleading kind of clever — the whole reason
+        // the floor is allowed to move is that it is stated when it does.
+        unit.axis(scale.floor)
     } else if row == 1 {
         // The first row not already carrying an anchor.
         series.unwrap_or_default().to_string()
