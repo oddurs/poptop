@@ -11520,6 +11520,62 @@ fn an_unresolvable_owner_is_not_folded_into_one_user() {
 }
 
 #[test]
+fn the_reference_lines_never_outnumber_what_they_reference() {
+    // Reported as "it looks like clouds", and it was exactly that: the
+    // threshold rules were drawn every second cell, which is about forty marks
+    // on a hundred-column terminal. That was tuned against an area fill, which
+    // reached most cells and hid them. On an idle machine, where the series
+    // occupies a tenth of the panel and the rest is empty, the same rule
+    // becomes the loudest thing on screen — a reference line that has taken
+    // over the graph it was there to annotate.
+    //
+    // The property is a ratio, not a stride, because the stride is the thing
+    // that was wrong. However wide the panel and however sparse the series,
+    // chrome inside a graph must stay a minority of the ink in it.
+    let (w, h) = (100u16, 14u16);
+    let mut app = App::new(600);
+    // An idle machine with one spike, so the ceiling is 100 and the series
+    // lives near the floor: the shape that leaves the most room for chrome.
+    for i in (0..200).rev() {
+        app.push(sample_at(if i == 150 { 100.0 } else { 4.0 }, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw_timeline_for_test(f, f.area(), &app))
+        .unwrap();
+    let buf = term.backend().buffer();
+
+    // Measured per row, not across the panel. An earlier version summed the
+    // whole graph, and the memory band — a wall of data at this height —
+    // outweighed every dash in the CPU band, so the ratio held at the stride
+    // that caused the complaint. The question is how dense a rule *row* is,
+    // because that is the row a reader sees as texture.
+    let width = w as usize - ui::GUTTER_W;
+    let mut ruled = 0;
+    for y in 1..h - 1 {
+        let chrome = (ui::GUTTER_W as u16..w)
+            .filter(|&x| {
+                let c = &buf[(x, y)];
+                c.fg == app.theme.chrome && c.symbol() != " " && c.symbol() != "\u{2800}"
+            })
+            .count();
+        if chrome == 0 {
+            continue;
+        }
+        ruled += 1;
+        assert!(
+            chrome * 5 <= width,
+            "a rule row is {chrome} marks across {width} columns — texture, not a reference"
+        );
+    }
+    assert!(
+        ruled > 0,
+        "no rules at all, so this would pass with the feature removed"
+    );
+}
+
+#[test]
 fn a_high_flat_series_stops_being_a_wall() {
     // Reported twice as "the graphs look like a wall", and read twice as a
     // question about the character set — first braille, then the fill. It was

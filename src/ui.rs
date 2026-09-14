@@ -1863,10 +1863,15 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // minority on a busy machine; a line leaves nearly every cell, so
             // the same spacing would paint half the panel in chrome and the
             // reference would compete with the signal.
-            let every = match draws {
-                glyphs::Draw::Bars => 2,
-                glyphs::Draw::Line => 4,
-            };
+            // Proportional to the panel, not a fixed stride. Every second cell
+            // was tuned against an area fill that reached most of them, and it
+            // is roughly forty marks on a hundred-column terminal: on an idle
+            // machine, where nearly every cell is empty, that is not a
+            // reference line but the loudest thing on the screen. A reference
+            // has to be findable and recessive at the same time, and about ten
+            // marks across a panel is both however wide the panel is.
+            let cells = values.len().div_ceil(spc.max(1));
+            let every = (cells / 10).clamp(4, 24);
             match rule_level {
                 Some(lvl) if glyph == ' ' && i % every == 0 => {
                     // The rule belongs to the alphabet in force, not to the
