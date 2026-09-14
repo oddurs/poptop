@@ -12,7 +12,7 @@
 //! cannot come to disagree about what a value means, and a setting added for
 //! one gets the other for free.
 
-use crate::glyphs::GlyphSet;
+use crate::glyphs::{Axis, GlyphSet};
 use crate::sample::{ProcSample, Sample};
 use crate::theme::{Palette, Theme, Tier, Token};
 use ratatui::style::Color;
@@ -24,6 +24,7 @@ use std::time::Duration;
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
     pub glyphs: GlyphSet,
+    pub axis: Axis,
     pub tier: Tier,
     /// The theme asked for: a built-in, or a file in `~/.config/poptop/themes`.
     /// Whether it resolves is settled in [`resolve`], which is where the
@@ -113,6 +114,7 @@ impl Settings {
     pub fn detect() -> Self {
         Self {
             glyphs: default_glyphs(),
+            axis: Axis::default(),
             tier: Tier::detect(),
             theme: Palette::default().name().to_string(),
             theme_origin: None,
@@ -163,6 +165,7 @@ impl Settings {
     fn fixed() -> Self {
         Self {
             glyphs: GlyphSet::default(),
+            axis: Axis::default(),
             tier: Tier::TrueColor,
             theme: Palette::Safe.name().to_string(),
             theme_origin: None,
@@ -243,6 +246,13 @@ pub const KEYS: &[(&str, Apply)] = &[
     }),
     ("glyphs", |s, v| {
         s.glyphs = GlyphSet::parse(v).ok_or(GlyphSet::NAMES)?;
+        Ok(())
+    }),
+    // Where the axis starts. Separate from the character set, because it is a
+    // different decision: the set is what the graph is drawn with, this is what
+    // the rows mean.
+    ("scale", |s, v| {
+        s.axis = Axis::parse(v).ok_or(Axis::NAMES)?;
         Ok(())
     }),
     ("color", |s, v| {

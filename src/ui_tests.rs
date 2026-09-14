@@ -11576,12 +11576,60 @@ fn the_reference_lines_never_outnumber_what_they_reference() {
 }
 
 #[test]
-fn a_high_flat_series_stops_being_a_wall() {
-    // Reported twice as "the graphs look like a wall", and read twice as a
-    // question about the character set — first braille, then the fill. It was
-    // neither. A series between 72% and 85% on an axis pinned to zero puts 72
-    // of its 100 points below the signal, and those rows are solid whatever the
-    // machine does.
+fn nothing_about_the_data_can_turn_the_bars_into_a_line() {
+    // The graph changing shape on its own was the complaint, twice over: a
+    // memory series drifting into a narrow band would silently stop being bars
+    // and start being a line, which reads as a different tool having drawn it.
+    // Whatever the data does, the default draws bars, and only `scale = fit`
+    // changes that.
+    let shapes = [
+        // A high narrow band — the case fitting exists for.
+        (72.0f32, 85.0f32),
+        // Flat, noisy, wide, and near zero.
+        (50.0, 50.0),
+        (0.0, 100.0),
+        (1.0, 3.0),
+        (95.0, 99.0),
+    ];
+    for (lo, hi) in shapes {
+        let mut app = App::new(600);
+        for i in (0..200).rev() {
+            let f = (i % 7) as f32 / 6.0;
+            let mut s = sample_at(lo + (hi - lo) * f, i);
+            s.mem.used = ((lo + (hi - lo) * f) / 100.0 * 16.0 * 1024.0) as u64 * (1 << 20);
+            app.push(s);
+        }
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        let r = ui::timeline_rows_range(22);
+        let lines = render_lines(&app, 92, 22);
+        let drawn: String = lines[r.start as usize..r.end as usize]
+            .iter()
+            .flat_map(|l| l.chars().skip(ui::GUTTER_W))
+            .collect();
+        for c in "╭╮╰╯│".chars() {
+            assert!(
+                !drawn.contains(c),
+                "a {lo}..{hi} series drew {c:?} — the default turned into a line"
+            );
+        }
+        assert!(
+            drawn.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)),
+            "a {lo}..{hi} series drew no bars at all"
+        );
+    }
+}
+
+#[test]
+fn scale_fit_stops_a_high_flat_series_being_a_wall() {
+    // A series between 72% and 85% on an axis pinned to zero puts 72 of its 100
+    // points below the signal, and those rows are solid whatever the machine
+    // does. `scale = fit` reclaims them.
+    //
+    // Opt-in, not automatic. Fitting changes the *form* as well as the axis —
+    // bars encode magnitude by area, so a truncated axis has to be drawn as a
+    // line to stay honest — and a graph that silently changes shape because the
+    // data drifted into a band is worse than a wall. Most people want bars, and
+    // bars want zero.
     let mut app = App::new(600);
     for i in 0..200 {
         let mut s = sample_at(50.0, 200 - i);
@@ -11590,6 +11638,7 @@ fn a_high_flat_series_stops_being_a_wall() {
         app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.axis = crate::glyphs::Axis::Fit;
 
     let r = ui::timeline_rows_range(22);
     let lines = render_lines(&app, 92, 22);

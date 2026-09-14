@@ -1510,7 +1510,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             .flatten()
             .copied()
             .fold(f32::INFINITY, f32::min);
-        let scale = glyphs::Scale::pick(trough, peak, unit.ceiling(peak));
+        let scale = glyphs::Scale::pick(trough, peak, unit.ceiling(peak), app.axis);
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.

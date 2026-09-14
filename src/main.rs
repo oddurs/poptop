@@ -61,6 +61,12 @@ USAGE:
                     outline instead of filling under it; `ascii` needs no
                     Unicode. `--glyphs` is the old name and still works. Falls
                     back to ascii on a Linux console.
+    --scale=WHERE   where the y-axis starts: zero (default) or fit. `fit`
+                    reclaims the rows a high flat series wastes — memory at
+                    72-85% spends most of a 0-100 panel on ink that never
+                    changes — at the cost of drawing that panel as a line
+                    rather than bars, since a bar on a truncated axis
+                    misstates its own magnitude.
     --color=TIER    auto (default), mono, 16, 256, or true. Honours NO_COLOR.
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
     --window=SPAN   history retained, as time not samples (default 10m)
@@ -680,6 +686,7 @@ fn main() -> io::Result<()> {
     app.interval = settings.interval;
     app.theme = theme;
     app.glyphs = settings.glyphs;
+    app.axis = settings.axis;
     app.signals = settings.signals;
 
     // Collect once before drawing so the first frame has real numbers. CPU

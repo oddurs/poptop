@@ -34,6 +34,35 @@ pub enum Draw {
     Line,
 }
 
+/// Where a graph's axis starts.
+///
+/// A separate decision from the character set, and a setting rather than
+/// something the graph does on its own. Fitting reclaims the rows a high flat
+/// series wastes, but it also changes the *form* — bars encode magnitude by
+/// area, so a truncated axis makes 74 look like a third of 84, and a fitted
+/// panel has to be drawn as a line to stay honest. That is a trade worth
+/// offering and not worth imposing: most people want bars, and bars want zero.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Axis {
+    /// From zero, always. Bars, and the encoding is true.
+    #[default]
+    Zero,
+    /// Fitted to the data where that reclaims rows, drawn as a line.
+    Fit,
+}
+
+impl Axis {
+    pub const NAMES: &'static str = "zero or fit";
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "zero" => Some(Self::Zero),
+            "fit" => Some(Self::Fit),
+            _ => None,
+        }
+    }
+}
+
 /// The range a graph's rows cover: what the bottom means and what the top does.
 ///
 /// The ceiling has always adapted to the data. The floor did not — it was zero,
@@ -72,7 +101,8 @@ impl Scale {
     /// The scale for a series spanning `min..=max`, given the ceiling its unit
     /// would pick for a zero-based axis.
     ///
-    /// Fitted only when the zero-based view would spend less than a third of
+    /// Never fitted unless asked: see [`Axis`]. When asked, fitted only when
+    /// the zero-based view would spend less than a third of
     /// the panel on the data — below that the rows below the signal outnumber
     /// the rows carrying it, which is the case worth spending the extra
     /// machinery on. Above it, zero is both honest and no worse.
@@ -83,9 +113,10 @@ impl Scale {
     /// and it is the hysteresis — as the window slides, `min` and `max` move
     /// continuously while the bounds only move when they cross a step, so the
     /// axis does not flap and neither does the form that follows it.
-    pub fn pick(min: f32, max: f32, zero_ceiling: f32) -> Self {
+    pub fn pick(min: f32, max: f32, zero_ceiling: f32, axis: Axis) -> Self {
         let span = max - min;
-        if !span.is_finite()
+        if axis == Axis::Zero
+            || !span.is_finite()
             || !min.is_finite()
             || zero_ceiling <= 0.0
             || max <= 0.0
@@ -427,19 +458,29 @@ pub fn box_glyph(from: f32, to: f32, row: usize, rows: usize) -> char {
     match (row == a, row == b) {
         // Flat: the line arrives and leaves at the same height.
         (true, true) => '─',
-        // The near end of a step. Which corner depends on which way it turns.
+        // The cell's left end, where the line arrives from the previous cell,
+        // so this corner always opens to the *left* and turns towards `b`.
+        // `╰` and `╯` were the wrong way round here and in the arm below, which
+        // drew a rise as two corners both opening left: a dead end above a dead
+        // end, where the eye expects a step.
         (true, false) => {
             if a > b {
-                '╰'
+                // Rising: in from the left, out upwards.
+                '╯'
             } else {
+                // Falling: in from the left, out downwards.
                 '╮'
             }
         }
+        // The cell's right end, where the line leaves for the next cell, so
+        // this corner always opens to the *right* and turns back towards `a`.
         (false, true) => {
             if a > b {
+                // Rising: in from below, out to the right.
                 '╭'
             } else {
-                '╯'
+                // Falling: in from above, out to the right.
+                '╰'
             }
         }
         // Strictly between the two ends: the vertical part of the step.
@@ -1103,7 +1144,7 @@ mod composition_tests {
         // The case this exists for: memory between 72% and 85% on a panel that
         // spanned 0 to 100, so 72 of the 100 points were rows of ink that never
         // changed. The reclaimed rows are the whole feature.
-        let s = Scale::pick(72.0, 85.0, 100.0);
+        let s = Scale::pick(72.0, 85.0, 100.0, Axis::Fit);
         assert!(
             s.fitted,
             "a 13-point band on a 100-point axis was not fitted"
@@ -1131,7 +1172,7 @@ mod composition_tests {
         // and moving its floor would truncate it for no gain — and, because the
         // form follows the axis, would turn honest bars into a line.
         for (min, max) in [(0.0f32, 95.0f32), (2.0, 60.0), (0.0, 40.0)] {
-            let s = Scale::pick(min, max, ceiling_for(max));
+            let s = Scale::pick(min, max, ceiling_for(max), Axis::Fit);
             assert!(!s.fitted, "{min}..{max} was fitted");
             assert_eq!(s.floor, 0.0);
         }
@@ -1144,12 +1185,12 @@ mod composition_tests {
         // a value pinned to a floor rather than as a value not moving. It also
         // made the axis label its own ceiling `23`, which is true and useless.
         for v in [2.0f32, 22.0, 78.0, 99.0] {
-            let s = Scale::pick(v, v, ceiling_for(v));
+            let s = Scale::pick(v, v, ceiling_for(v), Axis::Fit);
             assert!(!s.fitted, "a flat {v}% was fitted to {s:?}");
         }
         // And the near-flat case, which is the same problem one step along:
         // a band too narrow to label distinguishably.
-        assert!(!Scale::pick(78.0, 78.4, 100.0).fitted);
+        assert!(!Scale::pick(78.0, 78.4, 100.0, Axis::Fit).fitted);
     }
 
     #[test]
@@ -1159,9 +1200,9 @@ mod composition_tests {
         // frame — and because the form follows the axis, a series hovering at
         // the fitting threshold would alternate between bars and a line.
         // Rounding to a readable step is what stops both.
-        let base = Scale::pick(72.0, 85.0, 100.0);
+        let base = Scale::pick(72.0, 85.0, 100.0, Axis::Fit);
         for drift in [0.0f32, 0.3, 0.7, 1.1, 1.9] {
-            let s = Scale::pick(72.0 + drift, 85.0 - drift, 100.0);
+            let s = Scale::pick(72.0 + drift, 85.0 - drift, 100.0, Axis::Fit);
             assert_eq!(
                 (s.floor, s.ceiling),
                 (base.floor, base.ceiling),
@@ -1180,7 +1221,7 @@ mod composition_tests {
         //
         // Stated here as the invariant rather than only in `glyph_row`, so the
         // next person to add a set has to satisfy it.
-        let fitted = Scale::pick(72.0, 85.0, 100.0);
+        let fitted = Scale::pick(72.0, 85.0, 100.0, Axis::Fit);
         assert!(fitted.fitted);
         for set in [
             GlyphSet::Block,
@@ -1220,6 +1261,70 @@ mod composition_tests {
                      which is one of the strokes it draws"
                 );
             }
+        }
+    }
+    /// Which sides of its cell a box glyph connects: (left, right, up, down).
+    fn sides(c: char) -> (bool, bool, bool, bool) {
+        match c {
+            '─' => (true, true, false, false),
+            '│' => (false, false, true, true),
+            '╭' => (false, true, false, true),
+            '╮' => (true, false, false, true),
+            '╰' => (false, true, true, false),
+            '╯' => (true, false, true, false),
+            ' ' => (false, false, false, false),
+            other => panic!("{other:?} is not a box glyph"),
+        }
+    }
+
+    #[test]
+    fn a_line_has_no_loose_ends() {
+        // `╰` and `╯` were the wrong way round, so a rise drew as two corners
+        // both opening left — a dead end above a dead end, where the eye
+        // expects a step. Every test passed with them swapped, because every
+        // test asked which characters appeared and none asked whether they
+        // joined up.
+        //
+        // The invariant is connectivity: if a glyph opens downwards, the glyph
+        // below it must open upwards, and a glyph that opens left or right must
+        // meet one that opens back. A line that does not join is not a line.
+        let rows = 4;
+        for (from, to) in [
+            (0.1f32, 0.9f32),
+            (0.9, 0.1),
+            (0.5, 0.5),
+            (0.2, 0.4),
+            (0.95, 0.05),
+        ] {
+            let column: Vec<char> = (0..rows).map(|r| box_glyph(from, to, r, rows)).collect();
+            for r in 0..rows {
+                let (_, _, up, down) = sides(column[r]);
+                if down {
+                    assert!(
+                        r + 1 < rows && sides(column[r + 1]).2,
+                        "{from}->{to}: row {r} ({:?}) opens down onto nothing",
+                        column[r]
+                    );
+                }
+                if up {
+                    assert!(
+                        r > 0 && sides(column[r - 1]).3,
+                        "{from}->{to}: row {r} ({:?}) opens up onto nothing",
+                        column[r]
+                    );
+                }
+            }
+            // And the column enters on the left at `from`'s row and leaves on
+            // the right at `to`'s row, or the step joins nothing horizontally.
+            let place = |f: f32| rows - 1 - ((f * rows as f32) as usize).min(rows - 1);
+            assert!(
+                sides(column[place(from)]).0,
+                "{from}->{to}: nothing arrives from the previous cell"
+            );
+            assert!(
+                sides(column[place(to)]).1,
+                "{from}->{to}: nothing leaves for the next cell"
+            );
         }
     }
 }
