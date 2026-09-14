@@ -137,3 +137,40 @@ Good ideas without a date yet.
 - [x] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 - [x] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
 
+
+## v3.0 — It explains
+
+`          ` 0% · 0 of 5 done · due 2028-01-01
+
+poptop can show you any instant and it makes you do the joining.
+
+### backlog
+
+- [ ] `0081` The timeline fills, where it should draw a line <sup>bug · p0</sup>
+- [ ] `0082` Nothing says why the worst moment was the worst <sup>feature · p0</sup>
+- [ ] `0083` Two moments cannot be compared <sup>feature · p1</sup>
+- [ ] `0084` Nothing knows what normal looks like for this machine <sup>feature · p1</sup>
+- [ ] `0085` A finding cannot leave the terminal it was found in <sup>feature · p2</sup>
+
+## v3.1 — It knows why
+
+`          ` 0% · 0 of 2 done · due 2028-04-01
+
+poptop can name the process; it cannot say what that process is waiting on.
+
+### backlog
+
+- [ ] `0086` A blocked process is a dead end <sup>feature · p1</sup>
+- [ ] `0087` Why a process is hot needs a different tool <sup>feature · p2</sup>
+
+## v3.2 — It is navigable
+
+`          ` 0% · 0 of 3 done · due 2028-07-01
+
+Six hundred samples retained, and no way to search them.
+
+### backlog
+
+- [ ] `0088` The buffer can be addressed but not searched <sup>feature · p1</sup>
+- [ ] `0089` One machine at a time <sup>feature · p2</sup>
+- [ ] `0090` The first run teaches nothing <sup>feature · p3</sup>
