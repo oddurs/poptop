@@ -129,7 +129,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_cgroups {
         draw_cgroups(f, chunks[2], app);
     } else {
-        draw_procs(f, chunks[2], app);
+        draw_procs(f, chunks[2], app, chunks[1]);
     }
     draw_help(f, chunks[3], app);
 }
@@ -1275,6 +1275,35 @@ pub fn draw_timeline_for_test(f: &mut Frame, area: Rect, app: &App) {
     draw_timeline(f, area, app);
 }
 
+/// The span of history the timeline is showing: first sample, sample count, and
+/// the zoom those samples are aggregated at.
+///
+/// Extracted so the table's sparklines can be drawn on the same clock. A spike
+/// halfway along the timeline has to sit halfway along the row's history too,
+/// or the two pictures are of different spans and the reader has to know which
+/// before either can be believed.
+///
+/// Derived rather than stored, like `window_start` itself: it depends on panel
+/// width and zoom, both of which are render-time facts.
+pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
+    let inner_w = area.width as usize;
+    let inner_h = area.height.saturating_sub(1) as usize;
+    if inner_w == 0 || inner_h == 0 {
+        return (0, 0, 1);
+    }
+    let graph_rows = inner_h.saturating_sub(1).max(1);
+    let gutter = if inner_w >= MIN_WIDTH_FOR_GUTTER && graph_rows >= MIN_ROWS_FOR_AXIS {
+        GUTTER_W
+    } else {
+        0
+    };
+    let slots = inner_w.saturating_sub(gutter) * app.glyphs.samples_per_cell();
+    let len = app.history.len();
+    let zoom = app::effective_zoom(app.zoom(), len, slots);
+    let shown = (slots * zoom).min(len);
+    (window_start(&app.history, shown), shown, zoom)
+}
+
 /// The scrubable timeline, oldest on the left.
 ///
 /// Two packings compose here: each character cell holds `samples_per_cell`
@@ -1307,11 +1336,18 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     };
     let graph_w = inner_w.saturating_sub(gutter);
 
+    // One sample a cell. The old packing put two side by side to double the
+    // horizontal resolution of an *area*; a line has one stroke a column, and two
+    // values sharing a cell would be a smear rather than two readings. The trade
+    // is real — half as many samples on screen — and `+`/`-` answers it, since
+    // zoom aggregates by peak so a spike survives the compression.
     let spc = app.glyphs.samples_per_cell();
     let slots = graph_w * spc;
     let samples: Vec<&Sample> = app.history.iter().collect();
-    let zoom = app::effective_zoom(app.zoom(), samples.len(), slots);
-    let shown = (slots * zoom).min(samples.len());
+    // From the shared computation, not a second copy of it: the table's
+    // sparklines are drawn on this window too, and two derivations of the same
+    // window drift the moment either is touched.
+    let (window_start, shown, zoom) = shown_window(app, area);
     // Text-editor scrolling. The window stays anchored to the live edge while
     // the cursor is inside it, and follows only once the cursor would leave —
     // so the live view never shuffles, and scrubbing never takes you somewhere
@@ -1320,7 +1356,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Stateless on purpose: the window position is derived from the cursor each
     // frame rather than stored, so there is no scroll offset to keep in sync
     // with a buffer that is being written to at the same time.
-    let window_start = window_start(&app.history, shown);
     let window = &samples[window_start..window_start + shown];
 
     // The selected process's own history, in place of the machine's. Same
@@ -1494,10 +1529,18 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         } else {
             app.theme.series_mem
         };
-        // Each graph scales to its own peak: memory at 78% and CPU at 16% are
-        // different questions and deserve different axes.
+        // Each graph scales to its own data: memory at 78% and CPU at 16% are
+        // different questions and deserve different axes. The floor moves too —
+        // a series living in a narrow band high up gets an axis fitted to that
+        // band, because a zero-based panel would spend most of its rows on ink
+        // that never changes. See `glyphs::Scale`.
         let peak = values.iter().flatten().copied().fold(0.0_f32, f32::max);
-        let ceiling = unit.ceiling(peak);
+        let trough = values
+            .iter()
+            .flatten()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let scale = glyphs::Scale::pick(trough, peak, unit.ceiling(peak), app.axis);
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
@@ -1513,7 +1556,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         } else {
             [app.theme.warn_pct, app.theme.critical_pct]
                 .iter()
-                .filter_map(|&pct| glyphs::rule_position_scaled(pct, rows, ceiling))
+                .filter_map(|&pct| glyphs::rule_position(scale, pct, rows))
                 .collect()
         };
         // A figure this row could not read joins the gaps, for this row only.
@@ -1529,7 +1572,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 gutter,
                 &app.theme,
                 labelled.then_some(name),
-                ceiling,
+                scale,
                 *unit,
             );
             spans.extend(
@@ -1542,7 +1585,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                         spc,
                         rule_level,
                         series,
-                        ceiling,
+                        scale,
                         gaps: &row_gaps,
                     },
                     &app.theme,
@@ -1715,6 +1758,15 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(all), area);
 }
 
+/// A peak that is a value, or `None` for a cell no sample landed in.
+///
+/// `peak` folds with `f32::max` from `NEG_INFINITY`, so an empty cell comes back
+/// as that rather than as a number. Passing it on as zero is the one thing this
+/// tool must never do.
+fn finite(v: f32) -> Option<f32> {
+    v.is_finite().then_some(v)
+}
+
 /// One row of graph. `row` counts from the top of a `rows`-tall graph.
 /// Everything one graph row needs to draw itself. Bundled because seven
 /// positional parameters had become eight and the call site was unreadable.
@@ -1731,15 +1783,15 @@ struct GraphRow<'a> {
     rule_level: Option<usize>,
     /// Identity of the series — never a judgement about its value.
     series: Color,
-    /// Top of the y-axis for this graph.
-    ceiling: f32,
+    /// The range this graph's rows cover, floor to ceiling.
+    scale: glyphs::Scale,
     /// Per-slot flags marking where time is missing from the buffer.
     gaps: &'a [bool],
 }
 
 /// Draw one row of a graph.
 fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
-    let (set, values, row, rows, spc, rule_level, series, ceiling, gaps) = (
+    let (set, values, row, rows, spc, rule_level, series, scale, gaps) = (
         g.set,
         g.values,
         g.row,
@@ -1747,7 +1799,7 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
         g.spc,
         g.rule_level,
         g.series,
-        g.ceiling,
+        g.scale,
         g.gaps,
     );
     let spans = values
@@ -1775,10 +1827,56 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             {
                 return Span::styled(set.gap_glyph().to_string(), theme.chrome_style());
             }
-            let pcts: Vec<f32> = cell.iter().map(|v| v.unwrap_or(0.0)).collect();
-            let left = glyphs::level_in_row_scaled(pcts[0], row, rows, ceiling);
-            let right =
-                glyphs::level_in_row_scaled(*pcts.get(1).unwrap_or(&pcts[0]), row, rows, ceiling);
+            // This cell's value and the next one, so the stroke can join them.
+            // The peak within a cell, matching how zoom aggregates: a line drawn
+            // through the mean would smooth away the spike the tool exists to
+            // catch.
+            let peak = |c: &[Option<f32>]| {
+                c.iter()
+                    .filter_map(|v| *v)
+                    .fold(f32::NEG_INFINITY, f32::max)
+            };
+            let here = finite(peak(cell));
+            // A cell with no sample draws nothing. An area fill got this for
+            // free — level zero is a blank glyph — but a line does not: it
+            // would draw a flat stroke along the baseline across the part of
+            // the buffer that has not been filled yet, which says the machine
+            // was idle then. It was not. Nothing was recorded then.
+            let Some(here) = here else {
+                return Span::raw(" ");
+            };
+            // Joined to the next cell only if there is one. Running the stroke
+            // into an empty cell invents the same zero at one remove.
+            let next = values
+                .get((i + 1) * spc..((i + 2) * spc).min(values.len()))
+                .map(peak)
+                .and_then(finite)
+                .unwrap_or(here);
+            // The form follows the axis, not the setting. Bars encode
+            // magnitude by area, so a truncated axis makes 74 look like a third
+            // of 84 — the classic misleading chart. A line encodes change, for
+            // which a fitted axis is standard and honest, and the gutter states
+            // the floor either way.
+            let draws = if scale.fitted {
+                glyphs::Draw::Line
+            } else {
+                set.draws()
+            };
+            let glyph = match draws {
+                // A bar from the baseline to the value. Every cell below the
+                // value is full, the cell the value lands in is part-full, and
+                // everything above is empty — the shape a sparkline has always
+                // had, read as height rather than traced as a path.
+                glyphs::Draw::Bars => set.bar(glyphs::fill_in_row(
+                    scale.frac(here),
+                    row,
+                    rows,
+                    set.sub_rows(),
+                )),
+                // Box drawing needs the direction of travel to pick a corner,
+                // which a height cannot carry.
+                glyphs::Draw::Line => set.line(scale.frac(here), scale.frac(next), row, rows),
+            };
             // Colour is identity here, not magnitude — see `Theme::series_style`.
             // The threshold rules now carry "is this bad", which is what the
             // heat ramp was doing redundantly on top of the bar height.
@@ -1790,16 +1888,29 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // bar does not reach this row. Drawing the rule across the part of
             // the buffer that has not been filled yet is noise about a region
             // where there is nothing to reference.
-            let has_data = cell.iter().any(|v| v.is_some());
-            let empty = left.max(right) == 0;
+            // How often the rule shows through depends on how much of the panel
+            // the series leaves empty. A bar leaves the space *above* it, a
+            // minority on a busy machine; a line leaves nearly every cell, so
+            // the same spacing would paint half the panel in chrome and the
+            // reference would compete with the signal.
+            // Proportional to the panel, not a fixed stride. Every second cell
+            // was tuned against an area fill that reached most of them, and it
+            // is roughly forty marks on a hundred-column terminal: on an idle
+            // machine, where nearly every cell is empty, that is not a
+            // reference line but the loudest thing on the screen. A reference
+            // has to be findable and recessive at the same time, and about ten
+            // marks across a panel is both however wide the panel is.
+            let cells = values.len().div_ceil(spc.max(1));
+            let every = (cells / 10).clamp(4, 24);
             match rule_level {
-                Some(lvl) if has_data && empty && i % 2 == 0 => {
-                    Span::styled(set.rule_glyph(lvl).to_string(), theme.chrome_style())
+                Some(lvl) if glyph == ' ' && i % every == 0 => {
+                    // The rule belongs to the alphabet in force, not to the
+                    // setting: a `block` panel drawing a fitted series draws it
+                    // in box characters, and `block`'s own rule is one of them.
+                    let mark = set.drawn_as(draws).rule_glyph(lvl);
+                    Span::styled(mark.to_string(), theme.chrome_style())
                 }
-                _ => Span::styled(
-                    set.glyph(left, right).to_string(),
-                    theme.series_style(series),
-                ),
+                _ => Span::styled(glyph.to_string(), theme.series_style(series)),
             }
         })
         .collect::<Vec<_>>();
@@ -1904,7 +2015,7 @@ pub fn axis_label_for_test(row: usize, rows: usize, name: Option<&str>) -> Strin
         GUTTER_W,
         &Theme::new(crate::theme::Palette::Safe, Theme::default().tier),
         name,
-        100.0,
+        glyphs::Scale::zero(100.0),
         Unit::Percent,
     )
     .iter()
@@ -2025,7 +2136,7 @@ fn axis_label(
     gutter: usize,
     theme: &Theme,
     series: Option<&str>,
-    ceiling: f32,
+    scale: glyphs::Scale,
     unit: Unit,
 ) -> Vec<Span<'static>> {
     if gutter == 0 {
@@ -2049,9 +2160,12 @@ fn axis_label(
         // The ceiling, not a fixed 100 — the axis has to say what it is, or
         // scaling it would be the misleading kind of clever. In the series'
         // own units, because `4194304` is arithmetic and `4.0M` is a scale.
-        unit.axis(ceiling)
+        unit.axis(scale.ceiling)
     } else if row + 1 == rows {
-        "0".to_string()
+        // The floor, not a fixed `0`. A fitted axis that labelled its bottom
+        // row zero would be the misleading kind of clever — the whole reason
+        // the floor is allowed to move is that it is stated when it does.
+        unit.axis(scale.floor)
     } else if row == 1 {
         // The first row not already carrying an anchor.
         series.unwrap_or_default().to_string()
@@ -2212,7 +2326,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     let slot = history::slot_of_index(idx, n_values, zoom, slots);
 
     let cell = (slot / spc).min(graph_w.saturating_sub(1));
-    let marker = app.glyphs.cursor_marker(spc == 2 && slot % spc == 1);
+    let marker = app.glyphs.cursor_marker();
 
     // This row is positional. It used to carry the values at the cursor as
     // well, which read as a crosshair readout and was in fact a copy: while
@@ -2252,25 +2366,30 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     // and lost a character to it — `1▐/slot`, which names nothing and hides the
     // scale it was there to state.
     let room = |a: usize, b: usize| b.saturating_sub(a);
-    let side = |n: usize, anchors: bool| -> Option<(usize, usize)> {
+    //
+    // Both the side and the column are independent of where exactly the marker
+    // is. Centring the caption in the space beside it made the caption chase
+    // the cursor across the row, sliding a column on every keypress; the side
+    // now flips once, when the cursor crosses the midpoint, and the caption
+    // sits at a fixed column on whichever side it lands.
+    let side = |n: usize, anchors: bool| -> Option<usize> {
         let (l0, r1) = if anchors {
             (ANCHOR_L + 1, width.saturating_sub(ANCHOR_R))
         } else {
             (0, width)
         };
         let pad = if anchors { 2 } else { 1 };
-        let left = (l0, cell);
-        let right = (cell + 1, r1);
-        let ok = |(a, b): (usize, usize)| room(a, b) >= n + pad;
-        match (ok(left), ok(right)) {
-            (true, true) => Some(if room(left.0, left.1) >= room(right.0, right.1) {
-                left
-            } else {
-                right
-            }),
-            (true, false) => Some(left),
-            (false, true) => Some(right),
-            (false, false) => None,
+        let fits_left = room(l0, cell.min(r1)) >= n + pad;
+        let fits_right = room((cell + 1).max(l0), r1) >= n + pad;
+        let at_left = l0 + 1;
+        let at_right = r1.saturating_sub(n + 1);
+        // The caption takes the half the marker is not in.
+        match (cell * 2 < width, fits_left, fits_right) {
+            (true, _, true) => Some(at_right),
+            (false, true, _) => Some(at_left),
+            (_, _, true) => Some(at_right),
+            (_, true, _) => Some(at_left),
+            _ => None,
         }
     };
     // Anchors first, because they are what make the marker's position mean
@@ -2283,17 +2402,17 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
         .iter()
         .find_map(|c| {
             let n = cols(c);
-            (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), n, s, true)))?
+            (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), s, true)))?
         })
         .or_else(|| {
             w.captions.iter().find_map(|c| {
                 let n = cols(c);
-                (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), n, s, false)))?
+                (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), s, false)))?
             })
         });
 
     match chosen {
-        Some((caption, n, (a, b), anchors)) => {
+        Some((caption, at, anchors)) => {
             if anchors {
                 // An anchor the marker would land in is not drawn at all. That
                 // is agreement rather than collision — a marker at the right
@@ -2306,7 +2425,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
                     put(&mut row, width.saturating_sub(ANCHOR_R), "now");
                 }
             }
-            put(&mut row, a + (b - a - n) / 2, caption);
+            put(&mut row, at, caption);
         }
         // Nothing to say but where the cursor is.
         None => {
@@ -2754,7 +2873,7 @@ fn short_cgroup(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
+fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
     // the ratchet is a history one, so widening the window brings them back
@@ -2843,13 +2962,24 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .take(visible_rows)
         .filter_map(|r| r.proc.key())
         .collect();
-    // The whole retained buffer, not a slice of it. A per-row summary that
-    // shifted every time the timeline zoomed would be a second, contradictory
-    // reading of the same history; "what this process has been doing" is a
-    // fixed question with a fixed answer.
-    let series = history::series_for(&app.history, &keys, app.history.len());
-    let spark_slots = SPARK_W * app.glyphs.samples_per_cell();
-    let spark_zoom = app.history.len().div_ceil(spark_slots.max(1)).max(1);
+    // The window the timeline is showing, not the whole buffer.
+    //
+    // This used to be the whole buffer, on the reasoning that "what has this
+    // process been doing" is a fixed question deserving a fixed answer. The
+    // objection to that is stronger: the two pictures are then of different
+    // spans, side by side, with nothing saying so. A spike halfway along the
+    // timeline sits somewhere else entirely in the row beside it, and the
+    // reader has to know which span each is drawn over before either can be
+    // read against the other. Same window, same zoom, same cursor — the same
+    // rule the detail view already follows.
+    let (spark_start, spark_shown, _) = shown_window(app, timeline);
+    let series = history::series_in(&app.history, &keys, spark_start, spark_shown);
+    // Same span, harder compression. Ten cells against the timeline's hundred
+    // means each one covers ten times as much, so the sparkline needs its own
+    // zoom over the same samples rather than the timeline's — synchronised is
+    // about the span, not the stride.
+    let spark_slots = SPARK_W * app.glyphs.spark_samples_per_cell();
+    let spark_zoom = spark_shown.div_ceil(spark_slots.max(1)).max(1);
 
     // One ceiling across every row. Scaling each sparkline to its own peak
     // makes a flat 12% process look exactly like one spiking to 90%, which
@@ -2862,9 +2992,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // it scrolls off. That is the same objection as the comment above — the
     // answer to "what has this process been doing" must not depend on where the
     // list happens to be sitting.
+    // Over the window rather than the whole buffer, now that the window is what
+    // is drawn: a ceiling set by a spike that scrolled out of view flattens
+    // every row still on screen.
     let spark_ceiling = glyphs::ceiling_for(
         app.history
             .iter()
+            .skip(spark_start)
+            .take(spark_shown)
             .flat_map(|s| s.procs.iter())
             .map(|p| p.cpu)
             .fold(0.0_f32, f32::max),
@@ -3443,6 +3578,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Width of the per-process history sparkline, in cells.
+/// The cursor's mark, named once so the renderer and the tests cannot drift.
+#[cfg(test)]
+pub const MARK: char = '▲';
+
 pub const SPARK_W: usize = 10;
 
 /// One process's CPU history as a sparkline.
@@ -3457,10 +3596,20 @@ fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling
     let Some(series) = series else {
         return " ".repeat(SPARK_W);
     };
-    let spc = set.samples_per_cell();
+    let spc = set.spark_samples_per_cell();
     let slots = SPARK_W * spc;
     let values: Vec<f32> = series.iter().map(|v| v.unwrap_or(0.0)).collect();
     let agg = history::peak_slots(&values, zoom.max(1), slots);
+    if spc == 1 {
+        // The eighths ramp: one sample a cell, nine heights.
+        return agg
+            .iter()
+            .map(|v| match v {
+                None => ' ',
+                Some(v) => set.spark_glyph(eighths(*v, ceiling)),
+            })
+            .collect();
+    }
     agg.chunks(spc)
         .map(|cell| {
             let a = cell[0].unwrap_or(0.0);
@@ -3470,6 +3619,18 @@ fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling
             set.glyph(l, r)
         })
         .collect()
+}
+
+/// A value as eighths of a ceiling, 0..=8.
+///
+/// Anything above zero rounds *up* to at least one eighth. A process using 0.4%
+/// of the machine is running, and a blank cell says it was not there at all —
+/// the same distinction the gap above is drawing.
+fn eighths(v: f32, ceiling: f32) -> usize {
+    if v <= 0.0 || !v.is_finite() || ceiling <= 0.0 {
+        return 0;
+    }
+    ((v / ceiling * 8.0).ceil() as usize).clamp(1, 8)
 }
 
 /// Width of a process-table bar. Four cells at eight sub-steps is thirty-two

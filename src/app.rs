@@ -467,6 +467,7 @@ pub struct App {
     /// Index into [`ZOOM_LEVELS`].
     zoom_idx: usize,
     pub glyphs: GlyphSet,
+    pub axis: crate::glyphs::Axis,
     pub theme: Theme,
     /// Nominal time between samples, for spotting gaps in the buffer.
     pub interval: std::time::Duration,
@@ -514,6 +515,7 @@ impl App {
             baseline_over: false,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
+            axis: crate::glyphs::Axis::default(),
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,
         }
