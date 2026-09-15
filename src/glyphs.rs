@@ -420,16 +420,18 @@ impl GlyphSet {
 
     /// Marker showing which half of a cell the scrub cursor sits on. Without
     /// this, packing two samples per cell would halve cursor precision.
-    /// The mark under the sample the cursor is on.
-    ///
-    /// A cell covers two samples, so a *half* is what the marker has to be:
-    /// `▌` for the older of the pair, `▐` for the newer. Marking the whole cell
-    /// would halve scrub precision in the one place precision is the point.
-    pub fn cursor_marker(self, right_half: bool) -> char {
+    /// The mark under the cell the cursor is in.
+    pub fn cursor_marker(self) -> char {
         match self {
             Self::Ascii => '^',
-            _ if right_half => '▐',
-            _ => '▌',
+            // One mark, not a half. `▌` and `▐` said which of a cell's two
+            // samples the cursor was on, which is real information and cost
+            // more than it was worth: the mark flipped between the two halves
+            // on every single keypress, and a cursor that jitters sideways as
+            // you scrub reads as a fault in the program. The exact lag is in
+            // the header, stated in seconds, where it can be read rather than
+            // inferred from which half of a character is filled.
+            _ => '▲',
         }
     }
 }

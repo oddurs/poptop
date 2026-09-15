@@ -129,7 +129,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_cgroups {
         draw_cgroups(f, chunks[2], app);
     } else {
-        draw_procs(f, chunks[2], app);
+        draw_procs(f, chunks[2], app, chunks[1]);
     }
     draw_help(f, chunks[3], app);
 }
@@ -1275,6 +1275,35 @@ pub fn draw_timeline_for_test(f: &mut Frame, area: Rect, app: &App) {
     draw_timeline(f, area, app);
 }
 
+/// The span of history the timeline is showing: first sample, sample count, and
+/// the zoom those samples are aggregated at.
+///
+/// Extracted so the table's sparklines can be drawn on the same clock. A spike
+/// halfway along the timeline has to sit halfway along the row's history too,
+/// or the two pictures are of different spans and the reader has to know which
+/// before either can be believed.
+///
+/// Derived rather than stored, like `window_start` itself: it depends on panel
+/// width and zoom, both of which are render-time facts.
+pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
+    let inner_w = area.width as usize;
+    let inner_h = area.height.saturating_sub(1) as usize;
+    if inner_w == 0 || inner_h == 0 {
+        return (0, 0, 1);
+    }
+    let graph_rows = inner_h.saturating_sub(1).max(1);
+    let gutter = if inner_w >= MIN_WIDTH_FOR_GUTTER && graph_rows >= MIN_ROWS_FOR_AXIS {
+        GUTTER_W
+    } else {
+        0
+    };
+    let slots = inner_w.saturating_sub(gutter) * app.glyphs.samples_per_cell();
+    let len = app.history.len();
+    let zoom = app::effective_zoom(app.zoom(), len, slots);
+    let shown = (slots * zoom).min(len);
+    (window_start(&app.history, shown), shown, zoom)
+}
+
 /// The scrubable timeline, oldest on the left.
 ///
 /// Two packings compose here: each character cell holds `samples_per_cell`
@@ -1315,8 +1344,10 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let spc = app.glyphs.samples_per_cell();
     let slots = graph_w * spc;
     let samples: Vec<&Sample> = app.history.iter().collect();
-    let zoom = app::effective_zoom(app.zoom(), samples.len(), slots);
-    let shown = (slots * zoom).min(samples.len());
+    // From the shared computation, not a second copy of it: the table's
+    // sparklines are drawn on this window too, and two derivations of the same
+    // window drift the moment either is touched.
+    let (window_start, shown, zoom) = shown_window(app, area);
     // Text-editor scrolling. The window stays anchored to the live edge while
     // the cursor is inside it, and follows only once the cursor would leave —
     // so the live view never shuffles, and scrubbing never takes you somewhere
@@ -1325,7 +1356,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Stateless on purpose: the window position is derived from the cursor each
     // frame rather than stored, so there is no scroll offset to keep in sync
     // with a buffer that is being written to at the same time.
-    let window_start = window_start(&app.history, shown);
     let window = &samples[window_start..window_start + shown];
 
     // The selected process's own history, in place of the machine's. Same
@@ -2296,7 +2326,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     let slot = history::slot_of_index(idx, n_values, zoom, slots);
 
     let cell = (slot / spc).min(graph_w.saturating_sub(1));
-    let marker = app.glyphs.cursor_marker(spc == 2 && slot % spc == 1);
+    let marker = app.glyphs.cursor_marker();
 
     // This row is positional. It used to carry the values at the cursor as
     // well, which read as a crosshair readout and was in fact a copy: while
@@ -2336,25 +2366,30 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     // and lost a character to it — `1▐/slot`, which names nothing and hides the
     // scale it was there to state.
     let room = |a: usize, b: usize| b.saturating_sub(a);
-    let side = |n: usize, anchors: bool| -> Option<(usize, usize)> {
+    //
+    // Both the side and the column are independent of where exactly the marker
+    // is. Centring the caption in the space beside it made the caption chase
+    // the cursor across the row, sliding a column on every keypress; the side
+    // now flips once, when the cursor crosses the midpoint, and the caption
+    // sits at a fixed column on whichever side it lands.
+    let side = |n: usize, anchors: bool| -> Option<usize> {
         let (l0, r1) = if anchors {
             (ANCHOR_L + 1, width.saturating_sub(ANCHOR_R))
         } else {
             (0, width)
         };
         let pad = if anchors { 2 } else { 1 };
-        let left = (l0, cell);
-        let right = (cell + 1, r1);
-        let ok = |(a, b): (usize, usize)| room(a, b) >= n + pad;
-        match (ok(left), ok(right)) {
-            (true, true) => Some(if room(left.0, left.1) >= room(right.0, right.1) {
-                left
-            } else {
-                right
-            }),
-            (true, false) => Some(left),
-            (false, true) => Some(right),
-            (false, false) => None,
+        let fits_left = room(l0, cell.min(r1)) >= n + pad;
+        let fits_right = room((cell + 1).max(l0), r1) >= n + pad;
+        let at_left = l0 + 1;
+        let at_right = r1.saturating_sub(n + 1);
+        // The caption takes the half the marker is not in.
+        match (cell * 2 < width, fits_left, fits_right) {
+            (true, _, true) => Some(at_right),
+            (false, true, _) => Some(at_left),
+            (_, _, true) => Some(at_right),
+            (_, true, _) => Some(at_left),
+            _ => None,
         }
     };
     // Anchors first, because they are what make the marker's position mean
@@ -2367,17 +2402,17 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
         .iter()
         .find_map(|c| {
             let n = cols(c);
-            (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), n, s, true)))?
+            (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), s, true)))?
         })
         .or_else(|| {
             w.captions.iter().find_map(|c| {
                 let n = cols(c);
-                (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), n, s, false)))?
+                (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), s, false)))?
             })
         });
 
     match chosen {
-        Some((caption, n, (a, b), anchors)) => {
+        Some((caption, at, anchors)) => {
             if anchors {
                 // An anchor the marker would land in is not drawn at all. That
                 // is agreement rather than collision — a marker at the right
@@ -2390,7 +2425,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
                     put(&mut row, width.saturating_sub(ANCHOR_R), "now");
                 }
             }
-            put(&mut row, a + (b - a - n) / 2, caption);
+            put(&mut row, at, caption);
         }
         // Nothing to say but where the cursor is.
         None => {
@@ -2838,7 +2873,7 @@ fn short_cgroup(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
+fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
     // the ratchet is a history one, so widening the window brings them back
@@ -2927,13 +2962,24 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .take(visible_rows)
         .filter_map(|r| r.proc.key())
         .collect();
-    // The whole retained buffer, not a slice of it. A per-row summary that
-    // shifted every time the timeline zoomed would be a second, contradictory
-    // reading of the same history; "what this process has been doing" is a
-    // fixed question with a fixed answer.
-    let series = history::series_for(&app.history, &keys, app.history.len());
-    let spark_slots = SPARK_W * app.glyphs.samples_per_cell();
-    let spark_zoom = app.history.len().div_ceil(spark_slots.max(1)).max(1);
+    // The window the timeline is showing, not the whole buffer.
+    //
+    // This used to be the whole buffer, on the reasoning that "what has this
+    // process been doing" is a fixed question deserving a fixed answer. The
+    // objection to that is stronger: the two pictures are then of different
+    // spans, side by side, with nothing saying so. A spike halfway along the
+    // timeline sits somewhere else entirely in the row beside it, and the
+    // reader has to know which span each is drawn over before either can be
+    // read against the other. Same window, same zoom, same cursor — the same
+    // rule the detail view already follows.
+    let (spark_start, spark_shown, _) = shown_window(app, timeline);
+    let series = history::series_in(&app.history, &keys, spark_start, spark_shown);
+    // Same span, harder compression. Ten cells against the timeline's hundred
+    // means each one covers ten times as much, so the sparkline needs its own
+    // zoom over the same samples rather than the timeline's — synchronised is
+    // about the span, not the stride.
+    let spark_slots = SPARK_W * app.glyphs.spark_samples_per_cell();
+    let spark_zoom = spark_shown.div_ceil(spark_slots.max(1)).max(1);
 
     // One ceiling across every row. Scaling each sparkline to its own peak
     // makes a flat 12% process look exactly like one spiking to 90%, which
@@ -2946,9 +2992,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // it scrolls off. That is the same objection as the comment above — the
     // answer to "what has this process been doing" must not depend on where the
     // list happens to be sitting.
+    // Over the window rather than the whole buffer, now that the window is what
+    // is drawn: a ceiling set by a spike that scrolled out of view flattens
+    // every row still on screen.
     let spark_ceiling = glyphs::ceiling_for(
         app.history
             .iter()
+            .skip(spark_start)
+            .take(spark_shown)
             .flat_map(|s| s.procs.iter())
             .map(|p| p.cpu)
             .fold(0.0_f32, f32::max),
@@ -3527,6 +3578,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Width of the per-process history sparkline, in cells.
+/// The cursor's mark, named once so the renderer and the tests cannot drift.
+#[cfg(test)]
+pub const MARK: char = '▲';
+
 pub const SPARK_W: usize = 10;
 
 /// One process's CPU history as a sparkline.

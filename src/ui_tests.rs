@@ -1265,7 +1265,7 @@ fn paused_state_is_visibly_marked() {
         "paused badge must report real elapsed lag"
     );
     assert!(
-        out.contains('▌') || out.contains('▐'),
+        out.contains(ui::MARK),
         "scrub cursor must be visible without colour"
     );
 }
@@ -1407,25 +1407,75 @@ fn show_frame() {
 }
 
 #[test]
-fn cursor_marker_picks_the_correct_half_of_a_cell() {
-    // A cell packs two samples, so the marker has to distinguish them or
-    // scrubbing loses half its precision.
-    let mut app = App::new(60);
-    for i in (0..8).rev() {
+fn the_caption_does_not_chase_the_cursor_across_the_row() {
+    // Reported as the jog wheel "dancing around left right". The caption was
+    // centred in whatever space the marker left beside it, so every keypress
+    // moved the marker, which changed the space, which moved the caption — the
+    // text sliding a column at a time across the row while the reader was
+    // trying to read the graph above it.
+    //
+    // It is allowed to change sides once, when the cursor crosses the midpoint,
+    // because otherwise the marker would eventually land on top of it. What it
+    // must not do is drift.
+    let (w, h) = (100u16, 24u16);
+    let mut app = App::new(600);
+    for i in (0..400).rev() {
         app.push(sample_at(10.0, i));
     }
-    app.glyphs = crate::glyphs::GlyphSet::Braille;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // Newest is slot 7 (right half of cell 3); one back is slot 6 (left half).
-    app.history.scrub(-1);
+    let caption_at = |app: &App| -> Option<usize> {
+        rows(app, w, h)
+            .iter()
+            .find_map(|r| r.find("shown").map(|b| r[..b].chars().count()))
+    };
+
+    let mut positions = Vec::new();
+    for _ in 0..40 {
+        app.history.scrub(-2);
+        if let Some(at) = caption_at(&app) {
+            positions.push(at);
+        }
+    }
+    assert!(positions.len() > 20, "the caption vanished while scrubbing");
+
+    let distinct: std::collections::BTreeSet<usize> = positions.iter().copied().collect();
     assert!(
-        render(&app, 100, 30).contains('▌'),
-        "odd offset is a left half"
+        distinct.len() <= 2,
+        "the caption took {} different columns while the cursor moved: {distinct:?}",
+        distinct.len()
     );
-    app.history.scrub(-1);
-    assert!(
-        render(&app, 100, 30).contains('▐'),
-        "even offset is a right half"
+}
+
+#[test]
+fn the_cursor_mark_does_not_flip_as_it_moves() {
+    // It used to be a *half* — `▌` for the older sample of a cell, `▐` for the
+    // newer — which is real information and cost more than it was worth: the
+    // mark flipped between the two halves on every keypress, and a cursor that
+    // jitters sideways while you scrub reads as a fault in the program. The
+    // exact lag is in the header, in seconds.
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    // The timeline panel alone: the process table draws `▌` as a micro-bar, and
+    // a frame-wide search finds that instead.
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..12 {
+        app.history.scrub(-1);
+        let r = ui::timeline_rows_range(30);
+        let lines = render_lines(&app, 100, 30);
+        seen.extend(
+            lines[r.start as usize..r.end as usize]
+                .iter()
+                .flat_map(|l| l.chars())
+                .filter(|c| "▌▐▲^".contains(*c)),
+        );
+    }
+    assert_eq!(
+        seen,
+        std::collections::HashSet::from([ui::MARK]),
+        "the cursor drew more than one kind of mark while moving"
     );
 }
 
@@ -2272,7 +2322,7 @@ fn cursor_column(app: &App, w: u16, h: u16) -> Option<u16> {
     let buf = term.backend().buffer();
     for y in 0..h {
         for x in 0..w {
-            if matches!(buf[(x, y)].symbol(), "▌" | "▐" | "^") {
+            if matches!(buf[(x, y)].symbol(), "▲" | "^") {
                 return Some(x);
             }
         }
@@ -2603,7 +2653,7 @@ fn the_cursor_row_states_the_scale_and_repeats_no_figure() {
             assert!(text.contains("now"), "the now anchor is gone:\n{text}");
         }
         // …and never a fragment of one, which names nothing at all.
-        for fragment in ["▌ow", "▐ow", "pas▌", "pas▐", " ow ", " as "] {
+        for fragment in ["▲ow", "pas▲", " ow ", " as "] {
             assert!(
                 !text.contains(fragment),
                 "an anchor was written through (scrubbed: {scrubbed}): {fragment:?}\n{text}"
@@ -2719,7 +2769,7 @@ fn zoom_still_works_at_any_scroll_position() {
         assert_eq!(rows.len(), 12);
         // The cursor must remain visible at every zoom level.
         assert!(
-            rows.iter().any(|r| r.contains('▌') || r.contains('▐')),
+            rows.iter().any(|r| r.contains(ui::MARK)),
             "cursor lost at zoom {}",
             app.zoom()
         );
@@ -2748,13 +2798,13 @@ fn the_caption_moves_aside_rather_than_being_written_through() {
         let rows = timeline_rows(&app, 100, 12);
         let row = rows
             .iter()
-            .find(|r| r.contains('▌') || r.contains('▐'))
+            .find(|r| r.contains(ui::MARK))
             .unwrap_or_else(|| panic!("no cursor row at -{back}: {rows:?}"));
         assert!(
             row.contains("/slot"),
             "the caption was written through at -{back}: {row:?}"
         );
-        let marker = row.find(['▌', '▐']).unwrap();
+        let marker = row.find(ui::MARK).unwrap();
         let caption = row.find("shown,").expect("caption missing");
         assert_ne!(marker, caption, "the marker landed inside the caption");
     }
@@ -4850,7 +4900,7 @@ fn thread_churn_does_not_credit_growth_across_a_pid_with_no_identity() {
 #[test]
 fn a_process_absent_from_a_sample_leaves_a_gap_not_a_zero() {
     // "It was not running" and "it was running and idle" are different facts.
-    use crate::history::series_for;
+    use crate::history::series_in;
     let mut app = App::new(600);
     for i in (0..10).rev() {
         let mut s = sample_at(10.0, i as u64);
@@ -4862,7 +4912,7 @@ fn a_process_absent_from_a_sample_leaves_a_gap_not_a_zero() {
         };
         app.push(s);
     }
-    let series = series_for(&app.history, &[(7, 0)], 10);
+    let series = series_in(&app.history, &[(7, 0)], 0, 10);
     let s = &series[&(7, 0)];
     assert_eq!(s.len(), 10);
     assert!(s[..5].iter().all(Option::is_none), "absence became data");
@@ -11572,6 +11622,67 @@ fn the_reference_lines_never_outnumber_what_they_reference() {
     assert!(
         ruled > 0,
         "no rules at all, so this would pass with the feature removed"
+    );
+}
+
+#[test]
+fn the_sparkline_and_the_timeline_are_drawn_over_the_same_span() {
+    // They used to be of different spans, side by side, with nothing saying so:
+    // the timeline showed its window, the sparkline squeezed the whole buffer
+    // into ten cells. A spike a quarter of the way along one sat somewhere else
+    // entirely in the other, so neither could be read against the other.
+    //
+    // Tested as a *position*, because that is the claim. The buffer is four
+    // times the window, so under the old behaviour a spike at the start of the
+    // window landed in the last quarter of the sparkline instead of its first
+    // cell.
+    let (w, h) = (110u16, 24u16);
+    let mut app = App::new(2000);
+    let spike_at = 60; // samples back from now
+    for i in (0..800).rev() {
+        let mut s = sample_at(5.0, i as u64);
+        s.procs = vec![ProcSample {
+            cpu: if i == spike_at { 90.0 } else { 1.0 },
+            ..proc_named(7, "ffmpeg", 0.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let r = ui::timeline_rows_range(h);
+    let (start, shown, _) = ui::shown_window(
+        &app,
+        ratatui::layout::Rect::new(0, r.start, w, r.end - r.start),
+    );
+    assert!(
+        shown < app.history.len(),
+        "the window covers the whole buffer, so this cannot tell the two apart"
+    );
+
+    // Where the spike falls in the window, as a fraction of it.
+    let spike_index = app.history.len() - 1 - spike_at;
+    assert!(
+        spike_index >= start && spike_index < start + shown,
+        "the spike is outside the window"
+    );
+    let want = (spike_index - start) as f32 / shown as f32;
+
+    // And where the sparkline actually drew it.
+    let spark = spark_for(&app, "ffmpeg");
+    let cells: Vec<char> = spark.chars().collect();
+    let tallest = cells
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, c)| ink_of(&c.to_string()))
+        .map(|(i, _)| i)
+        .expect("an empty sparkline");
+    let got = tallest as f32 / cells.len() as f32;
+
+    assert!(
+        (got - want).abs() <= 1.0 / cells.len() as f32,
+        "the spike is {:.0}% along the window and {:.0}% along the sparkline: {spark:?}",
+        want * 100.0,
+        got * 100.0
     );
 }
 
