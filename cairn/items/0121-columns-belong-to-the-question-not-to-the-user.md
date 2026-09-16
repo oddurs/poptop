@@ -2,7 +2,7 @@
 id: 121
 title: Columns belong to the question, not to the user
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -43,17 +43,26 @@ with the scope (119).
 The width ladder stays: it decides which of a tab's columns fit, which is a
 different question from which columns the tab has.
 
-## What needs deciding
+## What was decided
 
-- **Whether any toggle survives.** `i` exists because IO is expensive to
-  collect, not because it is optional to see — that is a collection question
-  wearing a display key, and it may belong in the Disk tab's own behaviour.
-- **What happens to a sort by a column the new tab lacks.** Already handled for
-  `View`; the rule generalises.
+**`i` was a collection question wearing a display key, and that is where it
+went.** Choosing the Disk tab now insists on the disk figures, so the tab pays
+for what it shows. The key is gone; nothing replaced it.
+
+**The disk columns stayed on the CPU tab.** The plan above proposed moving them
+to Disk alone, and `io_columns_are_there_before_anyone_asks` already argued the
+other way and argued it better: the header can say the machine is blocked on IO,
+and the table under it is where the culprit is named. Making that answer a tab
+away would be a real loss to save a key, so only the key went.
+
+**The membership keys survive.** `y`, `K` and `C` change which *rows* exist
+rather than which columns describe them, which is a question no tab can answer.
+The table in this ticket is therefore a plan for 120 and 126 rather than a thing
+that landed whole.
 
 ## Acceptance criteria
 
-- [ ] No key toggles a column that a tab already answers for
-- [ ] Each tab has a sane default sort, and switching tabs keeps a valid one
-- [ ] The width ladder still decides what fits
-- [ ] Nothing that was reachable becomes unreachable
+- [x] No key toggles a column that a tab already answers for
+- [x] Each tab has a sane default sort, and switching tabs keeps a valid one
+- [x] The width ladder still decides what fits
+- [x] Nothing that was reachable becomes unreachable

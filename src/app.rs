@@ -210,7 +210,11 @@ impl View {
     /// Whether the per-process disk columns belong in this view.
     ///
     /// In the disk view they are the point, so they are not subject to the
-    /// width test that hides them elsewhere.
+    /// width test that hides them elsewhere. On the CPU tab they are subject to
+    /// it and still present by default, which `io_columns_are_there_before_anyone_asks`
+    /// argues for and this deliberately did not disturb: the header can say the
+    /// machine is blocked on IO, and the table under it is where the culprit is
+    /// named. Making that answer a tab away would be a real loss to save a key.
     pub fn wants_io(self) -> bool {
         matches!(self, View::Cpu | View::Disk)
     }
@@ -772,9 +776,21 @@ impl App {
     ///
     /// The budget names what it withholds until somebody asks for it by name,
     /// and for a view's columns the key that asks is the one that opens it.
+    /// Ask for whatever this tab needs to answer its own question.
+    ///
+    /// This is where the `i` key went. It gated the disk columns, which made a
+    /// collection decision wear a display key: the figures are expensive to
+    /// read, not optional to see, and the tab that exists to show them is the
+    /// one that should be paying for them. Choosing Disk *is* asking for disk.
     pub fn insist_for_view(&mut self) {
-        if self.view == View::Memory {
-            self.insist(Source::Pss);
+        match self.view {
+            View::Memory => self.insist(Source::Pss),
+            View::Disk => {
+                self.show_io = true;
+                self.io_ratchet = true;
+                self.insist(Source::Io);
+            }
+            View::Cpu => {}
         }
     }
 

@@ -12727,3 +12727,70 @@ fn the_tab_strip_is_the_first_row_given_up() {
         assert!(left >= 1, "total={total}: the table got {left} rows");
     }
 }
+
+#[test]
+fn the_disk_tab_asks_for_the_data_it_needs() {
+    // `i` gated the disk columns, which made a collection decision wear a
+    // display key: the figures are expensive to read, not optional to see, and
+    // the tab that exists to show them is the one that should pay for them.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.show_io = false;
+
+    press(&mut app, KeyCode::Char('3')); // Disk
+    assert_eq!(app.view, crate::app::View::Disk);
+    assert!(
+        app.show_io,
+        "choosing the disk tab did not ask for the disk figures"
+    );
+    assert!(
+        app.needs().wants(crate::collect::Source::Io),
+        "the collector was not told the disk tab needs it"
+    );
+}
+
+#[test]
+fn no_key_toggles_a_column_a_tab_already_answers_for() {
+    // The keys that remain are about *membership* — which processes are in the
+    // list — not about which columns describe them. That is a different
+    // question and the tab cannot answer it.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let before = (app.show_io, app.view);
+    press(&mut app, KeyCode::Char('i'));
+    assert_eq!(
+        (app.show_io, app.view),
+        before,
+        "`i` still toggles a column set the tab owns"
+    );
+    assert!(
+        crate::action_for(KeyCode::Char('i'), KeyModifiers::NONE).is_none(),
+        "`i` is still bound"
+    );
+
+    // And the menu does not offer it either, or the key would be gone and the
+    // command would not.
+    assert!(
+        !crate::menu::bar()
+            .into_iter()
+            .flat_map(|t| t.items)
+            .any(|i| i.label().contains("I/O")),
+        "the menu still offers the column toggle"
+    );
+
+    // Threads, kernel threads and cgroups survive: each changes which rows
+    // exist rather than which columns describe them.
+    for (key, label) in [('y', "Threads"), ('K', "Kernel threads"), ('C', "cgroups")] {
+        assert!(
+            crate::action_for(KeyCode::Char(key), KeyModifiers::NONE).is_some(),
+            "`{key}` was removed, and it is a membership question"
+        );
+        assert!(
+            crate::menu::bar()
+                .into_iter()
+                .flat_map(|t| t.items)
+                .any(|i| i.label() == label),
+            "{label} is not in the menu"
+        );
+    }
+}

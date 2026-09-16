@@ -44,7 +44,6 @@ pub enum Action {
     NextGrouping,
     ToggleTree,
     ToggleDetail,
-    ToggleIo,
     ToggleThreads,
     ToggleCgroups,
     ToggleKernel,
@@ -140,7 +139,6 @@ impl Action {
                 }
             }
             Self::ToggleDetail => app.detail = !app.detail,
-            Self::ToggleIo => app.toggle_io(),
             Self::ToggleThreads => app.toggle_threads(),
             Self::ToggleCgroups => app.toggle_cgroups(),
             Self::ToggleKernel => app.show_kernel = !app.show_kernel,
@@ -168,7 +166,6 @@ impl Action {
         Some(match self {
             Self::ToggleTree => app.tree,
             Self::ToggleDetail => app.detail,
-            Self::ToggleIo => app.show_io,
             Self::ToggleThreads => app.show_threads,
             Self::ToggleCgroups => app.show_cgroups,
             Self::ToggleKernel => app.show_kernel,

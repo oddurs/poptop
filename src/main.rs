@@ -1693,7 +1693,6 @@ pub fn action_for(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
             let at = c as usize - '1' as usize;
             Action::SetView(*crate::app::View::ALL.get(at)?)
         }
-        KeyCode::Char('i') => Action::ToggleIo,
         // atop's key for the same thing.
         KeyCode::Char('y') => Action::ToggleThreads,
         // atop shows cgroups on G. C here, because g is already grouping and
