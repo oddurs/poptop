@@ -639,6 +639,41 @@ Both surfaces dispatch through one `Action`, and a test walks every item and
 checks its key hint against what that key actually does — so a menu that says
 `d` beside "Process detail" cannot drift into meaning something else.
 
+## Surfaces
+
+poptop paints its own ground, in four layers:
+
+| | |
+|---|---|
+| `surface` | the application's ground, under the whole frame |
+| `panel` | the timeline and the table body |
+| `raised` | the menu bar, its dropdowns, the table's column headers |
+| `stripe` | every other table row |
+
+The steps are small on purpose. A stripe loud enough to notice competes with the
+figures it is there to help you read across, and a process row is wide — a
+number on the left and the name it belongs to on the right, with eight columns
+between.
+
+It is not only a look. `--check-theme` used to measure contrast against a
+constant described as "a dark surface typical of the terminals poptop is
+designed against" — an assumption about somebody else's configuration. Now that
+poptop paints the ground, every figure it reports is a measurement, and every
+token is measured against every layer it can appear on:
+
+```
+  text        on surface        11.45:1
+  text        on panel          10.80:1
+  text        on raised          9.49:1
+  text        on stripe         10.34:1
+  text        on selected row    7.08:1
+```
+
+Below 256 colours nothing is painted at all. The 16 ANSI slots belong to the
+user's terminal theme — it decides what `DarkGray` looks like — so claiming one
+as a background is as likely to fight their scheme as to match it. A tier that
+cannot promise a colour should not promise a surface.
+
 ## The mouse
 
 On by default. Click a menu title to open it and an item to run it; click a

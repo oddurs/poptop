@@ -9,7 +9,7 @@ use crate::history;
 use crate::sample::{IoRates, NetStat, Sample};
 use crate::theme::Theme;
 use ratatui::prelude::*;
-use ratatui::widgets::{Cell, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table};
 use std::time::Duration;
 
 /// Eighth-block glyphs, used to draw the timeline one cell per sample.
@@ -146,6 +146,19 @@ pub fn panels(app: &App, area: Rect) -> Panels {
 pub fn draw(f: &mut Frame, app: &App) {
     let p = panels(app, f.area());
 
+    // The ground first, under everything. Two things follow from painting it
+    // rather than leaving it to the terminal: the interface reads as one
+    // surface instead of as text that happens to be arranged, and every
+    // contrast figure `--check-theme` reports becomes a measurement rather
+    // than an assumption about somebody else's configuration.
+    f.render_widget(Block::default().style(app.theme.surface_style()), f.area());
+    // Panels one step up, so the bands of the screen are visible without a
+    // border spending a row and a column on saying where they are.
+    for panel in [p.timeline, p.table] {
+        f.render_widget(Block::default().style(app.theme.panel_style()), panel);
+    }
+    f.render_widget(Block::default().style(app.theme.raised_style()), p.menu);
+
     let Some(sample) = app.history.current() else {
         f.render_widget(
             Paragraph::new("collecting first sample…").style(app.theme.dim_style()),
@@ -229,8 +242,10 @@ fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
     let (w, h) = (box_area.width as usize, box_area.height);
 
     // Cleared first: a dropdown is opaque, and ratatui draws over rather than
-    // through.
+    // through. Then the raised ground, which is what makes it read as being
+    // *over* the table rather than cut into it.
     f.render_widget(Clear, box_area);
+    f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
 
     let inner = w.saturating_sub(2);
     let mut lines = vec![Line::from(Span::styled(
@@ -3199,7 +3214,20 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         .take(rows_visible)
         .map(|(i, r)| {
             let p = &r.proc;
-            let mut style = Style::default();
+            // Every other row gets a slightly lighter ground. A process table
+            // is wide — a figure on the left and the name it belongs to on the
+            // right, with eight columns between — and the eye loses the line it
+            // is on somewhere in the middle. Striping is the oldest fix there
+            // is for that, and it costs nothing a border would not cost more.
+            //
+            // Subtle on purpose: a stripe loud enough to notice competes with
+            // the figures it is there to help you read across. See
+            // `Theme::stripe_style`.
+            let mut style = if i % 2 == 1 {
+                app.theme.stripe_style()
+            } else {
+                Style::default()
+            };
             if Some(i) == selected {
                 style = app.theme.selection_style();
             } else if r.context_only {

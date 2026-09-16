@@ -12345,3 +12345,148 @@ fn clicking_a_row_selects_it() {
         "clicking a different row kept the same selection"
     );
 }
+
+// ── surfaces ────────────────────────────────────────────────────────────────
+
+/// Every background actually painted in a rendered frame, by row.
+fn grounds(app: &App, w: u16, h: u16) -> Vec<Vec<Option<ratatui::style::Color>>> {
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw(f, app)).unwrap();
+    let buf = term.backend().buffer();
+    (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| match buf[(x, y)].bg {
+                    ratatui::style::Color::Reset => None,
+                    c => Some(c),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn lit(mut app: App) -> App {
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app
+}
+
+#[test]
+fn the_whole_frame_is_painted_not_just_the_parts_with_content() {
+    // An interface that paints some of its ground and leaves the rest to the
+    // terminal is not layered, it is patchy: the gaps read as holes in the
+    // program. It also makes every contrast figure `--check-theme` reports an
+    // assumption about a background poptop does not control.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..4)
+            .map(|n| proc_named(100 + n, "proc", 5.0, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let app = lit(app);
+    for (y, row) in grounds(&app, 92, 24).iter().enumerate() {
+        assert!(
+            row.iter().all(|c| c.is_some()),
+            "row {y} has unpainted cells"
+        );
+    }
+}
+
+#[test]
+fn the_surfaces_are_layered_in_one_direction() {
+    // The whole point of four grounds is that they read as elevation. Four
+    // shades in no particular order is not a layer system, it is four shades —
+    // and the one that has to be highest is `raised`, since a dropdown
+    // indistinguishable from the table beneath it is a dropdown cut into the
+    // table rather than laid over it.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor);
+    let lum = |c: ratatui::style::Color| {
+        let [r, g, b] = crate::cvd::to_rgb(c).expect("a true colour");
+        r as u32 + g as u32 + b as u32
+    };
+    assert!(
+        lum(t.surface) < lum(t.panel),
+        "a panel is not raised above the ground"
+    );
+    assert!(
+        lum(t.panel) < lum(t.stripe),
+        "a stripe is not distinguishable from the row beside it"
+    );
+    assert!(
+        lum(t.stripe) < lum(t.raised),
+        "the raised surface is not the highest one"
+    );
+    // And the steps are small. A stripe you notice competes with the figures it
+    // is there to help you read across.
+    assert!(
+        lum(t.stripe) - lum(t.panel) < lum(t.raised) - lum(t.panel),
+        "the stripe is a louder step than the raised surface"
+    );
+}
+
+#[test]
+fn a_terminal_that_cannot_be_trusted_with_a_background_is_given_none() {
+    // The 16 ANSI slots belong to the user's theme — their terminal decides
+    // what `DarkGray` looks like — so painting one as a background is as likely
+    // to fight their scheme as to match it. A tier that cannot promise a colour
+    // must not promise a surface.
+    for tier in [Tier::Mono, Tier::Ansi16] {
+        let t = Theme::new(Palette::Safe, tier);
+        assert!(!tier.paints_surfaces(), "{tier:?} claims it can paint");
+        for (name, style) in [
+            ("surface", t.surface_style()),
+            ("panel", t.panel_style()),
+            ("raised", t.raised_style()),
+            ("stripe", t.stripe_style()),
+        ] {
+            assert_eq!(style.bg, None, "{tier:?} painted a {name} background");
+        }
+    }
+    // And the frame really is left alone, not merely the styles.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::Ansi16);
+    assert!(
+        grounds(&app, 60, 12).iter().flatten().all(
+            |c| c.is_none() || *c == Some(Theme::new(Palette::Safe, Tier::Ansi16).selection_bg)
+        ),
+        "a 16-colour frame had a background painted into it"
+    );
+}
+
+#[test]
+fn the_table_stripes_alternate_and_the_selection_beats_them() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let mut app = lit(app);
+    let (w, h) = (92u16, 26u16);
+    let table_top = ui::timeline_rows_range(h).end + 2;
+
+    let bg_of = |app: &App, y: u16| grounds(app, w, h)[y as usize][4];
+    let a = bg_of(&app, table_top);
+    let b = bg_of(&app, table_top + 1);
+    let c = bg_of(&app, table_top + 2);
+    assert_ne!(
+        a, b,
+        "adjacent rows share a ground, so there are no stripes"
+    );
+    assert_eq!(a, c, "the stripe does not alternate, it drifts");
+
+    // The selection outranks the stripe, or every other selected row would look
+    // different from the one above it for no reason the reader can see.
+    app.select_row(0);
+    let sel = bg_of(&app, table_top);
+    app.select_row(1);
+    assert_eq!(
+        sel,
+        bg_of(&app, table_top + 1),
+        "a selected row looks different depending on whether it is striped"
+    );
+}
