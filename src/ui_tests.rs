@@ -13476,3 +13476,116 @@ fn clearing_the_filter_is_one_action() {
     assert!(app.filter.is_empty(), "clearing left the filter in place");
     assert!(!app.editing_filter, "clearing left the field focused");
 }
+
+// ── the action bar ──────────────────────────────────────────────────────────
+
+#[test]
+fn what_can_be_done_to_the_selection_is_visible_without_a_menu() {
+    // Activity Monitor puts three controls in its title bar and attaches them
+    // to the selection: visible, few, and which of them are available tells you
+    // what can be done to what you picked.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.signals = true;
+
+    let footer = |app: &App| rows(app, 120, 26).last().unwrap().clone();
+
+    app.selected = None;
+    let none = footer(&app);
+    assert!(
+        !none.contains("inspect"),
+        "actions are offered with nothing selected: {none:?}"
+    );
+
+    app.select_row(0);
+    let some = footer(&app);
+    assert!(
+        some.contains("postgres") && some.contains("824"),
+        "the bar does not name what is selected: {some:?}"
+    );
+    assert!(some.contains("⏎ inspect"), "{some:?}");
+    assert!(some.contains("TERM") && some.contains("KILL"), "{some:?}");
+    // And it does not spend sixty columns repeating the command line the table
+    // is already showing.
+    assert!(
+        !some.contains("/var/db/postgres"),
+        "the bar printed the whole command line: {some:?}"
+    );
+}
+
+#[test]
+fn what_cannot_be_done_says_so_before_it_is_attempted() {
+    // An action bar offering `x TERM` on a recorded day, which then refuses it,
+    // is worse than one that never offered it: the reader has already decided
+    // by the time they find out.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.select_row(0);
+    app.signals = true;
+
+    let footer = |app: &App| rows(app, 120, 26).last().unwrap().clone();
+    assert!(footer(&app).contains("TERM"), "live, and it is not offered");
+
+    // Scrubbed into history: the pid on this row may belong to something else
+    // now, which is the whole reason signalling is refused there.
+    app.history.scrub(-5);
+    let back = footer(&app);
+    assert!(
+        !back.contains("x TERM"),
+        "the bar still offers a signal while scrubbing: {back:?}"
+    );
+    assert!(
+        back.contains("postgres"),
+        "the bar stopped naming the selection too: {back:?}"
+    );
+    // Whatever it says instead, it is the same reason the attempt would give.
+    assert!(
+        app.signal_refusal().is_some(),
+        "this test is no longer about a refusal"
+    );
+
+    // And with signals off entirely.
+    app.history.goto_live();
+    app.signals = false;
+    let off = footer(&app);
+    assert!(
+        !off.contains("x TERM"),
+        "signals are off and still offered: {off:?}"
+    );
+}
+
+#[test]
+fn a_folded_row_offers_nothing_because_it_is_several_processes() {
+    // Signalling "the one under the cursor" there means picking one of them,
+    // which is not a decision a confirmation could describe — `ask_to_signal`
+    // already refuses it, and offering it first would be the same mistake the
+    // refusal exists to avoid.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.selected = Some(crate::app::Watched::Group {
+        name: std::sync::Arc::from("postgres"),
+    });
+    let footer = rows(&app, 120, 26).last().unwrap().clone();
+    assert!(
+        !footer.contains("inspect"),
+        "a folded row was offered a process action: {footer:?}"
+    );
+}
+
+#[test]
+fn a_prompt_outranks_the_action_bar() {
+    // A pending confirmation, a jump note and a filter error are about
+    // something the reader just did; the bar is about something they are still
+    // looking at. The row is shared and the question wins.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.select_row(0);
+    app.signals = true;
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.pending.is_some(), "no confirmation to outrank the bar");
+    let footer = rows(&app, 120, 26).last().unwrap().clone();
+    assert!(
+        footer.contains("y to confirm") || footer.contains("send"),
+        "the action bar displaced the confirmation: {footer:?}"
+    );
+}

@@ -2,7 +2,7 @@
 id: 125
 title: The actions on a process are a key you have to know
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -35,17 +35,26 @@ greying what cannot:
 Attached to the selection, so it appears when something is selected and says
 nothing when nothing is.
 
-## What needs deciding
+## What was decided
 
-- **Whether it lives on the row or in the key hints.** On the row it competes
-  with the command name, which is the widest and most useful column. In the
-  hints it is one more thing on a line that already has eight.
-- **What "cannot" looks like.** Signalling a process from a recorded day is
-  already refused; the affordance should say so before the attempt rather than
-  after.
+**The footer, not the row.** The footer already changes with the mode — a
+filter error, a jump note, a pending confirmation — and a selection is a mode.
+On the row it would compete with the command name, which is the widest and most
+useful column.
+
+**It is last in that row's ladder.** A pending confirmation, a jump note and a
+filter error are about something the reader just did; this is about something
+they are still looking at, so the question wins the row.
+
+**"Cannot" needed the reason to have two lengths.** `Refused::Scrubbing`
+is a hundred and twenty characters, written for a row with nothing else on it,
+and pasting it into a shared row dropped the whole bar including the name of the
+thing selected. `Blocked` is the reason rather than the sentence, with
+`short()` for the footer and `why()` for the note — one decision about
+whether, two lengths of it.
 
 ## Acceptance criteria
 
-- [ ] What can be done to the selection is visible without a menu
-- [ ] What cannot be done says so before it is attempted
-- [ ] Nothing appears when nothing is selected
+- [x] What can be done to the selection is visible without a menu
+- [x] What cannot be done says so before it is attempted
+- [x] Nothing appears when nothing is selected

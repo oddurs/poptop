@@ -644,6 +644,33 @@ impl App {
     /// moment of sending, so the reader is told before typing `y` rather than
     /// after. A prompt that can only be answered "no" is worse than the key
     /// saying why.
+    /// Why a signal would be refused right now, if it would.
+    ///
+    /// Split out so the affordance and the attempt cannot disagree. An action
+    /// bar offering `x quit` on a recorded day, which then refuses it, is worse
+    /// than one that never offered it: the reader has already decided before
+    /// they find out.
+    ///
+    /// Returns the reason rather than a sentence, because the two callers need
+    /// different lengths of it — a footer shared with the key hints cannot
+    /// carry the hundred and twenty characters the note line is written for.
+    pub fn signal_refusal(&self) -> Option<Blocked> {
+        if !self.signals {
+            return Some(Blocked::Off);
+        }
+        // `replaying` before `is_live`: that method means "the cursor is
+        // untethered", which in a day opened with `--read` is true the moment
+        // somebody presses `End` — and every check below would then be made
+        // against last Tuesday's process table.
+        if self.replaying {
+            return Some(Blocked::Recorded);
+        }
+        if !self.history.is_live() {
+            return Some(Blocked::Scrubbing);
+        }
+        None
+    }
+
     pub fn ask_to_signal(&mut self, signal: crate::signal::Signal) {
         self.signal_note = None;
         if !self.signals {
@@ -651,19 +678,8 @@ impl App {
                 Some("signals are off — `signals = on` in the config, or --signals=on".into());
             return;
         }
-        // `replaying` before `is_live`: that method means "the cursor is
-        // untethered", which in a day opened with `--read` is true the moment
-        // somebody presses `End` — and every check below would then be made
-        // against last Tuesday's process table.
-        let refused = if self.replaying {
-            Some(crate::signal::Refused::Recorded)
-        } else if !self.history.is_live() {
-            Some(crate::signal::Refused::Scrubbing)
-        } else {
-            None
-        };
-        if let Some(why) = refused {
-            self.signal_note = Some(why.why(None));
+        if let Some(why) = self.signal_refusal() {
+            self.signal_note = Some(why.why());
             return;
         }
         let Some(p) = self.selected_process() else {
@@ -1578,6 +1594,40 @@ pub enum Watched {
     Group {
         name: Arc<str>,
     },
+}
+
+/// Why signalling is refused right now.
+///
+/// The reason rather than a sentence: the footer says `while scrubbing` beside
+/// what else can be done, and the note line says the whole thing when somebody
+/// tries anyway. Two lengths, one decision about whether.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Blocked {
+    Off,
+    Recorded,
+    Scrubbing,
+}
+
+impl Blocked {
+    /// Four words, for a row that is shared with the key hints.
+    pub fn short(self) -> &'static str {
+        match self {
+            Blocked::Off => "signals off",
+            Blocked::Recorded => "a recorded day",
+            Blocked::Scrubbing => "while scrubbing",
+        }
+    }
+
+    /// The whole reason, for the row that has nothing else on it.
+    pub fn why(self) -> String {
+        match self {
+            Blocked::Off => {
+                "signals are off — `signals = on` in the config, or --signals=on".to_string()
+            }
+            Blocked::Recorded => crate::signal::Refused::Recorded.why(None),
+            Blocked::Scrubbing => crate::signal::Refused::Scrubbing.why(None),
+        }
+    }
 }
 
 impl Watched {

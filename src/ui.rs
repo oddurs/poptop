@@ -4340,6 +4340,66 @@ fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
     (format!(" ! io: {}/{eligible} need root", s.io_denied), true)
 }
 
+/// What can be done to the selected process, and what cannot and why.
+///
+/// Activity Monitor puts three controls in its title bar and attaches them to
+/// the selection: they are visible, they are few, and which of them are
+/// available tells you what can be done to what you have picked. This is the
+/// terminal's version — the footer already changes with the mode, and a
+/// selection is a mode.
+///
+/// `None` when nothing is selected, so the row says nothing rather than
+/// offering actions with no subject.
+fn selection_actions(app: &App, width: usize) -> Option<Line<'static>> {
+    let name = match app.selected.as_ref()? {
+        // The *short* name, not the command line. `Watched` keeps the full
+        // command so a missing process can be named unambiguously, and putting
+        // that in a one-line bar spends sixty columns identifying a row the
+        // reader is already looking at.
+        crate::app::Watched::Process { pid, name, .. } => {
+            let short = name.split_whitespace().next().unwrap_or(name);
+            let short = short.rsplit('/').next().unwrap_or(short);
+            format!("{short} · {pid}")
+        }
+        // A folded row is several processes, and "signal the one under the
+        // cursor" there means picking one of them — which is not a decision a
+        // confirmation could describe. So it offers nothing.
+        crate::app::Watched::Group { .. } => return None,
+    };
+    let mut spans = vec![
+        Span::styled(" ", app.theme.dim_style()),
+        Span::styled(name, app.theme.title_style()),
+        Span::styled("  ⏎ inspect", app.theme.dim_style()),
+    ];
+    // Said before it is attempted, not after. An action bar offering `x quit`
+    // on a recorded day and then refusing it is worse than one that never
+    // offered it: the reader has already decided by the time they find out.
+    match app.signal_refusal() {
+        None => spans.push(Span::styled(
+            " · x TERM · X KILL".to_string(),
+            app.theme.dim_style(),
+        )),
+        Some(why) => spans.push(Span::styled(
+            format!(" · no signal: {}", why.short()),
+            app.theme.warning_style(),
+        )),
+    }
+    // Its own ladder, because this row is shared. What the reader picked and
+    // what can be done to it outrank the key hints, which are a reminder; but
+    // the whole bar is given up before it clips, because a clipped action list
+    // reads as an action that does not exist.
+    let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
+    if used > width {
+        return None;
+    }
+    let rest = width.saturating_sub(used + 3);
+    let hints = fit_hints(KEY_HINTS, rest as u16);
+    if !hints.is_empty() {
+        spans.push(Span::styled(format!("   {hints}"), app.theme.dim_style()));
+    }
+    Some(Line::from(spans))
+}
+
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     let line = if app.editing_filter {
         // The field itself is on the scope line, where the filter is the scope.
@@ -4396,6 +4456,11 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         // was recorded at 03:00 is the whole point of asking, and a message
         // that vanished with the prompt would be one nobody read.
         Line::from(Span::styled(format!(" {note}"), app.theme.warning_style()))
+    } else if let Some(actions) = selection_actions(app, area.width as usize) {
+        // Last, after every prompt: a pending confirmation, a jump note and a
+        // filter error are all about something the reader just did, and this is
+        // about something they are still looking at.
+        actions
     } else {
         Line::from(Span::styled(
             fit_hints(KEY_HINTS, area.width),
