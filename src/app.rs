@@ -468,6 +468,8 @@ pub struct App {
     zoom_idx: usize,
     pub glyphs: GlyphSet,
     pub axis: crate::glyphs::Axis,
+    /// Which dropdown is open, if any. See `menu.rs`.
+    pub menu: crate::menu::MenuState,
     pub theme: Theme,
     /// Nominal time between samples, for spotting gaps in the buffer.
     pub interval: std::time::Duration,
@@ -516,6 +518,7 @@ impl App {
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
             axis: crate::glyphs::Axis::default(),
+            menu: crate::menu::MenuState::default(),
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,
         }

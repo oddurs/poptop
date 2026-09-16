@@ -214,8 +214,12 @@ fn one_node_costs_no_row_and_two_get_one() {
     // the panel below the header must start a row lower than it does without
     // nodes, and the table must not lose a row to make up for it.
     let node_y = numa_rows.iter().position(|r| r.contains("nodes")).unwrap();
-    assert_eq!(node_y, 2, "the node row landed outside the header");
-    let below = &numa_rows[3];
+    assert_eq!(
+        node_y,
+        ui::MENU_H as usize + 2,
+        "the node row landed outside the header"
+    );
+    let below = &numa_rows[node_y + 1];
     assert!(
         !below.contains("nodes"),
         "the node row was drawn twice, or over the timeline: {below}"
@@ -230,20 +234,21 @@ fn one_node_costs_no_row_and_two_get_one() {
     mixed.push(two_node_sample());
     mixed.history.scrub(-1);
     let scrubbed = rows(&mixed, 100, 30);
+    let node_row = ui::MENU_H as usize + 2;
     assert_eq!(
         ui::header_height(&mixed),
         3,
         "the header shrank while scrubbing"
     );
     assert!(
-        scrubbed[2].contains("nodes"),
+        scrubbed[node_row].contains("nodes"),
         "the reserved row went blank instead of saying why: {:?}",
-        scrubbed[2]
+        scrubbed[node_row]
     );
     assert!(
-        scrubbed[2].contains("not recorded"),
+        scrubbed[node_row].contains("not recorded"),
         "a sample with no nodes drew somebody else's figures: {:?}",
-        scrubbed[2]
+        scrubbed[node_row]
     );
 
     // And it never lets go. A single sample where `/sys` could not be read
@@ -286,7 +291,9 @@ fn a_nodes_colour_does_not_call_page_cache_lost_memory() {
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer().clone();
-    let row: Vec<_> = (0..100u16).map(|x| buf[(x, 2)].clone()).collect();
+    let row: Vec<_> = (0..100u16)
+        .map(|x| buf[(x, ui::MENU_H + 2)].clone())
+        .collect();
     let text: String = row.iter().map(|c| c.symbol()).collect();
     assert!(text.contains("n0") && text.contains("n1"), "{text}");
 
@@ -454,7 +461,7 @@ fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
     let mut app = App::new(600);
     app.push(nfs_sample(0));
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let healthy = rows(&app, 160, 30)[0].clone();
+    let healthy = rows(&app, 160, 30)[ui::MENU_H as usize].clone();
 
     // The busiest mount, by calls. `/mnt/quiet` made three.
     assert!(
@@ -476,13 +483,13 @@ fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
     let mut sick = App::new(600);
     sick.push(nfs_sample(96));
     sick.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let bad = rows(&sick, 160, 30)[0].clone();
+    let bad = rows(&sick, 160, 30)[ui::MENU_H as usize].clone();
     assert!(bad.contains("8.0% re"), "{bad}");
 
     // And a machine with no NFS at all spends nothing on it.
     let mut plain = App::new(600);
     plain.push(sample(8.0));
-    let none = rows(&plain, 160, 30)[0].clone();
+    let none = rows(&plain, 160, 30)[ui::MENU_H as usize].clone();
     assert!(!none.contains("op/s"), "{none}");
 }
 
@@ -513,7 +520,7 @@ fn a_mount_that_stopped_answering_is_not_a_share_of_nothing() {
     });
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let row = rows(&app, 160, 30)[0].clone();
+    let row = rows(&app, 160, 30)[ui::MENU_H as usize].clone();
 
     assert!(
         row.contains("/mnt/hung"),
@@ -560,13 +567,13 @@ fn a_running_server_is_named_and_an_absent_one_is_not() {
     let mut s = nfs_sample(0);
     s.nfs.as_mut().unwrap().server_calls = Some(4800);
     app.push(s);
-    let with = rows(&app, 200, 30)[0].clone();
+    let with = rows(&app, 200, 30)[ui::MENU_H as usize].clone();
     assert!(with.contains("NFSD 4.8k op/s"), "{with}");
 
     // A machine that mounts NFS but serves none says nothing about serving.
     let mut client = App::new(600);
     client.push(nfs_sample(0));
-    let without = rows(&client, 200, 30)[0].clone();
+    let without = rows(&client, 200, 30)[ui::MENU_H as usize].clone();
     assert!(
         !without.contains("NFSD"),
         "a machine with no nfsd threads was reported as a server: {without}"
@@ -604,20 +611,24 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
     // Paused, not live: opening a day and being taken to the present would
     // discard the thing that was asked for.
     assert!(
-        oldest[0].contains("PAUSED"),
+        oldest[ui::MENU_H as usize].contains("PAUSED"),
         "a recorded day opened live: {}",
-        oldest[0]
+        oldest[ui::MENU_H as usize]
     );
 
     // And the cursor moves through it, showing a different moment.
     app.history.scrub(20);
     let middle = rows(&app, 120, 30);
     assert_ne!(
-        oldest[0], middle[0],
+        oldest[ui::MENU_H as usize],
+        middle[ui::MENU_H as usize],
         "scrubbing a recorded day changed nothing"
     );
     app.history.goto_oldest();
-    assert_eq!(rows(&app, 120, 30)[0], oldest[0]);
+    assert_eq!(
+        rows(&app, 120, 30)[ui::MENU_H as usize],
+        oldest[ui::MENU_H as usize]
+    );
 
     // A live sample must not be pushed into it. The buffer is sized to the day
     // exactly, so a push evicts the oldest recorded sample and shifts the
@@ -626,7 +637,7 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
     // push while replaying; this is the property that makes it have to.
     app.history.push(sample(99.0));
     assert_ne!(
-        rows(&app, 120, 30)[0],
+        rows(&app, 120, 30)[ui::MENU_H as usize],
         oldest[0],
         "pushing into a full replay buffer left the view alone, so this test no \
          longer covers why `run` must not do it"
@@ -1896,7 +1907,7 @@ fn mono_tier_still_marks_the_paused_state() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let reversed = (0..buf.area.width).any(|x| {
-        buf[(x, 0)]
+        buf[(x, ui::MENU_H)]
             .modifier
             .contains(ratatui::style::Modifier::REVERSED)
     });
@@ -2901,7 +2912,7 @@ fn status_colour_is_kept_where_it_answers_is_this_bad() {
         };
         // Figures then cores. Taken from `HEADER_H` rather than written down:
         // the header lost a row and every hardcoded index moved with it.
-        (row(0), row(ui::HEADER_H - 1))
+        (row(ui::MENU_H), row(ui::MENU_H + ui::HEADER_H - 1))
     };
     let (h_idle, c_idle) = styles_at(5.0);
     let (h_busy, c_busy) = styles_at(95.0);
@@ -2967,7 +2978,7 @@ fn status_and_identity_hues_stay_in_their_own_panels() {
                     // `ok` hue by design, so it alone would satisfy a naive
                     // "some status colour appeared" check even with every
                     // figure, meter and table cell stripped of status colour.
-                    if status.contains(&c.fg) && !blank && y >= ui::HEADER_H {
+                    if status.contains(&c.fg) && !blank && y >= ui::MENU_H + ui::HEADER_H {
                         status_hues.insert(format!("{:?}", c.fg));
                     }
                 }
@@ -3087,7 +3098,7 @@ fn the_stated_scale_matches_the_colouring_it_describes() {
         let mut term = Terminal::new(TestBackend::new(170, 30)).unwrap();
         term.draw(|f| ui::draw(f, &app)).unwrap();
         let buf = term.backend().buffer();
-        let row: String = (0..170u16).map(|x| buf[(x, 0)].symbol()).collect();
+        let row: String = (0..170u16).map(|x| buf[(x, ui::MENU_H)].symbol()).collect();
         assert!(
             row.contains(&format!("warn {warn}")),
             "the header does not print warn {warn}: {row:?}"
@@ -3240,7 +3251,7 @@ fn a_many_core_machine_summarises_rather_than_clipping() {
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
             let row: String = (0..w)
-                .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+                .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
                 .collect();
             let drawn = row.chars().filter(|c| BAR_GLYPHS.contains(c)).count();
             // Whatever it degrades to, the count itself is always stated.
@@ -3288,7 +3299,7 @@ fn a_host_with_no_per_core_data_says_so() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let row: String = (0..100u16)
-        .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+        .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
         .collect();
     assert!(
         row.contains("not reported"),
@@ -3310,7 +3321,7 @@ fn show_core_overflow() {
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
             let row: String = (0..w)
-                .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+                .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
                 .collect();
             println!("  {cores:>4} cores, w={w:<4} |{}|", row);
         }
@@ -3328,7 +3339,7 @@ fn growing_the_timeline_never_shrinks_it() {
     // two floors compete below seventeen rows, and the table wins: a nine-row
     // graph on a fourteen-row terminal was bought with a table showing no
     // processes at all, which is not a trade between resolutions.
-    let smallest_that_fits = ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
+    let smallest_that_fits = ui::MENU_H + ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
     for total in smallest_that_fits..=200u16 {
         assert!(
             ui::timeline_height(total, ui::HEADER_H) >= ui::TIMELINE_MIN_H,
@@ -3491,7 +3502,8 @@ fn a_short_terminal_shows_processes_rather_than_a_taller_graph() {
     // table's floor was two *panel* rows, and a table spends two on chrome
     // before any data.
     for total in 12..=17u16 {
-        let table = total - ui::HEADER_H - 1 - ui::timeline_height(total, ui::HEADER_H);
+        let table =
+            total - ui::MENU_H - ui::HEADER_H - 1 - ui::timeline_height(total, ui::HEADER_H);
         assert!(
             table >= ui::PROCS_FLOOR_H,
             "total={total}: the table got {table} rows, below its floor of {}",
@@ -3510,8 +3522,9 @@ fn the_process_table_always_keeps_some_rows() {
     // Including on terminals too small for the timeline's own floor, where the
     // timeline takes what is left rather than the height it would prefer.
     for total in 6..=80u16 {
-        let left =
-            total.saturating_sub(ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1);
+        let left = total.saturating_sub(
+            ui::MENU_H + ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1,
+        );
         assert!(left >= 1, "total={total}: process table got {left} rows");
     }
 }
@@ -3610,7 +3623,7 @@ fn present_at(app: &App, w: u16, h: u16) -> Present {
         // The last header row, whichever that is. Written down as `2` it kept
         // pointing at the timeline the moment the header lost a row.
         core_meters: {
-            let r = row(ui::HEADER_H - 1);
+            let r = row(ui::MENU_H + ui::HEADER_H - 1);
             r.contains('▇') || r.contains('▄') || r.contains('▁')
         },
         // Scoped to the timeline's gutter columns. Matching "CPU " anywhere
@@ -3820,7 +3833,7 @@ fn core_meters_are_countable_in_groups() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let row: String = (0..100u16)
-        .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+        .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
         .collect();
     let meters = row.trim_end().split_once("cores ").unwrap().1;
     // Fourteen cores in groups of four: three gaps.
@@ -4951,7 +4964,7 @@ fn measure_render_with_sparklines() {
 /// moved down into the figures, and a dozen assertions had been reading line 1
 /// by number — every one of them silently repointed at the per-core meters.
 fn figures_line(app: &App, w: u16, h: u16) -> String {
-    render_lines(app, w, h)[0].clone()
+    render_lines(app, w, h)[ui::MENU_H as usize].clone()
 }
 
 fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
@@ -11828,5 +11841,253 @@ fn scale_fit_stops_a_high_flat_series_being_a_wall() {
     assert!(
         chrome_marks > 0,
         "no rule was drawn, so this proves nothing about which glyph it uses"
+    );
+}
+
+#[test]
+#[ignore]
+fn show_menu() {
+    let mut app = App::new(600);
+    for i in 0..120 {
+        let mut s = sample_at(((i as f32) * 0.7).sin().abs() * 80.0, 120 - i);
+        s.procs = vec![
+            proc_named(824, "postgres", 88.4, 512 << 20),
+            proc_named(1190, "nginx", 12.5, 32 << 20),
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for (label, open, item) in [("closed", None, 0), ("View open", Some(2), 6)] {
+        app.menu.open = open;
+        app.menu.item = item;
+        println!("\n=== {label} ===");
+        for l in rows(&app, 92, 26) {
+            println!("{}", l.trim_end());
+        }
+    }
+}
+
+// ── the menu bar ────────────────────────────────────────────────────────────
+
+/// Press a key with no modifiers.
+fn press(app: &mut App, code: KeyCode) {
+    crate::handle_key_with_mods_for_test(app, code, KeyModifiers::NONE);
+}
+
+#[test]
+fn every_menu_item_agrees_with_the_key_beside_it() {
+    // The reason the menu and the keyboard dispatch through one `Action`. A
+    // menu that said `d` beside "Process detail" while `d` did something else
+    // would be teaching the wrong thing, and nothing about a second
+    // implementation would notice: both would work, and they would disagree.
+    for title in crate::menu::bar() {
+        for item in &title.items {
+            let key = item.key();
+            let mut chars = key.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                continue; // `End`, `Space` — named keys, checked below.
+            };
+            if !c.is_ascii() {
+                continue; // `←` is one character and still a named key.
+            }
+            let from_key = crate::action_for(KeyCode::Char(c), KeyModifiers::NONE);
+            assert_eq!(
+                from_key,
+                item.action(),
+                "the menu says {key:?} runs {:?}, the keyboard says it runs {from_key:?}",
+                item.action()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_named_keys_on_the_menu_do_what_it_says() {
+    // The other half: the items whose key is a name rather than a letter.
+    // Spelled out here rather than derived, because the whole point is to check
+    // the spelling.
+    for (name, code) in [
+        ("End", KeyCode::End),
+        ("Home", KeyCode::Home),
+        ("Space", KeyCode::Char(' ')),
+        ("←", KeyCode::Left),
+        ("→", KeyCode::Right),
+        ("↑", KeyCode::Up),
+        ("↓", KeyCode::Down),
+    ] {
+        let want = crate::action_for(code, KeyModifiers::NONE);
+        let found = crate::menu::bar()
+            .into_iter()
+            .flat_map(|t| t.items)
+            .find(|i| i.key() == name)
+            .and_then(|i| i.action());
+        if let Some(found) = found {
+            assert_eq!(Some(found), want, "the menu's {name:?} is not the key's");
+        }
+    }
+}
+
+#[test]
+fn the_bar_is_always_on_screen() {
+    // A menu that appeared only once opened is a menu nobody discovers, which
+    // is the entire reason for having one: poptop has around thirty single-key
+    // bindings and the footer can name six.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let first = rows(&app, 100, 24)[0].clone();
+    for name in ["File", "Edit", "View", "Go", "Process"] {
+        assert!(first.contains(name), "{name} is not on the bar: {first:?}");
+    }
+    assert!(
+        first.contains("F10"),
+        "the bar does not say how to open it: {first:?}"
+    );
+}
+
+#[test]
+fn the_menu_opens_navigates_and_acts() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    assert!(!app.menu.is_open());
+    press(&mut app, KeyCode::F(10));
+    assert_eq!(app.menu.open, Some(0), "F10 did not open the bar");
+
+    // Right wraps around the titles rather than stopping.
+    let n = crate::menu::bar().len();
+    for _ in 0..n {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.menu.open, Some(0), "the titles do not wrap");
+
+    // Down never lands on a rule: a separator that eats a keypress reads as the
+    // menu having stopped responding.
+    app.menu.open = Some(2); // View, which has rules in it
+    app.menu.item = 0;
+    let view = &crate::menu::bar()[2];
+    for _ in 0..view.items.len() * 2 {
+        press(&mut app, KeyCode::Down);
+        assert!(
+            view.items[app.menu.item].action().is_some(),
+            "the highlight landed on a rule at index {}",
+            app.menu.item
+        );
+    }
+
+    // Enter acts and closes.
+    let before = app.detail;
+    let at = view
+        .items
+        .iter()
+        .position(|i| i.action() == Some(crate::command::Action::ToggleDetail))
+        .expect("no detail item");
+    app.menu.item = at;
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.menu.is_open(), "the menu stayed open after choosing");
+    assert_ne!(app.detail, before, "choosing the item did nothing");
+
+    // Esc closes without acting.
+    press(&mut app, KeyCode::F(10));
+    let before = app.detail;
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.menu.is_open());
+    assert_eq!(app.detail, before, "escaping the menu still acted");
+}
+
+#[test]
+fn the_open_menu_takes_every_key() {
+    // A bar that let unrelated keys through is one you dismiss by reflex while
+    // meaning to scroll — and scrolling under an open menu moves a cursor the
+    // reader cannot see.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    press(&mut app, KeyCode::F(10));
+    let at = app.history.cursor_index();
+    for code in [KeyCode::Char('q'), KeyCode::Char('d'), KeyCode::Char('t')] {
+        press(&mut app, code);
+    }
+    assert!(!app.should_quit, "`q` quit from inside the menu");
+    assert!(
+        !app.detail && !app.tree,
+        "a letter acted while the menu was open"
+    );
+    assert_eq!(
+        app.history.cursor_index(),
+        at,
+        "the cursor moved under the menu"
+    );
+}
+
+#[test]
+fn a_box_on_screen_keeps_the_menu_shut() {
+    // The filter and the jump take every printable key and the signal
+    // confirmation takes every key at all. A menu opening over one of them
+    // would be two modes claiming the keyboard, and the one the reader is
+    // looking at would lose.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for begin in [KeyCode::Char('/'), KeyCode::Char('b')] {
+        app.menu.close();
+        press(&mut app, begin);
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            !app.menu.is_open(),
+            "the menu opened over a box begun with {begin:?}"
+        );
+        press(&mut app, KeyCode::Esc);
+    }
+}
+
+#[test]
+fn alt_opens_the_title_it_names() {
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for (i, t) in crate::menu::bar().iter().enumerate() {
+        app.menu.close();
+        crate::handle_key_with_mods_for_test(
+            &mut app,
+            KeyCode::Char(t.hotkey.to_ascii_lowercase()),
+            KeyModifiers::ALT,
+        );
+        assert_eq!(
+            app.menu.open,
+            Some(i),
+            "alt-{} did not open {}",
+            t.hotkey,
+            t.name
+        );
+    }
+}
+
+#[test]
+fn the_dropdown_is_opaque_and_ticks_what_is_on() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.glyphs = crate::glyphs::GlyphSet::Block;
+    app.menu.open = Some(2); // View
+    let drawn = rows(&app, 100, 26).join("\n");
+    assert!(
+        drawn.contains("Bars (block)"),
+        "the dropdown did not draw:\n{drawn}"
+    );
+    // The set in force is ticked and the others are not.
+    let ticked: Vec<&str> = drawn
+        .lines()
+        .filter(|l| l.contains('•'))
+        .map(|l| l.trim())
+        .collect();
+    assert!(
+        ticked.iter().any(|l| l.contains("Bars (block)")),
+        "the set in force is not ticked: {ticked:?}"
+    );
+    assert!(
+        !ticked.iter().any(|l| l.contains("ASCII")),
+        "a set that is not in force is ticked: {ticked:?}"
     );
 }

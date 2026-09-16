@@ -10,12 +10,14 @@
 mod app;
 mod check;
 mod collect;
+mod command;
 mod config;
 mod cvd;
 mod export;
 mod glyphs;
 mod history;
 mod log;
+mod menu;
 mod persist;
 mod query;
 mod report;
@@ -31,6 +33,7 @@ mod ui_tests;
 
 use app::App;
 use collect::{Collector, Needs, Platform, Source};
+use command::Action;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::io;
 use std::time::{Duration, Instant};
@@ -1328,6 +1331,31 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         app.should_quit = true;
         return;
     }
+    // The bar, before every mode below it. F10 is the convention older than
+    // any of them; Alt-letter jumps straight to a title, as it does everywhere
+    // else a menu bar exists.
+    if app.menu.is_open() {
+        menu_key(app, code, mods);
+        return;
+    }
+    // Not while a box is up. The filter and the jump take every printable key,
+    // and the signal confirmation takes every key at all — a menu opening over
+    // one of them would be two modes claiming the keyboard, and the one the
+    // reader is looking at would lose.
+    let modal = app.editing_filter || app.editing_jump || app.pending.is_some();
+    if code == KeyCode::F(10) && !modal {
+        app.menu.toggle();
+        return;
+    }
+    if let KeyCode::Char(c) = code
+        && mods.contains(KeyModifiers::ALT)
+        && !modal
+        && let Some(at) = menu::MenuState::title_for(c, &menu::bar())
+    {
+        app.menu.open = Some(at);
+        app.menu.item = 0;
+        return;
+    }
     if app.editing_filter {
         match code {
             KeyCode::Enter | KeyCode::Esc => app.editing_filter = false,
@@ -1386,131 +1414,112 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     if !matches!(code, KeyCode::Char('x' | 'X')) {
         app.signal_note = None;
     }
+    if let Some(action) = action_for(code, mods) {
+        action.apply(app);
+    }
+}
+
+/// Keys while a dropdown is open.
+///
+/// The menu owns every key here. A bar that let unrelated keys through would be
+/// one you dismiss by reflex while meaning to scroll — the same reasoning as
+/// the signal confirmation.
+fn menu_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+    let titles = menu::bar();
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-        KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
-
-        // Scrubbing. Shift jumps ten samples at a time for crossing a long
-        // buffer without holding the key down.
-        KeyCode::Left | KeyCode::Char('h') => {
-            let step = if mods.contains(KeyModifiers::SHIFT) {
-                10
-            } else {
-                1
-            };
-            app.history.scrub(-step);
-        }
-        KeyCode::Right | KeyCode::Char('l') => {
-            let step = if mods.contains(KeyModifiers::SHIFT) {
-                10
-            } else {
-                1
-            };
-            app.history.scrub(step);
-        }
-        KeyCode::Char(' ') => {
-            // Space toggles: pause pins the cursor where it is, resume returns
-            // to the live edge.
-            if app.history.is_live() {
-                app.history.scrub(-1);
-            } else {
-                app.history.goto_live();
+        KeyCode::Esc | KeyCode::F(10) => app.menu.close(),
+        KeyCode::Left => app.menu.move_title(-1, titles.len()),
+        KeyCode::Right => app.menu.move_title(1, titles.len()),
+        KeyCode::Up | KeyCode::Down => {
+            let delta = if code == KeyCode::Up { -1 } else { 1 };
+            if let Some(t) = app.menu.open.and_then(|i| titles.get(i)) {
+                app.menu.move_item(delta, &t.items);
             }
         }
-        KeyCode::Home => {
-            app.history.goto_oldest();
-        }
-        KeyCode::End => {
-            app.history.goto_live();
-        }
-
-        KeyCode::Up | KeyCode::Char('k') => app.select_delta(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.select_delta(1),
-        KeyCode::PageUp => app.select_delta(-10),
-        KeyCode::PageDown => app.select_delta(10),
-
-        // '=' so zooming out does not require Shift on most layouts.
-        KeyCode::Char('+' | '=') => app.zoom_in(),
-        KeyCode::Char('-' | '_') => app.zoom_out(),
-
-        // The selection is of a process, so re-sorting moves the row under it
-        // and keeps it selected. Resetting to the top here was the same bug as
-        // the one scrubbing had.
-        KeyCode::Char('s') => app.sort = app.sort.next(app.io_collected(), app.view),
-        // Column sets, over the same rows and the same renderer. `v` because
-        // atop spends seven keys on this and poptop has three views and few
-        // free letters.
-        KeyCode::Char('v') => {
-            app.view = app.view.next();
-            // Asking for the view again is asking for its columns again, if the
-            // budget had taken them away.
-            app.insist_for_view();
-            // A sort the new view cannot show would be an ordering with no
-            // visible reason for it, so switching views brings the sort with
-            // it when it has to.
-            if !app.view.sorts().contains(&app.sort) {
-                app.sort = app.view.default_sort_for(app.io_collected());
+        KeyCode::Home => app.menu.item = 0,
+        KeyCode::Enter => {
+            // Closed before the action runs, not after. Several of these open a
+            // box of their own — the filter, the jump, the signal confirmation
+            // — and a dropdown still on screen over one of them is two modes
+            // claiming the keyboard.
+            let chosen = menu::chosen(app.menu, &titles);
+            app.menu.close();
+            if let Some(action) = chosen {
+                action.apply(app);
             }
         }
-        // Accept the suggestion. Never applied on its own: a table that
-        // reorders itself under the reader is worse than one that does not, so
-        // the constraint is named and this is the one key that acts on it.
-        KeyCode::Char('S') => {
-            if let Some(c) = app.constraint() {
-                app.sort = c.sort();
-                // Sorting by a column that is not on screen answers the
-                // question invisibly: the rows move and nothing says why. The
-                // reader asked for this by pressing the key, so the columns
-                // come with it.
-                if c.sort() == app::Sort::Disk {
-                    app.show_io = true;
-                }
+        KeyCode::Char(c) if mods.contains(KeyModifiers::ALT) => {
+            if let Some(at) = menu::MenuState::title_for(c, &titles) {
+                app.menu.open = Some(at);
+                app.menu.item = 0;
             }
-        }
-        KeyCode::Char('i') => app.toggle_io(),
-        // atop's key for the same thing.
-        KeyCode::Char('y') => app.toggle_threads(),
-        // atop shows cgroups on G. C here, because g is already grouping and
-        // G is not free either.
-        KeyCode::Char('C') => app.toggle_cgroups(),
-        KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
-        KeyCode::Char('t') => {
-            app.tree = !app.tree;
-            // Grouping destroys parentage by construction, so a grouped tree
-            // would be a tree of things that are not processes. bottom makes
-            // the same two exclusive.
-            if app.tree {
-                app.group = crate::app::Grouping::Off;
-            }
-        }
-        KeyCode::Char('d') => app.detail = !app.detail,
-        KeyCode::Char('g') => {
-            // A cycle: off, by name, by user, by container — atop's `p`, `u`
-            // and `j` on one key. Each is the same machinery with a different
-            // key, so they are a choice rather than three exclusive layouts.
-            app.group = app.group.next();
-            if app.group != crate::app::Grouping::Off {
-                app.tree = false;
-            }
-        }
-        KeyCode::Char('/') => {
-            app.editing_filter = true;
-            app.filter.clear();
-        }
-        // `x`, not `k`: `k` is already "select the previous process", the vim
-        // binding beside `j`, and a key that quietly stopped moving the
-        // selection would be a bad trade anywhere and an unforgivable one here.
-        KeyCode::Char('x') => app.ask_to_signal(crate::signal::Signal::Term),
-        KeyCode::Char('X') => app.ask_to_signal(crate::signal::Signal::Kill),
-        // `b` for the beginning of a moment, which is atop's `-b`. Not `j`:
-        // that is already "select the next process", the vim binding beside
-        // `k`, and a key that quietly stopped moving the selection would be a
-        // worse trade than an unfamiliar letter.
-        KeyCode::Char('b') => {
-            app.editing_jump = true;
-            app.jump.clear();
-            app.jump_note = None;
         }
         _ => {}
     }
+}
+
+/// The action a key asks for, or `None` if it asks for nothing.
+///
+/// Separated from `handle_key` so the mapping is a table rather than a pile of
+/// statements: every one of these is also a menu item, and the two have to be
+/// the same command or they will drift. See `command.rs`.
+pub fn action_for(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
+    // Shift crosses a long buffer without holding the key down.
+    let step = if mods.contains(KeyModifiers::SHIFT) {
+        10
+    } else {
+        1
+    };
+    Some(match code {
+        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => Action::Quit,
+
+        KeyCode::Left | KeyCode::Char('h') => Action::Scrub(-step),
+        KeyCode::Right | KeyCode::Char('l') => Action::Scrub(step),
+        KeyCode::Char(' ') => Action::ToggleLive,
+        KeyCode::Home => Action::GotoOldest,
+        KeyCode::End => Action::GotoLive,
+
+        KeyCode::Up | KeyCode::Char('k') => Action::Select(-1),
+        KeyCode::Down | KeyCode::Char('j') => Action::Select(1),
+        KeyCode::PageUp => Action::Select(-10),
+        KeyCode::PageDown => Action::Select(10),
+
+        // '=' so zooming in does not require Shift on most layouts.
+        KeyCode::Char('+' | '=') => Action::ZoomIn,
+        KeyCode::Char('-' | '_') => Action::ZoomOut,
+
+        // The selection is of a process, so re-sorting moves the row under it
+        // and keeps it selected.
+        KeyCode::Char('s') => Action::NextSort,
+        // Accept the suggestion. Never applied on its own: a table that
+        // reorders itself under the reader is worse than one that does not.
+        KeyCode::Char('S') => Action::AcceptSuggestedSort,
+        // Column sets, over the same rows and the same renderer. `v` because
+        // atop spends seven keys on this and poptop has three views and few
+        // free letters.
+        KeyCode::Char('v') => Action::NextView,
+        KeyCode::Char('i') => Action::ToggleIo,
+        // atop's key for the same thing.
+        KeyCode::Char('y') => Action::ToggleThreads,
+        // atop shows cgroups on G. C here, because g is already grouping and
+        // G is not free either.
+        KeyCode::Char('C') => Action::ToggleCgroups,
+        KeyCode::Char('K') => Action::ToggleKernel,
+        KeyCode::Char('t') => Action::ToggleTree,
+        KeyCode::Char('d') => Action::ToggleDetail,
+        // A cycle: off, by name, by user, by container — atop's `p`, `u` and
+        // `j` on one key.
+        KeyCode::Char('g') => Action::NextGrouping,
+        KeyCode::Char('/') => Action::BeginFilter,
+        // `x`, not `k`: `k` is already "select the previous process", the vim
+        // binding beside `j`, and a key that quietly stopped moving the
+        // selection would be an unforgivable trade here.
+        KeyCode::Char('x') => Action::Signal(crate::signal::Signal::Term),
+        KeyCode::Char('X') => Action::Signal(crate::signal::Signal::Kill),
+        // `b` for the beginning of a moment, which is atop's `-b`. Not `j`:
+        // that is already "select the next process".
+        KeyCode::Char('b') => Action::BeginJump,
+        _ => return None,
+    })
 }

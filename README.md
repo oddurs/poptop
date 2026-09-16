@@ -8,6 +8,7 @@ with an empty buffer and fills it as it runs: no daemon, no config, no logfiles,
 nothing that had to be running before you noticed the problem.
 
 ```
+  File  Edit  View  Go  Process   F10 menu
  poptop — PAUSED  -18s · warn 50 · crit 80
 CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒▒░░░░░
   4 cores ▇▄▁█
@@ -30,7 +31,7 @@ past                      2m23s shown, 1s/slot                      ▐      now
    4.2 ▏       148.0M      S     1      ▁▁▁▁▁    2077 node
    0.1          12.0M      S     1      ▁▁▁▁▁       1 systemd
 
-q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select · s sort
+q quit · F10 menu · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select
 ```
 
 The gutter names each graph and anchors its scale; the dashed lines are the
@@ -623,6 +624,20 @@ watching to save time on a box that is waiting for the network anyway. The
 per-op statistics are scanned rather than collected for the same reason —
 NFSv4.2 writes seventy-odd lines a mount and three numbers are wanted, and a
 vector per line was most of the cost.
+
+## The menu
+
+`F10` opens a menu bar — File, Edit, View, Go, Process — and `Alt` plus the
+first letter opens one directly. Arrows move, `⏎` chooses, `Esc` closes.
+
+It is a discoverability surface, not a second set of commands. poptop has around
+thirty single-key bindings: fine once you know them, impenetrable before, and
+the footer has room for six. Every menu item states the key that also runs it,
+so the menu teaches itself out of use.
+
+Both surfaces dispatch through one `Action`, and a test walks every item and
+checks its key hint against what that key actually does — so a menu that says
+`d` beside "Process detail" cannot drift into meaning something else.
 
 `--graph=block|braille|line|ascii` picks how the timeline is drawn, and
 `graph = block` in the config file makes the choice stick.

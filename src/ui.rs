@@ -9,7 +9,7 @@ use crate::history;
 use crate::sample::{IoRates, NetStat, Sample};
 use crate::theme::Theme;
 use ratatui::prelude::*;
-use ratatui::widgets::{Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Cell, Clear, Paragraph, Row, Table};
 use std::time::Duration;
 
 /// Eighth-block glyphs, used to draw the timeline one cell per sample.
@@ -82,6 +82,8 @@ pub const PROCS_FLOOR_H: u16 = PROCS_FLOOR_ROWS + PROCS_CHROME_H;
 /// Never below the height it used to have, and never so tall the process table
 /// cannot be read.
 pub fn timeline_height(total: u16, header: u16) -> u16 {
+    // `total` is the whole frame; the bar has already taken its row.
+    let total = total.saturating_sub(MENU_H);
     let spare = total.saturating_sub(header + PROCS_RESERVE_H + 1);
     let want = (spare * 2 / 5).clamp(TIMELINE_MIN_H, TIMELINE_MAX_H);
     // On a terminal too small for the floor, take what is left over — but never
@@ -97,7 +99,9 @@ pub fn timeline_height(total: u16, header: u16) -> u16 {
 /// outrank the timeline and this would report a panel that is not there.
 #[cfg(test)]
 pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
-    let top = HEADER_H;
+    // The menu bar sits above the header, so every panel is one row lower than
+    // the constants alone would say.
+    let top = MENU_H + HEADER_H;
     top..top + timeline_height(total_height, HEADER_H)
 }
 
@@ -106,6 +110,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // about instead of one drawn over the timeline.
     let header = header_height(app);
     let chunks = Layout::vertical([
+        Constraint::Length(MENU_H),
         Constraint::Length(header),
         Constraint::Length(timeline_height(f.area().height, header)),
         // Whatever remains. `timeline_height` has already reserved the table's
@@ -124,14 +129,129 @@ pub fn draw(f: &mut Frame, app: &App) {
         return;
     };
 
-    draw_header(f, chunks[0], app, sample);
-    draw_timeline(f, chunks[1], app);
+    draw_menu_bar(f, chunks[0], app);
+    draw_header(f, chunks[1], app, sample);
+    draw_timeline(f, chunks[2], app);
     if app.show_cgroups {
-        draw_cgroups(f, chunks[2], app);
+        draw_cgroups(f, chunks[3], app);
     } else {
-        draw_procs(f, chunks[2], app, chunks[1]);
+        draw_procs(f, chunks[3], app, chunks[2]);
     }
-    draw_help(f, chunks[3], app);
+    draw_help(f, chunks[4], app);
+    // Last, over everything: a dropdown that the table drew on top of would be
+    // a menu you can open and cannot read.
+    draw_dropdown(f, f.area(), app);
+}
+
+/// Height of the menu bar. One row, always drawn — a bar that appeared only
+/// when opened would be a bar nobody discovers, which is the whole reason it
+/// exists.
+pub const MENU_H: u16 = 1;
+
+/// The bar: `File  Edit  View  Go  Process`, with the open one highlighted.
+fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
+    let titles = crate::menu::bar();
+    let mut spans = vec![Span::raw(" ")];
+    for (i, t) in titles.iter().enumerate() {
+        let open = app.menu.open == Some(i);
+        let style = if open {
+            app.theme.selection_style()
+        } else {
+            app.theme.title_style()
+        };
+        spans.push(Span::styled(format!(" {} ", t.name), style));
+    }
+    // The key that opens it, stated on the bar itself. A menu bar with no way
+    // in is decoration.
+    let hint = if app.menu.is_open() {
+        "  ↑↓ move · ⏎ choose · esc close"
+    } else {
+        "  F10 menu"
+    };
+    spans.push(Span::styled(hint.to_string(), app.theme.dim_style()));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The open dropdown, drawn over whatever is beneath it.
+fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
+    let titles = crate::menu::bar();
+    let Some(open) = app.menu.open else { return };
+    let Some(title) = titles.get(open) else {
+        return;
+    };
+
+    let w = crate::menu::width(title).min(area.width.saturating_sub(2) as usize);
+    let h = title.items.len() + 2;
+    let x = crate::menu::title_column(open, &titles)
+        .min(area.width.saturating_sub(w as u16 + 1) as usize) as u16;
+    let y = MENU_H;
+    if area.height <= y + 1 || w == 0 {
+        return;
+    }
+    let h = (h as u16).min(area.height - y);
+    let box_area = Rect::new(x, y, w as u16, h);
+
+    // Cleared first: a dropdown is opaque, and ratatui draws over rather than
+    // through.
+    f.render_widget(Clear, box_area);
+
+    let inner = w.saturating_sub(2);
+    let mut lines = vec![Line::from(Span::styled(
+        format!("╭{}╮", "─".repeat(inner)),
+        app.theme.chrome_style(),
+    ))];
+    for (i, item) in title.items.iter().enumerate() {
+        if lines.len() + 1 >= h as usize {
+            break;
+        }
+        lines.push(match item {
+            crate::menu::Item::Rule => Line::from(Span::styled(
+                format!("├{}┤", "─".repeat(inner)),
+                app.theme.chrome_style(),
+            )),
+            crate::menu::Item::Do(label, key, _) => {
+                let tick = match crate::menu::checked(item, app) {
+                    Some(true) => "• ",
+                    Some(false) => "  ",
+                    None => "  ",
+                };
+                let key_w = key.chars().count();
+                let gap =
+                    inner.saturating_sub(2 + tick.chars().count() + label.chars().count() + key_w);
+                let text = format!(
+                    " {tick}{label}{}{key} ",
+                    " ".repeat(gap.max(1).saturating_sub(1))
+                );
+                let style = if i == app.menu.item {
+                    app.theme.selection_style()
+                } else {
+                    app.theme.dim_style()
+                };
+                Line::from(vec![
+                    Span::styled("│", app.theme.chrome_style()),
+                    Span::styled(cut(&text, inner), style),
+                    Span::styled("│", app.theme.chrome_style()),
+                ])
+            }
+        });
+    }
+    if lines.len() < h as usize {
+        lines.push(Line::from(Span::styled(
+            format!("╰{}╯", "─".repeat(inner)),
+            app.theme.chrome_style(),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), box_area);
+}
+
+/// Pad or truncate to exactly `n` columns.
+fn cut(s: &str, n: usize) -> String {
+    let have = s.chars().count();
+    if have >= n {
+        s.chars().take(n).collect()
+    } else {
+        format!("{s}{}", " ".repeat(n - have))
+    }
 }
 
 /// A section rule with its name on it, replacing a panel border.
@@ -3825,6 +3945,9 @@ pub fn fit_hints_for_test(width: u16) -> String {
 
 pub const KEY_HINTS: &[&str] = &[
     "q quit",
+    // Second, because it is the one hint that leads to all the others: the bar
+    // names every command there is, beside the key that also runs it.
+    "F10 menu",
     "←/→ scrub",
     "b jump",
     "+/- zoom",
