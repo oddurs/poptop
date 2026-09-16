@@ -1055,6 +1055,30 @@ fn short_mount(mount: &str) -> String {
 /// all would be the figure that taught everyone to ignore it.
 pub const CLOCK_NOMINAL: f32 = 99.0;
 
+/// A per-second count, shortened once it stops being readable in full.
+///
+/// A busy box switches a hundred thousand times a second, and `103847/s` is six
+/// characters of precision nobody uses on a row that is already fighting for
+/// width.
+#[cfg(test)]
+pub fn rate_per_s_for_test(n: u64) -> String {
+    rate_per_s(n)
+}
+
+fn rate_per_s(n: u64) -> String {
+    match n {
+        0..=9_999 => format!("{n}/s"),
+        10_000..=999_999 => format!("{:.0}k/s", n as f64 / 1_000.0),
+        1_000_000..=999_999_999 => format!("{:.1}M/s", n as f64 / 1_000_000.0),
+        // A machine cannot switch a billion times a second. A figure this large
+        // is a counter that wrapped or a clock that jumped, and the honest
+        // rendering of "this number is not a rate" is not to print it — but it
+        // is still a fact about the machine, so the row says there was one
+        // rather than going blank.
+        _ => "≫1G/s".to_string(),
+    }
+}
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     let mem_pct = s.mem.used_pct();
     let dim = app.theme.dim_style();
@@ -1460,6 +1484,28 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             Span::raw(s.procs.len().to_string()),
         ],
     });
+    // Only where the platform counts them, which is Linux: macOS has no
+    // `/proc/stat`, and a zero there would be a fabricated figure about the one
+    // thing this row exists to notice.
+    //
+    // This is the honest end of "energy". Activity Monitor scores it, from a
+    // formula that is not public, using a per-process wakeup count that neither
+    // platform gives up cheaply — `CONFIG_SCHEDSTATS` is off by default on
+    // Linux and `task_power_info` needs root on macOS. What *is* measured is
+    // the machine's switch and interrupt rate, and a machine thrashing between
+    // threads looks identical to a busy one without it. See cairn 126.
+    if let Some(csw) = s.ctxt {
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: 95,
+            spans: vec![
+                Span::styled("CSW ", dim),
+                Span::raw(rate_per_s(csw)),
+                Span::styled("  IRQ ", dim),
+                Span::raw(s.intr.map_or_else(|| "—".to_string(), rate_per_s)),
+            ],
+        });
+    }
     // Last to survive. Load conflates runnable and blocked into one number,
     // which is exactly the confusion `RUN` and `BLOCKED` exist to undo — and
     // the smoothing it adds is what the timeline is for. Kept for the people

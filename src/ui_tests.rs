@@ -13729,3 +13729,84 @@ fn the_selected_row_is_identifiable_without_its_background() {
         "the mono tier cannot show a selection at all"
     );
 }
+
+// ── the honest end of energy ────────────────────────────────────────────────
+
+#[test]
+fn a_thrashing_machine_does_not_look_like_a_busy_one() {
+    // Activity Monitor scores energy from a formula that is not public, using a
+    // per-process wakeup count neither platform gives up cheaply. What *is*
+    // measured is the machine's switch and interrupt rate, and a box thrashing
+    // between threads looks identical to a busy one without it.
+    let mut app = App::new(600);
+    let mut s = sample(50.0);
+    s.ctxt = Some(184_000);
+    s.intr = Some(96_000);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let line = header_rows(&app, 200, 24)
+        .into_iter()
+        .find(|l| l.contains("CSW"))
+        .expect("the switch rate is not on the header");
+    assert!(line.contains("184k/s"), "unreadable switch rate: {line:?}");
+    assert!(
+        line.contains("IRQ"),
+        "no interrupt rate beside it: {line:?}"
+    );
+    assert!(
+        line.contains("96k/s"),
+        "unreadable interrupt rate: {line:?}"
+    );
+}
+
+#[test]
+fn a_platform_that_does_not_count_switches_says_nothing_rather_than_zero() {
+    // macOS has no `/proc/stat`. A zero there would be a fabricated figure
+    // about the one thing this row exists to notice.
+    let mut app = App::new(600);
+    let mut s = sample(50.0);
+    s.ctxt = None;
+    s.intr = None;
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let head = header_rows(&app, 200, 24).join("\n");
+    assert!(
+        !head.contains("CSW"),
+        "a platform that cannot count them drew the figure anyway:\n{head}"
+    );
+    assert!(!head.contains("0/s"), "a fabricated zero:\n{head}");
+
+    // And the interrupt half alone is an em dash rather than a zero.
+    let mut app = App::new(600);
+    let mut s = sample(50.0);
+    s.ctxt = Some(1_000);
+    s.intr = None;
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let line = header_rows(&app, 200, 24)
+        .into_iter()
+        .find(|l| l.contains("CSW"))
+        .expect("no switch rate");
+    assert!(
+        line.contains('—'),
+        "a missing interrupt count drew a number: {line:?}"
+    );
+}
+
+#[test]
+fn a_rate_stays_readable_however_large_it_gets() {
+    // `103847/s` is six characters of precision nobody uses on a row that is
+    // already fighting for width.
+    assert_eq!(ui::rate_per_s_for_test(7), "7/s");
+    assert_eq!(ui::rate_per_s_for_test(9_999), "9999/s");
+    assert_eq!(ui::rate_per_s_for_test(184_000), "184k/s");
+    assert_eq!(ui::rate_per_s_for_test(2_400_000), "2.4M/s");
+    for n in [0u64, 1, 9_999, 10_000, 999_999, 1_000_000, u64::MAX] {
+        assert!(
+            ui::rate_per_s_for_test(n).chars().count() <= 7,
+            "{n} renders as {:?}",
+            ui::rate_per_s_for_test(n)
+        );
+    }
+}
