@@ -2,7 +2,7 @@
 id: 106
 title: A graph pinned to zero wastes the panel on a high flat series
 type: bug
-status: todo
+status: backlog
 milestone: v3.5
 created: 2026-09-14
 updated: 2026-09-14

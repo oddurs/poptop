@@ -2,7 +2,7 @@
 id: 116
 title: A command palette for the things with no key
 type: feature
-status: todo
+status: backlog
 milestone: v3.6
 created: 2026-09-15
 updated: 2026-09-15

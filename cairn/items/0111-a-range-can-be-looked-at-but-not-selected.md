@@ -2,7 +2,7 @@
 id: 111
 title: A range can be looked at but not selected
 type: feature
-status: todo
+status: backlog
 milestone: v3.5
 created: 2026-09-14
 updated: 2026-09-14

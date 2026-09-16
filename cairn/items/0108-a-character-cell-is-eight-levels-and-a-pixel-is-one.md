@@ -2,7 +2,7 @@
 id: 108
 title: A character cell is eight levels and a pixel is one
 type: feature
-status: todo
+status: backlog
 milestone: v3.5
 created: 2026-09-14
 updated: 2026-09-14

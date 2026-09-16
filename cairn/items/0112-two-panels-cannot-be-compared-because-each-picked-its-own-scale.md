@@ -2,7 +2,7 @@
 id: 112
 title: Two panels cannot be compared because each picked its own scale
 type: feature
-status: todo
+status: backlog
 milestone: v3.5
 created: 2026-09-14
 updated: 2026-09-14

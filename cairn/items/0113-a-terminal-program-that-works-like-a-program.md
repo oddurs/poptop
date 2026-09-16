@@ -1,9 +1,9 @@
 ---
 id: 113
 title: A terminal program that works like a program
+key: v3.6
 type: milestone
-status: todo
-milestone: v3.6
+status: backlog
 created: 2026-09-15
 updated: 2026-09-15
 priority: p1
