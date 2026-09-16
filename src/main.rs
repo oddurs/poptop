@@ -1540,7 +1540,7 @@ pub fn handle_mouse(app: &mut App, ev: event::MouseEvent, area: ratatui::layout:
             if inside(p.table) {
                 // The column headers sort; the rows below select. Same row the
                 // caret is drawn on, which is the point of putting it there.
-                if y == p.table.y + 1 {
+                if y == ui::table_header_y(p.table) {
                     if let Some(s) = ui::sort_at(app, p.table, x) {
                         app.sort = s;
                     }
@@ -1598,8 +1598,9 @@ fn title_at(x: u16) -> Option<usize> {
 
 /// The table row under `y`, as an action.
 fn row_at(table: ratatui::layout::Rect, y: u16) -> Option<Action> {
-    // One for the section rule, one for the column headers.
-    let first = table.y + 2;
+    // One past the column headers, wherever they turned out to be — which
+    // depends on whether the summary strip took a row.
+    let first = ui::table_header_y(table) + 1;
     (y >= first).then(|| Action::SelectRow((y - first) as usize))
 }
 

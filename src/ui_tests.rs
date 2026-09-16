@@ -4835,7 +4835,12 @@ fn an_unknown_thread_count_is_a_dash_not_a_one() {
         }];
         app.push(s);
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-        render(&app, 200, 40)
+        // The data row, not the frame: the summary strip totals the thread
+        // count too, so a frame-wide count finds it twice.
+        data_rows(&app, 200, 40)
+            .into_iter()
+            .find(|l| l.contains("zzsentinel"))
+            .unwrap_or_default()
             .lines()
             .find(|l| l.contains("zzsentinel"))
             .expect("no process row")
@@ -5663,7 +5668,9 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     // One row taller than it was: the tab strip took a row from the table, and
     // this test is about what a *deep tree* does with nine rows rather than
     // about how many rows there happen to be.
-    let rows: Vec<String> = rows(&app, 104, 25)
+    // A row taller again: the summary strip took one from the table, and this
+    // test is about what a deep tree does with nine rows.
+    let rows: Vec<String> = rows(&app, 104, 26)
         .into_iter()
         .filter(|l| l.contains("Chrome") || l.contains('…'))
         .collect();
@@ -11877,6 +11884,22 @@ fn show_menu() {
     }
 }
 
+/// The table's *data* rows: past the title, the summary strip and the headers.
+///
+/// The strip says `2 shown · CPU 107.0%`, and `shown` contains ` sh` — so a
+/// test looking for a process called `sh` finds the summary and counts a row
+/// that is not one. Every row above the data is chrome, and chrome belongs to
+/// whichever test is about it.
+fn data_rows(app: &App, w: u16, h: u16) -> Vec<String> {
+    let all = rows(app, w, h);
+    let p = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h));
+    let first = (ui::table_header_y(p.table) + 1) as usize;
+    all.into_iter()
+        .skip(first)
+        .take((p.table.y + p.table.height) as usize - first)
+        .collect()
+}
+
 /// The process panel's rows, sliced from the layout rather than searched for.
 ///
 /// The scope line says `processes` too, and it sits above — so a frame-wide
@@ -12393,9 +12416,10 @@ fn clicking_a_row_selects_it() {
         app.push(s);
     }
     let (w, h) = (100u16, 26u16);
-    let r = ui::timeline_rows_range(h);
-    // Two rows into the table: past the section rule and the column headers.
-    let first = r.end + 2;
+    // Past the section rule, the summary strip and the column headers, wherever
+    // those turned out to be.
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let first = ui::table_header_y(panel) + 1;
     click(&mut app, 10, first, w, h);
     let top = app.selected.clone();
     assert!(top.is_some(), "clicking the first row selected nothing");
@@ -12590,7 +12614,8 @@ fn the_table_stripes_alternate_and_the_selection_beats_them() {
     }
     let mut app = lit(app);
     let (w, h) = (92u16, 26u16);
-    let table_top = ui::timeline_rows_range(h).end + 2;
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let table_top = ui::table_header_y(panel) + 1;
 
     let bg_of = |app: &App, y: u16| grounds(app, w, h)[y as usize][4];
     let a = bg_of(&app, table_top);
@@ -13149,7 +13174,7 @@ fn clicking_a_header_sorts_by_that_column() {
         if want == crate::app::Sort::Cpu {
             app.sort = crate::app::Sort::Pid;
         }
-        click(&mut app, at as u16 + 1, table.y + 1, w, h);
+        click(&mut app, at as u16 + 1, ui::table_header_y(table), w, h);
         assert_eq!(
             app.sort, want,
             "clicking the caret column at {at} gave {:?}",
@@ -13181,7 +13206,7 @@ fn clicking_a_column_that_sorts_by_nothing_does_nothing() {
         .expect("no sparkline header");
 
     app.sort = crate::app::Sort::Pid;
-    click(&mut app, at as u16 + 1, table.y + 1, w, h);
+    click(&mut app, at as u16 + 1, ui::table_header_y(table), w, h);
     assert_eq!(
         app.sort,
         crate::app::Sort::Pid,
@@ -13648,7 +13673,7 @@ fn every_numeric_column_is_right_aligned_and_every_text_column_is_not() {
             1,
         ));
 
-    let table = table_rows(&app, w, h);
+    let table = data_rows(&app, w, h);
     let rows: Vec<&String> = table
         .iter()
         .filter(|l| l.contains("postgres") || l.contains(" sh"))
@@ -13809,4 +13834,202 @@ fn a_rate_stays_readable_however_large_it_gets() {
             ui::rate_per_s_for_test(n)
         );
     }
+}
+
+// ── the summary strip ───────────────────────────────────────────────────────
+
+/// Eight processes: four postgres at 10% each, four nginx at 5%.
+fn a_mixed_table(app: &mut App) {
+    let mut s = sample(10.0);
+    s.procs = (0..8)
+        .map(|i| ProcSample {
+            threads: Some(if i < 4 { 8 } else { 2 }),
+            started: Some(i as u64),
+            ..proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "nginx" },
+                if i < 4 { 10.0 } else { 5.0 },
+                if i < 4 { 1 << 30 } else { 1 << 28 },
+            )
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+}
+
+fn strip_of(app: &App) -> String {
+    let (w, h) = (140u16, 30u16);
+    let panel = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    rows(app, w, h)[(panel.y + 1) as usize].trim().to_string()
+}
+
+#[test]
+fn the_strip_says_what_the_rows_on_screen_add_up_to() {
+    // Nothing else on screen states it. The header above is about the machine;
+    // the scope line says how many rows there are and not what they cost.
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    let all = strip_of(&app);
+    assert!(all.contains("8 shown"), "{all:?}");
+    // Four at 10% and four at 5%.
+    assert!(
+        all.contains("60.0%"),
+        "the CPU total is wrong or absent: {all:?}"
+    );
+    // Four gigabytes and four 256M.
+    assert!(
+        all.contains("5.0G"),
+        "the memory total is wrong or absent: {all:?}"
+    );
+    assert!(
+        all.contains("40 threads"),
+        "the thread total is wrong: {all:?}"
+    );
+}
+
+#[test]
+fn the_strip_follows_the_filter() {
+    // The question the filter just asked. Four postgres processes using 40% of
+    // a core between them is the fact this row exists for, and it is wrong the
+    // moment it describes the machine instead of the rows.
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    let before = strip_of(&app);
+
+    app.filter = "postgres".into();
+    let after = strip_of(&app);
+    assert_ne!(before, after, "filtering did not change the strip");
+    assert!(after.contains("4 shown"), "{after:?}");
+    assert!(
+        after.contains("40.0%"),
+        "the CPU total is still the machine's: {after:?}"
+    );
+    assert!(
+        after.contains("4.0G"),
+        "the memory total is still the machine's: {after:?}"
+    );
+    assert!(after.contains("32 threads"), "{after:?}");
+}
+
+#[test]
+fn the_strip_follows_the_grouping_and_says_how_many_groups() {
+    // Folding does not change what the rows cost, only how many rows there are.
+    // Saying both is the difference between "twelve things" and "twelve things
+    // that are two".
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    let flat = strip_of(&app);
+    assert!(
+        !flat.contains("groups"),
+        "an ungrouped table claims groups: {flat:?}"
+    );
+
+    press(&mut app, KeyCode::Char('g'));
+    assert_ne!(app.group, crate::app::Grouping::Off);
+    let grouped = strip_of(&app);
+    assert!(
+        grouped.contains("2 groups"),
+        "grouping did not say how many: {grouped:?}"
+    );
+    // And the totals are the same processes, however they are folded.
+    assert!(
+        grouped.contains("8 shown") && grouped.contains("60.0%"),
+        "folding changed what the rows cost: {grouped:?}"
+    );
+}
+
+#[test]
+fn the_strip_and_the_scope_line_count_the_same_processes() {
+    // Two rows describing the same set, built from different code. One saying
+    // `4 of 8` above another saying `5 shown` is the interface contradicting
+    // itself in adjacent rows.
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    for f in ["", "postgres", "nginx", "zzz"] {
+        app.filter = f.into();
+        let scope = ui::scope_text(&app, 80);
+        let shown = ui::totals(&app).procs;
+        assert!(
+            scope.contains(&shown.to_string()),
+            "the scope says {scope:?} and the strip counts {shown}"
+        );
+    }
+}
+
+#[test]
+fn the_strip_gives_up_its_row_before_the_table_does() {
+    // A summary of rows you cannot see is worth less than the rows.
+    assert_eq!(
+        ui::summary_height(ratatui::layout::Rect::new(0, 0, 100, 30)),
+        1,
+        "a tall table has no strip"
+    );
+    assert_eq!(
+        ui::summary_height(ratatui::layout::Rect::new(0, 0, 100, 3)),
+        0,
+        "a table at its floor kept the strip"
+    );
+}
+
+#[test]
+fn an_expanded_process_is_still_one_process() {
+    // `y` puts a row under a process for each of its threads. They are rows,
+    // not processes, and counting them would make expanding one look like the
+    // machine had just grown forty more — and double its CPU, since a thread
+    // row carries its process's figures.
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let shut = ui::totals(&app);
+    app.select_delta(1);
+    app.toggle_threads();
+    let open = ui::totals(&app);
+
+    assert!(
+        app.visible_rows().iter().any(|r| r.is_thread()),
+        "nothing expanded, so this proves nothing"
+    );
+    assert_eq!(
+        (shut.procs, shut.cpu, shut.rss),
+        (open.procs, open.cpu, open.rss),
+        "expanding a process changed what the table is said to contain"
+    );
+}
+
+#[test]
+fn a_thread_total_nobody_can_supply_is_left_out_rather_than_dashed() {
+    // An em dash here is a clause that says nothing on every frame, and on
+    // macOS — where a process poptop cannot open reports no thread count —
+    // that is most of them. A figure absent for a stated reason belongs on the
+    // row about that process; a permanent `— threads` is noise on the row about
+    // all of them.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            threads: Some(4),
+            started: Some(1),
+            ..proc_named(100, "postgres", 10.0, 1 << 30)
+        },
+        ProcSample {
+            threads: None,
+            started: Some(2),
+            ..proc_named(101, "opaque", 5.0, 1 << 28)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let strip = strip_of(&app);
+    assert!(
+        !strip.contains("threads"),
+        "a total nobody can supply was claimed anyway: {strip:?}"
+    );
+    assert!(!strip.contains('—'), "a dash stood in for it: {strip:?}");
+    // The magnitudes it *can* give are still there.
+    assert!(
+        strip.contains("15.0%") && strip.contains("2 shown"),
+        "{strip:?}"
+    );
 }

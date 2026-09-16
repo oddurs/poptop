@@ -3377,6 +3377,123 @@ fn short_cgroup(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+/// What the rows on screen add up to.
+///
+/// About the *shown* processes, not the machine: the header above already says
+/// what the machine is doing, and the question this answers is the one the
+/// filter just asked. Four postgres processes using 142% of a core between them
+/// is a fact nothing else on screen states, and it changes with every filter,
+/// every grouping and every kernel-thread toggle.
+pub struct Totals {
+    pub procs: usize,
+    pub cpu: f32,
+    pub rss: u64,
+    /// `None` where any row would not say, rather than a sum that quietly
+    /// leaves some out — the same rule the thread column follows.
+    pub threads: Option<u64>,
+    /// How many of the rows are folded groups, if any are.
+    pub groups: usize,
+}
+
+/// Add up what is on screen.
+///
+/// Counted the same way the scope line counts, so the two cannot disagree about
+/// how many processes are being described: thread rows are skipped, and a
+/// folded row stands for everything folded into it.
+pub fn totals(app: &App) -> Totals {
+    let rows = app.visible_rows();
+    let mut out = Totals {
+        procs: 0,
+        cpu: 0.0,
+        rss: 0,
+        threads: Some(0),
+        groups: 0,
+    };
+    for r in rows.iter().filter(|r| !r.is_thread()) {
+        out.procs += r.count();
+        out.cpu += r.proc.cpu;
+        out.rss += r.proc.rss;
+        out.groups += usize::from(r.members.is_some());
+        out.threads = match (out.threads, r.proc.threads) {
+            (Some(n), Some(t)) => Some(n + u64::from(t)),
+            _ => None,
+        };
+    }
+    out
+}
+
+/// The summary strip, drawn between the panel title and the column headers.
+fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>> {
+    let t = totals(app);
+    if t.procs == 0 {
+        return None;
+    }
+    let dim = app.theme.dim_style();
+    let share = if total_mem > 0 {
+        format!(" ({:.0}%)", t.rss as f64 / total_mem as f64 * 100.0)
+    } else {
+        String::new()
+    };
+    // Its own ladder, given up from the least diagnostic end. The count goes
+    // last because the scope line already says it — this row is here for the
+    // magnitudes, which nothing else states.
+    // Dropped rather than dashed when the platform will not say. An em dash
+    // here is a clause that says nothing on every frame — and on macOS, where
+    // a process poptop cannot open reports no thread count, that is most of
+    // them. A figure absent for a stated reason belongs on the row about that
+    // process; a permanent `— threads` is noise on the row about all of them.
+    let mut rungs = Vec::new();
+    if let Some(thr) = t.threads {
+        rungs.push(format!(
+            " {} shown · CPU {:.1}% · MEM {}{} · {thr} threads",
+            t.procs,
+            t.cpu,
+            fmt_bytes(t.rss),
+            share
+        ));
+    }
+    rungs.extend([
+        format!(
+            " {} shown · CPU {:.1}% · MEM {}{}",
+            t.procs,
+            t.cpu,
+            fmt_bytes(t.rss),
+            share
+        ),
+        format!(" CPU {:.1}% · MEM {}", t.cpu, fmt_bytes(t.rss)),
+        format!(" CPU {:.1}%", t.cpu),
+    ]);
+    let text = rungs.into_iter().find(|r| cols(r) <= width)?;
+    let mut spans = vec![Span::styled(text, dim)];
+    // Only when something is folded, because otherwise it is a fact about
+    // nothing: an ungrouped table has as many rows as processes and saying so
+    // is noise.
+    if t.groups > 0 {
+        let note = format!("  ({} groups)", t.groups);
+        if cols(&note) + spans.iter().map(|s| cols(&s.content)).sum::<usize>() <= width {
+            spans.push(Span::styled(note, dim));
+        }
+    }
+    Some(Line::from(spans))
+}
+
+/// Whether the summary strip is drawn, for a table panel of this height.
+///
+/// Given up before the table drops below its floor, the same way the tab strip
+/// is: a summary of rows you cannot see is worth less than the rows.
+pub fn summary_height(table: Rect) -> u16 {
+    u16::from(table.height > PROCS_FLOOR_H + 3)
+}
+
+/// The row the column headers are drawn on.
+///
+/// One derivation, because the mouse needs it to know a header was clicked and
+/// the table needs it to draw them — and an off-by-one between those two is a
+/// click that sorts by the column above the one under the pointer.
+pub fn table_header_y(table: Rect) -> u16 {
+    table.y + 1 + summary_height(table)
+}
+
 /// Which of the table's optional columns are on, for a table drawn in `area`.
 ///
 /// One derivation, used by `draw_procs` to lay the table out and by the mouse
@@ -4226,12 +4343,32 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         Paragraph::new(divider_of(title, area.width, &app.theme)),
         Rect { height: 1, ..area },
     );
+    // Between the title and the column headers: the title says which processes
+    // these are, this says what they add up to, and the headers name the
+    // columns. Each row is one step closer to the figures.
+    let summary = summary_height(area);
+    if summary > 0
+        && let Some(line) = summary_line(
+            app,
+            app.history.current().map_or(0, |s| s.mem.total),
+            area.width as usize,
+        )
+    {
+        f.render_widget(
+            Paragraph::new(line).style(app.theme.panel_style()),
+            Rect {
+                y: area.y + 1,
+                height: 1,
+                ..area
+            },
+        );
+    }
     let table = Table::new(rows, widths).header(header);
     f.render_widget(
         table,
         Rect {
-            y: area.y + 1,
-            height: area.height.saturating_sub(1),
+            y: area.y + 1 + summary,
+            height: area.height.saturating_sub(1 + summary),
             ..area
         },
     );
