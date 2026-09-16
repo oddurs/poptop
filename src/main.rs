@@ -24,6 +24,7 @@ mod report;
 mod sample;
 mod signal;
 mod store;
+mod term;
 mod theme;
 mod tree;
 mod ui;
@@ -71,6 +72,10 @@ USAGE:
                     changes — at the cost of drawing that panel as a line
                     rather than bars, since a bar on a truncated axis
                     misstates its own magnitude.
+    --surface=WHERE auto (default) or off. poptop asks the terminal for its
+                    background colour and steps its panels a few per cent away
+                    from it, so the layers match whatever scheme you already
+                    have. `off` paints nothing and skips the question.
     --mouse=on|off  take the mouse (default on). Click the menu, click a row
                     to select it, click or drag the timeline to scrub, wheel to
                     move whichever of the two is under the pointer. While
@@ -780,6 +785,17 @@ fn main() -> io::Result<()> {
         warnings.push(config::Warning(
             "no state directory to log into — set HOME or XDG_STATE_HOME".into(),
         ));
+    }
+
+    // Before the alternate screen: the reply arrives on stdin, and the event
+    // loop would eat it. Bounded hard — see `term::background` — because a
+    // terminal that ignores the query is the common case, not the exception.
+    //
+    // Skipped entirely when the surfaces are switched off, so `surface = off`
+    // costs nothing at all, not even the wait.
+    if settings.surfaces {
+        let base = term::background(std::time::Duration::from_millis(150));
+        app.theme = app.theme.with_surfaces(base);
     }
 
     let mut terminal = ratatui::init();

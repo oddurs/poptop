@@ -12371,17 +12371,23 @@ fn grounds(app: &App, w: u16, h: u16) -> Vec<Vec<Option<ratatui::style::Color>>>
         .collect()
 }
 
+/// A true-colour theme with its surfaces derived, as a real run would have.
+///
+/// The base is a dark terminal's, because that is what the surfaces are stepped
+/// away from — `with_surfaces(None)` paints nothing at all, which is what
+/// happens when the terminal will not say.
 fn lit(mut app: App) -> App {
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0x14, 0x14, 0x17]));
     app
 }
 
 #[test]
-fn the_whole_frame_is_painted_not_just_the_parts_with_content() {
-    // An interface that paints some of its ground and leaves the rest to the
-    // terminal is not layered, it is patchy: the gaps read as holes in the
-    // program. It also makes every contrast figure `--check-theme` reports an
-    // assumption about a background poptop does not control.
+fn the_terminals_own_background_is_left_alone() {
+    // The application's ground is the terminal's ground. poptop painted over it
+    // for a while, which made the interface look like one surface and made
+    // every `--check-theme` figure a measurement — and also threw away a theme
+    // the user had already chosen. Elevation above the ground is poptop's to
+    // paint; the ground is not.
     let mut app = App::new(600);
     for i in (0..30).rev() {
         let mut s = sample_at(10.0, i);
@@ -12391,12 +12397,60 @@ fn the_whole_frame_is_painted_not_just_the_parts_with_content() {
         app.push(s);
     }
     let app = lit(app);
-    for (y, row) in grounds(&app, 92, 24).iter().enumerate() {
-        assert!(
-            row.iter().all(|c| c.is_some()),
-            "row {y} has unpainted cells"
+    let frame = grounds(&app, 92, 24);
+
+    // The header and the footer sit on the ground, and it is not painted.
+    let header: Vec<_> = frame[ui::MENU_H as usize].iter().flatten().collect();
+    assert!(
+        header.is_empty(),
+        "the header painted over the terminal's own background"
+    );
+
+    // And the raised parts are painted, or none of this would be visible.
+    let menu: Vec<_> = frame[0].iter().flatten().collect();
+    assert!(
+        !menu.is_empty(),
+        "the menu bar was not raised above the ground"
+    );
+}
+
+#[test]
+fn a_terminal_that_will_not_say_gets_nothing_painted() {
+    // A guessed base is worse than none. The steps are a few per cent, which is
+    // invisible against the wrong ground and ugly against a very wrong one, and
+    // there is no way to tell which from inside the program.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(None);
+    for (name, style) in [
+        ("surface", t.surface_style()),
+        ("panel", t.panel_style()),
+        ("raised", t.raised_style()),
+        ("stripe", t.stripe_style()),
+    ] {
+        assert_eq!(
+            style.bg, None,
+            "a {name} was painted with no base to step from"
         );
     }
+}
+
+#[test]
+fn a_light_terminal_gets_darker_panels_not_lighter_ones() {
+    // Elevation is away from the ground, not upward. A scheme that only knows
+    // how to lighten turns a solarized-light window into a wash.
+    let lum = |c: ratatui::style::Color| {
+        let [r, g, b] = crate::cvd::to_rgb(c).expect("a derived colour");
+        r as u32 + g as u32 + b as u32
+    };
+    let dark = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0x14, 0x14, 0x17]));
+    assert!(
+        lum(dark.panel) > 0x14 * 3,
+        "a dark terminal got darker panels"
+    );
+    let light = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0xfd, 0xf6, 0xe3]));
+    assert!(
+        lum(light.panel) < 0xfd + 0xf6 + 0xe3,
+        "a light terminal got lighter panels"
+    );
 }
 
 #[test]
@@ -12406,13 +12460,21 @@ fn the_surfaces_are_layered_in_one_direction() {
     // and the one that has to be highest is `raised`, since a dropdown
     // indistinguishable from the table beneath it is a dropdown cut into the
     // table rather than laid over it.
-    let t = Theme::new(Palette::Safe, Tier::TrueColor);
+    let t = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0x14, 0x14, 0x17]));
     let lum = |c: ratatui::style::Color| {
         let [r, g, b] = crate::cvd::to_rgb(c).expect("a true colour");
         r as u32 + g as u32 + b as u32
     };
+    // Against the base it was derived from, not against `t.surface` — that is
+    // `Reset` now, because the ground belongs to the terminal.
+    let base = 0x14 * 3;
+    assert_eq!(
+        t.surface,
+        ratatui::style::Color::Reset,
+        "the ground was painted"
+    );
     assert!(
-        lum(t.surface) < lum(t.panel),
+        base < lum(t.panel),
         "a panel is not raised above the ground"
     );
     assert!(

@@ -27,6 +27,8 @@ pub struct Settings {
     pub axis: Axis,
     /// Whether to take the mouse. Off gives terminal text selection back.
     pub mouse: bool,
+    /// Whether to derive panel surfaces from the terminal's own background.
+    pub surfaces: bool,
     pub tier: Tier,
     /// The theme asked for: a built-in, or a file in `~/.config/poptop/themes`.
     /// Whether it resolves is settled in [`resolve`], which is where the
@@ -118,6 +120,7 @@ impl Settings {
             glyphs: default_glyphs(),
             axis: Axis::default(),
             mouse: true,
+            surfaces: true,
             tier: Tier::detect(),
             theme: Palette::default().name().to_string(),
             theme_origin: None,
@@ -170,6 +173,7 @@ impl Settings {
             glyphs: GlyphSet::default(),
             axis: Axis::default(),
             mouse: true,
+            surfaces: true,
             tier: Tier::TrueColor,
             theme: Palette::Safe.name().to_string(),
             theme_origin: None,
@@ -264,6 +268,14 @@ pub const KEYS: &[(&str, Apply)] = &[
             "on" | "true" | "yes" => true,
             "off" | "false" | "no" => false,
             _ => return Err("on or off"),
+        };
+        Ok(())
+    }),
+    ("surface", |s, v| {
+        s.surfaces = match v {
+            "auto" | "on" | "true" | "yes" => true,
+            "off" | "none" | "false" | "no" => false,
+            _ => return Err("auto or off"),
         };
         Ok(())
     }),

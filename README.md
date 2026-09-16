@@ -641,25 +641,35 @@ checks its key hint against what that key actually does — so a menu that says
 
 ## Surfaces
 
-poptop paints its own ground, in four layers:
+**The ground stays yours.** poptop asks the terminal for its background colour —
+OSC 11, which Ghostty, kitty, iTerm2, foot, WezTerm, xterm and Alacritty all
+answer — and steps its panels a few per cent *away* from it:
 
 | | |
 |---|---|
-| `surface` | the application's ground, under the whole frame |
-| `panel` | the timeline and the table body |
-| `raised` | the menu bar, its dropdowns, the table's column headers |
-| `stripe` | every other table row |
+| the ground | never painted: it is the terminal's |
+| `panel` | 2% away — the timeline and the table body |
+| `stripe` | 4% away — every other table row |
+| `raised` | 6% away — the menu bar, its dropdowns, the column headers |
+
+Away, not lighter: the direction comes from the base's own luminance, so a
+light terminal gets darker panels rather than a wash. On a `#24283b` scheme the
+layers come out `#282c3f`, `#2d3143`, `#313547` — the scheme's own hue, one
+step up.
+
+If the terminal will not answer, nothing is painted at all. A guessed base is
+worse than none: these steps are small enough to be invisible against the wrong
+ground and large enough to be ugly.
 
 The steps are small on purpose. A stripe loud enough to notice competes with the
 figures it is there to help you read across, and a process row is wide — a
 number on the left and the name it belongs to on the right, with eight columns
-between.
+between. Six per cent is also a ceiling rather than a taste: above it the raised
+surface climbs far enough toward `chrome` that a dropdown's own border stops
+clearing the contrast floor.
 
-It is not only a look. `--check-theme` used to measure contrast against a
-constant described as "a dark surface typical of the terminals poptop is
-designed against" — an assumption about somebody else's configuration. Now that
-poptop paints the ground, every figure it reports is a measurement, and every
-token is measured against every layer it can appear on:
+`--check-theme` has no terminal to ask, so it derives the layers from a stated
+dark base and measures every token against every one of them:
 
 ```
   text        on surface        11.45:1
@@ -669,10 +679,8 @@ token is measured against every layer it can appear on:
   text        on selected row    7.08:1
 ```
 
-Below 256 colours nothing is painted at all. The 16 ANSI slots belong to the
-user's terminal theme — it decides what `DarkGray` looks like — so claiming one
-as a background is as likely to fight their scheme as to match it. A tier that
-cannot promise a colour should not promise a surface.
+Below 256 colours nothing is painted at all, and `surface = off` turns it off
+everywhere.
 
 ## The mouse
 

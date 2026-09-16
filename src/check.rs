@@ -220,12 +220,15 @@ impl Report {
         // measured text against would be the same failure as the selected row,
         // one layer along — and adding three of them at once is exactly when
         // that happens.
+        // The surfaces are derived from the terminal's background at startup,
+        // and `--check-theme` has no terminal to ask. So it derives them from
+        // the documented base instead: the report then says what the layers
+        // would be on a typical dark terminal, which is a stated assumption
+        // rather than a silent gap. Reporting only the base would certify a
+        // palette against one of the five grounds it is actually drawn on.
+        let theme = &theme.with_surfaces(Some(SURFACE));
         let selected = cvd::to_rgb(theme.selection_bg);
-        let base = if theme.tier.paints_surfaces() {
-            cvd::to_rgb(theme.surface).unwrap_or(SURFACE)
-        } else {
-            SURFACE
-        };
+        let base = SURFACE;
         let mut grounds: Vec<(&'static str, [u8; 3], bool)> = vec![("surface", base, true)];
         if theme.tier.paints_surfaces() {
             for (name, c) in [
