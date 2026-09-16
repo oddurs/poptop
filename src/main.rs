@@ -83,6 +83,12 @@ USAGE:
                     copying; most terminals restore that if you hold Shift.
     --color=TIER    auto (default), mono, 16, 256, or true. Honours NO_COLOR.
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
+    --smooth=SPAN   how long the table's figures are averaged over (default 5s,
+                    or `off`). A process table at one sample a second is mostly
+                    noise, and the rows swap places while you are reading them.
+                    The timeline is not averaged: it is where a spike has to be
+                    found, and the table is what you read once you have found
+                    one.
     --window=SPAN   history retained, as time not samples (default 10m)
     --store=on|off  keep history across restarts (default off). Written on a
                     clean exit to $XDG_STATE_HOME/poptop/history and read at
@@ -698,6 +704,12 @@ fn main() -> io::Result<()> {
         .map_or(settings.history_len(), |s| s.len().max(1));
     let mut app = App::new(capacity);
     app.interval = settings.interval;
+    // In samples, because that is what the buffer is counted in — but stated in
+    // seconds, because the interval is itself a setting and "five seconds"
+    // means the same thing at either end of it.
+    app.smooth = (settings.smooth.as_secs_f64() / settings.interval.as_secs_f64())
+        .round()
+        .max(1.0) as usize;
     app.theme = theme;
     app.glyphs = settings.glyphs;
     app.axis = settings.axis;

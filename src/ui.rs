@@ -3728,6 +3728,16 @@ pub fn table_columns(
     (widths, sorts)
 }
 
+/// How long the table's figures are averaged over, in the units it was asked in.
+fn fmt_smooth(samples: usize, interval: Duration) -> String {
+    let secs = samples as f64 * interval.as_secs_f64();
+    if secs >= 1.0 {
+        format!("{secs:.0}s")
+    } else {
+        format!("{:.0}ms", secs * 1000.0)
+    }
+}
+
 fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
@@ -3796,6 +3806,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         dropped,
         taken,
     );
+    // The same averaging the ordering used, so a row's figure and its position
+    // are describing the same thing. Computed again rather than threaded
+    // through `visible_rows`: it is a fold over a few hundred processes across
+    // five samples, and the alternative is a cache invalidated by every one of
+    // `History`'s six cursor movements.
+    let sm = app.smoothing();
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -3973,7 +3989,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                 return Row::new(cells).style(style);
             }
             let mut cells = vec![
-                num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
+                num(format!("{:.1}", sm.cpu(p))).style(app.theme.heat_style(sm.cpu(p))),
                 // A bar beside the number turns a column that must be read
                 // into one that can be scanned. htop does the same, for the
                 // same reason.
@@ -3986,12 +4002,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                 // identity. The C6 test caught it.
             ];
             if show_bars {
-                cells.push(Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style()));
+                cells.push(Cell::from(cpu_bar(sm.cpu(p))).style(app.theme.dim_style()));
             }
-            cells.push(num(fmt_bytes(p.rss)));
+            cells.push(num(fmt_bytes(sm.rss(p))));
             if show_bars {
                 cells.push(
-                    Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
+                    Cell::from(glyphs::micro_bar(mem_frac(sm.rss(p), total_mem), BAR_W))
                         .style(app.theme.dim_style()),
                 );
             }
@@ -4393,6 +4409,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         // the byte budget, or the disk.
         (23, logging, app.theme.warning_style()),
         (28, threads, plain),
+        // Said, because otherwise the table and the timeline disagree in silence.
+        // A row reading 12.3% directly under a graph showing a spike to 40 is
+        // two panels contradicting each other, and the reader has no way to
+        // know one of them is an average.
+        (
+            35,
+            if sm.is_on() {
+                format!(" · avg {}", fmt_smooth(app.smooth, app.interval))
+            } else {
+                String::new()
+            },
+            plain,
+        ),
         (
             40,
             // Both named, because `s` now cycles within the view and the two

@@ -17,6 +17,14 @@ use std::sync::Arc;
 /// a gap in the buffer from an ordinary interval is a question about the
 /// nominal rate, and two copies of that number would drift the moment item
 /// 0013 makes it configurable.
+/// Samples the table averages over by default.
+///
+/// Five, which at the default one-second interval is Activity Monitor's own
+/// refresh period — long enough that a row stops twitching and short enough
+/// that a process starting is on screen before you have finished reading the
+/// row above it.
+pub const DEFAULT_SMOOTH: usize = 5;
+
 pub const DEFAULT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Samples per display slot.
@@ -68,10 +76,21 @@ impl Sort {
     /// Order two processes under this sort. Shared by the flat table and by
     /// sibling ordering inside the tree, so both agree.
     pub fn compare(self, a: &ProcSample, b: &ProcSample) -> Ordering {
+        self.compare_with(&Smoothing::default(), a, b)
+    }
+
+    /// The same ordering, over averaged figures.
+    ///
+    /// Sorting on the smoothed value is the half of smoothing that matters. A
+    /// row whose *number* twitches is mildly annoying; a row that swaps places
+    /// with its neighbour while you are reading it is the thing that makes a
+    /// table unreadable, and that happens on a single noisy sample unless the
+    /// ordering is over the average too.
+    pub fn compare_with(self, sm: &Smoothing, a: &ProcSample, b: &ProcSample) -> Ordering {
         match self {
             // Descending for resource columns: the interesting rows go top.
-            Sort::Cpu => b.cpu.total_cmp(&a.cpu),
-            Sort::Mem => b.rss.cmp(&a.rss),
+            Sort::Cpu => sm.cpu(b).total_cmp(&sm.cpu(a)),
+            Sort::Mem => sm.rss(b).cmp(&sm.rss(a)),
             // Unreadable sorts last, not as zero. A process whose IO could not
             // be read is not an idle one, and putting it among the idle ones
             // would be the fabricated zero this codebase refuses everywhere
@@ -498,6 +517,8 @@ pub struct App {
     pub theme: Theme,
     /// Nominal time between samples, for spotting gaps in the buffer.
     pub interval: std::time::Duration,
+    /// Samples the table's figures are averaged over. 1 is off. See `Smoothing`.
+    pub smooth: usize,
 }
 
 impl App {
@@ -548,6 +569,7 @@ impl App {
             inspecting: false,
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,
+            smooth: DEFAULT_SMOOTH,
         }
     }
 
@@ -956,7 +978,7 @@ impl App {
             // hidden kernel thread must not survive as somebody's visible
             // ancestor, and `kthreadd` is the ancestor of every one of them.
             let procs: Vec<&ProcSample> = sample.procs.iter().chain(exited).filter(shown).collect();
-            return tree::build(&procs, self.sort, matched.as_ref());
+            return tree::build(&procs, self.sort, &self.smoothing(), matched.as_ref());
         }
 
         let mut v: Vec<&ProcSample> = sample
@@ -969,14 +991,16 @@ impl App {
 
         if self.group != Grouping::Off {
             let mut rows = grouped(&v, self.group);
-            rows.sort_by(|a, b| self.sort.compare(&a.proc, &b.proc));
+            let sm = self.smoothing();
+            rows.sort_by(|a, b| self.sort.compare_with(&sm, &a.proc, &b.proc));
             // Not spliced: a group row stands for a name, and the threads of
             // one of its members belong under a process, not under a heading
             // that folds several.
             return rows;
         }
 
-        v.sort_by(|a, b| self.sort.compare(a, b));
+        let sm = self.smoothing();
+        v.sort_by(|a, b| self.sort.compare_with(&sm, a, b));
         self.with_threads(sample, v.into_iter().map(TreeRow::of).collect())
     }
 
@@ -1505,6 +1529,88 @@ impl App {
         self.selected = Some(Watched::of(&rows[i]));
     }
 
+    /// Average every process's figures over the last `smooth` samples ending at
+    /// the cursor.
+    ///
+    /// Computed per frame rather than cached. It is a fold over at most a few
+    /// hundred processes across a handful of samples, and a cache would have to
+    /// be invalidated by every one of `History`'s six cursor movements — which
+    /// is exactly the kind of fact-derived-twice this interface keeps being
+    /// bitten by.
+    ///
+    /// Ends *at the cursor*, not at the live edge: scrubbed to 14:32, the table
+    /// shows what those processes were doing around 14:32, which is the only
+    /// reading that agrees with the timeline beside it.
+    /// Where the averaging window ends.
+    ///
+    /// While live this is a *boundary* rather than the newest sample, so the
+    /// averages — and therefore the ordering — hold still between one boundary
+    /// and the next. That is where the calm comes from: averaging alone only
+    /// makes reordering less frequent, and Activity Monitor is restful because
+    /// it redraws every five seconds rather than because it means.
+    ///
+    /// The rows themselves still come from the newest sample. Quantising those
+    /// too was tried and is wrong: a process that had just started would not be
+    /// listed for five seconds, and "what is running now" is the question the
+    /// table exists to answer.
+    ///
+    /// While scrubbing it is the cursor exactly. The reader is asking about a
+    /// particular moment, and quantising the answer would show them a different
+    /// one.
+    fn table_index(&self) -> Option<usize> {
+        if self.history.len() == 0 {
+            return None;
+        }
+        let at = self.history.cursor_index();
+        Some(if self.smooth > 1 && self.history.is_live() {
+            at - (at % self.smooth)
+        } else {
+            at
+        })
+    }
+
+    pub fn smoothing(&self) -> Smoothing {
+        let window = self.smooth;
+        if window <= 1 {
+            return Smoothing::default();
+        }
+        // While live, the window ends on a boundary rather than on the newest
+        // sample — so between one boundary and the next *nothing in the table
+        // changes*, which is where the calm actually comes from. Averaging
+        // alone only makes the reordering less frequent; Activity Monitor is
+        // restful because it redraws every five seconds, not because it means.
+        //
+        // While scrubbing it ends exactly at the cursor. Then the reader is
+        // asking about a particular moment, and quantising the answer would be
+        // showing them a different one.
+        let at = self.table_index().unwrap_or(0);
+        let first = (at + 1).saturating_sub(window);
+        let mut sums: HashMap<(i32, Option<u64>), (f32, u64, u32)> = HashMap::new();
+        for s in self.history.iter().skip(first).take(at + 1 - first) {
+            for p in s.procs.iter().chain(s.exited.as_deref().unwrap_or(&[])) {
+                let e = sums.entry((p.pid, p.started)).or_default();
+                e.0 += p.cpu;
+                e.1 += p.rss;
+                e.2 += 1;
+            }
+        }
+        Smoothing {
+            by_key: sums
+                .into_iter()
+                .map(|(k, (cpu, rss, n))| {
+                    let n = n.max(1);
+                    (
+                        k,
+                        Averaged {
+                            cpu: cpu / n as f32,
+                            rss: rss / u64::from(n),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
     /// Where the watched process is in these rows, if it is in them at all.
     pub fn row_of(&self, rows: &[TreeRow<'_>]) -> Option<usize> {
         let w = self.selected.as_ref()?;
@@ -1627,6 +1733,56 @@ impl Blocked {
             Blocked::Recorded => crate::signal::Refused::Recorded.why(None),
             Blocked::Scrubbing => crate::signal::Refused::Scrubbing.why(None),
         }
+    }
+}
+
+/// Each process's figures, averaged over the last few samples.
+///
+/// A process table read at one sample a second is mostly noise: a row's CPU
+/// figure swings from 3 to 40 and back, and — far worse for reading it — the
+/// rows swap places while your eye is on them. Activity Monitor answers this by
+/// refreshing every five seconds. poptop keeps every second and averages what
+/// it shows, which is the same calm with none of the delay: a spike still
+/// happens at the second it happened, and the timeline still draws it.
+///
+/// **Mean here, and peak in the timeline.** That looks like a contradiction and
+/// is the opposite: the timeline is where a spike must be found, so averaging
+/// it away would be a lie; the table is a thing you *read*, and the spike is on
+/// the graph directly above it. Each aggregation matches the question its panel
+/// answers.
+///
+/// Absences are skipped rather than counted as zero. A process that was not
+/// running for three of the five samples was not idle for them, and dividing by
+/// five would report a figure it never had.
+#[derive(Default)]
+pub struct Smoothing {
+    by_key: HashMap<(i32, Option<u64>), Averaged>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Averaged {
+    cpu: f32,
+    rss: u64,
+}
+
+impl Smoothing {
+    /// The averaged CPU of this process, or its own figure when there is no
+    /// average to use.
+    pub fn cpu(&self, p: &ProcSample) -> f32 {
+        self.by_key
+            .get(&(p.pid, p.started))
+            .map_or(p.cpu, |a| a.cpu)
+    }
+
+    pub fn rss(&self, p: &ProcSample) -> u64 {
+        self.by_key
+            .get(&(p.pid, p.started))
+            .map_or(p.rss, |a| a.rss)
+    }
+
+    /// Whether anything is being averaged, for the panel to say so.
+    pub fn is_on(&self) -> bool {
+        !self.by_key.is_empty()
     }
 }
 

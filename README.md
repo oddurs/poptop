@@ -24,7 +24,7 @@ CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒�
   MEM ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿
     0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
 past  2m23s shown, 1s/slot                                          ▲      now
-── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
+── processes (4) · all root · avg 5s — sort: CPU ! io: panel too narrow ──────
  ▾CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
   88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿     824 postgres
   12.5 ▌        32.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    1190 nginx
@@ -681,6 +681,32 @@ dark base and measures every token against every one of them:
 
 Below 256 colours nothing is painted at all, and `surface = off` turns it off
 everywhere.
+
+## Smoothing
+
+The table's figures are averaged over the last five seconds by default —
+`--smooth=SPAN`, or `smooth = off`. At one sample a second a process table is
+mostly noise: a row's CPU swings from 3 to 40 and back, and, far worse, rows
+swap places while your eye is on them.
+
+Activity Monitor answers this by refreshing every five seconds. poptop keeps
+every second and averages what it *shows*, which is the same calm with none of
+the delay — a spike still happens at the second it happened, and the timeline
+still draws it.
+
+The ordering is over the average too, which is the half that matters. A row
+whose number twitches is mildly annoying; a row that swaps with its neighbour
+while you are reading it is what makes a table unreadable, and that happens on a
+single noisy sample unless the sort is smoothed as well.
+
+**Mean here, peak in the timeline.** That looks like a contradiction and is the
+opposite: the timeline is where a spike must be *found*, so averaging it away
+would be a lie; the table is a thing you read, with the graph directly above it.
+Each aggregation matches the question its panel answers — and the panel title
+says `avg 5s`, so the two can never disagree in silence.
+
+The window ends at the cursor, not at the live edge. Scrubbed to 14:32, the
+table shows what those processes were doing around 14:32.
 
 ## The mouse
 

@@ -51,6 +51,8 @@ pub struct Settings {
     pub critical: f32,
     /// Time between samples.
     pub interval: Duration,
+    /// How long the table's figures are averaged over. Zero is off.
+    pub smooth: Duration,
     /// How much history to retain, in time rather than samples. Sample count
     /// is a fact about the buffer; the span is what the user actually wants.
     pub window: Duration,
@@ -101,6 +103,13 @@ pub struct Settings {
 /// atop's logging default, and for the same reason: a day of ten-minute
 /// snapshots is what an incident review reads, and it is 144 samples rather
 /// than 86,400.
+/// How long the table's figures are averaged over by default.
+///
+/// Five seconds, which is Activity Monitor's own refresh period. Long enough
+/// that a row stops twitching, short enough that a process starting is on
+/// screen before you have finished reading the row above it.
+pub const DEFAULT_SMOOTH: Duration = Duration::from_secs(5);
+
 pub const DEFAULT_LOG_INTERVAL: Duration = Duration::from_secs(600);
 /// Days of log kept, unless asked otherwise.
 ///
@@ -129,6 +138,7 @@ impl Settings {
             warn: Theme::DEFAULT_WARN_PCT,
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
+            smooth: DEFAULT_SMOOTH,
             window: DEFAULT_WINDOW,
             store: false,
             log: false,
@@ -182,6 +192,7 @@ impl Settings {
             warn: Theme::DEFAULT_WARN_PCT,
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
+            smooth: DEFAULT_SMOOTH,
             window: DEFAULT_WINDOW,
             store: false,
             log: false,
@@ -298,6 +309,16 @@ pub const KEYS: &[(&str, Apply)] = &[
     }),
     ("interval", |s, v| {
         s.interval = duration(v)?;
+        Ok(())
+    }),
+    // A span, not a sample count: the sample interval is itself a setting, and
+    // "five seconds" means the same thing at either end of it while "five
+    // samples" does not.
+    ("smooth", |s, v| {
+        s.smooth = match v {
+            "off" | "none" | "0" => Duration::ZERO,
+            _ => duration(v)?,
+        };
         Ok(())
     }),
     ("window", |s, v| {

@@ -5493,7 +5493,10 @@ fn churn_is_not_summed_across_a_sleep() {
     adjacent
         .history
         .push(sample_with_at(Some(1_204_331), 0, vec![threaded(1, 0, 1)]));
-    assert!(render(&adjacent, 100, 30).contains("came and went"));
+    // Wider than it was: the title now also says the figures are averaged, and
+    // that clause outranks churn — it changes how every number in the table is
+    // read, where churn is one fact about one interval.
+    assert!(render(&adjacent, 120, 30).contains("came and went"));
 }
 
 #[test]
@@ -14230,5 +14233,345 @@ fn a_click_lands_on_the_column_the_air_moved() {
         app.sort,
         crate::app::Sort::Pid,
         "the click landed a column away from the header it was on"
+    );
+}
+
+// ── smoothing ───────────────────────────────────────────────────────────────
+
+/// Two processes whose CPU crosses back and forth every sample while their
+/// averages stay clearly apart.
+fn a_jittery_pair(app: &mut App, samples: usize) {
+    for i in 0..samples {
+        let mut s = sample_at(50.0, (samples - i) as u64);
+        let flip = i % 2 == 0;
+        // The averages have to be clearly apart, not merely different: with a
+        // five-sample window an alternating series averages to 58 or 42
+        // depending on which end it starts, and a pair whose means are 35 and
+        // 31 crosses anyway — which tests the fixture rather than the feature.
+        s.procs = vec![
+            ProcSample {
+                cpu: if flip { 90.0 } else { 10.0 },
+                started: Some(1),
+                ..proc_named(101, "spiky", 0.0, 1 << 30)
+            },
+            ProcSample {
+                cpu: 30.0,
+                started: Some(2),
+                ..proc_named(102, "level", 0.0, 1 << 28)
+            },
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+}
+
+#[test]
+fn the_rows_stop_swapping_places_under_your_eye() {
+    // The half of smoothing that matters. A row whose *number* twitches is
+    // mildly annoying; a row that swaps with its neighbour while you are
+    // reading it is what makes a table unreadable — and that happens on a
+    // single noisy sample unless the ordering is over the average too.
+    let order = |app: &App| -> Vec<String> {
+        app.visible_rows()
+            .iter()
+            .filter(|r| !r.is_thread())
+            .map(|r| r.proc.name.to_string())
+            .collect()
+    };
+
+    let mut raw = App::new(600);
+    raw.smooth = 1;
+    a_jittery_pair(&mut raw, 9);
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..6 {
+        seen.insert(order(&raw));
+        raw.history.scrub(-1);
+    }
+    assert!(
+        seen.len() > 1,
+        "the fixture does not actually swap rows, so this proves nothing"
+    );
+
+    let mut smooth = App::new(600);
+    a_jittery_pair(&mut smooth, 9);
+    assert!(smooth.smooth > 1, "smoothing is off by default");
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..6 {
+        seen.insert(order(&smooth));
+        smooth.history.scrub(-1);
+    }
+    assert_eq!(
+        seen.len(),
+        1,
+        "the rows still swap places with smoothing on: {seen:?}"
+    );
+}
+
+#[test]
+fn a_figure_is_the_average_of_the_window_ending_at_the_cursor() {
+    // Ends at the cursor, not at the live edge: scrubbed to a moment, the table
+    // shows what those processes were doing around it, which is the only
+    // reading that agrees with the timeline beside it.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    app.smooth = 4;
+
+    let cpu = |app: &App, name: &str| {
+        let sm = app.smoothing();
+        app.visible_rows()
+            .iter()
+            .find(|r| &*r.proc.name == name)
+            .map(|r| sm.cpu(&r.proc))
+            .expect("no such row")
+    };
+    // Four samples alternating 90/10 average to 50 whichever end you start.
+    assert!(
+        (cpu(&app, "spiky") - 50.0).abs() < 0.01,
+        "{}",
+        cpu(&app, "spiky")
+    );
+    // And the raw figure is still the raw figure.
+    let raw = app
+        .history
+        .current()
+        .unwrap()
+        .procs
+        .iter()
+        .find(|p| &*p.name == "spiky")
+        .unwrap()
+        .cpu;
+    assert!(raw == 90.0 || raw == 10.0, "the buffer was smoothed: {raw}");
+}
+
+#[test]
+fn a_process_absent_for_part_of_the_window_is_not_averaged_with_zeroes() {
+    // It was not idle for those samples. Dividing by the whole window would
+    // report a figure it never had, which is the fabricated zero this codebase
+    // refuses everywhere else.
+    let mut app = App::new(600);
+    for i in 0..6 {
+        let mut s = sample_at(10.0, (6 - i) as u64);
+        s.procs = if i >= 4 {
+            vec![ProcSample {
+                cpu: 80.0,
+                started: Some(1),
+                ..proc_named(101, "late", 0.0, 1 << 20)
+            }]
+        } else {
+            vec![]
+        };
+        app.push(s);
+    }
+    app.smooth = 5;
+    let sm = app.smoothing();
+    let p = app.history.current().unwrap().procs[0].clone();
+    assert!(
+        (sm.cpu(&p) - 80.0).abs() < 0.01,
+        "a process present for two of five samples averaged to {}",
+        sm.cpu(&p)
+    );
+}
+
+#[test]
+fn the_table_says_that_its_figures_are_averaged() {
+    // Otherwise the table and the timeline disagree in silence: a row reading
+    // 35% directly under a graph showing a spike to 60 is two panels
+    // contradicting each other, with no way to know one is an average.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    let title = table_rows(&app, 150, 26)
+        .into_iter()
+        .find(|l| l.contains("processes"))
+        .unwrap();
+    assert!(
+        title.contains("avg 5s"),
+        "the table does not say so: {title:?}"
+    );
+
+    app.smooth = 1;
+    let off = table_rows(&app, 150, 26)
+        .into_iter()
+        .find(|l| l.contains("processes"))
+        .unwrap();
+    assert!(
+        !off.contains("avg"),
+        "it claims to be averaging with smoothing off: {off:?}"
+    );
+}
+
+#[test]
+fn the_timeline_is_not_smoothed() {
+    // Peak in the timeline, mean in the table. That looks like a contradiction
+    // and is the opposite: the timeline is where a spike must be *found*, so
+    // averaging it away would be a lie — and the table is a thing you read,
+    // with the spike on the graph directly above it.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    let r = ui::timeline_rows_range(26);
+    let lines = render_lines(&app, 120, 26);
+    let band = &lines[r.start as usize..r.end as usize];
+    // The machine's own series is a flat 50 in this fixture, so what would
+    // change under smoothing is the *process* detail — check the buffer is
+    // untouched instead, which is the claim that matters.
+    assert!(band.iter().any(|l| l.contains("CPU")), "no timeline drawn");
+    let raws: std::collections::HashSet<String> = app
+        .history
+        .iter()
+        .flat_map(|s| s.procs.iter())
+        .filter(|p| &*p.name == "spiky")
+        .map(|p| format!("{:.1}", p.cpu))
+        .collect();
+    assert_eq!(
+        raws.len(),
+        2,
+        "the buffer no longer holds the samples it was given: {raws:?}"
+    );
+}
+
+#[test]
+fn the_figure_on_the_row_is_the_one_the_ordering_used() {
+    // Sorting on the average while drawing the raw value would be the worst of
+    // both: rows that hold still showing numbers that do not, and a table whose
+    // order cannot be explained by the figures in it.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    let row = data_rows(&app, 140, 26)
+        .into_iter()
+        .find(|l| l.contains("spiky"))
+        .expect("no row");
+    // The raw samples are 90.0 and 10.0; five of them average to 58 or 42.
+    assert!(
+        !row.contains("90.0") && !row.contains("10.0"),
+        "the row shows a raw sample rather than the average: {row:?}"
+    );
+    let sm = app.smoothing();
+    let p = app
+        .history
+        .current()
+        .unwrap()
+        .procs
+        .iter()
+        .find(|p| &*p.name == "spiky")
+        .unwrap()
+        .clone();
+    assert!(
+        row.contains(&format!("{:.1}", sm.cpu(&p))),
+        "the row does not show {:.1}: {row:?}",
+        sm.cpu(&p)
+    );
+}
+
+#[test]
+fn the_order_holds_still_between_boundaries_and_moves_on_them() {
+    // Averaging alone only makes reordering less frequent — measured on a real
+    // machine at fifteen frames in fifteen. The calm comes from the averages
+    // ending on a boundary, so between one and the next nothing in the table
+    // can change its mind. Same measurement with this: three in fifteen.
+    let mut app = App::new(600);
+    app.smooth = 5;
+    let order = |app: &App| -> Vec<i32> {
+        app.visible_rows()
+            .iter()
+            .filter(|r| !r.is_thread())
+            .map(|r| r.proc.pid)
+            .collect()
+    };
+    // A pair that trades places every sample, so any un-quantised ordering
+    // changes on every push.
+    let mut seen = Vec::new();
+    for i in 0..15 {
+        let mut s = sample_at(50.0, (15 - i) as u64);
+        s.procs = vec![
+            ProcSample {
+                cpu: if i % 2 == 0 { 90.0 } else { 10.0 },
+                started: Some(1),
+                ..proc_named(101, "a", 0.0, 1 << 20)
+            },
+            ProcSample {
+                cpu: if i % 2 == 0 { 10.0 } else { 90.0 },
+                started: Some(2),
+                ..proc_named(102, "b", 0.0, 1 << 20)
+            },
+        ];
+        app.push(s);
+        seen.push(order(&app));
+    }
+    let flips = seen.windows(2).filter(|w| w[0] != w[1]).count();
+    assert!(
+        flips <= 15 / 5,
+        "the order changed {flips} times in fifteen samples, which is not calm"
+    );
+
+    // And it is not frozen: a process that takes over does eventually get to
+    // the top, within a window.
+    app.smooth = 1;
+    let live = order(&app);
+    app.smooth = 5;
+    assert!(!live.is_empty() && !order(&app).is_empty());
+}
+
+#[test]
+fn a_process_that_has_just_started_is_listed_at_once() {
+    // Quantising the *rows* as well as the averages was tried and is wrong: a
+    // process that had just started would not be listed for five seconds, and
+    // "what is running now" is the question the table exists to answer.
+    let mut app = App::new(600);
+    app.smooth = 5;
+    for i in 0..7 {
+        let mut s = sample_at(10.0, (7 - i) as u64);
+        s.procs = vec![proc_named(101, "old", 5.0, 1 << 20)];
+        app.push(s);
+    }
+    let mut s = sample_at(10.0, 0);
+    s.procs = vec![
+        proc_named(101, "old", 5.0, 1 << 20),
+        ProcSample {
+            started: Some(9),
+            ..proc_named(999, "brandnew", 50.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+
+    let names: Vec<String> = app
+        .visible_rows()
+        .iter()
+        .map(|r| r.proc.name.to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "brandnew"),
+        "a process that started this second is not in the table: {names:?}"
+    );
+}
+
+#[test]
+fn scrubbing_asks_about_the_moment_rather_than_the_boundary() {
+    // While live the window ends on a boundary, which is what holds the table
+    // still. While scrubbing the reader is asking about a particular moment,
+    // and quantising the answer would show them a different one.
+    let mut app = App::new(600);
+    app.smooth = 4;
+    for i in 0..12 {
+        let mut s = sample_at(10.0, (12 - i) as u64);
+        s.procs = vec![ProcSample {
+            cpu: i as f32 * 10.0,
+            started: Some(1),
+            ..proc_named(101, "ramp", 0.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    let cpu = |app: &App| {
+        let sm = app.smoothing();
+        sm.cpu(&app.history.current().unwrap().procs[0])
+    };
+    // Every step back changes the answer, rather than changing it every fourth.
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..4 {
+        app.history.scrub(-1);
+        seen.insert(format!("{:.2}", cpu(&app)));
+    }
+    assert_eq!(
+        seen.len(),
+        4,
+        "scrubbing moved the cursor without moving the window: {seen:?}"
     );
 }

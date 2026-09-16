@@ -84,6 +84,7 @@ impl<'a> TreeRow<'a> {
 pub fn build<'a>(
     procs: &[&'a ProcSample],
     sort: Sort,
+    sm: &crate::app::Smoothing,
     matched: Option<&HashSet<i32>>,
 ) -> Vec<TreeRow<'a>> {
     let by_pid: HashMap<i32, &'a ProcSample> = procs.iter().map(|p| (p.pid, *p)).collect();
@@ -107,9 +108,9 @@ pub fn build<'a>(
     }
 
     for kids in children.values_mut() {
-        kids.sort_by(|a, b| sort.compare(a, b));
+        kids.sort_by(|a, b| sort.compare_with(sm, a, b));
     }
-    roots.sort_by(|a, b| sort.compare(a, b));
+    roots.sort_by(|a, b| sort.compare_with(sm, a, b));
 
     let mut out = Vec::with_capacity(procs.len());
     let mut visited = HashSet::new();
@@ -255,7 +256,12 @@ mod tests {
             p(2, 1, "sshd", 1.0),
             p(3, 2, "bash", 2.0),
         ];
-        let rows = build(&refs(&procs), Sort::Pid, None);
+        let rows = build(
+            &refs(&procs),
+            Sort::Pid,
+            &crate::app::Smoothing::default(),
+            None,
+        );
         assert_eq!(names(&rows), vec!["init", "└─ sshd", "   └─ bash"]);
     }
 
@@ -267,7 +273,12 @@ mod tests {
             p(3, 1, "high", 90.0),
         ];
         // Sorted by CPU descending, so "high" comes first and "low" is last.
-        let rows = build(&refs(&procs), Sort::Cpu, None);
+        let rows = build(
+            &refs(&procs),
+            Sort::Cpu,
+            &crate::app::Smoothing::default(),
+            None,
+        );
         assert_eq!(names(&rows), vec!["init", "├─ high", "└─ low"]);
     }
 
@@ -275,7 +286,12 @@ mod tests {
     fn an_orphan_becomes_a_root() {
         // Parent 999 exited between samples; the child must not vanish with it.
         let procs = vec![p(1, 0, "init", 0.0), p(5, 999, "orphan", 0.0)];
-        let rows = build(&refs(&procs), Sort::Pid, None);
+        let rows = build(
+            &refs(&procs),
+            Sort::Pid,
+            &crate::app::Smoothing::default(),
+            None,
+        );
         assert_eq!(rows.len(), 2);
         assert!(names(&rows).contains(&"orphan".to_string()));
     }
@@ -284,14 +300,24 @@ mod tests {
     fn a_ppid_cycle_neither_hangs_nor_drops_a_process() {
         // 2 and 3 claim each other as parent: neither is a root.
         let procs = vec![p(1, 0, "init", 0.0), p(2, 3, "a", 0.0), p(3, 2, "b", 0.0)];
-        let rows = build(&refs(&procs), Sort::Pid, None);
+        let rows = build(
+            &refs(&procs),
+            Sort::Pid,
+            &crate::app::Smoothing::default(),
+            None,
+        );
         assert_eq!(rows.len(), 3, "every process must appear exactly once");
     }
 
     #[test]
     fn a_self_parented_process_is_a_root() {
         let procs = vec![p(1, 1, "weird", 0.0)];
-        let rows = build(&refs(&procs), Sort::Pid, None);
+        let rows = build(
+            &refs(&procs),
+            Sort::Pid,
+            &crate::app::Smoothing::default(),
+            None,
+        );
         assert_eq!(names(&rows), vec!["weird"]);
     }
 
@@ -307,7 +333,12 @@ mod tests {
                 )
             })
             .collect();
-        let rows = build(&refs(&procs), Sort::Cpu, None);
+        let rows = build(
+            &refs(&procs),
+            Sort::Cpu,
+            &crate::app::Smoothing::default(),
+            None,
+        );
         assert_eq!(rows.len(), 50);
         let seen: HashSet<i32> = rows.iter().map(|r| r.proc.pid).collect();
         assert_eq!(seen.len(), 50);
@@ -322,7 +353,12 @@ mod tests {
             p(4, 1, "unrelated", 0.0),
         ];
         let matched = HashSet::from([3]);
-        let rows = build(&refs(&procs), Sort::Pid, Some(&matched));
+        let rows = build(
+            &refs(&procs),
+            Sort::Pid,
+            &crate::app::Smoothing::default(),
+            Some(&matched),
+        );
 
         assert_eq!(names(&rows), vec!["init", "└─ sshd", "   └─ target"]);
         // Ancestors are context, the match is not.
@@ -335,7 +371,12 @@ mod tests {
     fn filtering_with_a_cycle_above_the_match_terminates() {
         let procs = vec![p(1, 2, "a", 0.0), p(2, 1, "b", 0.0), p(3, 1, "target", 0.0)];
         let matched = HashSet::from([3]);
-        let rows = build(&refs(&procs), Sort::Pid, Some(&matched));
+        let rows = build(
+            &refs(&procs),
+            Sort::Pid,
+            &crate::app::Smoothing::default(),
+            Some(&matched),
+        );
         assert!(rows.iter().any(|r| r.proc.name.as_ref() == "target"));
     }
 
@@ -344,7 +385,12 @@ mod tests {
         let procs: Vec<ProcSample> = (1..=4)
             .map(|i| p(i, i - 1, &format!("d{i}"), 0.0))
             .collect();
-        let rows = build(&refs(&procs), Sort::Pid, None);
+        let rows = build(
+            &refs(&procs),
+            Sort::Pid,
+            &crate::app::Smoothing::default(),
+            None,
+        );
         assert_eq!(names(&rows), vec!["d1", "└─ d2", "   └─ d3", "      └─ d4"]);
     }
 }
