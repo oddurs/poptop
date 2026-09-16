@@ -7129,7 +7129,10 @@ fn a_column_of_one_repeated_value_gives_its_width_to_the_command() {
     let one = rows(&app, 120, 20);
     let head = one.iter().find(|l| l.contains("PID")).unwrap();
     assert!(!head.contains("USER"), "the column stayed: {head:?}");
-    let title = one.iter().find(|l| l.contains("processes")).unwrap();
+    // From the panel, not the frame: the scope line on the tab strip says
+    // `processes` too and sits above this.
+    let one_table = table_rows(&app, 100, 30);
+    let title = one_table.iter().find(|l| l.contains("processes")).unwrap();
     assert!(
         title.contains("· all root"),
         "what the column said was not said anywhere: {title:?}"
@@ -7479,7 +7482,8 @@ fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     for w in 40..=160u16 {
-        let frame = rows(&app, w, 20);
+        // The panel's own rows: the scope line says `processes` too.
+        let frame = table_rows(&app, w, 20);
         let title = frame.iter().find(|l| l.contains("processes")).unwrap();
         let text = title.trim_end_matches(['─', ' ']);
         // Nothing is ever cut mid-clause.
@@ -11875,6 +11879,20 @@ fn show_menu() {
     }
 }
 
+/// The process panel's rows, sliced from the layout rather than searched for.
+///
+/// The scope line says `processes` too, and it sits above — so a frame-wide
+/// search for the panel title now finds the navigation instead. Same hazard as
+/// [`header_rows`], one row along.
+fn table_rows(app: &App, w: u16, h: u16) -> Vec<String> {
+    let all = rows(app, w, h);
+    let p = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h));
+    all.into_iter()
+        .skip(p.table.y as usize)
+        .take(p.table.height as usize)
+        .collect()
+}
+
 /// The header panel's rows, sliced from the layout rather than searched for.
 ///
 /// Searching the frame for a line containing "CPU" used to find the header.
@@ -12615,9 +12633,11 @@ fn the_resource_on_screen_is_named_without_pressing_anything() {
             v.label()
         );
     }
+    // And the scope, which shares this row because "which resource" and "which
+    // processes" are the same question.
     assert!(
-        strip.contains("tab"),
-        "the strip does not say how to move between them: {strip:?}"
+        strip.contains("All processes"),
+        "the strip does not state the scope: {strip:?}"
     );
 }
 
@@ -12791,6 +12811,117 @@ fn no_key_toggles_a_column_a_tab_already_answers_for() {
                 .flat_map(|t| t.items)
                 .any(|i| i.label() == label),
             "{label} is not in the menu"
+        );
+    }
+}
+
+// ── the scope line ──────────────────────────────────────────────────────────
+
+#[test]
+fn a_filtered_table_cannot_be_read_as_the_whole_machine() {
+    // The line is present when nothing is filtered, which is what makes it
+    // trustworthy when something is: its absence can never mean "no filter".
+    //
+    // poptop used to say this in a clause of the process panel's title, and
+    // that title is a ladder whose clauses are dropped from the least important
+    // end — so on the terminals where the table is hardest to read, the
+    // sentence saying *which* processes these are went first.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..40)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "other" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+
+    let strip = |app: &App, w: u16| rows(app, w, 26)[ui::MENU_H as usize].trim().to_string();
+
+    let all = strip(&app, 120);
+    assert!(
+        all.contains("40"),
+        "the unfiltered scope states no count: {all:?}"
+    );
+
+    app.filter = "postgres".into();
+    let some = strip(&app, 120);
+    assert!(
+        some.contains("postgres") && some.contains("4") && some.contains("40"),
+        "a filtered scope does not say what was narrowed: {some:?}"
+    );
+    assert_ne!(all, some, "filtering did not change the scope line");
+}
+
+#[test]
+fn the_scope_line_never_disappears_however_narrow_it_gets() {
+    // The one property that matters. A scope line that can vanish is one whose
+    // absence means "unfiltered", and that is the claim it exists to stop.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..40)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "other" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+    app.filter = "postgres".into();
+
+    for w in 1..=200usize {
+        let text = ui::scope_text(&app, w);
+        assert!(!text.trim().is_empty(), "the scope vanished at {w} columns");
+        // And it still carries both numbers, which is the irreducible claim:
+        // "this is not all of them".
+        assert!(
+            text.contains('4') && text.contains("40"),
+            "at {w} columns the scope stopped saying how much is hidden: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn the_scope_shortens_by_rungs_rather_than_by_clipping() {
+    // A clipped scope reads as a message that does not exist — `postgres · 4 of
+    // 4` with the denominator cut off is worse than no line at all, because it
+    // is wrong rather than absent.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..40)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "other" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+    app.filter = "postgres".into();
+
+    let mut seen: Vec<String> = (10..=60usize).map(|w| ui::scope_text(&app, w)).collect();
+    seen.dedup();
+    assert!(
+        seen.len() > 1,
+        "the scope has only one rung, so nothing is being tested"
+    );
+    for text in &seen {
+        assert!(
+            text.chars().count() <= 60,
+            "a rung is wider than the widest width asked for: {text:?}"
+        );
+        assert!(
+            !text.ends_with(" of") && !text.ends_with('·'),
+            "a rung is a clipped sentence rather than a shorter one: {text:?}"
         );
     }
 }

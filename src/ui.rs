@@ -229,11 +229,65 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
         };
         spans.push(Span::styled(format!("  {}  ", v.label()), style));
     }
-    spans.push(Span::styled(
-        "   tab · 1-3".to_string(),
-        app.theme.dim_style(),
-    ));
+    // The scope, right-aligned on the same row. "Which resource" and "which
+    // processes" are the same question — what am I looking at — and putting the
+    // second one here costs no row of its own.
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let scope = scope_text(app, (area.width as usize).saturating_sub(used + 2));
+    let pad = (area.width as usize).saturating_sub(used + scope.chars().count() + 1);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(scope, app.theme.dim_style()));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// What is being listed, and what has narrowed it.
+///
+/// Present when nothing is filtered, which is what makes it trustworthy when
+/// something is: the line never disappears, so its absence can never be
+/// mistaken for "no filter". poptop used to state this in a clause of the
+/// process panel's title — and that title is a ladder whose clauses are dropped
+/// from the least important end, so on the terminals where the table is hardest
+/// to read, the sentence saying *which* processes these are went first.
+///
+/// A table that does not say it is filtered is a table that lies about the
+/// machine, and it does it silently. So this has its own ladder, and the bottom
+/// rung is still a pair of numbers rather than nothing.
+pub fn scope_text(app: &App, width: usize) -> String {
+    let rows = app.visible_rows();
+    let shown: usize = rows
+        .iter()
+        .filter(|r| !r.is_thread())
+        .map(|r| r.count())
+        .sum();
+    // Every process in the sample, including the ones a filter or the kernel
+    // toggle is hiding — the denominator has to be the machine, or "4 of 4"
+    // would be true of a filtered list and say nothing.
+    let total = app.history.current().map_or(0, |s| s.procs.len());
+    let user = app.one_user();
+    let filter = app.filter.trim();
+
+    let mut rungs = Vec::new();
+    if filter.is_empty() {
+        if let Some(u) = user.as_deref() {
+            rungs.push(format!("All processes · {total} · {u}"));
+        }
+        rungs.push(format!("All processes · {total}"));
+        rungs.push(format!("{total} processes"));
+        rungs.push(format!("{total}"));
+    } else {
+        if let Some(u) = user.as_deref() {
+            rungs.push(format!("{filter} · {shown} of {total} · {u}"));
+        }
+        rungs.push(format!("{filter} · {shown} of {total}"));
+        rungs.push(format!("{shown} of {total}"));
+        rungs.push(format!("{shown}/{total}"));
+    }
+    rungs
+        .into_iter()
+        .find(|r| r.chars().count() <= width)
+        // Never nothing. A scope line that can vanish is one whose absence
+        // means "unfiltered", and that is the claim this exists to stop.
+        .unwrap_or_else(|| format!("{shown}/{total}"))
 }
 
 /// Where a tab's name starts, in columns. Shared with the mouse.

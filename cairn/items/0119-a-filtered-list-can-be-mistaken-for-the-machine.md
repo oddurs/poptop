@@ -2,7 +2,7 @@
 id: 119
 title: A filtered list can be mistaken for the machine
 type: bug
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -36,18 +36,21 @@ the same place, stating what is being listed and what has narrowed it.
   postgres · 4 of 760 · user oddurs
 ```
 
-## What needs deciding
+## What was decided
 
-- **Whether it can share a row with the tab strip.** Both are one row and both
-  are permanent; together they are two rows of chrome before any data. Sharing
-  is tempting and makes the scope compete with the navigation.
-- **What counts as scope.** The filter and the user are obviously scope.
-  Grouping and the tree change the shape of the list rather than its membership,
-  and may belong somewhere else.
+**It shares the tab strip's row, right-aligned.** "Which resource" and "which
+processes" are the same question — what am I looking at — so they belong on the
+same band, and the scope costs no row of its own. The strip lost its `tab · 1-3`
+hint to make room, which is no loss: the strip shows the tabs and the menu names
+their keys, so the footer hint was the third place the same thing was explained.
+
+**The filter and the user are scope; grouping and the tree are not.** Both of
+those change the shape of the list rather than its membership, and the panel
+title still names them.
 
 ## Acceptance criteria
 
-- [ ] Present when nothing is filtered, so its absence means nothing
-- [ ] Never dropped by the width ladder
-- [ ] States the count shown against the count that exists
-- [ ] A filtered table cannot be read as the whole machine
+- [x] Present when nothing is filtered, so its absence means nothing
+- [x] Never dropped by the width ladder
+- [x] States the count shown against the count that exists
+- [x] A filtered table cannot be read as the whole machine
