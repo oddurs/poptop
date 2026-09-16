@@ -2,7 +2,7 @@
 id: 122
 title: The sort is not shown where the sorting is
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -34,17 +34,26 @@ Clicking a header sorts by it; clicking the sorted one reverses. `s` keeps
 cycling, because a monitor over ssh on a terminal with no mouse is the case
 poptop is for.
 
-## What needs deciding
+## What was decided
 
-- **Descending is not a thing poptop has.** Every sort is descending, because
-  "what is using the most" is the question. Reversal has to either be added or
-  deliberately declined, and declining it means the caret is decoration.
-- **Where the marker goes on a right-aligned numeric column.** Against the
-  header text, not the column edge, or it reads as part of the number below it.
+**Reversal was declined and the caret is not decoration.** Every sort is
+descending, because "what is using the most" is the question. The caret says
+*which* column the ordering is over, which is the thing that was previously
+only stated several rows away in a clause the width ladder could drop.
+
+**The caret goes in the padding a right-aligned column already has**, prefixed
+rather than appended. Appending it pushes the label two columns left and the
+header stops sharing a right edge with the figures under it, which
+`a_column_of_figures_shares_a_right_edge` exists to prevent.
+
+**The bar beside a figure does not take a second caret**, and the disk pair
+takes one on the first of them: the ordering is read *plus* write, so a caret on
+each would claim two keys and a caret on the second would read as a claim about
+that column alone.
 
 ## Acceptance criteria
 
-- [ ] The sorted column is marked in its own header
-- [ ] Clicking a header sorts by it
-- [ ] `s` still works, and agrees with what the header shows
-- [ ] The marker survives the width ladder, or the column does not
+- [x] The sorted column is marked in its own header
+- [x] Clicking a header sorts by it
+- [x] `s` still works, and agrees with what the header shows
+- [x] The marker survives the width ladder, or the column does not

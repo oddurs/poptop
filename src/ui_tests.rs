@@ -12996,3 +12996,213 @@ fn the_zones_stay_in_one_order_across_every_tab() {
         }
     }
 }
+
+// ── the sort marker ─────────────────────────────────────────────────────────
+
+#[test]
+fn the_sorted_column_is_marked_in_its_own_header() {
+    // It used to be stated in the panel title several rows away, in a clause
+    // the width ladder can drop — so the ordering was named furthest from the
+    // thing it ordered, and on a narrow terminal not at all.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let head = |app: &App| {
+        table_rows(app, 150, 26)
+            .into_iter()
+            .find(|l| l.contains("COMMAND"))
+            .expect("no column headers")
+    };
+    for (sort, label) in [
+        (crate::app::Sort::Cpu, "CPU%"),
+        (crate::app::Sort::Mem, "RSS"),
+        (crate::app::Sort::Pid, "PID"),
+        (crate::app::Sort::Name, "COMMAND"),
+    ] {
+        app.sort = sort;
+        let line = head(&app);
+        assert_eq!(
+            line.matches('▾').count(),
+            1,
+            "sorting by {label} marked {} columns: {line:?}",
+            line.matches('▾').count()
+        );
+        // Beside its own label, not somewhere else on the row.
+        let at = line.find('▾').expect("just counted one");
+        let near = line
+            .find(label)
+            .map(|i| i.abs_diff(at) <= label.len() + 2)
+            .unwrap_or(false);
+        assert!(near, "the caret is not on the {label} header: {line:?}");
+    }
+}
+
+#[test]
+fn the_caret_does_not_push_a_header_off_its_column() {
+    // Appending it to a right-aligned label shifts the label left and the
+    // header stops sharing a right edge with the figures under it, which
+    // `a_column_of_figures_shares_a_right_edge` exists to prevent. It goes in
+    // the padding the column already has.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(824, "postgres", 88.4, 512 << 20)];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let edge = |app: &App| {
+        let table = table_rows(app, 150, 26);
+        let head = table.iter().find(|l| l.contains("CPU%")).unwrap();
+        let row = table.iter().find(|l| l.contains("postgres")).unwrap();
+        // Counted in characters: `▾` is three bytes, so a byte offset makes a
+        // marked header look four columns wider than it is.
+        let ends = |l: &str, s: &str| {
+            l.find(s)
+                .map(|b| l[..b].chars().count() + s.chars().count())
+        };
+        (ends(head, "CPU%").unwrap(), ends(row, "88.4").unwrap())
+    };
+    app.sort = crate::app::Sort::Pid;
+    let (unsorted_head, figures) = edge(&app);
+    app.sort = crate::app::Sort::Cpu;
+    let (sorted_head, figures_again) = edge(&app);
+    assert_eq!(
+        figures, figures_again,
+        "marking a column moved the figures under it"
+    );
+    assert_eq!(
+        unsorted_head, sorted_head,
+        "the caret pushed the CPU% header off its column's right edge"
+    );
+}
+
+#[test]
+fn the_panel_title_and_the_header_cannot_disagree_about_the_sort() {
+    // Both name it, and they are built from different code. `s` cycles, and the
+    // caret has to follow — a table that says `sort: MEM` in its title with the
+    // caret over CPU% is two sources of truth, one of them wrong.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..3)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for _ in 0..6 {
+        press(&mut app, KeyCode::Char('s'));
+        let table = table_rows(&app, 150, 26);
+        let title = table.iter().find(|l| l.contains("processes")).unwrap();
+        let head = table.iter().find(|l| l.contains("COMMAND")).unwrap();
+        assert!(
+            title.contains(&format!("sort: {}", app.sort.label())),
+            "the title does not name the sort: {title:?}"
+        );
+        assert_eq!(
+            head.matches('▾').count(),
+            1,
+            "the header marks {} columns for {:?}",
+            head.matches('▾').count(),
+            app.sort
+        );
+    }
+}
+
+#[test]
+fn clicking_a_header_sorts_by_that_column() {
+    // Where the state is shown is where the action happens, which is why nobody
+    // has ever needed to be told how a sortable table works.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let (w, h) = (150u16, 26u16);
+    let table = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+
+    // Every column that stands for a sort key is clickable, found by the caret
+    // it draws when it is the one in force — so this cannot pass by clicking
+    // somewhere that happens to work.
+    for want in [
+        crate::app::Sort::Mem,
+        crate::app::Sort::Pid,
+        crate::app::Sort::Name,
+        crate::app::Sort::Cpu,
+    ] {
+        app.sort = want;
+        let head = table_rows(&app, w, h)
+            .into_iter()
+            .find(|l| l.contains("COMMAND"))
+            .unwrap();
+        let at = head
+            .find('▾')
+            .map(|b| head[..b].chars().count())
+            .expect("no caret to aim at");
+        // Somewhere else first, so landing on `want` is the click's doing.
+        app.sort = crate::app::Sort::Cpu;
+        if want == crate::app::Sort::Cpu {
+            app.sort = crate::app::Sort::Pid;
+        }
+        click(&mut app, at as u16 + 1, table.y + 1, w, h);
+        assert_eq!(
+            app.sort, want,
+            "clicking the caret column at {at} gave {:?}",
+            app.sort
+        );
+    }
+}
+
+#[test]
+fn clicking_a_column_that_sorts_by_nothing_does_nothing() {
+    // The state letter, the bars and the sparkline are not orderings. Clicking
+    // one should leave the table alone rather than doing whatever is nearest.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let (w, h) = (150u16, 26u16);
+    let table = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let head = table_rows(&app, w, h)
+        .into_iter()
+        .find(|l| l.contains("COMMAND"))
+        .unwrap();
+    let at = head
+        .find("HIST")
+        .map(|b| head[..b].chars().count())
+        .expect("no sparkline header");
+
+    app.sort = crate::app::Sort::Pid;
+    click(&mut app, at as u16 + 1, table.y + 1, w, h);
+    assert_eq!(
+        app.sort,
+        crate::app::Sort::Pid,
+        "clicking the sparkline header changed the ordering"
+    );
+}
+
+#[test]
+fn clicking_a_row_still_selects_rather_than_sorting() {
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..6)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    let (w, h) = (150u16, 26u16);
+    let table = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    app.sort = crate::app::Sort::Pid;
+    click(&mut app, 10, table.y + 3, w, h);
+    assert_eq!(app.sort, crate::app::Sort::Pid, "a row click re-sorted");
+    assert!(app.selected.is_some(), "a row click selected nothing");
+}

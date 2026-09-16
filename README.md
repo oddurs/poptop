@@ -25,7 +25,7 @@ CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒�
     0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
 past  2m23s shown, 1s/slot                                          ▲      now
 ── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
-  CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
+ ▾CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
   88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿     824 postgres
   12.5 ▌        32.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    1190 nginx
    4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node

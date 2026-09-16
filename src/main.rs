@@ -1529,10 +1529,16 @@ pub fn handle_mouse(app: &mut App, ev: event::MouseEvent, area: ratatui::layout:
                 }
                 return;
             }
-            if inside(p.table)
-                && let Some(a) = row_at(p.table, y)
-            {
-                a.apply(app);
+            if inside(p.table) {
+                // The column headers sort; the rows below select. Same row the
+                // caret is drawn on, which is the point of putting it there.
+                if y == p.table.y + 1 {
+                    if let Some(s) = ui::sort_at(app, p.table, x) {
+                        app.sort = s;
+                    }
+                } else if let Some(a) = row_at(p.table, y) {
+                    a.apply(app);
+                }
             }
         }
         // Dragging the timeline scrubs continuously, which is the one gesture

@@ -3180,6 +3180,128 @@ fn short_cgroup(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+/// Which of the table's optional columns are on, for a table drawn in `area`.
+///
+/// One derivation, used by `draw_procs` to lay the table out and by the mouse
+/// to work out which header was clicked. It was briefly two, and the second one
+/// guessed `show_user` — so a click on `COMMAND` landed on the column before it
+/// and sorted by something else. A hit box computed separately from the column
+/// it is over agrees until it does not.
+pub struct TableShape {
+    pub bars: bool,
+    pub thr: bool,
+    pub io: bool,
+    pub mem_cols: bool,
+    pub user: bool,
+    pub cid: bool,
+}
+
+pub fn table_shape(app: &App, area: Rect) -> TableShape {
+    let one_user = app.one_user();
+    let user = one_user.is_none() && app.group != crate::app::Grouping::User;
+    let bars = app.view != crate::app::View::Disk;
+    let thr = app.view == crate::app::View::Cpu;
+    let mem_cols = app.view == crate::app::View::Memory;
+    let io = app.show_io
+        && app.view.wants_io()
+        && (app.view == crate::app::View::Disk || area.width >= min_width_for_io(user));
+    let given = i32::from(if bars { 0 } else { BAR_W as u16 * 2 + 3 }) + if thr { 0 } else { 5 }
+        - if mem_cols { 8 + 8 + 7 + 8 + 4i32 } else { 0 };
+    let (dropped, taken) = (given.max(0) as u16, (-given).max(0) as u16);
+    let cid = app.group != crate::app::Grouping::User
+        && app.any_container()
+        && command_width(area.width, io, user, true, dropped, taken) as u16 > MIN_COMMAND_W;
+    TableShape {
+        bars,
+        thr,
+        io,
+        mem_cols,
+        user,
+        cid,
+    }
+}
+
+/// The sort key of the column at `x`, for a table drawn in `area`.
+///
+/// Uses the same list the header and the table do, split the same way: a hit
+/// box computed separately from the column it is over agrees until it does not.
+///
+/// The widths depend on what the tab is showing, which is what `table_shape`
+/// answers — one derivation, so the caret and the click cannot disagree.
+pub fn sort_at(app: &App, area: Rect, x: u16) -> Option<crate::app::Sort> {
+    let s = table_shape(app, area);
+    let (widths, sorts) = table_columns(s.bars, s.thr, s.io, s.mem_cols, s.user, s.cid);
+    let cells = Layout::horizontal(widths).spacing(1).split(area);
+    cells
+        .iter()
+        .position(|r| x >= r.x && x < r.x + r.width)
+        .and_then(|i| sorts.get(i).copied().flatten())
+}
+
+/// The table's columns: how wide each is, and which sort key it stands for.
+///
+/// One list, used by the header to mark the sorted column, by the table to lay
+/// itself out, and by the mouse to work out which header was clicked. Three
+/// copies of this arithmetic would put the caret over one column and the click
+/// target over another, and nothing would say so.
+///
+/// `None` is a column nothing can be sorted by — a bar, a state letter, the
+/// sparkline. Clicking one does nothing rather than doing something arbitrary.
+pub fn table_columns(
+    show_bars: bool,
+    show_thr: bool,
+    show_io: bool,
+    show_mem_cols: bool,
+    show_user: bool,
+    show_cid: bool,
+) -> (Vec<Constraint>, Vec<Option<crate::app::Sort>>) {
+    use crate::app::Sort;
+    let mut widths = Vec::new();
+    let mut sorts = Vec::new();
+    let mut col = |w: Constraint, s: Option<Sort>| {
+        widths.push(w);
+        sorts.push(s);
+    };
+    col(Constraint::Length(6), Some(Sort::Cpu));
+    if show_bars {
+        // The bar, plus room for the over-100 mark.
+        // The bar is the same key as the figure beside it, and `None` here
+        // because the caret belongs on the label, not on both.
+        col(Constraint::Length(BAR_W as u16 + 1), None);
+    }
+    col(Constraint::Length(8), Some(Sort::Mem));
+    if show_bars {
+        col(Constraint::Length(BAR_W as u16), None);
+    }
+    col(Constraint::Length(2), None);
+    if show_thr {
+        col(Constraint::Length(4), None);
+    }
+    if show_io {
+        // The pair is ordered by read *plus* write. The caret goes on the
+        // first of them, which reads as "sorted from here" rather than as a
+        // claim about that column alone.
+        col(Constraint::Length(9), Some(Sort::Disk));
+        col(Constraint::Length(9), None);
+    }
+    if show_mem_cols {
+        for w in [8, 8, 7, 8] {
+            col(Constraint::Length(w), None);
+        }
+    }
+    col(Constraint::Length(SPARK_W as u16), None);
+    col(Constraint::Length(7), Some(Sort::Pid));
+    if show_user {
+        col(Constraint::Length(USER_W), None);
+    }
+    if show_cid {
+        // Twelve characters, which is what `docker ps` shows.
+        col(Constraint::Length(CID_W), None);
+    }
+    col(Constraint::Min(MIN_COMMAND_W), Some(Sort::Name));
+    (widths, sorts)
+}
+
 fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
@@ -3193,22 +3315,24 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // would be the same word twice. That inverts 0043's rule, which drops the
     // column when every row shares a value — here every row has a different
     // one and it is still redundant.
-    let show_user = one_user.is_none() && app.group != crate::app::Grouping::User;
+    // From `table_shape`, not computed again here: the mouse asks that function
+    // which column it clicked, and two derivations of the same six flags put
+    // the caret over one column and the click target over another.
+    let shape = table_shape(app, area);
+    let show_user = shape.user;
     // In the disk view the throughput columns are the point, so they are not
     // subject to the width test that hides them elsewhere — which is the
     // concrete thing views fix: today those figures vanish on a narrow terminal
     // with nothing to bring them back, and this key is what brings them back.
-    let show_io = app.show_io
-        && app.view.wants_io()
-        && (app.view == crate::app::View::Disk || area.width >= min_width_for_io(show_user));
+    let show_io = shape.io;
     // What the disk columns are given room by. A view is a named list of
     // columns over one renderer, not a second renderer.
-    let show_bars = app.view != crate::app::View::Disk;
-    let show_thr = app.view == crate::app::View::Cpu;
+    let show_bars = shape.bars;
+    let show_thr = shape.thr;
     // The memory view's own columns: what a process's memory actually costs,
     // what it has reserved, whether it is being paged in, and which way it is
     // going.
-    let show_mem_cols = app.view == crate::app::View::Memory;
+    let show_mem_cols = shape.mem_cols;
     // What the view has given back, in columns, for the command to use — less
     // what it has taken. The memory view drops the thread count and *adds* four
     // columns of its own, so counting only the drops left the arithmetic
@@ -3237,10 +3361,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // members can be in different ones — so the column would be a header and
     // twelve blank columns on every row, which is the argument that drops
     // `USER` two lines up.
-    let show_cid = app.group != crate::app::Grouping::User
-        && app.any_container()
-        && command_width(area.width, show_io, show_user, true, dropped, taken) as u16
-            > MIN_COMMAND_W;
+    let show_cid = shape.cid;
     let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped, taken);
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
@@ -3554,45 +3675,72 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         })
         .collect();
 
-    // A header aligned against its column is a header for a different column.
-    // `right` marks the numeric ones; the bars and the text columns stay left.
-    let right = |s| num(s).style(app.theme.table_header_style());
-    let left = |s: &str| Cell::from(s.to_string()).style(app.theme.table_header_style());
     // In the order the cells are pushed, which is what `Table` pairs them by.
     // With the IO columns shown these had drifted a place: `HISTORY` sat over
     // DISK R, `DISK R` over DISK W, and `DISK W` over the sparkline — every one
     // of the three naming the column beside it.
-    let mut header_cells = vec![right("CPU%")];
+    // The caret goes in the header of the column the ordering is over, which is
+    // where the reader is already looking. It used to be stated in the panel
+    // title several rows away, in a clause the width ladder can drop — so the
+    // ordering was named furthest from the thing it ordered.
+    //
+    // Always descending, because "what is using the most" is the question. The
+    // caret says *which* column, not which direction.
+    let (_, sorts) = table_columns(
+        show_bars,
+        show_thr,
+        show_io,
+        show_mem_cols,
+        show_user,
+        show_cid,
+    );
+    let mut nth = 0usize;
+    let mut sorted = move || {
+        let is = sorts.get(nth).copied().flatten() == Some(app.sort);
+        nth += 1;
+        if is { "▾" } else { "" }
+    };
+    // Prefixed on a right-aligned header and suffixed on a left-aligned one, so
+    // the caret sits in the padding the column already has. Appending it to a
+    // right-aligned label pushes the label two columns left and the header
+    // stops sharing a right edge with the figures under it —
+    // `a_column_of_figures_shares_a_right_edge` is about exactly that.
+    let right =
+        |s: &str, mark: &str| num(format!("{mark}{s}")).style(app.theme.table_header_style());
+    let left = |s: &str, mark: &str| {
+        Cell::from(format!("{s}{mark}")).style(app.theme.table_header_style())
+    };
+    let mut header_cells = vec![right("CPU%", sorted())];
     if show_bars {
-        header_cells.push(left(""));
+        header_cells.push(left("", sorted()));
     }
-    header_cells.push(right("RSS"));
+    header_cells.push(right("RSS", sorted()));
     if show_bars {
-        header_cells.push(left(""));
+        header_cells.push(left("", sorted()));
     }
-    header_cells.push(left("S"));
+    header_cells.push(left("S", sorted()));
     if show_thr {
-        header_cells.push(right("THR"));
+        header_cells.push(right("THR", sorted()));
     }
     if show_io {
-        header_cells.push(right("DISK R"));
-        header_cells.push(right("DISK W"));
+        header_cells.push(right("DISK R", sorted()));
+        header_cells.push(right("DISK W", sorted()));
     }
     if show_mem_cols {
-        header_cells.push(right("PSS"));
-        header_cells.push(right("VSZ"));
-        header_cells.push(right("MAJF/s"));
-        header_cells.push(right("GROW"));
+        header_cells.push(right("PSS", sorted()));
+        header_cells.push(right("VSZ", sorted()));
+        header_cells.push(right("MAJF/s", sorted()));
+        header_cells.push(right("GROW", sorted()));
     }
-    header_cells.push(left(&spark_header(spark_ceiling)));
-    header_cells.push(right("PID"));
+    header_cells.push(left(&spark_header(spark_ceiling), sorted()));
+    header_cells.push(right("PID", sorted()));
     if show_user {
-        header_cells.push(left("USER"));
+        header_cells.push(left("USER", sorted()));
     }
     if show_cid {
-        header_cells.push(left("CID"));
+        header_cells.push(left("CID", sorted()));
     }
-    header_cells.push(left("COMMAND"));
+    header_cells.push(left("COMMAND", sorted()));
     let header = Row::new(header_cells).style(app.theme.table_header_style());
 
     // What the table cannot show, said out loud. A process that lived 200ms is
@@ -3848,39 +3996,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     ];
     let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
 
-    let mut widths = vec![Constraint::Length(6)];
-    if show_bars {
-        // The bar, plus room for the over-100 mark.
-        widths.push(Constraint::Length(BAR_W as u16 + 1));
-    }
-    widths.push(Constraint::Length(8));
-    if show_bars {
-        widths.push(Constraint::Length(BAR_W as u16));
-    }
-    widths.push(Constraint::Length(2));
-    if show_thr {
-        widths.push(Constraint::Length(4));
-    }
-    if show_io {
-        widths.push(Constraint::Length(9));
-        widths.push(Constraint::Length(9));
-    }
-    if show_mem_cols {
-        widths.push(Constraint::Length(8));
-        widths.push(Constraint::Length(8));
-        widths.push(Constraint::Length(7));
-        widths.push(Constraint::Length(8));
-    }
-    widths.push(Constraint::Length(SPARK_W as u16));
-    widths.push(Constraint::Length(7));
-    if show_user {
-        widths.push(Constraint::Length(USER_W));
-    }
-    if show_cid {
-        // Twelve characters, which is what `docker ps` shows.
-        widths.push(Constraint::Length(CID_W));
-    }
-    widths.push(Constraint::Min(MIN_COMMAND_W));
+    let (widths, sorts) = table_columns(
+        show_bars,
+        show_thr,
+        show_io,
+        show_mem_cols,
+        show_user,
+        show_cid,
+    );
+    let _ = &sorts;
 
     f.render_widget(
         Paragraph::new(divider_of(title, area.width, &app.theme)),
