@@ -2,7 +2,7 @@
 id: 118
 title: The resource you are looking at is invisible
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -52,8 +52,8 @@ most likely to be opened in.
 
 ## Acceptance criteria
 
-- [ ] The resource on screen is named without pressing anything
-- [ ] The other resources are visible, so they can be discovered
-- [ ] Reachable by a key, by the menu and by the mouse
-- [ ] Legible at the mono tier
-- [ ] Does not take a key the timeline needs
+- [x] The resource on screen is named without pressing anything
+- [x] The other resources are visible, so they can be discovered
+- [x] Reachable by a key, by the menu and by the mouse
+- [x] Legible at the mono tier
+- [x] Does not take a key the timeline needs

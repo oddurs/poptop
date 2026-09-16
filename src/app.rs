@@ -162,7 +162,7 @@ const BUDGET_STRIKES: u32 = 3;
 pub enum View {
     /// What poptop has always shown: CPU, memory, state, threads, history.
     #[default]
-    Generic,
+    Cpu,
     /// Memory, with the room the other columns were using.
     Memory,
     /// Disk throughput, always — not only when it happens to fit.
@@ -176,18 +176,35 @@ pub enum View {
 impl View {
     pub fn next(self) -> Self {
         match self {
-            View::Generic => View::Memory,
+            View::Cpu => View::Memory,
             View::Memory => View::Disk,
-            View::Disk => View::Generic,
+            View::Disk => View::Cpu,
         }
     }
 
+    /// Every tab, in the order they are drawn.
+    ///
+    /// The list rather than a `next` chain: a tab strip has to draw them all,
+    /// and deriving the strip by walking `next` until it came back round would
+    /// be a loop that only works because the cycle happens to be closed.
+    pub const ALL: [View; 3] = [View::Cpu, View::Memory, View::Disk];
+
+    /// The name on the tab.
+    ///
+    /// Capitalised, because these are now proper nouns on a navigation strip
+    /// rather than a word in a sentence in a panel title.
     pub fn label(self) -> &'static str {
         match self {
-            View::Generic => "generic",
-            View::Memory => "memory",
-            View::Disk => "disk",
+            View::Cpu => "CPU",
+            View::Memory => "Memory",
+            View::Disk => "Disk",
         }
+    }
+
+    pub fn prev(self) -> Self {
+        // Two forward is one back in a cycle of three, and writing it this way
+        // means the order lives in one place.
+        self.next().next()
     }
 
     /// Whether the per-process disk columns belong in this view.
@@ -195,7 +212,7 @@ impl View {
     /// In the disk view they are the point, so they are not subject to the
     /// width test that hides them elsewhere.
     pub fn wants_io(self) -> bool {
-        matches!(self, View::Generic | View::Disk)
+        matches!(self, View::Cpu | View::Disk)
     }
 
     /// The sort keys reachable from this view.
@@ -206,7 +223,7 @@ impl View {
     /// panel can name both without either contradicting the table.
     pub fn sorts(self) -> &'static [Sort] {
         match self {
-            View::Generic => &[Sort::Cpu, Sort::Mem, Sort::Disk, Sort::Pid, Sort::Name],
+            View::Cpu => &[Sort::Cpu, Sort::Mem, Sort::Disk, Sort::Pid, Sort::Name],
             View::Memory => &[Sort::Mem, Sort::Cpu, Sort::Pid, Sort::Name],
             View::Disk => &[Sort::Disk, Sort::Cpu, Sort::Pid, Sort::Name],
         }
@@ -1080,7 +1097,7 @@ impl App {
                     // Both views fall back to the generic one, so the state
                     // stays consistent: a view whose defining column is no
                     // longer collected would be a panel of em dashes.
-                    Source::Pss => self.view = View::Generic,
+                    Source::Pss => self.view = View::Cpu,
                     // Neither has a view to turn off: exit records go into the
                     // table beside live rows, and the clock ceiling is a header
                     // figure. The withheld clause is what says they stopped.

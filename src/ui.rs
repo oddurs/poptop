@@ -82,8 +82,8 @@ pub const PROCS_FLOOR_H: u16 = PROCS_FLOOR_ROWS + PROCS_CHROME_H;
 /// Never below the height it used to have, and never so tall the process table
 /// cannot be read.
 pub fn timeline_height(total: u16, header: u16) -> u16 {
-    // `total` is the whole frame; the bar has already taken its row.
-    let total = total.saturating_sub(MENU_H);
+    // `total` is the whole frame; the bar and the tab strip have taken theirs.
+    let total = total.saturating_sub(chrome_height(total));
     let spare = total.saturating_sub(header + PROCS_RESERVE_H + 1);
     let want = (spare * 2 / 5).clamp(TIMELINE_MIN_H, TIMELINE_MAX_H);
     // On a terminal too small for the floor, take what is left over — but never
@@ -101,7 +101,7 @@ pub fn timeline_height(total: u16, header: u16) -> u16 {
 pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
     // The menu bar sits above the header, so every panel is one row lower than
     // the constants alone would say.
-    let top = MENU_H + HEADER_H;
+    let top = chrome_height(total_height) + HEADER_H;
     top..top + timeline_height(total_height, HEADER_H)
 }
 
@@ -113,6 +113,7 @@ pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
 /// nothing would say so — the click would just do the wrong thing sometimes.
 pub struct Panels {
     pub menu: Rect,
+    pub tabs: Rect,
     pub header: Rect,
     pub timeline: Rect,
     pub table: Rect,
@@ -125,6 +126,7 @@ pub fn panels(app: &App, area: Rect) -> Panels {
     let header = header_height(app);
     let c = Layout::vertical([
         Constraint::Length(MENU_H),
+        Constraint::Length(tabs_height(area.height)),
         Constraint::Length(header),
         Constraint::Length(timeline_height(area.height, header)),
         // Whatever remains. `timeline_height` has already reserved the table's
@@ -136,10 +138,11 @@ pub fn panels(app: &App, area: Rect) -> Panels {
     .split(area);
     Panels {
         menu: c[0],
-        header: c[1],
-        timeline: c[2],
-        table: c[3],
-        help: c[4],
+        tabs: c[1],
+        header: c[2],
+        timeline: c[3],
+        table: c[4],
+        help: c[5],
     }
 }
 
@@ -168,6 +171,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     };
 
     draw_menu_bar(f, p.menu, app);
+    draw_tabs(f, p.tabs, app);
     draw_header(f, p.header, app, sample);
     draw_timeline(f, p.timeline, app);
     if app.show_cgroups {
@@ -179,6 +183,70 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Last, over everything: a dropdown that the table drew on top of would be
     // a menu you can open and cannot read.
     draw_dropdown(f, f.area(), app);
+}
+
+/// The rows above the header: the menu bar, and the tab strip if it fits.
+///
+/// A function rather than a constant, because the strip is the first row given
+/// up on a short terminal — and named once, because the last time a row was
+/// added at the top, twenty tests that had written `MENU_H` to mean "the offset
+/// to the header" all had to be found and changed.
+pub fn chrome_height(total: u16) -> u16 {
+    MENU_H + tabs_height(total)
+}
+
+/// Height of the tab strip, which is one row or none.
+///
+/// Drawn wherever there is room, because navigation nobody can see is
+/// navigation nobody uses. Given up before the timeline loses a row, because a
+/// graph too short to read is a worse loss than a strip whose contents the
+/// panel title still names.
+pub fn tabs_height(total: u16) -> u16 {
+    let without = MENU_H + HEADER_H + 1 + PROCS_FLOOR_H + TIMELINE_MIN_H;
+    u16::from(total > without)
+}
+
+/// Height of the tab strip when there is room for it.
+#[cfg(test)]
+pub const TABS_H: u16 = 1;
+
+/// The resource being examined, and the ones that are not.
+///
+/// Marked with an underline rather than colour alone. Five meaning-bearing hues
+/// are already spent, and a navigation strip that is invisible at the mono tier
+/// fails on exactly the terminals a monitor is most likely to be opened in.
+fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
+    let mut spans = vec![Span::raw(" ")];
+    for v in crate::app::View::ALL {
+        let on = app.view == v;
+        let style = if on {
+            app.theme
+                .title_style()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            app.theme.dim_style()
+        };
+        spans.push(Span::styled(format!("  {}  ", v.label()), style));
+    }
+    spans.push(Span::styled(
+        "   tab · 1-3".to_string(),
+        app.theme.dim_style(),
+    ));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Where a tab's name starts, in columns. Shared with the mouse.
+pub fn tab_column(index: usize) -> usize {
+    crate::app::View::ALL
+        .iter()
+        .take(index)
+        .fold(1, |at, v| at + v.label().chars().count() + 4)
+}
+
+/// Width of a tab's clickable region.
+pub fn tab_width(v: crate::app::View) -> usize {
+    v.label().chars().count() + 4
 }
 
 /// Height of the menu bar. One row, always drawn — a bar that appeared only
@@ -3073,7 +3141,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // What the disk columns are given room by. A view is a named list of
     // columns over one renderer, not a second renderer.
     let show_bars = app.view != crate::app::View::Disk;
-    let show_thr = app.view == crate::app::View::Generic;
+    let show_thr = app.view == crate::app::View::Cpu;
     // The memory view's own columns: what a process's memory actually costs,
     // what it has reserved, whether it is being paged in, and which way it is
     // going.
@@ -3679,7 +3747,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             // can no longer disagree — so saying one without the other leaves
             // the reader guessing which columns the ordering is over.
             match app.view {
-                crate::app::View::Generic => format!(" — sort: {}", app.sort.label()),
+                crate::app::View::Cpu => format!(" — sort: {}", app.sort.label()),
                 v => format!(" — {} view, sort: {}", v.label(), app.sort.label()),
             },
             plain,

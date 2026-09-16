@@ -38,6 +38,9 @@ pub enum Action {
     NextSort,
     AcceptSuggestedSort,
     NextView,
+    PrevView,
+    /// A tab by name, for the strip and the menu — a pointer names a place.
+    SetView(crate::app::View),
     NextGrouping,
     ToggleTree,
     ToggleDetail,
@@ -102,6 +105,17 @@ impl Action {
                     }
                 }
             }
+            Self::PrevView | Self::SetView(_) => {
+                app.view = match self {
+                    Self::PrevView => app.view.prev(),
+                    Self::SetView(v) => v,
+                    _ => unreachable!("guarded by the arm"),
+                };
+                app.insist_for_view();
+                if !app.view.sorts().contains(&app.sort) {
+                    app.sort = app.view.default_sort_for(app.io_collected());
+                }
+            }
             Self::NextView => {
                 app.view = app.view.next();
                 app.insist_for_view();
@@ -161,6 +175,7 @@ impl Action {
             Self::SetGlyphs(g) => app.glyphs == g,
             Self::SetAxis(a) => app.axis == a,
             Self::GotoLive => app.history.is_live(),
+            Self::SetView(v) => app.view == v,
             _ => return None,
         })
     }

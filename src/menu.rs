@@ -77,6 +77,10 @@ pub fn bar() -> Vec<Title> {
             name: "View",
             hotkey: 'V',
             items: vec![
+                Do("CPU", "1", SetView(crate::app::View::Cpu)),
+                Do("Memory", "2", SetView(crate::app::View::Memory)),
+                Do("Disk", "3", SetView(crate::app::View::Disk)),
+                Rule,
                 Do("Bars (block)", "", SetGlyphs(GlyphSet::Block)),
                 Do("Bars (braille)", "", SetGlyphs(GlyphSet::Braille)),
                 Do("Line", "", SetGlyphs(GlyphSet::Line)),
@@ -91,7 +95,6 @@ pub fn bar() -> Vec<Title> {
                 Do("Process detail", "d", ToggleDetail),
                 Do("Tree", "t", ToggleTree),
                 Do("Group", "g", NextGrouping),
-                Do("Columns", "v", NextView),
                 Rule,
                 Do("I/O columns", "i", ToggleIo),
                 Do("Thread count", "y", ToggleThreads),

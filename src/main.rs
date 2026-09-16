@@ -1517,6 +1517,12 @@ pub fn handle_mouse(app: &mut App, ev: event::MouseEvent, area: ratatui::layout:
                 app.menu.item = 0;
                 return;
             }
+            if inside(p.tabs)
+                && let Some(v) = tab_at(x)
+            {
+                Action::SetView(v).apply(app);
+                return;
+            }
             if inside(p.timeline) {
                 if let Some(a) = scrub_to(app, p.timeline, x) {
                     a.apply(app);
@@ -1549,6 +1555,17 @@ pub fn handle_mouse(app: &mut App, ev: event::MouseEvent, area: ratatui::layout:
         }
         _ => {}
     }
+}
+
+/// Which tab the column `x` falls in, if any.
+fn tab_at(x: u16) -> Option<crate::app::View> {
+    crate::app::View::ALL
+        .into_iter()
+        .enumerate()
+        .find_map(|(i, v)| {
+            let at = ui::tab_column(i) as u16;
+            (x >= at && x < at + ui::tab_width(v) as u16).then_some(v)
+        })
 }
 
 /// Which menu title the column `x` falls in, if any.
@@ -1667,6 +1684,15 @@ pub fn action_for(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
         // atop spends seven keys on this and poptop has three views and few
         // free letters.
         KeyCode::Char('v') => Action::NextView,
+        // The tab strip. Not `←`/`→`, which scrub time and must keep doing so:
+        // the timeline is the thing poptop has that Activity Monitor does not,
+        // and its keys come first.
+        KeyCode::Tab => Action::NextView,
+        KeyCode::BackTab => Action::PrevView,
+        KeyCode::Char(c @ '1'..='9') => {
+            let at = c as usize - '1' as usize;
+            Action::SetView(*crate::app::View::ALL.get(at)?)
+        }
         KeyCode::Char('i') => Action::ToggleIo,
         // atop's key for the same thing.
         KeyCode::Char('y') => Action::ToggleThreads,

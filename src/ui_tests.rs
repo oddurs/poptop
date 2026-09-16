@@ -216,7 +216,7 @@ fn one_node_costs_no_row_and_two_get_one() {
     let node_y = numa_rows.iter().position(|r| r.contains("nodes")).unwrap();
     assert_eq!(
         node_y,
-        ui::MENU_H as usize + 2,
+        CHROME as usize + 2,
         "the node row landed outside the header"
     );
     let below = &numa_rows[node_y + 1];
@@ -234,7 +234,7 @@ fn one_node_costs_no_row_and_two_get_one() {
     mixed.push(two_node_sample());
     mixed.history.scrub(-1);
     let scrubbed = rows(&mixed, 100, 30);
-    let node_row = ui::MENU_H as usize + 2;
+    let node_row = CHROME as usize + 2;
     assert_eq!(
         ui::header_height(&mixed),
         3,
@@ -291,9 +291,7 @@ fn a_nodes_colour_does_not_call_page_cache_lost_memory() {
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer().clone();
-    let row: Vec<_> = (0..100u16)
-        .map(|x| buf[(x, ui::MENU_H + 2)].clone())
-        .collect();
+    let row: Vec<_> = (0..100u16).map(|x| buf[(x, CHROME + 2)].clone()).collect();
     let text: String = row.iter().map(|c| c.symbol()).collect();
     assert!(text.contains("n0") && text.contains("n1"), "{text}");
 
@@ -461,7 +459,7 @@ fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
     let mut app = App::new(600);
     app.push(nfs_sample(0));
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let healthy = rows(&app, 160, 30)[ui::MENU_H as usize].clone();
+    let healthy = rows(&app, 160, 30)[CHROME as usize].clone();
 
     // The busiest mount, by calls. `/mnt/quiet` made three.
     assert!(
@@ -483,13 +481,13 @@ fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
     let mut sick = App::new(600);
     sick.push(nfs_sample(96));
     sick.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let bad = rows(&sick, 160, 30)[ui::MENU_H as usize].clone();
+    let bad = rows(&sick, 160, 30)[CHROME as usize].clone();
     assert!(bad.contains("8.0% re"), "{bad}");
 
     // And a machine with no NFS at all spends nothing on it.
     let mut plain = App::new(600);
     plain.push(sample(8.0));
-    let none = rows(&plain, 160, 30)[ui::MENU_H as usize].clone();
+    let none = rows(&plain, 160, 30)[CHROME as usize].clone();
     assert!(!none.contains("op/s"), "{none}");
 }
 
@@ -520,7 +518,7 @@ fn a_mount_that_stopped_answering_is_not_a_share_of_nothing() {
     });
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let row = rows(&app, 160, 30)[ui::MENU_H as usize].clone();
+    let row = rows(&app, 160, 30)[CHROME as usize].clone();
 
     assert!(
         row.contains("/mnt/hung"),
@@ -567,13 +565,13 @@ fn a_running_server_is_named_and_an_absent_one_is_not() {
     let mut s = nfs_sample(0);
     s.nfs.as_mut().unwrap().server_calls = Some(4800);
     app.push(s);
-    let with = rows(&app, 200, 30)[ui::MENU_H as usize].clone();
+    let with = rows(&app, 200, 30)[CHROME as usize].clone();
     assert!(with.contains("NFSD 4.8k op/s"), "{with}");
 
     // A machine that mounts NFS but serves none says nothing about serving.
     let mut client = App::new(600);
     client.push(nfs_sample(0));
-    let without = rows(&client, 200, 30)[ui::MENU_H as usize].clone();
+    let without = rows(&client, 200, 30)[CHROME as usize].clone();
     assert!(
         !without.contains("NFSD"),
         "a machine with no nfsd threads was reported as a server: {without}"
@@ -611,23 +609,22 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
     // Paused, not live: opening a day and being taken to the present would
     // discard the thing that was asked for.
     assert!(
-        oldest[ui::MENU_H as usize].contains("PAUSED"),
+        oldest[CHROME as usize].contains("PAUSED"),
         "a recorded day opened live: {}",
-        oldest[ui::MENU_H as usize]
+        oldest[CHROME as usize]
     );
 
     // And the cursor moves through it, showing a different moment.
     app.history.scrub(20);
     let middle = rows(&app, 120, 30);
     assert_ne!(
-        oldest[ui::MENU_H as usize],
-        middle[ui::MENU_H as usize],
+        oldest[CHROME as usize], middle[CHROME as usize],
         "scrubbing a recorded day changed nothing"
     );
     app.history.goto_oldest();
     assert_eq!(
-        rows(&app, 120, 30)[ui::MENU_H as usize],
-        oldest[ui::MENU_H as usize]
+        rows(&app, 120, 30)[CHROME as usize],
+        oldest[CHROME as usize]
     );
 
     // A live sample must not be pushed into it. The buffer is sized to the day
@@ -637,7 +634,7 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
     // push while replaying; this is the property that makes it have to.
     app.history.push(sample(99.0));
     assert_ne!(
-        rows(&app, 120, 30)[ui::MENU_H as usize],
+        rows(&app, 120, 30)[CHROME as usize],
         oldest[0],
         "pushing into a full replay buffer left the view alone, so this test no \
          longer covers why `run` must not do it"
@@ -1907,7 +1904,7 @@ fn mono_tier_still_marks_the_paused_state() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let reversed = (0..buf.area.width).any(|x| {
-        buf[(x, ui::MENU_H)]
+        buf[(x, CHROME)]
             .modifier
             .contains(ratatui::style::Modifier::REVERSED)
     });
@@ -2616,7 +2613,7 @@ fn the_header_reports_the_values_at_the_cursor_not_the_live_ones() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     app.history.scrub(-35); // back into the 90% region
 
-    let header = rows(&app, 100, 24)
+    let header = header_rows(&app, 100, 24)
         .into_iter()
         .find(|l| l.contains("CPU"))
         .expect("no header");
@@ -2912,7 +2909,7 @@ fn status_colour_is_kept_where_it_answers_is_this_bad() {
         };
         // Figures then cores. Taken from `HEADER_H` rather than written down:
         // the header lost a row and every hardcoded index moved with it.
-        (row(ui::MENU_H), row(ui::MENU_H + ui::HEADER_H - 1))
+        (row(CHROME), row(CHROME + ui::HEADER_H - 1))
     };
     let (h_idle, c_idle) = styles_at(5.0);
     let (h_busy, c_busy) = styles_at(95.0);
@@ -2978,7 +2975,7 @@ fn status_and_identity_hues_stay_in_their_own_panels() {
                     // `ok` hue by design, so it alone would satisfy a naive
                     // "some status colour appeared" check even with every
                     // figure, meter and table cell stripped of status colour.
-                    if status.contains(&c.fg) && !blank && y >= ui::MENU_H + ui::HEADER_H {
+                    if status.contains(&c.fg) && !blank && y >= CHROME + ui::HEADER_H {
                         status_hues.insert(format!("{:?}", c.fg));
                     }
                 }
@@ -3098,7 +3095,7 @@ fn the_stated_scale_matches_the_colouring_it_describes() {
         let mut term = Terminal::new(TestBackend::new(170, 30)).unwrap();
         term.draw(|f| ui::draw(f, &app)).unwrap();
         let buf = term.backend().buffer();
-        let row: String = (0..170u16).map(|x| buf[(x, ui::MENU_H)].symbol()).collect();
+        let row: String = (0..170u16).map(|x| buf[(x, CHROME)].symbol()).collect();
         assert!(
             row.contains(&format!("warn {warn}")),
             "the header does not print warn {warn}: {row:?}"
@@ -3251,7 +3248,7 @@ fn a_many_core_machine_summarises_rather_than_clipping() {
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
             let row: String = (0..w)
-                .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
+                .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
                 .collect();
             let drawn = row.chars().filter(|c| BAR_GLYPHS.contains(c)).count();
             // Whatever it degrades to, the count itself is always stated.
@@ -3299,7 +3296,7 @@ fn a_host_with_no_per_core_data_says_so() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let row: String = (0..100u16)
-        .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
+        .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
         .collect();
     assert!(
         row.contains("not reported"),
@@ -3321,7 +3318,7 @@ fn show_core_overflow() {
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
             let row: String = (0..w)
-                .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
+                .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
                 .collect();
             println!("  {cores:>4} cores, w={w:<4} |{}|", row);
         }
@@ -3339,7 +3336,7 @@ fn growing_the_timeline_never_shrinks_it() {
     // two floors compete below seventeen rows, and the table wins: a nine-row
     // graph on a fourteen-row terminal was bought with a table showing no
     // processes at all, which is not a trade between resolutions.
-    let smallest_that_fits = ui::MENU_H + ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
+    let smallest_that_fits = CHROME + ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
     for total in smallest_that_fits..=200u16 {
         assert!(
             ui::timeline_height(total, ui::HEADER_H) >= ui::TIMELINE_MIN_H,
@@ -3522,8 +3519,10 @@ fn the_process_table_always_keeps_some_rows() {
     // Including on terminals too small for the timeline's own floor, where the
     // timeline takes what is left rather than the height it would prefer.
     for total in 6..=80u16 {
+        // The real function, not `CHROME`: this loop runs down to six rows,
+        // where the tab strip has already given its row up.
         let left = total.saturating_sub(
-            ui::MENU_H + ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1,
+            ui::chrome_height(total) + ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1,
         );
         assert!(left >= 1, "total={total}: process table got {left} rows");
     }
@@ -3623,7 +3622,7 @@ fn present_at(app: &App, w: u16, h: u16) -> Present {
         // The last header row, whichever that is. Written down as `2` it kept
         // pointing at the timeline the moment the header lost a row.
         core_meters: {
-            let r = row(ui::MENU_H + ui::HEADER_H - 1);
+            let r = row(CHROME + ui::HEADER_H - 1);
             r.contains('▇') || r.contains('▄') || r.contains('▁')
         },
         // Scoped to the timeline's gutter columns. Matching "CPU " anywhere
@@ -3833,7 +3832,7 @@ fn core_meters_are_countable_in_groups() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let row: String = (0..100u16)
-        .map(|x| buf[(x, ui::MENU_H + ui::HEADER_H - 1)].symbol())
+        .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
         .collect();
     let meters = row.trim_end().split_once("cores ").unwrap().1;
     // Fourteen cores in groups of four: three gaps.
@@ -4964,7 +4963,7 @@ fn measure_render_with_sparklines() {
 /// moved down into the figures, and a dozen assertions had been reading line 1
 /// by number — every one of them silently repointed at the per-core meters.
 fn figures_line(app: &App, w: u16, h: u16) -> String {
-    render_lines(app, w, h)[ui::MENU_H as usize].clone()
+    render_lines(app, w, h)[CHROME as usize].clone()
 }
 
 fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
@@ -5661,7 +5660,10 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     app.tree = true;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let rows: Vec<String> = rows(&app, 104, 24)
+    // One row taller than it was: the tab strip took a row from the table, and
+    // this test is about what a *deep tree* does with nine rows rather than
+    // about how many rows there happen to be.
+    let rows: Vec<String> = rows(&app, 104, 25)
         .into_iter()
         .filter(|l| l.contains("Chrome") || l.contains('…'))
         .collect();
@@ -7877,7 +7879,7 @@ fn sorting_does_not_move_the_selection_to_a_different_process() {
 
     let mut seen = Vec::new();
     for _ in 0..4 {
-        app.sort = app.sort.next(false, crate::app::View::Generic);
+        app.sort = app.sort.next(false, crate::app::View::Cpu);
         let rows = app.visible_rows();
         let i = app.row_of(&rows).expect("the sort lost the selection");
         assert_eq!(&*rows[i].proc.name, "redis", "the sort moved the selection");
@@ -8420,12 +8422,12 @@ fn the_sort_cycle_skips_disk_when_there_are_no_disk_figures() {
     let mut seen = vec![Sort::Cpu];
     let mut s = Sort::Cpu;
     for _ in 0..6 {
-        s = s.next(false, crate::app::View::Generic);
+        s = s.next(false, crate::app::View::Cpu);
         seen.push(s);
     }
     assert!(!seen.contains(&Sort::Disk), "cycled onto an empty column");
     // …and reaches it when the figures exist.
-    assert_eq!(Sort::Mem.next(true, crate::app::View::Generic), Sort::Disk);
+    assert_eq!(Sort::Mem.next(true, crate::app::View::Cpu), Sort::Disk);
 }
 
 #[test]
@@ -8982,7 +8984,7 @@ fn a_machine_at_nominal_clock_spends_no_header_space_saying_so() {
         let mut a = App::new(60);
         a.theme = app.theme;
         a.push(s);
-        let header = rows(&a, 160, 20)
+        let header = header_rows(&a, 160, 20)
             .into_iter()
             .find(|l| l.contains("CPU"))
             .expect("no header");
@@ -9007,7 +9009,7 @@ fn the_clock_figure_qualifies_the_cpu_figure_it_sits_beside() {
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let header = rows(&app, 160, 20)
+    let header = header_rows(&app, 160, 20)
         .into_iter()
         .find(|l| l.contains("CPU"))
         .unwrap();
@@ -9027,7 +9029,7 @@ fn the_clock_figure_qualifies_the_cpu_figure_it_sits_beside() {
     // saying the machine is in trouble first. Rank decides what is dropped;
     // group decides where it sits, so the position above proves nothing about
     // the ladder.
-    let narrow = rows(&app, 46, 20)
+    let narrow = header_rows(&app, 46, 20)
         .into_iter()
         .find(|l| l.contains("CPU"))
         .expect("no header at 46 columns");
@@ -10873,7 +10875,7 @@ fn the_sort_and_the_view_cannot_disagree() {
 fn switching_views_brings_an_unreachable_sort_with_it() {
     use crate::app::{Sort, View};
     let mut app = App::new(600);
-    app.view = View::Generic;
+    app.view = View::Cpu;
     app.sort = Sort::Disk;
     // Memory does not show disk, so the sort has to move.
     app.view = View::Memory;
@@ -10894,7 +10896,7 @@ fn the_panel_names_the_view_when_it_is_not_the_default() {
     // view is the one that needs no announcing, so it is the *clause* that must
     // be absent.
     assert!(
-        !generic.contains("generic view"),
+        !generic.contains("CPU view"),
         "the default view is named for no reason:\n{generic}"
     );
 
@@ -10902,7 +10904,7 @@ fn the_panel_names_the_view_when_it_is_not_the_default() {
     app.sort = app.view.default_sort_for(true);
     let mem = rows(&app, 140, 10).join("\n");
     assert!(
-        mem.contains("memory view, sort: MEM"),
+        mem.contains("Memory view, sort: MEM"),
         "the panel does not say which columns the ordering is over:\n{mem}"
     );
 }
@@ -10937,7 +10939,7 @@ fn every_view_renders_every_kind_of_row() {
     // lockstep, and a view drops entries from all three. A mismatch does not
     // panic — ratatui just misaligns the columns silently — so this walks every
     // view against every row shape the table can produce.
-    for view in [View::Generic, View::Memory, View::Disk] {
+    for view in [View::Cpu, View::Memory, View::Disk] {
         for grouping in [Grouping::Off, Grouping::Name] {
             let mut app = App::new(600);
             app.push(sample_with_threads());
@@ -11051,7 +11053,7 @@ fn the_memory_view_shows_what_a_process_actually_costs() {
         );
     }
     // And the generic view does not carry them.
-    app.view = View::Generic;
+    app.view = View::Cpu;
     let generic = rows(&app, 160, 10).join("\n");
     assert!(
         !generic.contains("MAJF/s"),
@@ -11093,7 +11095,7 @@ fn proportional_memory_is_only_read_while_the_view_that_shows_it_is_open() {
     assert!(!app.needs().asked(Source::Pss), "read unasked");
     app.view = View::Memory;
     assert_eq!(app.needs().asked(Source::Pss), supported);
-    app.view = View::Generic;
+    app.view = View::Cpu;
     assert!(
         !app.needs().asked(Source::Pss),
         "the read outlived the view"
@@ -11873,6 +11875,46 @@ fn show_menu() {
     }
 }
 
+/// The header panel's rows, sliced from the layout rather than searched for.
+///
+/// Searching the frame for a line containing "CPU" used to find the header.
+/// The tab strip is named `CPU` too and sits above it, so a frame-wide search
+/// now finds the navigation and reports it as figures — which is a whole class
+/// of test that would silently start asking the wrong question.
+fn header_rows(app: &App, w: u16, h: u16) -> Vec<String> {
+    let all = rows(app, w, h);
+    let p = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h));
+    all.into_iter()
+        .skip(p.header.y as usize)
+        .take(p.header.height as usize)
+        .collect()
+}
+
+/// The rows above the header on a frame with room for everything.
+///
+/// A constant because every test that uses it renders a tall frame, and
+/// threading the height through forty call sites to re-derive a two would be
+/// noise. `the_test_constant_matches_the_real_chrome` is what stops it drifting.
+const CHROME: u16 = ui::MENU_H + ui::TABS_H;
+
+#[test]
+fn the_test_constant_matches_the_real_chrome() {
+    for h in [24, 30, 40, 60] {
+        assert_eq!(
+            ui::chrome_height(h),
+            CHROME,
+            "at {h} rows the chrome is not what the tests assume"
+        );
+    }
+    // And it really does give way on a short frame, or it would not be the
+    // first row surrendered.
+    assert_eq!(
+        ui::tabs_height(14),
+        0,
+        "the tab strip held its row on a short frame"
+    );
+}
+
 // ── the menu bar ────────────────────────────────────────────────────────────
 
 /// Press a key with no modifiers.
@@ -12187,20 +12229,17 @@ fn clicking_a_dropdown_item_runs_it_and_clicking_away_closes() {
     // The frame is not an item. Checked against the *first* item, because that
     // is the one a fall-through lands on: `y - (top + 1)` underflows to zero on
     // the border row, so a missing bounds check runs item zero silently.
+    // Aimed at whatever the first item happens to be, since the menu grows:
+    // `y - (top + 1)` underflows to zero on the border row, so a missing bounds
+    // check runs item zero silently.
     app.menu.open = Some(2);
-    app.glyphs = crate::glyphs::GlyphSet::Ascii;
-    assert_eq!(
-        items[0].action(),
-        Some(crate::command::Action::SetGlyphs(
-            crate::glyphs::GlyphSet::Block
-        )),
-        "this test is aimed at the wrong item"
-    );
+    let first = items[0].action().expect("the first item is a separator");
+    let before = (app.view, app.glyphs, app.tree, app.detail);
     click(&mut app, rect.x + 3, rect.y, 100, 26);
     assert_eq!(
-        app.glyphs,
-        crate::glyphs::GlyphSet::Ascii,
-        "clicking the border ran the first item"
+        (app.view, app.glyphs, app.tree, app.detail),
+        before,
+        "clicking the border ran the first item ({first:?})"
     );
 
     // And clicking past the box dismisses it rather than leaving it up.
@@ -12400,7 +12439,7 @@ fn the_terminals_own_background_is_left_alone() {
     let frame = grounds(&app, 92, 24);
 
     // The header and the footer sit on the ground, and it is not painted.
-    let header: Vec<_> = frame[ui::MENU_H as usize].iter().flatten().collect();
+    let header: Vec<_> = frame[CHROME as usize].iter().flatten().collect();
     assert!(
         header.is_empty(),
         "the header painted over the terminal's own background"
@@ -12557,4 +12596,134 @@ fn the_table_stripes_alternate_and_the_selection_beats_them() {
         bg_of(&app, table_top + 1),
         "a selected row looks different depending on whether it is striped"
     );
+}
+
+// ── the tab strip ───────────────────────────────────────────────────────────
+
+#[test]
+fn the_resource_on_screen_is_named_without_pressing_anything() {
+    // `v` cycled Generic → Memory → Disk and nothing on screen said which one
+    // you were in, that the others existed, or how to go back one. Activity
+    // Monitor spends its most valuable strip of screen on exactly this.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let strip = rows(&app, 100, 26)[ui::MENU_H as usize].clone();
+    for v in crate::app::View::ALL {
+        assert!(
+            strip.contains(v.label()),
+            "{} is not on the tab strip: {strip:?}",
+            v.label()
+        );
+    }
+    assert!(
+        strip.contains("tab"),
+        "the strip does not say how to move between them: {strip:?}"
+    );
+}
+
+#[test]
+fn the_current_tab_is_marked_without_relying_on_colour() {
+    // Five meaning-bearing hues are already spent, and a navigation strip that
+    // is invisible at the mono tier fails on exactly the terminals a monitor is
+    // most likely to be opened in.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::Mono);
+    let marked = |app: &App| {
+        let mut term = Terminal::new(TestBackend::new(100, 26)).unwrap();
+        term.draw(|f| ui::draw(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..100u16)
+            .filter(|&x| {
+                buf[(x, ui::MENU_H)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::UNDERLINED)
+                    && buf[(x, ui::MENU_H)].symbol() != " "
+            })
+            .map(|x| buf[(x, ui::MENU_H)].symbol().to_string())
+            .collect::<String>()
+    };
+    for v in crate::app::View::ALL {
+        app.view = v;
+        assert_eq!(
+            marked(&app),
+            v.label(),
+            "the mono tier marks the wrong tab, or none"
+        );
+    }
+}
+
+#[test]
+fn the_tabs_are_reachable_by_key_by_menu_and_by_mouse() {
+    let mut app = App::new(600);
+    // Several samples, so the arrow key below has somewhere to go: from a
+    // one-sample buffer it correctly does nothing, which would pass the test
+    // that says it still scrubs.
+    for i in (0..20).rev() {
+        app.push(sample_at(10.0, i));
+    }
+
+    // Tab and Shift-Tab, and they must not be the arrows: those scrub time, and
+    // the timeline is the thing poptop has that Activity Monitor does not.
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.view, crate::app::View::Cpu.next());
+    press(&mut app, KeyCode::BackTab);
+    assert_eq!(app.view, crate::app::View::Cpu);
+    let at = app.history.cursor_index();
+    press(&mut app, KeyCode::Left);
+    assert_ne!(
+        app.history.cursor_index(),
+        at,
+        "the arrows stopped scrubbing"
+    );
+
+    // The number keys.
+    for (i, v) in crate::app::View::ALL.into_iter().enumerate() {
+        press(&mut app, KeyCode::Char((b'1' + i as u8) as char));
+        assert_eq!(app.view, v, "key {} did not open {}", i + 1, v.label());
+    }
+
+    // The mouse.
+    for (i, v) in crate::app::View::ALL.into_iter().enumerate() {
+        app.view = crate::app::View::Cpu;
+        let at = crate::ui::tab_column(i) + v.label().chars().count() / 2 + 2;
+        click(&mut app, at as u16, ui::MENU_H, 100, 26);
+        assert_eq!(
+            app.view,
+            v,
+            "clicking {} at column {at} opened {:?}",
+            v.label(),
+            app.view
+        );
+    }
+
+    // And the menu.
+    let items: Vec<_> = crate::menu::bar()
+        .into_iter()
+        .flat_map(|t| t.items)
+        .collect();
+    for v in crate::app::View::ALL {
+        assert!(
+            items
+                .iter()
+                .any(|i| i.action() == Some(crate::command::Action::SetView(v))),
+            "{} is not in the menu",
+            v.label()
+        );
+    }
+}
+
+#[test]
+fn the_tab_strip_is_the_first_row_given_up() {
+    // A graph too short to read is a worse loss than a strip whose contents the
+    // panel title still names.
+    assert_eq!(ui::tabs_height(80), 1, "a tall terminal has no strip");
+    assert_eq!(ui::tabs_height(10), 0, "a short terminal kept the strip");
+    // And giving it up buys the timeline its floor back.
+    for total in 6..=80u16 {
+        let left = total.saturating_sub(
+            ui::chrome_height(total) + ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1,
+        );
+        assert!(left >= 1, "total={total}: the table got {left} rows");
+    }
 }
