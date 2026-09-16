@@ -2,7 +2,7 @@
 id: 127
 title: The table should look like a table
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -29,18 +29,26 @@ Details, and they are what the screenshot is actually made of:
   the end, and the useful half of a Java or Electron command line is in the
   middle. poptop already elides commands; the table's name column does not.
 
-## What needs deciding
+## What was decided
 
-- **Separators cost a column each.** Between eight columns that is eight
-  columns, on a table that is already fighting for width. A separator only in
-  the header — which is what Activity Monitor does — costs nothing per row and
-  may be enough.
-- **The gutter costs a column always.** It earns it only if something is in it
-  more often than not.
+Half of this had already landed by the time it was picked up, which is worth
+recording rather than quietly ticking.
 
-## Acceptance criteria
+**Reading across a wide row** is answered by the zebra striping from the
+surfaces work, not by separators. Separators cost a column each and there are
+eight of them; the header is a raised band rather than a hairline, which is
+stronger and costs nothing per row.
 
-- [ ] A wide row can be read across without losing the line
-- [ ] Every numeric column is right-aligned and every text column is not
-- [ ] The selected row is identifiable without relying on the background
-- [ ] A truncated name keeps the half that identifies it
+**The leading gutter was declined.** It costs a column always and earns it only
+if something is in it more often than not. The selection is carried by bold, a
+foreground *and* a background — three channels, one of which survives every
+tier — so it does not rest on the ground, which is what the gutter was for.
+
+**Middle truncation was already there** — `elide_middle`, used by the command
+column, which is the name column.
+
+**Alignment was a convention followed by hand and checked nowhere.** It is now a
+field on `Column`, and the header reads it rather than each of fourteen push
+sites choosing for itself. So a column cannot be declared numeric and drawn
+left, which was possible an hour ago and is the only thing here that was
+actually broken.

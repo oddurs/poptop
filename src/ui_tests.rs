@@ -13589,3 +13589,143 @@ fn a_prompt_outranks_the_action_bar() {
         "the action bar displaced the confirmation: {footer:?}"
     );
 }
+
+// ── the table's own shape ───────────────────────────────────────────────────
+
+#[test]
+fn every_numeric_column_is_right_aligned_and_every_text_column_is_not() {
+    // The rule was followed by hand in eleven places and checked nowhere. A
+    // figure that does not share a right edge with the one above it cannot be
+    // compared by eye, which is most of what a column of figures is for.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    // Deliberately different widths in every column: `7.0` against `100.0`, a
+    // megabyte against a gigabyte, two digits of pid against six. A uniform
+    // fixture would pass whatever the alignment was.
+    s.procs = vec![
+        ProcSample {
+            cpu: 100.0,
+            rss: 4 << 30,
+            threads: Some(128),
+            io: Some(crate::sample::IoRates {
+                read: 900 << 20,
+                write: 7,
+            }),
+            started: Some(1),
+            ..proc_named(999_999, "postgres", 0.0, 0)
+        },
+        ProcSample {
+            cpu: 7.0,
+            rss: 1 << 20,
+            threads: Some(2),
+            io: Some(crate::sample::IoRates { read: 3, write: 0 }),
+            started: Some(2),
+            ..proc_named(42, "sh", 0.0, 0)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let (w, h) = (170u16, 26u16);
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let shape = ui::table_shape(&app, panel);
+    let (widths, cols) = ui::table_columns(
+        shape.bars,
+        shape.thr,
+        shape.io,
+        shape.mem_cols,
+        shape.user,
+        shape.cid,
+    );
+    // The same split the table lays itself out with.
+    let cells = ratatui::layout::Layout::horizontal(widths)
+        .spacing(1)
+        .split(ratatui::layout::Rect::new(
+            panel.x,
+            panel.y + 1,
+            panel.width,
+            1,
+        ));
+
+    let table = table_rows(&app, w, h);
+    let rows: Vec<&String> = table
+        .iter()
+        .filter(|l| l.contains("postgres") || l.contains(" sh"))
+        .collect();
+    assert_eq!(rows.len(), 2, "expected two rows: {rows:?}");
+
+    for (i, col) in cols.iter().enumerate() {
+        let rect = cells[i];
+        let slice = |l: &str| -> String {
+            l.chars()
+                .skip(rect.x as usize)
+                .take(rect.width as usize)
+                .collect()
+        };
+        let cut: Vec<String> = rows.iter().map(|l| slice(l)).collect();
+        if cut.iter().any(|c| c.trim().is_empty()) {
+            continue; // an empty column says nothing about alignment
+        }
+        if col.numeric {
+            assert!(
+                cut.iter()
+                    .all(|c| c.ends_with(|ch: char| !ch.is_whitespace())),
+                "a numeric column does not share a right edge: {cut:?}"
+            );
+        } else {
+            let pad = |c: &String| c.len() - c.trim_start().len();
+            assert!(
+                cut.iter()
+                    .map(pad)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    == 1,
+                "a text column does not share a left edge: {cut:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_truncated_name_keeps_the_half_that_identifies_it() {
+    // Three rows reading `Google Chrome Helpe` are a renderer, a GPU process
+    // and a network service. Cutting the head is no better: `…Helper
+    // (Renderer)` could belong to any application on the machine.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cmd: Some(std::sync::Arc::from(
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (Renderer)",
+        )),
+        started: Some(1),
+        ..proc_named(824, "Google Chrome H", 10.0, 1 << 20)
+    }];
+    app.push(s);
+    let row = table_rows(&app, 110, 26)
+        .into_iter()
+        .find(|l| l.contains('…'))
+        .expect("nothing was elided");
+    assert!(row.contains("/Applications"), "the head was cut: {row:?}");
+    assert!(row.contains("(Renderer)"), "the tail was cut: {row:?}");
+}
+
+#[test]
+fn the_selected_row_is_identifiable_without_its_background() {
+    // A screenshot, a copy-paste, a terminal whose theme fights the selection
+    // colour: the row has to be findable by more than its ground.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor);
+    let sel = t.selection_style();
+    assert!(
+        sel.add_modifier.contains(ratatui::style::Modifier::BOLD),
+        "the selection rests on its background alone"
+    );
+    assert!(sel.fg.is_some(), "the selection sets no foreground");
+    // And at the mono tier, where there is no background to rest on.
+    let mono = Theme::new(Palette::Safe, Tier::Mono).selection_style();
+    assert!(
+        mono.add_modifier
+            .contains(ratatui::style::Modifier::REVERSED),
+        "the mono tier cannot show a selection at all"
+    );
+}

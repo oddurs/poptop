@@ -3386,7 +3386,15 @@ pub fn sort_at(app: &App, area: Rect, x: u16) -> Option<crate::app::Sort> {
     cells
         .iter()
         .position(|r| x >= r.x && x < r.x + r.width)
-        .and_then(|i| sorts.get(i).copied().flatten())
+        .and_then(|i| sorts.get(i).and_then(|c| c.sort))
+}
+
+/// One of the table's columns.
+pub struct Column {
+    /// The ordering this column stands for, or `None` if it is not one.
+    pub sort: Option<crate::app::Sort>,
+    /// Figures right, text left. Bars and the sparkline are neither.
+    pub numeric: bool,
 }
 
 /// The table's columns: how wide each is, and which sort key it stands for.
@@ -3405,51 +3413,54 @@ pub fn table_columns(
     show_mem_cols: bool,
     show_user: bool,
     show_cid: bool,
-) -> (Vec<Constraint>, Vec<Option<crate::app::Sort>>) {
+) -> (Vec<Constraint>, Vec<Column>) {
     use crate::app::Sort;
     let mut widths = Vec::new();
     let mut sorts = Vec::new();
-    let mut col = |w: Constraint, s: Option<Sort>| {
+    // `numeric` is the alignment rule written down: figures right, text left,
+    // and the bars and the sparkline are pictures rather than either. It was a
+    // convention followed by hand in eleven places and checked nowhere.
+    let mut col = |w: Constraint, sort: Option<Sort>, numeric: bool| {
         widths.push(w);
-        sorts.push(s);
+        sorts.push(Column { sort, numeric });
     };
-    col(Constraint::Length(6), Some(Sort::Cpu));
+    col(Constraint::Length(6), Some(Sort::Cpu), true);
     if show_bars {
         // The bar, plus room for the over-100 mark.
         // The bar is the same key as the figure beside it, and `None` here
         // because the caret belongs on the label, not on both.
-        col(Constraint::Length(BAR_W as u16 + 1), None);
+        col(Constraint::Length(BAR_W as u16 + 1), None, false);
     }
-    col(Constraint::Length(8), Some(Sort::Mem));
+    col(Constraint::Length(8), Some(Sort::Mem), true);
     if show_bars {
-        col(Constraint::Length(BAR_W as u16), None);
+        col(Constraint::Length(BAR_W as u16), None, false);
     }
-    col(Constraint::Length(2), None);
+    col(Constraint::Length(2), None, false);
     if show_thr {
-        col(Constraint::Length(4), None);
+        col(Constraint::Length(4), None, true);
     }
     if show_io {
         // The pair is ordered by read *plus* write. The caret goes on the
         // first of them, which reads as "sorted from here" rather than as a
         // claim about that column alone.
-        col(Constraint::Length(9), Some(Sort::Disk));
-        col(Constraint::Length(9), None);
+        col(Constraint::Length(9), Some(Sort::Disk), true);
+        col(Constraint::Length(9), None, true);
     }
     if show_mem_cols {
         for w in [8, 8, 7, 8] {
-            col(Constraint::Length(w), None);
+            col(Constraint::Length(w), None, true);
         }
     }
-    col(Constraint::Length(SPARK_W as u16), None);
-    col(Constraint::Length(7), Some(Sort::Pid));
+    col(Constraint::Length(SPARK_W as u16), None, false);
+    col(Constraint::Length(7), Some(Sort::Pid), true);
     if show_user {
-        col(Constraint::Length(USER_W), None);
+        col(Constraint::Length(USER_W), None, false);
     }
     if show_cid {
         // Twelve characters, which is what `docker ps` shows.
-        col(Constraint::Length(CID_W), None);
+        col(Constraint::Length(CID_W), None, false);
     }
-    col(Constraint::Min(MIN_COMMAND_W), Some(Sort::Name));
+    col(Constraint::Min(MIN_COMMAND_W), Some(Sort::Name), false);
     (widths, sorts)
 }
 
@@ -3837,7 +3848,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     //
     // Always descending, because "what is using the most" is the question. The
     // caret says *which* column, not which direction.
-    let (_, sorts) = table_columns(
+    // One walk of the column list, giving each header both its caret and its
+    // alignment. The alignment used to be chosen by hand at each of fourteen
+    // push sites, so a column could be declared numeric and drawn left with
+    // nothing to say the two had parted company.
+    let (_, cols) = table_columns(
         show_bars,
         show_thr,
         show_io,
@@ -3846,52 +3861,56 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         show_cid,
     );
     let mut nth = 0usize;
-    let mut sorted = move || {
-        let is = sorts.get(nth).copied().flatten() == Some(app.sort);
+    let mut head = move |label: &str| {
+        let col = cols.get(nth);
         nth += 1;
-        if is { "▾" } else { "" }
+        let mark = if col.and_then(|c| c.sort) == Some(app.sort) {
+            "▾"
+        } else {
+            ""
+        };
+        // Prefixed on a right-aligned header and suffixed on a left-aligned
+        // one, so the caret sits in the padding the column already has.
+        // Appending it to a right-aligned label pushes the label two columns
+        // left and the header stops sharing a right edge with the figures under
+        // it — `a_column_of_figures_shares_a_right_edge` is about exactly that.
+        if col.is_some_and(|c| c.numeric) {
+            num(format!("{mark}{label}")).style(app.theme.table_header_style())
+        } else {
+            Cell::from(format!("{label}{mark}")).style(app.theme.table_header_style())
+        }
     };
-    // Prefixed on a right-aligned header and suffixed on a left-aligned one, so
-    // the caret sits in the padding the column already has. Appending it to a
-    // right-aligned label pushes the label two columns left and the header
-    // stops sharing a right edge with the figures under it —
-    // `a_column_of_figures_shares_a_right_edge` is about exactly that.
-    let right =
-        |s: &str, mark: &str| num(format!("{mark}{s}")).style(app.theme.table_header_style());
-    let left = |s: &str, mark: &str| {
-        Cell::from(format!("{s}{mark}")).style(app.theme.table_header_style())
-    };
-    let mut header_cells = vec![right("CPU%", sorted())];
+    let mut header_cells = vec![head("CPU%")];
     if show_bars {
-        header_cells.push(left("", sorted()));
+        header_cells.push(head(""));
     }
-    header_cells.push(right("RSS", sorted()));
+    header_cells.push(head("RSS"));
     if show_bars {
-        header_cells.push(left("", sorted()));
+        header_cells.push(head(""));
     }
-    header_cells.push(left("S", sorted()));
+    header_cells.push(head("S"));
     if show_thr {
-        header_cells.push(right("THR", sorted()));
+        header_cells.push(head("THR"));
     }
     if show_io {
-        header_cells.push(right("DISK R", sorted()));
-        header_cells.push(right("DISK W", sorted()));
+        header_cells.push(head("DISK R"));
+        header_cells.push(head("DISK W"));
     }
     if show_mem_cols {
-        header_cells.push(right("PSS", sorted()));
-        header_cells.push(right("VSZ", sorted()));
-        header_cells.push(right("MAJF/s", sorted()));
-        header_cells.push(right("GROW", sorted()));
+        header_cells.push(head("PSS"));
+        header_cells.push(head("VSZ"));
+        header_cells.push(head("MAJF/s"));
+        header_cells.push(head("GROW"));
     }
-    header_cells.push(left(&spark_header(spark_ceiling), sorted()));
-    header_cells.push(right("PID", sorted()));
+    header_cells.push(head(&spark_header(spark_ceiling)));
+    header_cells.push(head("PID"));
     if show_user {
-        header_cells.push(left("USER", sorted()));
+        header_cells.push(head("USER"));
     }
     if show_cid {
-        header_cells.push(left("CID", sorted()));
+        header_cells.push(head("CID"));
     }
-    header_cells.push(left("COMMAND", sorted()));
+    header_cells.push(head("COMMAND"));
     let header = Row::new(header_cells).style(app.theme.table_header_style());
 
     // What the table cannot show, said out loud. A process that lived 200ms is
