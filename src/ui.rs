@@ -671,6 +671,15 @@ fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a
     };
 
     // What to keep: by rank, least diagnostic first out.
+    //
+    // *Not* by the tab. Biasing this toward the tab's own group was tried and
+    // is wrong: `Group` says where a figure sits, not how much it explains, and
+    // `Compute` holds both the two figures that answer "why is this slow" and
+    // the load average that conflates them. Promoting the group promoted the
+    // one figure the ladder had deliberately demoted.
+    //
+    // The header is about the machine, and "why is this machine slow" has the
+    // same answer whichever table you are reading. The tab governs the columns.
     let mut order: Vec<usize> = (0..figures.len()).collect();
     order.sort_by_key(|&i| figures[i].rank);
     let mut keep = vec![false; figures.len()];

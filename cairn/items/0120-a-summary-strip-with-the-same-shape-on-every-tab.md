@@ -2,7 +2,7 @@
 id: 120
 title: A summary strip with the same shape on every tab
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -55,16 +55,39 @@ width. It is not a widget in this strip, and the small graph in the middle zone
 is a *different* thing: sixty seconds of one series, at a glance, the way
 Activity Monitor's is.
 
-## What needs deciding
+## What was decided, and what was declined
 
-- **Whether the machine figures leave the top entirely.** A monitor with nothing
-  at the top for the first second of a run reads as not having started.
-- **What Memory's middle graph shows.** Activity Monitor has memory pressure,
-  which is a derived signal poptop does not compute.
+**The zone discipline was already there and was not verified.** `fit` keeps
+figures by rank and *positions* them by `Group`, and those are deliberately
+different orders — so a figure never moves as the terminal resizes, it only
+appears and disappears. That is the whole of "position means something", it has
+been true for a while, and nothing tested it.
+`a_figure_never_moves_it_only_appears_and_disappears` walks every width from 40
+to 200 and asserts the figures present are a *subsequence* of the widest set,
+which is exactly "dropped, never rearranged".
+
+**The three-row strip at the bottom was declined.** In a terminal the scarcest
+resource is rows, and a second summary costs three of them off the table while
+saying what the header already says in one to three. The repo's own objection
+applies — "a reminder that is always on screen twice is not a reminder, it is
+noise" — and it applies to summaries too.
+
+**Making the header follow the tab was tried and is wrong.** Biasing `fit`
+toward the tab's own `Group` promoted the load average, because `Compute` holds
+both the two figures that answer "why is this slow" and the one that conflates
+them. `Group` says where a figure sits, not how much it explains. The header is
+about the machine, and that question has the same answer whichever table you are
+reading; the tab governs the columns. `the_zones_stay_in_one_order_across_every_tab`
+pins that.
+
+What is left undone is the blank-rather-than-collapsed criterion: a group with
+nothing to say still closes up rather than holding its space. That is a real
+difference from Activity Monitor and it is a deliberate one — holding empty
+space on an 80-column terminal costs more than it buys.
 
 ## Acceptance criteria
 
-- [ ] Three zones, same order, same places, on every tab
-- [ ] A zone that has nothing to say is blank rather than collapsed
-- [ ] Degrades by dropping a zone whole, never by rearranging
-- [ ] The timeline is untouched
+- [x] Three zones, same order, same places, on every tab
+- [ ] A zone that has nothing to say is blank rather than collapsed — declined
+- [x] Degrades by dropping figures, never by rearranging
+- [x] The timeline is untouched

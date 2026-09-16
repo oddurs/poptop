@@ -12925,3 +12925,74 @@ fn the_scope_shortens_by_rungs_rather_than_by_clipping() {
         );
     }
 }
+
+// ── the summary's zones ─────────────────────────────────────────────────────
+
+#[test]
+fn a_figure_never_moves_it_only_appears_and_disappears() {
+    // The property that makes a position mean something. A header that
+    // rearranged as the terminal resized would be one where nothing could be
+    // found by where it is — you would have to read the labels every time,
+    // which is the whole cost a fixed layout exists to avoid.
+    //
+    // `fit` keeps figures by rank and *positions* them by group, and those are
+    // deliberately different orders. This is the test that the second one holds
+    // whatever the first one drops.
+    let mut app = App::new(600);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let labels = |w: u16| -> Vec<&'static str> {
+        let line = figures_line(&app, w, 24);
+        let mut at: Vec<(usize, &'static str)> = [
+            "CPU", "WAIT", "RUN", "BLOCKED", "LOAD", "MEM", "SWP", "UP ", "PROCS",
+        ]
+        .into_iter()
+        .filter_map(|k| line.find(k).map(|i| (i, k)))
+        .collect();
+        at.sort();
+        at.into_iter().map(|(_, k)| k).collect()
+    };
+
+    let widest = labels(200);
+    assert!(widest.len() >= 6, "not enough figures to test: {widest:?}");
+    for w in (40..=200u16).step_by(3) {
+        let here = labels(w);
+        // A subsequence, which is exactly "things were dropped, nothing moved".
+        let mut wide = widest.iter();
+        for k in &here {
+            assert!(
+                wide.any(|w2| w2 == k),
+                "at {w} columns the figures are reordered, not merely thinned:\n\
+                 {here:?}\nagainst\n{widest:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_zones_stay_in_one_order_across_every_tab() {
+    // The tab governs the columns of the table. It does not reorder the machine
+    // summary, because "why is this machine slow" has the same answer whichever
+    // table you are reading — and a summary that rearranged per tab would undo
+    // the property above for the sake of matching the tab.
+    let mut app = App::new(600);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let mut seen = None;
+    for v in crate::app::View::ALL {
+        app.view = v;
+        let line = figures_line(&app, 200, 24);
+        let order: Vec<usize> = ["CPU", "MEM", "UP "]
+            .into_iter()
+            .filter_map(|k| line.find(k))
+            .collect();
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(order, sorted, "{v:?} put the zones in a different order");
+        match &seen {
+            None => seen = Some(order),
+            Some(first) => assert_eq!(&order, first, "{v:?} moved a zone"),
+        }
+    }
+}
