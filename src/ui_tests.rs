@@ -13206,3 +13206,169 @@ fn clicking_a_row_still_selects_rather_than_sorting() {
     assert_eq!(app.sort, crate::app::Sort::Pid, "a row click re-sorted");
     assert!(app.selected.is_some(), "a row click selected nothing");
 }
+
+#[test]
+#[ignore]
+fn show_inspector() {
+    let mut app = App::new(600);
+    for i in (0..60).rev() {
+        let mut s = sample_at(30.0, i);
+        s.procs = vec![
+            ProcSample {
+                cpu: if i == 30 { 190.0 } else { 88.4 },
+                rss: if i == 30 { 640 << 20 } else { 512 << 20 },
+                threads: Some(4),
+                nice: Some(0),
+                cmd: Some(std::sync::Arc::from(
+                    "/usr/local/pgsql/bin/postgres -D /var/db/postgres",
+                )),
+                started: Some(2),
+                io: Some(crate::sample::IoRates {
+                    read: 1 << 20,
+                    write: 0,
+                }),
+                ..proc_named(824, "postgres", 0.0, 0)
+            },
+            proc_named(1190, "nginx", 12.5, 32 << 20),
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.select_row(0);
+    app.inspecting = true;
+    for l in rows(&app, 92, 26) {
+        println!("{}", l.trim_end());
+    }
+}
+
+// ── the inspector ───────────────────────────────────────────────────────────
+
+/// A buffer with one interesting process that spiked halfway through.
+fn one_process(app: &mut App) {
+    for i in (0..60).rev() {
+        let mut s = sample_at(30.0, i);
+        s.procs = vec![
+            ProcSample {
+                cpu: if i == 30 { 190.0 } else { 88.4 },
+                rss: if i == 30 { 640 << 20 } else { 512 << 20 },
+                threads: Some(4),
+                cmd: Some(std::sync::Arc::from(
+                    "/usr/local/pgsql/bin/postgres -D /var/db/postgres",
+                )),
+                started: Some(2),
+                ..proc_named(824, "postgres", 0.0, 0)
+            },
+            proc_named(1190, "nginx", 12.5, 32 << 20),
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.select_row(0);
+}
+
+#[test]
+fn the_inspector_says_what_the_table_cannot() {
+    // The full command is truncated in the table and available nowhere, the
+    // parent is collected and shown only in the tree, and `--export` has every
+    // field and is not a thing you read while looking at a row.
+    let mut app = App::new(600);
+    one_process(&mut app);
+
+    let shut = rows(&app, 92, 26).join("\n");
+    assert!(
+        !shut.contains("/var/db/postgres"),
+        "the inspector is drawing while closed"
+    );
+
+    press(&mut app, KeyCode::Enter);
+    assert!(app.inspecting, "⏎ did not open the inspector");
+    let open = rows(&app, 92, 26).join("\n");
+    for want in [
+        "/usr/local/pgsql/bin/postgres -D /var/db/postgres", // the full command
+        "parent 1",                                          // the parent
+        "sleeping",                                          // the state, spelled out
+        "threads",
+    ] {
+        assert!(open.contains(want), "the inspector omits {want:?}:\n{open}");
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.inspecting, "⏎ did not close it again");
+}
+
+#[test]
+fn the_peaks_come_from_the_buffer_and_say_what_they_cover() {
+    // The part Activity Monitor cannot do. It shows the instant you happen to
+    // be looking at; poptop kept the samples, and "is this normal for it" is a
+    // question about all of them.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.inspecting = true;
+    let open = rows(&app, 92, 26).join("\n");
+
+    assert!(open.contains("88.4%"), "no current figure:\n{open}");
+    assert!(
+        open.contains("190.0%"),
+        "the peak is not the buffer's, only the cursor's:\n{open}"
+    );
+    assert!(
+        open.contains("640.0M"),
+        "the memory peak is not the buffer's:\n{open}"
+    );
+    // And it says what window the peak covers, because the figure beside it is
+    // the cursor's moment: two clocks in one panel, named rather than inferred.
+    assert!(
+        open.contains("60 samples"),
+        "the peak does not say what it is over:\n{open}"
+    );
+}
+
+#[test]
+fn the_inspector_does_not_disturb_the_timeline() {
+    // `d` replaces the timeline with the process's history, which is a
+    // different thing. This floats over the table and leaves the graph alone,
+    // because the graph is what poptop has that Activity Monitor does not.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    let r = ui::timeline_rows_range(26);
+    let graph = |app: &App| {
+        rows(app, 92, 26)[r.start as usize..r.end as usize]
+            .iter()
+            .map(|l| l.chars().take(ui::GUTTER_W).collect::<String>())
+            .collect::<Vec<_>>()
+    };
+    let before = graph(&app);
+    app.inspecting = true;
+    assert_eq!(
+        before,
+        graph(&app),
+        "opening the inspector changed the timeline's own rows"
+    );
+    assert!(!app.detail, "the inspector turned the detail view on");
+}
+
+#[test]
+fn the_inspector_says_nothing_about_a_process_that_is_not_there() {
+    // Scrub back past the moment it started and the selection has no sample to
+    // describe. A panel that drew zeroes there would be inventing a process.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.inspecting = true;
+    app.selected = Some(crate::app::Watched::Process {
+        pid: 999_999,
+        started: Some(7),
+        name: std::sync::Arc::from("gone"),
+    });
+    let open = rows(&app, 92, 26).join("\n");
+    // No box at all, not merely the wrong title. Asserting the absent name is
+    // missing passes just as well when the panel has drawn somebody *else* —
+    // which is what falling back to the first process in the sample does, and
+    // is a worse failure than drawing nothing.
+    assert!(
+        !open.contains("╭ "),
+        "the inspector drew a box for a process that is not in this sample:\n{open}"
+    );
+    assert!(
+        !open.contains("parent"),
+        "the inspector described some other process:\n{open}"
+    );
+}

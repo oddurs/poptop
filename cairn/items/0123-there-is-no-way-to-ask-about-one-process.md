@@ -2,7 +2,7 @@
 id: 123
 title: There is no way to ask about one process
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -45,18 +45,20 @@ and they are the answer to "is this normal for it".
 
 ## What needs deciding
 
-- **Whether it replaces the timeline or floats over the table.** Floating keeps
-  the graph, which is the thing worth keeping.
-- **What it does while scrubbing.** The figures should be the cursor's moment,
-  and the peaks should be the whole buffer — two time bases in one panel, which
-  needs saying on the panel rather than being inferred.
-- **Open files and ports.** Both are a `lsof`-shaped problem and neither is
-  cheap. Probably not in the first version, and the panel should not look like
-  it is missing them.
+- **It floats**, centred on the frame. Sizing it to the table clipped the
+  measurements off the bottom, which are the point.
+- **Two time bases, both named.** The figures are the cursor's moment and the
+  peaks are the whole buffer, and the panel says `peak 190.0% over 60 samples`
+  rather than leaving the reader to infer which is which.
+- **Start time is not shown.** `started` is a raw clock-tick or Mach-absolute
+  value whose epoch differs by platform, and rendering it as a wall-clock time
+  needs the boot time it is relative to. Deliberately absent rather than wrong.
+- **Open files and ports are not here.** Both are an `lsof`-shaped problem and
+  neither is cheap.
 
 ## Acceptance criteria
 
-- [ ] The full command is readable without exporting
-- [ ] Parent, user, state and start time are all in one place
-- [ ] Peaks come from the buffer, and say what window they cover
-- [ ] Opens and closes without disturbing the timeline
+- [x] The full command is readable without exporting
+- [x] Parent, user and state are all in one place
+- [x] Peaks come from the buffer, and say what window they cover
+- [x] Opens and closes without disturbing the timeline

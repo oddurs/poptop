@@ -119,6 +119,8 @@ pub fn bar() -> Vec<Title> {
             name: "Process",
             hotkey: 'P',
             items: vec![
+                Do("Inspect…", "⏎", ToggleInspect),
+                Rule,
                 Do("Select previous", "↑", Select(-1)),
                 Do("Select next", "↓", Select(1)),
                 Rule,

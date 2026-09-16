@@ -180,6 +180,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_procs(f, p.table, app, p.timeline);
     }
     draw_help(f, p.help, app);
+    // Centred on the frame, not on the table: it is a modal about one row, and
+    // sizing it to the table clipped the measurements off the bottom — which
+    // are the point, since they are the part Activity Monitor cannot do.
+    draw_inspector(f, f.area(), app);
     // Last, over everything: a dropdown that the table drew on top of would be
     // a menu you can open and cannot read.
     draw_dropdown(f, f.area(), app);
@@ -333,6 +337,139 @@ fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The open dropdown, drawn over whatever is beneath it.
+/// One process, everything poptop holds about it, over the table.
+///
+/// `d` replaces the timeline with the selected process's history, which is a
+/// different and better thing than this and is not a substitute for it: the
+/// full command is truncated in the table and available nowhere, the parent is
+/// collected and shown only in the tree, and `--export` has every field and is
+/// not a thing you read while looking at a row.
+///
+/// The peaks are the part Activity Monitor cannot do. They come from the
+/// buffer, and they are the answer to "is this normal for it".
+fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
+    if !app.inspecting {
+        return;
+    }
+    let Some(sample) = app.history.current() else {
+        return;
+    };
+    let Some(watched) = app.selected.as_ref() else {
+        return;
+    };
+    let Some(p) = sample.procs.iter().find(|p| watched.matches(p)) else {
+        return;
+    };
+
+    // Over the whole buffer, not the visible window: "is this normal for it"
+    // is a question about everything that was recorded, and the window is a
+    // scroll position.
+    let (mut peak_cpu, mut peak_rss, mut seen) = (0.0f32, 0u64, 0usize);
+    for s in app.history.iter() {
+        if let Some(q) = s.procs.iter().find(|q| watched.matches(q)) {
+            peak_cpu = peak_cpu.max(q.cpu);
+            peak_rss = peak_rss.max(q.rss);
+            seen += 1;
+        }
+    }
+
+    let dim = app.theme.dim_style();
+    let val = app.theme.title_style();
+    let pair = |k: &str, v: String| {
+        Line::from(vec![
+            Span::styled(format!(" {k:<9}"), dim),
+            Span::styled(v, val),
+        ])
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(format!(" {}", p.command()), val)),
+        Line::from(""),
+        pair("user", p.user.to_string()),
+        pair("pid", format!("{}  parent {}", p.pid, p.ppid)),
+        pair(
+            "state",
+            match p.state {
+                'R' => "R · running".into(),
+                'S' => "S · sleeping".into(),
+                'D' => "D · uninterruptible".into(),
+                'Z' => "Z · zombie".into(),
+                'T' => "T · stopped".into(),
+                c => c.to_string(),
+            },
+        ),
+        pair(
+            "threads",
+            p.threads.map_or_else(|| "—".into(), |n| n.to_string()),
+        ),
+    ];
+    if let Some(n) = p.nice {
+        lines.push(pair("nice", n.to_string()));
+    }
+    if let Some(c) = p.container.as_deref() {
+        lines.push(pair("container", c.to_string()));
+    }
+    lines.push(Line::from(""));
+    // Both time bases are named, because they are different: the figure is the
+    // moment under the cursor and the peak is everything recorded. A panel
+    // showing two clocks without saying so is one whose numbers cannot be
+    // compared with each other.
+    lines.push(pair(
+        "cpu",
+        format!("{:.1}%   peak {peak_cpu:.1}% over {seen} samples", p.cpu),
+    ));
+    lines.push(pair(
+        "memory",
+        format!("{}   peak {}", fmt_bytes(p.rss), fmt_bytes(peak_rss)),
+    ));
+    if let Some(io) = p.io.as_ref() {
+        lines.push(pair(
+            "disk",
+            format!(
+                "{}/s read · {}/s written",
+                fmt_bytes(io.read),
+                fmt_bytes(io.write)
+            ),
+        ));
+    }
+
+    let w = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| cols(&s.content)).sum::<usize>())
+        .max()
+        .unwrap_or(20)
+        .clamp(24, area.width.saturating_sub(4) as usize);
+    let h = (lines.len() + 2).min(area.height.saturating_sub(2) as usize);
+    // Centred in the panel it is over, which means the panel's own origin: a
+    // box positioned in frame coordinates lands on whatever is at the top of
+    // the screen instead.
+    let x = area.x + (area.width.saturating_sub(w as u16 + 2)) / 2;
+    let y = area.y + (area.height.saturating_sub(h as u16)) / 2;
+    let box_area = Rect::new(x, y, w as u16 + 2, h as u16);
+
+    f.render_widget(Clear, box_area);
+    f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
+
+    let title = format!(" {} · {} ", p.name, p.pid);
+    let bar = "─".repeat(w.saturating_sub(cols(&title)).max(1));
+    let mut framed = vec![Line::from(Span::styled(
+        format!("╭{title}{bar}╮"),
+        app.theme.chrome_style(),
+    ))];
+    for l in lines.into_iter().take(h.saturating_sub(2)) {
+        let used: usize = l.spans.iter().map(|s| cols(&s.content)).sum();
+        let mut spans = vec![Span::styled("│", app.theme.chrome_style())];
+        spans.extend(l.spans);
+        spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+        spans.push(Span::styled("│", app.theme.chrome_style()));
+        framed.push(Line::from(spans));
+    }
+    framed.push(Line::from(Span::styled(
+        format!("╰{}╯", "─".repeat(w)),
+        app.theme.chrome_style(),
+    )));
+    f.render_widget(Paragraph::new(framed), box_area);
+}
+
 /// Where the open dropdown sits, if one is open.
 ///
 /// Shared with the mouse for the reason `panels` is: a hit box computed

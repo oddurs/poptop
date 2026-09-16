@@ -44,6 +44,8 @@ pub enum Action {
     NextGrouping,
     ToggleTree,
     ToggleDetail,
+    /// Open or close the inspector on the selected process.
+    ToggleInspect,
     ToggleThreads,
     ToggleCgroups,
     ToggleKernel,
@@ -139,6 +141,7 @@ impl Action {
                 }
             }
             Self::ToggleDetail => app.detail = !app.detail,
+            Self::ToggleInspect => app.inspecting = !app.inspecting,
             Self::ToggleThreads => app.toggle_threads(),
             Self::ToggleCgroups => app.toggle_cgroups(),
             Self::ToggleKernel => app.show_kernel = !app.show_kernel,
@@ -166,6 +169,7 @@ impl Action {
         Some(match self {
             Self::ToggleTree => app.tree,
             Self::ToggleDetail => app.detail,
+            Self::ToggleInspect => app.inspecting,
             Self::ToggleThreads => app.show_threads,
             Self::ToggleCgroups => app.show_cgroups,
             Self::ToggleKernel => app.show_kernel,

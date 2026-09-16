@@ -491,6 +491,8 @@ pub struct App {
     pub axis: crate::glyphs::Axis,
     /// Which dropdown is open, if any. See `menu.rs`.
     pub menu: crate::menu::MenuState,
+    /// Whether the inspector is open on the selected process. See `ui::draw_inspector`.
+    pub inspecting: bool,
     pub theme: Theme,
     /// Nominal time between samples, for spotting gaps in the buffer.
     pub interval: std::time::Duration,
@@ -540,6 +542,7 @@ impl App {
             glyphs: GlyphSet::default(),
             axis: crate::glyphs::Axis::default(),
             menu: crate::menu::MenuState::default(),
+            inspecting: false,
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,
         }
@@ -1592,6 +1595,18 @@ impl Watched {
     pub fn name(&self) -> &Arc<str> {
         match self {
             Watched::Process { name, .. } | Watched::Group { name } => name,
+        }
+    }
+
+    /// Whether this sample's process is the one being watched.
+    ///
+    /// Keyed on pid *and* start time, like `is` above and like `series_for`: on
+    /// pid alone a number reused after an exit splices two unrelated processes
+    /// into one.
+    pub fn matches(&self, p: &crate::sample::ProcSample) -> bool {
+        match self {
+            Watched::Process { pid, started, .. } => p.pid == *pid && p.started == *started,
+            Watched::Group { name } => **name == *p.name,
         }
     }
 

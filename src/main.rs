@@ -1707,6 +1707,8 @@ pub fn action_for(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
         KeyCode::Char('K') => Action::ToggleKernel,
         KeyCode::Char('t') => Action::ToggleTree,
         KeyCode::Char('d') => Action::ToggleDetail,
+        // `⏎` on a row, which is what a pointer would do to it.
+        KeyCode::Enter => Action::ToggleInspect,
         // A cycle: off, by name, by user, by container — atop's `p`, `u` and
         // `j` on one key.
         KeyCode::Char('g') => Action::NextGrouping,
