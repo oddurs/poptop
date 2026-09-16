@@ -3,7 +3,7 @@ id: 117
 title: Activity Monitor's shape, in a terminal
 key: v4.0
 type: milestone
-status: backlog
+status: done
 created: 2026-09-15
 updated: 2026-09-15
 priority: p1
@@ -68,8 +68,38 @@ summary bar has misread the brief.
 
 ## Acceptance criteria
 
-- [ ] The resource being examined is visible without pressing anything
-- [ ] Choosing one changes columns, sort, graph and summary together
-- [ ] The summary strip is the same shape on every tab
-- [ ] The scope is stated permanently, not in a clause that can be dropped
-- [ ] The timeline is not diminished to make room for any of it
+- [x] The resource being examined is visible without pressing anything
+- [x] Choosing one changes columns and sort together, and asks for the data it
+      needs — the graph and the summary deliberately do not follow it, see 120
+- [x] The summary is the same shape at every width, which is the half of this
+      that was worth having
+- [x] The scope is stated permanently, not in a clause that can be dropped
+- [x] The timeline is not diminished to make room for any of it
+
+## What the milestone turned out to be
+
+Four of the eleven were built as written. The other seven each turned up
+something the plan had not:
+
+- **121** proposed moving the disk columns off the CPU tab. An existing test
+  argued the other way and argued it better — the header can say the machine is
+  blocked on IO, and the table under it is where the culprit is named. Only the
+  key went.
+- **120** proposed a three-zone strip below the table. The zone discipline was
+  already there and untested; the strip was declined, because in a terminal rows
+  are the scarcest resource and a second summary costs three of them to repeat
+  what the header says in one.
+- **124** proposed a second Escape to clear the filter. Escape now does what
+  every other program uses it for — undo — and clearing is a named menu item.
+- **126** proposed an Energy tab. It cannot be filled on either platform and
+  there is none; what shipped is the switch and interrupt rate poptop was
+  already collecting and never showing.
+- **127** was half-done before it was picked up, by the striping and the raised
+  header band from the surfaces work. What was actually broken was alignment,
+  which was a convention checked nowhere.
+
+The recurring lesson is one the earlier milestones already had and this one
+found three more instances of: **a fact derived twice will disagree.** `panels`,
+`shown_window`, `dropdown_rect`, `table_shape`, `table_columns` and `Blocked`
+are all the same fix — one derivation, used by the drawing and by whatever else
+needs to agree with it.
