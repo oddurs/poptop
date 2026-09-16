@@ -28,6 +28,11 @@ pub enum Action {
 
     // Selection.
     Select(i32),
+    /// The row at this index of the visible table. The mouse points at a place
+    /// rather than a direction, and there is no key that means "the ninth row".
+    SelectRow(usize),
+    /// The sample at this index of the buffer, likewise.
+    ScrubTo(usize),
 
     // The table.
     NextSort,
@@ -78,6 +83,13 @@ impl Action {
             }
 
             Self::Select(n) => app.select_delta(n as isize),
+            Self::SelectRow(i) => app.select_row(i),
+            Self::ScrubTo(i) => {
+                // Relative, because that is the only way the cursor moves — and
+                // it is where the "past the newest means live" rule lives.
+                let from = app.history.cursor_index() as isize;
+                app.history.scrub(i as isize - from);
+            }
 
             Self::NextSort => app.sort = app.sort.next(app.io_collected(), app.view),
             Self::AcceptSuggestedSort => {

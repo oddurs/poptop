@@ -2,7 +2,7 @@
 id: 115
 title: The mouse is reported and ignored
 type: feature
-status: todo
+status: done
 milestone: v3.6
 created: 2026-09-15
 updated: 2026-09-15
@@ -41,7 +41,7 @@ click reads as a bar that is broken.
 
 ## Acceptance criteria
 
-- [ ] A menu can be operated entirely with the mouse
-- [ ] Clicking the timeline scrubs to that moment
-- [ ] Text selection is still possible, and how is stated
-- [ ] A terminal that reports no mouse loses nothing
+- [x] A menu can be operated entirely with the mouse
+- [x] Clicking the timeline scrubs to that moment
+- [x] Text selection is still possible, and how is stated
+- [x] A terminal that reports no mouse loses nothing

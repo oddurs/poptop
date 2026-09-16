@@ -639,6 +639,20 @@ Both surfaces dispatch through one `Action`, and a test walks every item and
 checks its key hint against what that key actually does — so a menu that says
 `d` beside "Process detail" cannot drift into meaning something else.
 
+## The mouse
+
+On by default. Click a menu title to open it and an item to run it; click a
+process row to select it; click or drag the timeline to scrub to that moment;
+the wheel moves whichever of the graph or the table is under the pointer.
+
+The cost is worth saying plainly: while poptop holds the mouse, dragging no
+longer selects text for copying. Most terminals give that back if you hold
+Shift, and `mouse = off` gives it back permanently.
+
+Hit-testing and drawing share one `panels()`, so a click cannot land on
+something other than what is drawn there — a second copy of that arithmetic
+agrees until it does not, and then only sometimes.
+
 `--graph=block|braille|line|ascii` picks how the timeline is drawn, and
 `graph = block` in the config file makes the choice stick.
 

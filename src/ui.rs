@@ -105,21 +105,46 @@ pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
     top..top + timeline_height(total_height, HEADER_H)
 }
 
-pub fn draw(f: &mut Frame, app: &App) {
+/// Where each panel sits in the frame.
+///
+/// Derived once and used by both the drawing and the mouse, which is the only
+/// way the two can agree about what a click landed on. A second copy of this
+/// arithmetic would put a hit box a row away from the thing drawn in it, and
+/// nothing would say so — the click would just do the wrong thing sometimes.
+pub struct Panels {
+    pub menu: Rect,
+    pub header: Rect,
+    pub timeline: Rect,
+    pub table: Rect,
+    pub help: Rect,
+}
+
+pub fn panels(app: &App, area: Rect) -> Panels {
     // Measured rather than assumed, so the node row is a row the layout knows
     // about instead of one drawn over the timeline.
     let header = header_height(app);
-    let chunks = Layout::vertical([
+    let c = Layout::vertical([
         Constraint::Length(MENU_H),
         Constraint::Length(header),
-        Constraint::Length(timeline_height(f.area().height, header)),
+        Constraint::Length(timeline_height(area.height, header)),
         // Whatever remains. `timeline_height` has already reserved the table's
         // share, and a `Min` here would outrank the timeline's `Length` and
         // silently shrink it below the height that function reports.
         Constraint::Min(1),
         Constraint::Length(1), // help
     ])
-    .split(f.area());
+    .split(area);
+    Panels {
+        menu: c[0],
+        header: c[1],
+        timeline: c[2],
+        table: c[3],
+        help: c[4],
+    }
+}
+
+pub fn draw(f: &mut Frame, app: &App) {
+    let p = panels(app, f.area());
 
     let Some(sample) = app.history.current() else {
         f.render_widget(
@@ -129,15 +154,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         return;
     };
 
-    draw_menu_bar(f, chunks[0], app);
-    draw_header(f, chunks[1], app, sample);
-    draw_timeline(f, chunks[2], app);
+    draw_menu_bar(f, p.menu, app);
+    draw_header(f, p.header, app, sample);
+    draw_timeline(f, p.timeline, app);
     if app.show_cgroups {
-        draw_cgroups(f, chunks[3], app);
+        draw_cgroups(f, p.table, app);
     } else {
-        draw_procs(f, chunks[3], app, chunks[2]);
+        draw_procs(f, p.table, app, p.timeline);
     }
-    draw_help(f, chunks[4], app);
+    draw_help(f, p.help, app);
     // Last, over everything: a dropdown that the table drew on top of would be
     // a menu you can open and cannot read.
     draw_dropdown(f, f.area(), app);
@@ -173,23 +198,35 @@ fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The open dropdown, drawn over whatever is beneath it.
+/// Where the open dropdown sits, if one is open.
+///
+/// Shared with the mouse for the reason `panels` is: a hit box computed
+/// separately from the box it is drawn in agrees until it does not.
+pub fn dropdown_rect(app: &App, area: Rect) -> Option<Rect> {
+    let titles = crate::menu::bar();
+    let open = app.menu.open?;
+    let title = titles.get(open)?;
+    let w = crate::menu::width(title).min(area.width.saturating_sub(2) as usize);
+    let y = MENU_H;
+    if area.height <= y + 1 || w == 0 {
+        return None;
+    }
+    let x = crate::menu::title_column(open, &titles)
+        .min(area.width.saturating_sub(w as u16 + 1) as usize) as u16;
+    let h = ((title.items.len() + 2) as u16).min(area.height - y);
+    Some(Rect::new(x, y, w as u16, h))
+}
+
 fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
     let titles = crate::menu::bar();
     let Some(open) = app.menu.open else { return };
     let Some(title) = titles.get(open) else {
         return;
     };
-
-    let w = crate::menu::width(title).min(area.width.saturating_sub(2) as usize);
-    let h = title.items.len() + 2;
-    let x = crate::menu::title_column(open, &titles)
-        .min(area.width.saturating_sub(w as u16 + 1) as usize) as u16;
-    let y = MENU_H;
-    if area.height <= y + 1 || w == 0 {
+    let Some(box_area) = dropdown_rect(app, area) else {
         return;
-    }
-    let h = (h as u16).min(area.height - y);
-    let box_area = Rect::new(x, y, w as u16, h);
+    };
+    let (w, h) = (box_area.width as usize, box_area.height);
 
     // Cleared first: a dropdown is opaque, and ratatui draws over rather than
     // through.

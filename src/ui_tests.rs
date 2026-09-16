@@ -12091,3 +12091,257 @@ fn the_dropdown_is_opaque_and_ticks_what_is_on() {
         "a set that is not in force is ticked: {ticked:?}"
     );
 }
+
+// ── the mouse ───────────────────────────────────────────────────────────────
+
+/// A left click at a point.
+fn click(app: &mut App, x: u16, y: u16, w: u16, h: u16) {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    crate::handle_mouse(
+        app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+        ratatui::layout::Rect::new(0, 0, w, h),
+    );
+}
+
+/// A wheel turn at a point.
+fn wheel(app: &mut App, down: bool, x: u16, y: u16, w: u16, h: u16) {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    crate::handle_mouse(
+        app,
+        MouseEvent {
+            kind: if down {
+                MouseEventKind::ScrollDown
+            } else {
+                MouseEventKind::ScrollUp
+            },
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+        ratatui::layout::Rect::new(0, 0, w, h),
+    );
+}
+
+#[test]
+fn clicking_the_bar_opens_the_title_under_the_pointer() {
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let titles = crate::menu::bar();
+    for (i, t) in titles.iter().enumerate() {
+        app.menu.close();
+        // The middle of the title's own columns, so the test fails on an
+        // off-by-one rather than landing in the padding either side.
+        let at = crate::menu::title_column(i, &titles) + t.name.chars().count() / 2;
+        click(&mut app, at as u16, 0, 100, 26);
+        assert_eq!(
+            app.menu.open,
+            Some(i),
+            "clicking {} at column {at} opened {:?}",
+            t.name,
+            app.menu.open
+        );
+    }
+    // Clicking the open one closes it, the way a menu bar has always worked.
+    let at = crate::menu::title_column(0, &titles) + 1;
+    app.menu.open = Some(0);
+    click(&mut app, at as u16, 0, 100, 26);
+    assert!(
+        !app.menu.is_open(),
+        "clicking the open title did not close it"
+    );
+}
+
+#[test]
+fn clicking_a_dropdown_item_runs_it_and_clicking_away_closes() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    let area = ratatui::layout::Rect::new(0, 0, 100, 26);
+    app.menu.open = Some(2); // View
+
+    let rect = ui::dropdown_rect(&app, area).expect("no dropdown");
+    let items = &crate::menu::bar()[2].items;
+    let at = items
+        .iter()
+        .position(|i| i.action() == Some(crate::command::Action::ToggleTree))
+        .expect("no tree item");
+
+    let before = app.tree;
+    click(&mut app, rect.x + 3, rect.y + 1 + at as u16, 100, 26);
+    assert_ne!(app.tree, before, "clicking the item did nothing");
+    assert!(!app.menu.is_open(), "the menu stayed open after a click");
+
+    // The frame is not an item. Checked against the *first* item, because that
+    // is the one a fall-through lands on: `y - (top + 1)` underflows to zero on
+    // the border row, so a missing bounds check runs item zero silently.
+    app.menu.open = Some(2);
+    app.glyphs = crate::glyphs::GlyphSet::Ascii;
+    assert_eq!(
+        items[0].action(),
+        Some(crate::command::Action::SetGlyphs(
+            crate::glyphs::GlyphSet::Block
+        )),
+        "this test is aimed at the wrong item"
+    );
+    click(&mut app, rect.x + 3, rect.y, 100, 26);
+    assert_eq!(
+        app.glyphs,
+        crate::glyphs::GlyphSet::Ascii,
+        "clicking the border ran the first item"
+    );
+
+    // And clicking past the box dismisses it rather than leaving it up.
+    app.menu.open = Some(2);
+    click(&mut app, 95, 20, 100, 26);
+    assert!(!app.menu.is_open(), "clicking away left the menu open");
+}
+
+#[test]
+fn an_open_menu_takes_the_click_from_whatever_is_under_it() {
+    // The dropdown is drawn over the table, so a click inside it must not also
+    // land on the row beneath. The menu is checked first for exactly this
+    // reason: the table is the larger target and would otherwise win.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let (w, h) = (100u16, 26u16);
+    let area = ratatui::layout::Rect::new(0, 0, w, h);
+    app.menu.open = Some(2); // View, the tallest menu — it reaches the table
+    let rect = ui::dropdown_rect(&app, area).expect("no dropdown");
+    let items = &crate::menu::bar()[2].items;
+
+    // A separator low enough to be over the table. Clicking one should do
+    // nothing at all beyond dismissing the menu — which makes it the sharpest
+    // test of whether the click fell through.
+    let table_top = ui::timeline_rows_range(h).end;
+    let at = items
+        .iter()
+        .enumerate()
+        .find(|(i, it)| it.action().is_none() && rect.y + 1 + *i as u16 > table_top)
+        .map(|(i, _)| i)
+        .expect("no separator over the table");
+
+    // Something selected first, so "unchanged" is a claim rather than a
+    // restatement of "nothing happened".
+    app.select_row(0);
+    let before = format!("{:?}", app.selected);
+    assert!(
+        app.selected.is_some(),
+        "nothing to lose, so this proves nothing"
+    );
+
+    click(&mut app, rect.x + 2, rect.y + 1 + at as u16, w, h);
+    assert_eq!(
+        format!("{:?}", app.selected),
+        before,
+        "the click went through the menu and selected a row underneath it"
+    );
+}
+
+#[test]
+fn clicking_the_timeline_scrubs_to_that_moment() {
+    let mut app = App::new(600);
+    for i in (0..300).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    let (w, h) = (100u16, 26u16);
+    let r = ui::timeline_rows_range(h);
+    let timeline = ratatui::layout::Rect::new(0, r.start, w, r.end - r.start);
+    let (start, shown, _) = ui::shown_window(&app, timeline);
+    assert!(shown > 4, "no window to click in");
+
+    // The left edge of the graph is the oldest sample on screen.
+    click(&mut app, ui::GUTTER_W as u16, r.start + 1, w, h);
+    assert_eq!(
+        app.history.cursor_index(),
+        start,
+        "clicking the left edge did not land on the oldest sample shown"
+    );
+
+    // And a column further right is a later moment, not an earlier one.
+    let before = app.history.cursor_index();
+    click(&mut app, ui::GUTTER_W as u16 + 20, r.start + 1, w, h);
+    assert!(
+        app.history.cursor_index() > before,
+        "clicking rightwards went backwards in time"
+    );
+}
+
+#[test]
+fn the_wheel_moves_whatever_is_under_it() {
+    let mut app = App::new(600);
+    for i in (0..300).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 5.0, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let (w, h) = (100u16, 26u16);
+    let r = ui::timeline_rows_range(h);
+
+    // Over the graph: time.
+    app.history.goto_oldest();
+    let before = app.history.cursor_index();
+    wheel(&mut app, true, 40, r.start + 1, w, h);
+    assert!(
+        app.history.cursor_index() > before,
+        "the wheel over the timeline did not move time"
+    );
+
+    // Over the table: the selection.
+    let at = app.history.cursor_index();
+    let before = app.selected.clone();
+    wheel(&mut app, true, 40, r.end + 3, w, h);
+    assert!(
+        app.selected.is_some(),
+        "the wheel over the table selected nothing"
+    );
+    assert_ne!(
+        format!("{:?}", app.selected),
+        format!("{before:?}"),
+        "the wheel over the table did not move the selection"
+    );
+    assert_eq!(
+        app.history.cursor_index(),
+        at,
+        "the wheel over the table moved time as well"
+    );
+}
+
+#[test]
+fn clicking_a_row_selects_it() {
+    let mut app = App::new(600);
+    for i in (0..10).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let (w, h) = (100u16, 26u16);
+    let r = ui::timeline_rows_range(h);
+    // Two rows into the table: past the section rule and the column headers.
+    let first = r.end + 2;
+    click(&mut app, 10, first, w, h);
+    let top = app.selected.clone();
+    assert!(top.is_some(), "clicking the first row selected nothing");
+    click(&mut app, 10, first + 3, w, h);
+    assert_ne!(
+        format!("{:?}", app.selected),
+        format!("{top:?}"),
+        "clicking a different row kept the same selection"
+    );
+}

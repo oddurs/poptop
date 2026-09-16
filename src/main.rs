@@ -70,6 +70,11 @@ USAGE:
                     changes — at the cost of drawing that panel as a line
                     rather than bars, since a bar on a truncated axis
                     misstates its own magnitude.
+    --mouse=on|off  take the mouse (default on). Click the menu, click a row
+                    to select it, click or drag the timeline to scrub, wheel to
+                    move whichever of the two is under the pointer. While
+                    poptop has the mouse, dragging no longer selects text for
+                    copying; most terminals restore that if you hold Shift.
     --color=TIER    auto (default), mono, 16, 256, or true. Honours NO_COLOR.
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
     --window=SPAN   history retained, as time not samples (default 10m)
@@ -777,6 +782,18 @@ fn main() -> io::Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    // Reported by every terminal poptop is likely to run in, and ignored until
+    // now. A menu bar you can see and cannot click reads as a bar that is
+    // broken, so the menu made this the next thing rather than a nicety.
+    //
+    // The cost is real and is stated in `--help`: while poptop has the mouse,
+    // dragging no longer selects text for copying. Every terminal worth the
+    // name restores that under Shift, and a reader who would rather have the
+    // selection can say `mouse = off`.
+    let mouse = settings.mouse;
+    if mouse {
+        let _ = crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture);
+    }
     let mut said = Vec::new();
     let result = run(
         &mut terminal,
@@ -786,6 +803,11 @@ fn main() -> io::Result<()> {
         replaying,
         &mut said,
     );
+    if mouse {
+        // Before the screen is restored, so a terminal left in mouse-reporting
+        // mode is not what somebody has to work out after poptop exits.
+        let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture);
+    }
     ratatui::restore();
     warnings.extend(said.into_iter().map(config::Warning));
     // A source that is only opened when a view is — an exit listener, a cgroup
@@ -1234,11 +1256,14 @@ fn run(
         // Poll with whatever is left of the sample interval: input stays
         // responsive without spinning, and sampling stays on schedule.
         let timeout = next_sample.saturating_duration_since(Instant::now());
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            handle_key(app, key.code, key.modifiers);
+        if event::poll(timeout)? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key(app, key.code, key.modifiers);
+                }
+                Event::Mouse(m) => handle_mouse(app, m, terminal.get_frame().area()),
+                _ => {}
+            }
         }
 
         if Instant::now() >= next_sample {
@@ -1417,6 +1442,132 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     if let Some(action) = action_for(code, mods) {
         action.apply(app);
     }
+}
+
+/// What a click, drag or wheel turn means.
+///
+/// Pure: it takes where the pointer is and returns an action, so the mapping
+/// can be tested without a terminal. `handle_mouse` is the two lines that apply
+/// the result and the menu bookkeeping that is not an action.
+pub fn handle_mouse(app: &mut App, ev: event::MouseEvent, area: ratatui::layout::Rect) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    let p = ui::panels(app, area);
+    let (x, y) = (ev.column, ev.row);
+    let inside =
+        |r: ratatui::layout::Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+
+    match ev.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            // An open dropdown takes the click before anything under it, which
+            // is what "over" means. Without this a menu item and the table row
+            // it is drawn on top of both answer, and the table wins because it
+            // is checked first.
+            if app.menu.is_open() {
+                if let Some(rect) = ui::dropdown_rect(app, area)
+                    && inside(rect)
+                {
+                    // The frame is not an item: the top and bottom rows are the
+                    // border, and clicking a border should do nothing rather
+                    // than run whatever is nearest.
+                    let row = y.saturating_sub(rect.y + 1) as usize;
+                    let titles = menu::bar();
+                    if y > rect.y
+                        && y + 1 < rect.y + rect.height
+                        && let Some(t) = app.menu.open.and_then(|i| titles.get(i))
+                        && let Some(action) = t.items.get(row).and_then(|i| i.action())
+                    {
+                        app.menu.close();
+                        action.apply(app);
+                    }
+                    return;
+                }
+                // On the bar: switch titles. Anywhere else: dismiss. A menu
+                // that stayed open when you clicked past it is one you have to
+                // close twice.
+                match title_at(x) {
+                    Some(at) if app.menu.open == Some(at) => app.menu.close(),
+                    Some(at) => {
+                        app.menu.open = Some(at);
+                        app.menu.item = 0;
+                    }
+                    None => app.menu.close(),
+                }
+                return;
+            }
+            if let Some(at) = title_at(x).filter(|_| inside(p.menu)) {
+                app.menu.open = Some(at);
+                app.menu.item = 0;
+                return;
+            }
+            if inside(p.timeline) {
+                if let Some(a) = scrub_to(app, p.timeline, x) {
+                    a.apply(app);
+                }
+                return;
+            }
+            if inside(p.table)
+                && let Some(a) = row_at(p.table, y)
+            {
+                a.apply(app);
+            }
+        }
+        // Dragging the timeline scrubs continuously, which is the one gesture
+        // here that a keyboard cannot express at all.
+        MouseEventKind::Drag(MouseButton::Left) if inside(p.timeline) => {
+            if let Some(a) = scrub_to(app, p.timeline, x) {
+                a.apply(app);
+            }
+        }
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            let down = ev.kind == MouseEventKind::ScrollDown;
+            // Over the graph the wheel moves time; over the table it moves the
+            // selection. Both are the thing under the pointer.
+            let action = if inside(p.timeline) {
+                Action::Scrub(if down { 1 } else { -1 })
+            } else {
+                Action::Select(if down { 1 } else { -1 })
+            };
+            action.apply(app);
+        }
+        _ => {}
+    }
+}
+
+/// Which menu title the column `x` falls in, if any.
+fn title_at(x: u16) -> Option<usize> {
+    let titles = menu::bar();
+    let mut at = 1u16;
+    for (i, t) in titles.iter().enumerate() {
+        let w = t.name.chars().count() as u16 + 2;
+        if x >= at && x < at + w {
+            return Some(i);
+        }
+        at += w;
+    }
+    None
+}
+
+/// The table row under `y`, as an action.
+fn row_at(table: ratatui::layout::Rect, y: u16) -> Option<Action> {
+    // One for the section rule, one for the column headers.
+    let first = table.y + 2;
+    (y >= first).then(|| Action::SelectRow((y - first) as usize))
+}
+
+/// The sample under column `x` of the timeline.
+fn scrub_to(app: &App, timeline: ratatui::layout::Rect, x: u16) -> Option<Action> {
+    let (start, shown, zoom) = ui::shown_window(app, timeline);
+    if shown == 0 {
+        return None;
+    }
+    let gutter = ui::GUTTER_W as u16;
+    let cell = x.checked_sub(timeline.x + gutter)? as usize;
+    let spc = app.glyphs.samples_per_cell();
+    // The same two packings the drawing uses, run backwards: a cell is `spc`
+    // slots and a slot is `zoom` samples.
+    let at = start + (cell * spc * zoom).min(shown - 1);
+    Some(Action::ScrubTo(at))
 }
 
 /// Keys while a dropdown is open.

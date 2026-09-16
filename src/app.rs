@@ -1432,6 +1432,24 @@ impl App {
         self.selected = Some(Watched::of(&rows[i]));
     }
 
+    /// Select the row at `i`, if there is one.
+    ///
+    /// The mouse's version of `select_delta`: it points at a row rather than a
+    /// direction. Thread rows are skipped the same way and for the same reason
+    /// — a thread carries its process's identity, so selecting one would select
+    /// the process and leave the highlight where it started.
+    pub fn select_row(&mut self, i: usize) {
+        let rows = self.visible_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let mut i = i.min(rows.len() - 1);
+        while rows[i].is_thread() && i > 0 {
+            i -= 1;
+        }
+        self.selected = Some(Watched::of(&rows[i]));
+    }
+
     /// Where the watched process is in these rows, if it is in them at all.
     pub fn row_of(&self, rows: &[TreeRow<'_>]) -> Option<usize> {
         let w = self.selected.as_ref()?;

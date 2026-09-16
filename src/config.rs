@@ -25,6 +25,8 @@ use std::time::Duration;
 pub struct Settings {
     pub glyphs: GlyphSet,
     pub axis: Axis,
+    /// Whether to take the mouse. Off gives terminal text selection back.
+    pub mouse: bool,
     pub tier: Tier,
     /// The theme asked for: a built-in, or a file in `~/.config/poptop/themes`.
     /// Whether it resolves is settled in [`resolve`], which is where the
@@ -115,6 +117,7 @@ impl Settings {
         Self {
             glyphs: default_glyphs(),
             axis: Axis::default(),
+            mouse: true,
             tier: Tier::detect(),
             theme: Palette::default().name().to_string(),
             theme_origin: None,
@@ -166,6 +169,7 @@ impl Settings {
         Self {
             glyphs: GlyphSet::default(),
             axis: Axis::default(),
+            mouse: true,
             tier: Tier::TrueColor,
             theme: Palette::Safe.name().to_string(),
             theme_origin: None,
@@ -253,6 +257,14 @@ pub const KEYS: &[(&str, Apply)] = &[
     // the rows mean.
     ("scale", |s, v| {
         s.axis = Axis::parse(v).ok_or(Axis::NAMES)?;
+        Ok(())
+    }),
+    ("mouse", |s, v| {
+        s.mouse = match v {
+            "on" | "true" | "yes" => true,
+            "off" | "false" | "no" => false,
+            _ => return Err("on or off"),
+        };
         Ok(())
     }),
     ("color", |s, v| {
