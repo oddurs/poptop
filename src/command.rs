@@ -146,8 +146,11 @@ impl Action {
             Self::ToggleCgroups => app.toggle_cgroups(),
             Self::ToggleKernel => app.show_kernel = !app.show_kernel,
             Self::BeginFilter => {
+                // Kept, not cleared. `/` on an existing filter used to throw it
+                // away before a key was pressed, so narrowing a narrowed list
+                // meant retyping the first query.
+                app.filter_before = app.filter.clone();
                 app.editing_filter = true;
-                app.filter.clear();
             }
             Self::ClearFilter => {
                 app.filter.clear();

@@ -2,7 +2,7 @@
 id: 124
 title: Search is a mode and should be a field
 type: feature
-status: backlog
+status: done
 milestone: v4.0
 created: 2026-09-15
 updated: 2026-09-15
@@ -32,16 +32,27 @@ Escape leaves it focused but not capturing, and a second Escape clears it —
 which is the distinction Activity Monitor draws with a field and poptop
 currently cannot express at all.
 
-## What needs deciding
+## What was decided
 
-- **Two Escapes is a convention nobody has met.** The alternative is an explicit
-  key to clear, and a filter that survives an Escape the reader thought would
-  undo it.
-- **Whether the match count belongs to the field or to the scope line.** `4 of
-  760` is scope; `postgres` is the query.
+**Two Escapes was not built.** Escape does the thing every other program uses it
+for: it puts back the filter that was there before the field was opened. Enter
+keeps what was typed. Both used to commit, so Escape was a second Enter — and
+spending the universal undo key on "finish" is the surprising part, not the
+absence of a second press.
+
+**Clearing is the menu's `Clear filter`**, which is one action and is named
+rather than guessed.
+
+**The field is the scope line.** While the filter is being typed it *is* the
+scope, so the query is shown there and nowhere else — the footer, which used to
+hold a box echoing it, now carries what the field takes and how to leave it,
+which is the only thing the box did that the field does not.
+
+**`/` keeps what is already there.** It used to clear the filter before a key
+was pressed, so narrowing a narrowed list meant retyping the first query.
 
 ## Acceptance criteria
 
-- [ ] A filter that is set is visible without pressing anything
-- [ ] Clearing it is one obvious action, not a guess
-- [ ] Typing in it does not stop the rest of the interface working
+- [x] A filter that is set is visible without pressing anything
+- [x] Clearing it is one obvious action, not a guess
+- [x] Typing in it does not stop the rest of the interface working

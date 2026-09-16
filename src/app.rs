@@ -351,6 +351,8 @@ pub struct App {
     last_row: std::cell::Cell<usize>,
     pub filter: String,
     pub editing_filter: bool,
+    /// What the filter was before editing began, so Escape can put it back.
+    pub filter_before: String,
     /// Whether the jump box is open, and what has been typed into it.
     ///
     /// An incident has a time. Scrubbing to it by pressing the left arrow six
@@ -508,6 +510,7 @@ impl App {
             last_row: std::cell::Cell::new(0),
             filter: String::new(),
             editing_filter: false,
+            filter_before: String::new(),
             editing_jump: false,
             replaying: false,
             jump: String::new(),

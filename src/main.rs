@@ -1400,7 +1400,15 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     }
     if app.editing_filter {
         match code {
-            KeyCode::Enter | KeyCode::Esc => app.editing_filter = false,
+            // Enter keeps what was typed; Escape puts back what was there
+            // before. Both used to commit, so Escape was a second Enter — and
+            // a key that every other program uses to undo is the wrong one to
+            // spend on "finish".
+            KeyCode::Enter => app.editing_filter = false,
+            KeyCode::Esc => {
+                app.filter = std::mem::take(&mut app.filter_before);
+                app.editing_filter = false;
+            }
             KeyCode::Backspace => {
                 app.filter.pop();
             }

@@ -237,10 +237,24 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
     // processes" are the same question — what am I looking at — and putting the
     // second one here costs no row of its own.
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let scope = scope_text(app, (area.width as usize).saturating_sub(used + 2));
-    let pad = (area.width as usize).saturating_sub(used + scope.chars().count() + 1);
+    // While the filter is being typed it *is* the scope, so the field is here
+    // rather than in a box of its own at the other end of the screen. Two
+    // places saying the same thing is the objection the key hints already
+    // answer to; a filter is no different.
+    let tail: Vec<Span> = if app.editing_filter {
+        let text = format!("filter: {}", app.filter);
+        vec![
+            Span::styled(text, app.theme.cursor_style()),
+            Span::styled("█", app.theme.cursor_style()),
+        ]
+    } else {
+        let scope = scope_text(app, (area.width as usize).saturating_sub(used + 2));
+        vec![Span::styled(scope, app.theme.dim_style())]
+    };
+    let tail_w: usize = tail.iter().map(|s| s.content.chars().count()).sum();
+    let pad = (area.width as usize).saturating_sub(used + tail_w + 1);
     spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(scope, app.theme.dim_style()));
+    spans.extend(tail);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -4328,18 +4342,17 @@ fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
     let line = if app.editing_filter {
-        // The error, where the query is being typed. A one-line filter box has
-        // nowhere else to teach the field names, so the message carries them.
-        let tail = match app.filter_error() {
-            Some(why) => Span::styled(format!("   {why}"), app.theme.warning_style()),
-            None => Span::styled("   (Enter/Esc to finish)", app.theme.dim_style()),
-        };
-        Line::from(vec![
-            Span::styled("filter: ", app.theme.cursor_style()),
-            Span::raw(&app.filter),
-            Span::styled("█", app.theme.cursor_style()),
-            tail,
-        ])
+        // The field itself is on the scope line, where the filter is the scope.
+        // What is left for this row is what the field takes and how to leave
+        // it — which a one-line box had nowhere else to put, and which is the
+        // reason the box existed at all.
+        match app.filter_error() {
+            Some(why) => Line::from(Span::styled(format!(" {why}"), app.theme.warning_style())),
+            None => Line::from(Span::styled(
+                " ⏎ keep · esc cancel · try `postgres`, `user:root`, `cpu>50`".to_string(),
+                app.theme.dim_style(),
+            )),
+        }
     } else if let Some(p) = app.pending.as_ref() {
         // The question, naming the process. The number is the part that gets
         // misread, and it is the only thing the alternative workflow — reading

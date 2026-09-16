@@ -8900,15 +8900,13 @@ fn a_malformed_query_hides_nothing_and_says_why() {
 
     // Said where the query is typed…
     app.editing_filter = true;
-    // The filter line itself, not the whole frame. The title carries the same
-    // message, so a frame-wide search is satisfied by the title even when the
-    // line where the query is being typed says nothing — and the explanation,
-    // not the echo, because the box already shows what was typed.
+    // The footer, not the whole frame. The panel title carries the same message
+    // and a frame-wide search is satisfied by it even when the row that is
+    // meant to explain the error says nothing. The *field* is on the scope line
+    // now; the footer is what is left, and the explanation belongs there
+    // because the field is already showing what was typed.
     let drawn = rows(&app, 140, 20);
-    let line = drawn
-        .iter()
-        .find(|l| l.starts_with("filter:"))
-        .expect("no filter line");
+    let line = drawn.last().expect("no footer");
     assert!(
         line.contains("no field called"),
         "the error is not shown where the query is typed: {line:?}"
@@ -13371,4 +13369,110 @@ fn the_inspector_says_nothing_about_a_process_that_is_not_there() {
         !open.contains("parent"),
         "the inspector described some other process:\n{open}"
     );
+}
+
+// ── the filter field ────────────────────────────────────────────────────────
+
+#[test]
+fn the_filter_is_typed_where_it_is_shown() {
+    // It used to be a box at the bottom of the screen while the scope line at
+    // the top said the same thing — two places for one fact, which is the
+    // objection the key hints already answer to.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..8)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 2 { "postgres" } else { "nginx" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    press(&mut app, KeyCode::Char('/'));
+    for c in "postgres".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let frame = rows(&app, 120, 26);
+    let strip = &frame[ui::MENU_H as usize];
+    assert!(
+        strip.contains("filter: postgres"),
+        "the field is not on the scope line: {strip:?}"
+    );
+    assert_eq!(
+        frame
+            .iter()
+            .filter(|l| l.contains("filter: postgres"))
+            .count(),
+        1,
+        "the query is echoed in more than one place"
+    );
+    // The footer says what the field takes and how to leave it, which is the
+    // only thing a box was for that the field is not.
+    let footer = frame.last().unwrap();
+    assert!(
+        footer.contains("esc") && footer.contains("⏎"),
+        "the footer does not say how to leave the field: {footer:?}"
+    );
+}
+
+#[test]
+fn escape_puts_back_the_filter_that_was_there() {
+    // Enter and Escape both used to commit, so Escape was a second Enter — and
+    // a key that every other program uses to undo is the wrong one to spend on
+    // "finish".
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 5.0, 1 << 20))
+        .collect();
+    app.push(s);
+
+    press(&mut app, KeyCode::Char('/'));
+    for c in "post".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.filter, "post", "Enter did not keep what was typed");
+
+    // Narrowing a narrowed list starts from what is already there rather than
+    // throwing it away before a key is pressed.
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!(
+        app.filter, "post",
+        "`/` cleared the filter it was opened on"
+    );
+    for c in "gres".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(app.filter, "postgres");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.filter, "post", "Escape committed instead of cancelling");
+    assert!(!app.editing_filter);
+}
+
+#[test]
+fn clearing_the_filter_is_one_action() {
+    // Not backspacing it away a character at a time, and not a guess.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 5.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.filter = "postgres".into();
+
+    let clear = crate::menu::bar()
+        .into_iter()
+        .flat_map(|t| t.items)
+        .find(|i| i.action() == Some(crate::command::Action::ClearFilter))
+        .expect("no way to clear the filter");
+    assert!(!clear.label().is_empty());
+    crate::command::Action::ClearFilter.apply(&mut app);
+    assert!(app.filter.is_empty(), "clearing left the filter in place");
+    assert!(!app.editing_filter, "clearing left the field focused");
 }
