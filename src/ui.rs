@@ -658,6 +658,51 @@ fn divider_of(parts: Vec<Span<'static>>, width: u16, theme: &Theme) -> Line<'sta
     Line::from(out)
 }
 
+/// A byte rate in a fixed number of columns.
+///
+/// The width of a figure must not depend on its value. `4.1M/s` is six columns
+/// and `635.7K/s` is eight, so a network figure that switched between them
+/// moved every figure to its right — measured at forty-six columns shifting a
+/// second, which is most of what made this row look unstable.
+///
+/// Three significant figures, which is more than anybody reads off a header,
+/// and right-aligned so the unit lands in the same place every time.
+pub fn fmt_rate(b: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    let n = if i == 0 || v >= 100.0 {
+        format!("{v:.0}")
+    } else if v >= 10.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v:.2}")
+    };
+    let text = format!("{n}{}/s", UNITS[i]);
+    // A counter that wrapped, or a clock that jumped. No interface carries
+    // sixteen exabytes a second, and the honest rendering of "this is not a
+    // rate" is not to print it — but the fixed width is the whole point of this
+    // function, so it says there was one rather than going blank.
+    let text = if text.chars().count() > RATE_W {
+        "≫1T/s".to_string()
+    } else {
+        text
+    };
+    format!("{text:>RATE_W$}")
+}
+
+/// Columns an interface name occupies. Most are three or four — `en0`, `lo0`,
+/// `eth0`, `wlan0` — and a longer one is elided rather than allowed to shift
+/// the row it sits in.
+pub const IFACE_W: usize = 5;
+
+/// Columns a rate occupies, whatever it is. `1023K/s` is the widest.
+pub const RATE_W: usize = 7;
+
 pub fn fmt_bytes(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut v = b as f64;
@@ -699,10 +744,12 @@ pub fn fmt_lag(d: Duration) -> String {
 fn fmt_uptime(d: Duration) -> String {
     let s = d.as_secs();
     let (days, hours, mins) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
+    // Padded, so the ninth day does not move every figure beside it when it
+    // becomes the tenth — and neither does the hour, or the minute.
     if days > 0 {
-        format!("{days}d {hours}h {mins}m")
+        format!("{days:>3}d {hours:02}h {mins:02}m")
     } else {
-        format!("{hours}h {mins}m")
+        format!("     {hours:02}h {mins:02}m")
     }
 }
 
@@ -721,7 +768,12 @@ fn fmt_uptime(d: Duration) -> String {
 /// What "wide enough for everything" means, and so what the heat legend has to
 /// fit alongside.
 /// Between two figures about the same resource.
-const NEAR: &str = "  ";
+/// Between two figures about the same resource.
+///
+/// Three rather than two. The row carries eight to twelve figures and they were
+/// packed tight enough that `MEM 84.9% ██████████░░ 20.4G / 24.0G SWP 88.5%`
+/// read as one long number rather than three facts.
+const NEAR: &str = "   ";
 /// Between two groups. Wider, and marked, because a group boundary that looks
 /// like the gap inside a group is not a boundary — and the mark carries on a
 /// terminal with no colour to spend.
@@ -1399,10 +1451,16 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             group: Group::Network,
             rank: 55,
             spans: vec![
-                Span::styled(format!("{} ", l.name), dim),
-                Span::styled(format!("{}/s", fmt_bytes(l.rx)), dim),
+                // The name in a fixed cell too: a laptop's busiest interface
+                // flips between `lo0` and `en0` from second to second, and the
+                // figure cannot change width when it does.
+                Span::styled(
+                    format!("{:<IFACE_W$} ", elide_middle(&l.name, IFACE_W)),
+                    dim,
+                ),
+                Span::styled(fmt_rate(l.rx), dim),
                 Span::styled(" ", dim),
-                Span::styled(format!("{}/s", fmt_bytes(l.tx)), dim),
+                Span::styled(fmt_rate(l.tx), dim),
             ],
         });
     }
@@ -1481,7 +1539,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         rank: 80,
         spans: vec![
             Span::styled("PROCS ", dim),
-            Span::raw(s.procs.len().to_string()),
+            // Right-aligned in four: a box crossing a thousand processes must
+            // not move the figures beside it.
+            Span::raw(format!("{:>4}", s.procs.len())),
         ],
     });
     // Only where the platform counts them, which is Linux: macOS has no
@@ -3477,6 +3537,37 @@ fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>
     Some(Line::from(spans))
 }
 
+/// Columns of air either side of the table's content, where there is room.
+///
+/// The panel dividers stay full width — they are the thing that says where a
+/// panel starts, and a divider stopping short of the edge would read as a box
+/// missing its corners. What gets the air is the content, which was flush
+/// against column zero and the right edge at the same time.
+///
+/// Given up first on a narrow terminal, like every other comfort here. A
+/// hundred and four columns is enough to draw a deep tree of Chrome helpers and
+/// not enough to spare two, so the threshold is where a terminal genuinely has
+/// slack rather than where it merely has room — a process elided to `…derer)`
+/// is a worse loss than a row that touches the edge.
+fn table_inset(width: u16) -> u16 {
+    u16::from(width >= 120)
+}
+
+/// Where the table's rows and headers are drawn, inside the panel.
+///
+/// One derivation, because the mouse resolves a click through the same
+/// arithmetic — and a hit box an inset away from the column it is over is the
+/// bug this milestone has already had twice.
+pub fn table_body(area: Rect) -> Rect {
+    let inset = table_inset(area.width);
+    Rect {
+        x: area.x + inset,
+        width: area.width.saturating_sub(inset * 2),
+        y: area.y + 1 + summary_height(area),
+        height: area.height.saturating_sub(1 + summary_height(area)),
+    }
+}
+
 /// Whether the summary strip is drawn, for a table panel of this height.
 ///
 /// Given up before the table drops below its floor, the same way the tab strip
@@ -3511,6 +3602,14 @@ pub struct TableShape {
 }
 
 pub fn table_shape(app: &App, area: Rect) -> TableShape {
+    // The width the columns actually get, which is the panel less the air
+    // either side of them. Using the panel's own width made every column
+    // decision two columns too generous, and the command was elided to a width
+    // it was then chopped at.
+    let area = Rect {
+        width: table_body(area).width,
+        ..area
+    };
     let one_user = app.one_user();
     let user = one_user.is_none() && app.group != crate::app::Grouping::User;
     let bars = app.view != crate::app::View::Disk;
@@ -3545,7 +3644,9 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
 pub fn sort_at(app: &App, area: Rect, x: u16) -> Option<crate::app::Sort> {
     let s = table_shape(app, area);
     let (widths, sorts) = table_columns(s.bars, s.thr, s.io, s.mem_cols, s.user, s.cid);
-    let cells = Layout::horizontal(widths).spacing(1).split(area);
+    let cells = Layout::horizontal(widths)
+        .spacing(1)
+        .split(table_body(area));
     cells
         .iter()
         .position(|r| x >= r.x && x < r.x + r.width)
@@ -3687,7 +3788,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // twelve blank columns on every row, which is the argument that drops
     // `USER` two lines up.
     let show_cid = shape.cid;
-    let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped, taken);
+    let cmd_w = command_width(
+        table_body(area).width,
+        show_io,
+        show_user,
+        show_cid,
+        dropped,
+        taken,
+    );
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -4359,19 +4467,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             Rect {
                 y: area.y + 1,
                 height: 1,
-                ..area
+                x: table_body(area).x,
+                width: table_body(area).width,
             },
         );
     }
     let table = Table::new(rows, widths).header(header);
-    f.render_widget(
-        table,
-        Rect {
-            y: area.y + 1 + summary,
-            height: area.height.saturating_sub(1 + summary),
-            ..area
-        },
-    );
+    f.render_widget(table, table_body(area));
 }
 
 /// Width of the per-process history sparkline, in cells.

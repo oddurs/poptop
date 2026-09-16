@@ -5617,8 +5617,15 @@ fn a_group_separator_is_measured_in_columns_not_bytes() {
     // five written out by hand. The two disagreed, and the header dropped
     // figures that fitted while leaving columns unused.
     let (near_cols, near_bytes, far_cols, far_bytes) = ui::separator_widths_for_test();
-    assert_eq!(near_cols, 2);
-    assert_eq!(far_cols, 5, "the group separator is not five columns wide");
+    // The numbers themselves are a design choice and change; what this test is
+    // about is that both are measured in *columns*. The relationship is the
+    // invariant: a group boundary has to be wider than the gap inside a group,
+    // or it is not a boundary.
+    assert!(
+        far_cols > near_cols,
+        "a group boundary is no wider than the gaps inside one"
+    );
+    assert!(near_cols >= 2, "figures are packed against each other");
     assert_ne!(
         far_cols, far_bytes,
         "this proves nothing unless columns and bytes differ"
@@ -14031,5 +14038,197 @@ fn a_thread_total_nobody_can_supply_is_left_out_rather_than_dashed() {
     assert!(
         strip.contains("15.0%") && strip.contains("2 shown"),
         "{strip:?}"
+    );
+}
+
+// ── a header that holds still ───────────────────────────────────────────────
+
+#[test]
+fn no_figure_moves_when_the_numbers_change() {
+    // Measured on a real terminal before this was written: forty-six columns of
+    // the header shifted every second, because the network figure is wider at
+    // `635.7K/s` than at `4.1M/s` and everything to its right moved with it.
+    //
+    // The rule is that a figure's *width* must not depend on its *value*. This
+    // walks the extremes of every figure that has a variable one and asserts
+    // the row is laid out identically.
+    let at = |cpu: f32, procs: usize, rx: u64, tx: u64, iface: &str, up_days: u64| {
+        let mut app = App::new(60);
+        let mut s = sample(cpu);
+        s.uptime = std::time::Duration::from_secs(up_days * 86400 + 3600 + 60);
+        s.procs = (0..procs)
+            .map(|i| proc_named(100 + i as i32, "p", 1.0, 1 << 20))
+            .collect();
+        s.net = Some(crate::sample::NetStat {
+            links: vec![crate::sample::Link {
+                name: std::sync::Arc::from(iface),
+                rx,
+                tx,
+                rx_packets: 1,
+                tx_packets: 1,
+            }],
+            errors: None,
+            drops: None,
+            retrans: None,
+            listen_drops: None,
+        });
+        app.push(s);
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        figures_line(&app, 200, 24)
+    };
+
+    // The narrowest each figure gets, and the widest.
+    // Non-zero on both: `NetStat::busiest` returns nothing for an idle
+    // interface, so a zero here drops the network figure entirely and the
+    // comparison stops being about its width.
+    let narrow = at(0.0, 1, 1, 1, "lo0", 0);
+    let wide = at(100.0, 9999, 900 << 20, 1023 << 30, "enp0s31f6", 999);
+
+    // Every label lands in the same column in both.
+    for label in ["CPU", "MEM", "SWP", "UP ", "PROCS"] {
+        let a = narrow.find(label).map(|b| narrow[..b].chars().count());
+        let b = wide.find(label).map(|b| wide[..b].chars().count());
+        assert_eq!(
+            a, b,
+            "{label} moved between the narrowest and widest values:\n{narrow}\n{wide}"
+        );
+    }
+    assert_eq!(
+        narrow.trim_end().chars().count(),
+        wide.trim_end().chars().count(),
+        "the row is a different length:\n{narrow}\n{wide}"
+    );
+    // The interface name is in a fixed cell too: a laptop's busiest interface
+    // flips between `lo0` and `en0` from second to second, and a long name on a
+    // server must not make the figure wider than a short one.
+    assert!(
+        narrow.contains("lo0"),
+        "the short name is not drawn:\n{narrow}"
+    );
+    // A long one is elided into the same cell rather than widening it, which is
+    // the only way the figures after it can stay put.
+    assert!(
+        wide.contains("en…f6"),
+        "a long interface name widened its cell instead of being elided:\n{wide}"
+    );
+}
+
+#[test]
+fn a_rate_is_the_same_width_whatever_it_is() {
+    for b in [
+        0u64,
+        1,
+        999,
+        1023,
+        1024,
+        100 << 10,
+        900 << 20,
+        1023 << 30,
+        u64::MAX,
+    ] {
+        assert_eq!(
+            ui::fmt_rate(b).chars().count(),
+            ui::RATE_W,
+            "{b} renders as {:?}",
+            ui::fmt_rate(b)
+        );
+    }
+    // And it is still readable: three significant figures, with the unit.
+    assert!(ui::fmt_rate(4 << 20).trim().starts_with("4.00M"));
+    assert!(ui::fmt_rate(635 << 10).trim().starts_with("635K"));
+    assert!(ui::fmt_rate(896).trim() == "896B/s");
+}
+
+#[test]
+fn an_uptime_is_the_same_width_on_its_ninth_day_and_its_tenth() {
+    let up = |secs| {
+        let mut app = App::new(60);
+        let mut s = sample(10.0);
+        s.uptime = std::time::Duration::from_secs(secs);
+        app.push(s);
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        let line = figures_line(&app, 200, 24);
+        let at = line.find("UP ").expect("no uptime");
+        line[at..].chars().take(14).collect::<String>()
+    };
+    let widths: std::collections::HashSet<usize> =
+        [60, 3600, 86400 * 9 + 3600, 86400 * 10 + 3600, 86400 * 365]
+            .into_iter()
+            .map(|s| up(s).trim_end().chars().count())
+            .collect();
+    assert_eq!(widths.len(), 1, "the uptime changes width: {widths:?}");
+}
+
+#[test]
+fn the_table_is_given_air_only_where_there_is_room_for_it() {
+    // Two columns either side of the rows. They are the first thing given up:
+    // at a hundred and four columns a deep tree of Chrome helpers needs every
+    // one of them, and a process elided to `…derer)` is a worse loss than a row
+    // that touches the edge.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let left_edge = |w: u16| -> usize {
+        data_rows(&app, w, 26)
+            .into_iter()
+            .find(|l| l.contains("postgres"))
+            .map(|l| l.len() - l.trim_start().len())
+            .expect("no row")
+    };
+    assert!(
+        left_edge(150) > left_edge(104),
+        "a wide terminal is no more spacious than a cramped one"
+    );
+
+    // And the panel's own divider still spans the whole width: it is what says
+    // where the panel starts, and one stopping short reads as a box missing its
+    // corners.
+    let title = table_rows(&app, 150, 26)
+        .into_iter()
+        .find(|l| l.contains("processes"))
+        .unwrap();
+    assert!(
+        title.starts_with("──"),
+        "the divider was inset with the content: {title:?}"
+    );
+    assert!(title.trim_end().chars().count() >= 148, "{title:?}");
+}
+
+#[test]
+fn a_click_lands_on_the_column_the_air_moved() {
+    // The inset shifts every column right, and the mouse resolves through the
+    // same `table_body` — which is the whole reason it is a function rather
+    // than two copies of the arithmetic.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let (w, h) = (150u16, 26u16);
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    assert!(ui::table_body(panel).x > panel.x, "no air to test against");
+
+    app.sort = crate::app::Sort::Cpu;
+    let head = table_rows(&app, w, h)
+        .into_iter()
+        .find(|l| l.contains("COMMAND"))
+        .unwrap();
+    let at = head
+        .find("PID")
+        .map(|b| head[..b].chars().count())
+        .expect("no pid header");
+    click(&mut app, at as u16 + 1, ui::table_header_y(panel), w, h);
+    assert_eq!(
+        app.sort,
+        crate::app::Sort::Pid,
+        "the click landed a column away from the header it was on"
     );
 }
