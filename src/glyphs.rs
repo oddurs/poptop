@@ -13,10 +13,10 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum GlyphSet {
     /// Braille. Four sub-rows a cell, so the finest line of the three.
+    #[default]
     Braille,
     /// Half blocks — `▄▀█`. Two sub-rows a cell, one weight throughout, and
     /// legible in any font that draws a terminal. The default.
-    #[default]
     Block,
     /// Box drawing — `╭ ╮ ╰ ╯ ─ │`. One level a row, and the cleanest line of
     /// the four: the corners make a stroke the eye follows without effort.
@@ -258,6 +258,17 @@ impl GlyphSet {
                 }
             }
         }
+    }
+
+    /// The character this set draws an empty cell with.
+    ///
+    /// Not always a space: braille's blank is `U+2800`, a real character that
+    /// happens to have no dots raised. Comparing against `' '` instead meant
+    /// "is this cell empty" was false for every braille cell on screen — which
+    /// silently switched off every threshold rule in that set, because the rule
+    /// only fills cells the series does not reach.
+    pub fn blank(self) -> char {
+        self.bar(0)
     }
 
     /// One cell of an outline, given where the line enters and leaves.
@@ -1096,23 +1107,28 @@ mod composition_tests {
     }
 
     #[test]
-    fn the_default_set_is_the_one_that_resolves_the_most() {
-        // `block` is the default because of this number, not because of font
-        // support alone: the eighths ramp puts eight levels in a cell where
-        // braille's dot rows put four. Braille buys width back — two samples a
-        // cell against block's one — so the information per cell is close, but
-        // in a graph three rows tall it is height that is scarce.
+    fn the_default_is_braille_and_block_is_the_one_that_resolves_more() {
+        // Both halves matter, and they pull against each other.
         //
-        // Asserted rather than left to `a_bar_resolves_every_level_its_set_claims`,
-        // which only checks a set draws as many levels as it claims and so
-        // passes just as happily on a set that claims two.
-        assert_eq!(GlyphSet::default(), GlyphSet::Block);
-        assert_eq!(GlyphSet::Block.sub_rows(), 8);
-        for other in [GlyphSet::Braille, GlyphSet::Ascii, GlyphSet::Line] {
-            assert!(
-                GlyphSet::Block.sub_rows() > other.sub_rows(),
-                "{other:?} resolves at least as much as the default"
-            );
+        // `block` resolves eight levels in a cell against braille's four, and
+        // for a while it was the default on exactly that argument. It is still
+        // the true statement about resolution and it is not the whole question:
+        // braille is the look this class of tool has had for a decade, it is
+        // what the author wants to read, and a monitor nobody enjoys looking at
+        // does not get looked at. That is a preference, and recording it as one
+        // is more honest than inventing a metric it wins on.
+        //
+        // What braille does win on is the sparkline, where it packs two samples
+        // into each of ten cells and so shows twice the history in the column
+        // that has least room for it.
+        assert_eq!(GlyphSet::default(), GlyphSet::Braille);
+        assert!(
+            GlyphSet::Block.sub_rows() > GlyphSet::Braille.sub_rows(),
+            "the trade this comment describes has stopped being true"
+        );
+        assert_eq!(GlyphSet::Braille.spark_samples_per_cell(), 2);
+        for other in [GlyphSet::Block, GlyphSet::Ascii, GlyphSet::Line] {
+            assert_eq!(other.spark_samples_per_cell(), 1);
         }
     }
 

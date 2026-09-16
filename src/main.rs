@@ -58,12 +58,13 @@ USAGE:
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
 
-    --graph=SET     how the timeline is drawn. `block` (default) draws bars
-                    with the eighths ramp, eight levels a cell; `braille` draws
-                    bars at four levels but two samples a cell; `line` draws the
-                    outline instead of filling under it; `ascii` needs no
-                    Unicode. `--glyphs` is the old name and still works. Falls
-                    back to ascii on a Linux console.
+    --graph=SET     how the timeline is drawn. `braille` (default) draws bars
+                    at four levels a cell, and two samples a cell in the table's
+                    sparkline; `block` resolves more — eight levels — with the
+                    eighths ramp; `line` draws the outline instead of filling
+                    under it; `ascii` needs no Unicode. `--glyphs` is the old
+                    name and still works. Falls back to ascii on a Linux
+                    console.
     --scale=WHERE   where the y-axis starts: zero (default) or fit. `fit`
                     reclaims the rows a high flat series wastes — memory at
                     72-85% spends most of a 0-100 panel on ink that never

@@ -2074,12 +2074,16 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // marks across a panel is both however wide the panel is.
             let cells = values.len().div_ceil(spc.max(1));
             let every = (cells / 10).clamp(4, 24);
+            // The alphabet in force is a function of the set *and* the form,
+            // and both of these questions are asked of it: which character
+            // means "empty", and which one means "a reference line". A fitted
+            // braille panel is drawn in box characters, whose empty is a space
+            // — while braille's own is `U+2800`, so asking the set alone said
+            // no cell was ever empty and no rule was ever drawn.
+            let alphabet = set.drawn_as(draws);
             match rule_level {
-                Some(lvl) if glyph == ' ' && i % every == 0 => {
-                    // The rule belongs to the alphabet in force, not to the
-                    // setting: a `block` panel drawing a fitted series draws it
-                    // in box characters, and `block`'s own rule is one of them.
-                    let mark = set.drawn_as(draws).rule_glyph(lvl);
+                Some(lvl) if glyph == alphabet.blank() && i % every == 0 => {
+                    let mark = alphabet.rule_glyph(lvl);
                     Span::styled(mark.to_string(), theme.chrome_style())
                 }
                 _ => Span::styled(glyph.to_string(), theme.series_style(series)),

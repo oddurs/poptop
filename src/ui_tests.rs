@@ -11736,8 +11736,13 @@ fn nothing_about_the_data_can_turn_the_bars_into_a_line() {
                 "a {lo}..{hi} series drew {c:?} — the default turned into a line"
             );
         }
+        // Asked of the set rather than assumed: the default has been block and
+        // is braille, and a hardcoded `▁▂▃` finds nothing in either the braille
+        // or the ascii alphabet.
+        let set = crate::glyphs::GlyphSet::default();
+        let marks: String = (1..=set.sub_rows()).map(|k| set.bar(k)).collect();
         assert!(
-            drawn.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)),
+            drawn.chars().any(|c| marks.contains(c)),
             "a {lo}..{hi} series drew no bars at all"
         );
     }
@@ -11825,10 +11830,11 @@ fn scale_fit_stops_a_high_flat_series_being_a_wall() {
     // The whole band, which starts one row above the label: `axis_label` puts
     // the ceiling on the band's first row and the name on its second.
     let mut chrome_marks = 0;
+    let blank = app.glyphs.blank().to_string();
     for y in r.start + mem_row as u16 - 1..=r.start + floor_row as u16 {
         for x in ui::GUTTER_W as u16..92 {
             let c = &buf[(x, y)];
-            if c.fg == app.theme.chrome && c.symbol() != " " {
+            if c.fg == app.theme.chrome && c.symbol() != " " && c.symbol() != blank {
                 chrome_marks += 1;
                 assert_ne!(
                     c.symbol(),

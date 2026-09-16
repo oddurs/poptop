@@ -13,23 +13,23 @@ nothing that had to be running before you noticed the problem.
 CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒▒░░░░░
   4 cores ▇▄▁█
 ── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
-  100 ─▆▄▂▇ ▆ ▇ ▆▃▃▆─▆─▆─▇▃▃▆ ▇ ▆ ▇▂▄▆─▇─▆─▇▁▄▆ ▇ ▆ ▇▁▅▆─▇─▅─▇─▅▅ ▇ ▅ ▇ ▅▅─▇─▅
-  CPU ▅████▃█ █▅████▄█─█▄████▅█ █▃████▅█─█▂████▆█ █▁████▇█─█─██████ █ ██████▁█
-      ███████▄████████▃████████▄████████▅████████▆████████▇███████████████████
-    0 ████████████████████████████████████████████████████████████████████████
-   50 ▄▄▃▂─ ─ ─ ─ ─ ─▂▃▄▄▃▂▁─ ─ ─ ─ ─ ▁▃▃▄▄▃▂ ─ ─ ─ ─ ─ ▂▃▄▄▃▂▁ ─ ─ ─ ─ ─▁▃▃▄▄
- WAIT █████▆▃     ▃▆████████▇▄▂    ▂▅▇████████▆▃     ▃▆████████▇▄▁    ▂▅▇█████
-    0 ████████▅▁▅██████████████▆▃▃▇██████████████▅▂▅██████████████▆▃▄▇████████
-   50 ─▅█████▅▂ ─ ─ ─ ▂▅█████▅▂ ─ ─ ─ ▂▅████▅▂─ ─ ─ ─ ▂█████▅▂─ ─ ─ ─▂▅█████▅▂
-  MEM ▇████████▇▄▁▁▁▄▇█████████▄▁▁▁▁▄▇████████▇▄▁▁▁▁▄▇████████▇▄▁▁▁▁▄█████████
-    0 ████████████████████████████████████████████████████████████████████████
-past                      2m23s shown, 1s/slot                      ▐      now
+  100 ⣀⣶⣤⣀⣿⠀⣶⣀⣿⠀⣶⣤⣤⣶⣀⣶⠀⣶⠀⣿⣤⣤⣶⠀⣿⠀⣶⠀⣿⣀⣤⣶⠀⣿⠀⣶⠀⣿⣀⣤⣶⠀⣿⠀⣶⠀⣿⣀⣶⣶⠀⣿⠀⣶⠀⣿⣀⣶⣶⠀⣿⠀⣶⣀⣿⠀⣶⣶⠀⣿⣀⣶
+  CPU ⣶⣿⣿⣿⣿⣤⣿⣀⣿⣶⣿⣿⣿⣿⣤⣿⠀⣿⣤⣿⣿⣿⣿⣶⣿⠀⣿⣤⣿⣿⣿⣿⣶⣿⠀⣿⣀⣿⣿⣿⣿⣶⣿⠀⣿⣀⣿⣿⣿⣿⣿⣿⠀⣿⠀⣿⣿⣿⣿⣿⣿⠀⣿⣀⣿⣿⣿⣿⣿⣿⣀⣿
+      ⣿⣿⣿⣿⣿⣿⣿⣤⣿⣿⣿⣿⣿⣿⣿⣿⣤⣿⣿⣿⣿⣿⣿⣿⣿⣤⣿⣿⣿⣿⣿⣿⣿⣿⣶⣿⣿⣿⣿⣿⣿⣿⣿⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+    0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+   50 ⣤⣤⣤⣀⠀⠀⠀⠉⠀⠀⠀⠀⠀⠀⠉⣀⣤⣤⣤⣤⣀⣀⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⣀⣤⣤⣤⣤⣤⣀⠀⠀⠀⠉⠀⠀⠀⠀⠀⠀⠉⣀⣤⣤⣤⣤⣀⣀⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⣀⣤⣤⣤⣤
+ WAIT ⣿⣿⣿⣿⣿⣶⣤⠀⠀⠀⠀⠀⣤⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⠀⠀⠀⠀⣀⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⠀⠀⠀⠀⠀⣤⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⠀⠀⠀⠀⣀⣶⣿⣿⣿⣿⣿⣿
+    0 ⣿⣿⣿⣿⣿⣿⣿⣿⣶⣀⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣀⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿
+   50 ⠉⣶⣿⣿⣿⣿⣿⣶⣀⠀⠀⠀⠀⠀⠉⠀⣀⣶⣿⣿⣿⣿⣿⣶⣀⠀⠀⠀⠉⠀⠀⠀⣀⣶⣿⣿⣿⣿⣶⣀⠀⠀⠉⠀⠀⠀⠀⠀⣀⣿⣿⣿⣿⣿⣶⣀⠉⠀⠀⠀⠀⠀⠀⣀⣶⣿⣿⣿⣿⣿⣶⣀
+  MEM ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⣀⣀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿
+    0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+past  2m23s shown, 1s/slot                                          ▲      now
 ── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
   CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
-  88.4 ███▌    512.0M ▏    S     1      █████     824 postgres
-  12.5 ▌        32.0M      S     1      ▁▁▁▁▁    1190 nginx
-   4.2 ▏       148.0M      S     1      ▁▁▁▁▁    2077 node
-   0.1          12.0M      S     1      ▁▁▁▁▁       1 systemd
+  88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿     824 postgres
+  12.5 ▌        32.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    1190 nginx
+   4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node
+   0.1          12.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀       1 systemd
 
 q quit · F10 menu · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select
 ```
@@ -691,15 +691,15 @@ agrees until it does not, and then only sometimes.
 `--graph=block|braille|line|ascii` picks how the timeline is drawn, and
 `graph = block` in the config file makes the choice stick.
 
-`block` is the default and draws bars — the classic sparkline, a column of ink
-from the baseline to the value, using the eighths ramp `▁▂▃▄▅▆▇█`. Eight levels
-in a character cell, against braille's four, and every font that can draw a
-progress bar already has them.
+`braille` is the default and draws bars — the classic sparkline, a column of ink
+from the baseline to the value. Four levels in a character cell, and two samples
+a cell in the table's ten-column sparkline, where history is scarcest.
 
-`braille` spends the difference the other way: four levels a cell, but two
-samples a cell, so it shows twice the history at half the vertical resolution.
-In a graph three rows tall it is height that is scarce, which is why it is no
-longer the default — but it is one setting away.
+`block` resolves more: eight levels a cell with the eighths ramp `▁▂▃▄▅▆▇█`, and
+every font that can draw a progress bar already has them. It was the default for
+a while on exactly that argument, which is the true statement about resolution
+and not the whole question — braille is the look this class of tool has had for
+a decade. One setting away either way.
 
 `line` draws the outline instead of filling under it. Worth reaching for when a
 series sits high and flat: a machine at 80% memory fills four rows in five with
