@@ -226,7 +226,8 @@ pub const TABS_H: u16 = 1;
 /// are already spent, and a navigation strip that is invisible at the mono tier
 /// fails on exactly the terminals a monitor is most likely to be opened in.
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
-    let mut spans = vec![Span::raw(" ")];
+    let area = content(app, area);
+    let mut spans = Vec::new();
     for v in crate::app::View::ALL {
         let on = app.view == v;
         let style = if on {
@@ -237,7 +238,7 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
         } else {
             app.theme.dim_style()
         };
-        spans.push(Span::styled(format!("  {}  ", v.label()), style));
+        spans.push(Span::styled(format!(" {}  ", v.label()), style));
     }
     // The scope, right-aligned on the same row. "Which resource" and "which
     // processes" are the same question — what am I looking at — and putting the
@@ -334,8 +335,9 @@ pub const MENU_H: u16 = 1;
 
 /// The bar: `File  Edit  View  Go  Process`, with the open one highlighted.
 fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
+    let area = content(app, area);
     let titles = crate::menu::bar();
-    let mut spans = vec![Span::raw(" ")];
+    let mut spans = Vec::new();
     for (i, t) in titles.iter().enumerate() {
         let open = app.menu.open == Some(i);
         let style = if open {
@@ -810,12 +812,18 @@ impl Density {
         }
     }
 
-    /// Columns of air either side of the table's content.
+    /// The frame's content margin, in columns, either side.
     ///
-    /// The panel dividers stay full width whatever this says — they are what
+    /// *One* margin, for every row that is not a full-width divider. Measured
+    /// before this existed, content began at column 0, 1, 2 or 3 depending on
+    /// which row it was — the menu bar flush left, the tab strip three in, the
+    /// header one, the table two, the footer none. Five margins rather than
+    /// one, which is what made the layout feel ragged rather than merely tight.
+    ///
+    /// The panel dividers are the exception and keep spanning: they are what
     /// tells you where a panel starts, and one stopping short of the edge reads
     /// as a box missing its corners.
-    pub fn inset(self, width: u16) -> u16 {
+    pub fn margin(self, width: u16) -> u16 {
         let want = match self {
             Self::Compact => 0,
             Self::Comfortable => 1,
@@ -1216,6 +1224,7 @@ fn rate_per_s(n: u64) -> String {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
+    let area = content(app, area);
     let mem_pct = s.mem.used_pct();
     let dim = app.theme.dim_style();
     let cores = s.cpu_per_core.len().max(1);
@@ -1932,6 +1941,9 @@ pub fn draw_timeline_for_test(f: &mut Frame, area: Rect, app: &App) {
 /// Derived rather than stored, like `window_start` itself: it depends on panel
 /// width and zoom, both of which are render-time facts.
 pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
+    // The drawn width, margin included, or the window the table's sparklines
+    // are aggregated over would not be the window the graph shows.
+    let area = content(app, area);
     let inner_w = area.width as usize;
     let inner_h = area.height.saturating_sub(1) as usize;
     if inner_w == 0 || inner_h == 0 {
@@ -1957,6 +1969,11 @@ pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
 /// with braille that is ten seconds per cell, so a normal terminal shows the
 /// entire buffer.
 fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
+    // The graph rows take the margin; the divider above them does not. A
+    // divider that stopped short of the edge reads as a box missing its
+    // corners, which is why the process panel's spans too.
+    let full = area;
+    let area = content(app, area);
     let inner_w = area.width as usize;
     let inner_h = area.height.saturating_sub(1) as usize;
     if inner_w == 0 || inner_h == 0 {
@@ -2399,9 +2416,15 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         None => format!(" timeline — {span} of {cap} buffered "),
     };
 
-    let mut all = vec![divider(&title, area.width, &app.theme)];
-    all.extend(lines);
-    f.render_widget(Paragraph::new(all), area);
+    let m = (full.width - area.width) / 2;
+    let pad = " ".repeat(m as usize);
+    let mut all = vec![divider(&title, full.width, &app.theme)];
+    all.extend(lines.into_iter().map(|l| {
+        let mut spans = vec![Span::raw(pad.clone())];
+        spans.extend(l.spans);
+        Line::from(spans)
+    }));
+    f.render_widget(Paragraph::new(all), full);
 }
 
 /// A peak that is a value, or `None` for a cell no sample landed in.
@@ -3623,18 +3646,29 @@ fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>
     Some(Line::from(spans))
 }
 
+/// The part of a panel its content is drawn in.
+///
+/// Every row that is not a full-width divider starts here, which is the whole
+/// of what `Density::margin` buys: a left edge you can run your eye down.
+pub fn content(app: &App, area: Rect) -> Rect {
+    let m = app.density.margin(area.width);
+    Rect {
+        x: area.x + m,
+        width: area.width.saturating_sub(m * 2),
+        ..area
+    }
+}
+
 /// Where the table's rows and headers are drawn, inside the panel.
 ///
 /// One derivation, because the mouse resolves a click through the same
 /// arithmetic — and a hit box an inset away from the column it is over is the
 /// bug this milestone has already had twice.
 pub fn table_body(app: &App, area: Rect) -> Rect {
-    let inset = app.density.inset(area.width);
     Rect {
-        x: area.x + inset,
-        width: area.width.saturating_sub(inset * 2),
         y: area.y + 1 + summary_height(area),
         height: area.height.saturating_sub(1 + summary_height(area)),
+        ..content(app, area)
     }
 }
 
@@ -4809,6 +4843,7 @@ fn selection_actions(app: &App, width: usize) -> Option<Line<'static>> {
 }
 
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
+    let area = content(app, area);
     let line = if app.editing_filter {
         // The field itself is on the scope line, where the filter is the scope.
         // What is left for this row is what the field takes and how to leave

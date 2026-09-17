@@ -29,7 +29,7 @@ with the one in force ticked.
 
 | | compact | comfortable | spacious |
 |---|---|---|---|
-| indent either side of the table | 0 | 1 | 2 |
+| the frame's content margin | 0 | 1 | 2 |
 | gap between two figures in a group | 2 | 3 | 4 |
 | blank row between the graph and the table | — | — | 1 |
 
@@ -40,6 +40,19 @@ elided to `…derer)` is a worse loss than a row touching the edge.
 
 The panel dividers stay full width whatever the setting: they are what says
 where a panel begins, and one stopping short reads as a box missing its corners.
+
+## The refinement that mattered
+
+The first version indented only the table, which did not fix the feeling. What
+did was measuring where content actually began on each row:
+
+    menu 0 · tabs 3 · header 1 · summary 2 · headers 2 · footer 0
+
+Five margins, not one. The layout was not short of air so much as ragged, and
+the eye cannot run down a left edge that is in five places. `Density::margin` is
+now the single source, applied by one `content()` helper to every row that is
+not a divider — and there is a test that renders at all three densities and
+asserts the whole frame starts in one place.
 
 ## What was declined
 

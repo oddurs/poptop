@@ -645,9 +645,15 @@ checks its key hint against what that key actually does — so a menu that says
 
 | | compact | comfortable | spacious |
 |---|---|---|---|
-| indent either side of the table | 0 | 1 | 2 |
+| the frame's content margin | 0 | 1 | 2 |
 | gap between two figures in a group | 2 | 3 | 4 |
 | blank row between the graph and the table | — | — | 1 |
+
+The margin is **one** margin, for every row that is not a divider. Measured
+before it existed, content began at column 0, 1, 2 or 3 depending on which row
+it was — the menu bar flush left, the tab strip three in, the header one, the
+table two, the footer none. Five margins rather than one, which is what made the
+layout read as ragged rather than merely tight.
 
 Every one of them is a *maximum*. A narrow terminal gives up the indent before
 it gives up a column of the command line, and a short one gives up the blank row

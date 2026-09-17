@@ -2687,7 +2687,12 @@ fn the_readout_never_pushes_the_marker_off_its_column() {
             app.history.scrub(-(back as isize));
 
             let gutter = if w as usize >= 30 { 4 } else { 0 };
-            let graph_w = w as usize - gutter;
+            // The drawn width, margin included: the graph rows take the
+            // content margin while the divider above them spans, so the panel's
+            // own width is two columns more than the graph gets.
+            let panel = ratatui::layout::Rect::new(0, 0, w, 12);
+            let m = ui::content(&app, panel).x;
+            let graph_w = ui::content(&app, panel).width as usize - gutter;
             let spc = app.glyphs.samples_per_cell();
             let slots = graph_w * spc;
             let zoom = crate::app::effective_zoom(app.zoom(), n, slots);
@@ -2698,7 +2703,7 @@ fn the_readout_never_pushes_the_marker_off_its_column() {
             }
             let idx = app.history.cursor_index() - dropped;
             let slot = crate::history::slot_of_index(idx, shown, zoom, slots);
-            let expected = gutter as u16 + (slot / spc) as u16;
+            let expected = m + gutter as u16 + (slot / spc) as u16;
 
             assert_eq!(
                 cursor_column(&app, w, 12),
@@ -14639,11 +14644,11 @@ fn comfort_is_the_first_thing_a_small_terminal_gives_up() {
     // A process elided to `…derer)` is a worse loss than a row that touches the
     // edge, and a graph too short to read is a worse loss than a blank line.
     for d in ui::Density::ALL {
-        assert_eq!(d.inset(80), 0, "{d:?} indented an eighty-column table");
+        assert_eq!(d.margin(80), 0, "{d:?} indented an eighty-column table");
         assert_eq!(d.panel_gap(24), 0, "{d:?} spent a row on air at 24 rows");
     }
     // And granted where there is room.
-    assert!(ui::Density::Spacious.inset(200) > ui::Density::Compact.inset(200));
+    assert!(ui::Density::Spacious.margin(200) > ui::Density::Compact.margin(200));
     assert_eq!(ui::Density::Spacious.panel_gap(40), 1);
     assert_eq!(ui::Density::Comfortable.panel_gap(40), 0);
 }
@@ -14723,4 +14728,79 @@ fn the_header_gap_widens_with_the_density() {
         widths[0] < widths[1] && widths[1] < widths[2],
         "the gap between two figures does not widen with the density: {widths:?}"
     );
+}
+
+#[test]
+fn every_content_row_starts_at_the_same_margin() {
+    // Measured before this was one setting: content began at column 0, 1, 2 or
+    // 3 depending on which row it was — the menu bar flush left, the tab strip
+    // three in, the header one, the table two, the footer none. Five margins
+    // rather than one, which is what made the layout read as ragged rather than
+    // merely tight.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..4)
+            .map(|n| proc_named(100 + n, "postgres", 10.0, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for d in ui::Density::ALL {
+        app.density = d;
+        let (w, h) = (170u16, 40u16);
+        let margin = ui::content(&app, ratatui::layout::Rect::new(0, 0, w, h)).x;
+        let mut starts: std::collections::BTreeSet<u16> = Default::default();
+        for row in rows(&app, w, h) {
+            if row.trim().is_empty() {
+                continue;
+            }
+            // Dividers span the panel: they are what says where one starts, and
+            // one stopping short of the edge reads as a box missing its corners.
+            if row.starts_with("──") {
+                continue;
+            }
+            let at = (row.len() - row.trim_start().len()) as u16;
+            // The timeline's gutter right-aligns its axis labels, so those rows
+            // start wherever the label is wide enough to reach — the gutter
+            // itself begins at the margin like everything else.
+            if at > margin + 1 {
+                continue;
+            }
+            starts.insert(at);
+        }
+        assert!(
+            starts.len() <= 2,
+            "{d:?}: content starts at {starts:?}, which is more than one margin"
+        );
+        let first = *starts.iter().next().expect("nothing drawn");
+        assert!(
+            first >= margin,
+            "{d:?}: a row starts at {first}, inside the {margin}-column margin"
+        );
+    }
+}
+
+#[test]
+fn a_divider_is_never_indented_with_the_content() {
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for d in ui::Density::ALL {
+        app.density = d;
+        for row in rows(&app, 170, 40) {
+            if !row.contains("──") {
+                continue;
+            }
+            assert!(
+                row.starts_with("──"),
+                "{d:?}: a divider was indented: {row:?}"
+            );
+            assert!(
+                row.trim_end().chars().count() >= 168,
+                "{d:?}: a divider stopped short: {row:?}"
+            );
+        }
+    }
 }
