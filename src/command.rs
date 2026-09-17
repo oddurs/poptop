@@ -107,25 +107,15 @@ impl Action {
                     }
                 }
             }
-            Self::PrevView | Self::SetView(_) => {
+            Self::PrevView | Self::SetView(_) | Self::NextView => {
                 app.view = match self {
                     Self::PrevView => app.view.prev(),
+                    Self::NextView => app.view.next(),
                     Self::SetView(v) => v,
                     _ => unreachable!("guarded by the arm"),
                 };
                 app.insist_for_view();
-                if !app.view.sorts().contains(&app.sort) {
-                    app.sort = app.view.default_sort_for(app.io_collected());
-                }
-            }
-            Self::NextView => {
-                app.view = app.view.next();
-                app.insist_for_view();
-                // A sort the new view cannot show would be an ordering with no
-                // visible reason for it.
-                if !app.view.sorts().contains(&app.sort) {
-                    app.sort = app.view.default_sort_for(app.io_collected());
-                }
+                app.adopt_view_sort();
             }
             Self::NextGrouping => {
                 app.group = app.group.next();

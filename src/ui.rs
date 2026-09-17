@@ -349,12 +349,24 @@ fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
     }
     // The key that opens it, stated on the bar itself. A menu bar with no way
     // in is decoration.
+    //
+    // At the far end, not two spaces after `Process`, where it read as a sixth
+    // menu — and where the eye going down the left-hand column hits it before
+    // it hits anything on the row below. The scope sits at that end of the tab
+    // strip for the same reason: this column of the screen is for what the bar
+    // *is*, not for what is on it. Dropped rather than crowded when the titles
+    // leave no room, like every other hint here.
     let hint = if app.menu.is_open() {
-        "  ↑↓ move · ⏎ choose · esc close"
+        "↑↓ move · ⏎ choose · esc close"
     } else {
-        "  F10 menu"
+        "F10 menu"
     };
-    spans.push(Span::styled(hint.to_string(), app.theme.dim_style()));
+    let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
+    let room = (area.width as usize).saturating_sub(used + 1);
+    if cols(hint) <= room {
+        spans.push(Span::raw(" ".repeat(room - cols(hint))));
+        spans.push(Span::styled(hint.to_string(), app.theme.dim_style()));
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 

@@ -852,6 +852,24 @@ impl App {
         }
     }
 
+    /// Order the table by the resource the tab is named after.
+    ///
+    /// A tab that says Disk and lists the busiest processes by CPU, each with
+    /// a pair of zeroes under DISK R and DISK W, has answered a question
+    /// nobody asked. The tab *is* the question; the ordering is half of the
+    /// answer, and `s` cycles within the view when it is the wrong half.
+    ///
+    /// The disk key is reachable on the strength of `show_io`, which
+    /// `insist_for_view` has just set, rather than of `io_collected`, which
+    /// describes the sample already taken. Otherwise the first press of the
+    /// key that exists to ask for disk figures would find none collected yet,
+    /// fall back to CPU, and stay there once they arrived.
+    pub fn adopt_view_sort(&mut self) {
+        self.sort = self
+            .view
+            .default_sort_for(self.show_io || self.io_collected());
+    }
+
     /// Show cgroups instead of processes, or stop.
     ///
     /// No ratchet, unlike [`App::toggle_threads`]: this genuinely stops

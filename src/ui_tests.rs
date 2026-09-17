@@ -10944,17 +10944,71 @@ fn the_sort_and_the_view_cannot_disagree() {
 }
 
 #[test]
+fn a_tab_orders_the_table_by_the_resource_it_is_named_after() {
+    use crate::app::{Sort, View};
+    // The disk tab listed the busiest processes by CPU, each with a pair of
+    // zeroes under DISK R and DISK W — the tab is the question, and the
+    // ordering was answering a different one. `s` cycles within the view when
+    // the reader wants the other half.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    app.push(s);
+    assert_eq!(app.sort, Sort::Cpu, "the fixture did not start on CPU");
+
+    press(&mut app, KeyCode::Char('3'));
+    assert_eq!(app.view, View::Disk);
+    assert_eq!(app.sort, Sort::Disk, "the disk tab kept the CPU ordering");
+
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.sort, Sort::Mem, "the memory tab kept the disk ordering");
+
+    press(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.sort, Sort::Cpu, "the cpu tab kept the memory ordering");
+}
+
+#[test]
+fn the_disk_tab_asks_for_disk_before_the_first_sample_carries_it() {
+    use crate::app::{Sort, View};
+    // The key that opens the tab is the one that starts collecting for it, so
+    // at the moment it is pressed no sample has the figures yet. Reading
+    // `io_collected` there fell back to CPU and stayed there once they
+    // arrived — on exactly the first press, which is the only one that
+    // matters.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = false;
+    app.push(s);
+
+    press(&mut app, KeyCode::Char('3'));
+    assert_eq!(app.view, View::Disk);
+    assert_eq!(
+        app.sort,
+        Sort::Disk,
+        "the disk tab settled for CPU because nothing had been collected yet"
+    );
+}
+
+#[test]
 fn switching_views_brings_an_unreachable_sort_with_it() {
     use crate::app::{Sort, View};
+    // A sort the new view cannot show would be an ordering with no visible
+    // reason for it. Driven through the key rather than by repeating the
+    // rule here, which is a test of itself.
     let mut app = App::new(600);
-    app.view = View::Cpu;
-    app.sort = Sort::Disk;
-    // Memory does not show disk, so the sort has to move.
-    app.view = View::Memory;
-    if !app.view.sorts().contains(&app.sort) {
-        app.sort = app.view.default_sort_for(true);
-    }
-    assert_eq!(app.sort, Sort::Mem, "the sort was left pointing at nothing");
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    app.push(s);
+    press(&mut app, KeyCode::Char('3'));
+    assert_eq!(app.sort, Sort::Disk, "the fixture is not set up");
+
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.view, View::Memory);
+    assert!(
+        app.view.sorts().contains(&app.sort),
+        "the sort was left pointing at nothing: {:?}",
+        app.sort
+    );
 }
 
 #[test]
@@ -12131,6 +12185,41 @@ fn the_bar_is_always_on_screen() {
     assert!(
         first.contains("F10"),
         "the bar does not say how to open it: {first:?}"
+    );
+}
+
+#[test]
+fn the_way_in_sits_at_the_far_end_of_the_bar() {
+    // Two spaces after `Process` it read as a sixth menu, and it was the first
+    // thing the eye met going down the left-hand column — ahead of everything
+    // on the row below it. The scope line is at that end of the tab strip for
+    // the same reason, and the two now share a right edge.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for w in [80u16, 100, 140] {
+        let drawn = rows(&app, w, 24);
+        let bar = drawn[0].trim_end();
+        let tabs = drawn[1].trim_end();
+        assert!(
+            bar.ends_with("F10 menu"),
+            "the way in is not at the end of the bar at w={w}: {bar:?}"
+        );
+        assert_eq!(
+            bar.chars().count(),
+            tabs.chars().count(),
+            "the bar and the strip below it do not share a right edge at w={w}"
+        );
+    }
+
+    // And it gives way rather than crowding the titles it belongs to.
+    let cramped = rows(&app, 36, 24)[0].clone();
+    assert!(
+        cramped.contains("File"),
+        "the titles were dropped before the hint: {cramped:?}"
+    );
+    assert!(
+        !cramped.contains("F10"),
+        "the hint crowded the bar it names: {cramped:?}"
     );
 }
 
