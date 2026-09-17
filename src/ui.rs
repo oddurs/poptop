@@ -3130,15 +3130,30 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
 /// default. Adding up what the table actually asks for is the only way to know
 /// where that starts, and doing it here rather than by eye means it cannot
 /// drift as columns change.
-/// Everything to the left of the command: pid, user, cpu% and its bar, rss and
-/// its bar, state, threads, history.
-const FIXED_COLUMNS: u16 =
-    7 + 10 + 6 + (BAR_W as u16 + 1) + 8 + BAR_W as u16 + 2 + 4 + SPARK_W as u16;
+/// The shape a plain CPU table has, as the width arithmetic's starting point.
+fn cpu_shape(show_io: bool, show_user: bool) -> TableShape {
+    TableShape {
+        bars: true,
+        thr: true,
+        io: show_io,
+        pss: false,
+        vsize: false,
+        majflt: false,
+        grow: false,
+        spark: true,
+        user: show_user,
+        cid: false,
+    }
+}
+
+/// Room enough for a command name to be worth reading, over the column's floor.
+///
+/// What `min_width_for_io` spends on top of the table's own request: the disk
+/// figures are worth having only if what they crowd out still identifies the
+/// row they are on.
+const COMMAND_WORTH_READING: u16 = 16;
 
 /// The narrowest terminal the IO columns will appear on.
-///
-/// The two IO columns, one space between each of the twelve, and enough left
-/// for a command name to be worth reading.
 ///
 /// Takes `show_user` for the same reason [`command_width`] does: when that
 /// column has been folded into the title its ten columns are free, and the IO
@@ -3146,7 +3161,7 @@ const FIXED_COLUMNS: u16 =
 /// than they needed to be.
 #[cfg(test)]
 pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
-    command_width(width, show_io, show_user, false, 0, 0)
+    command_width(&cpu_shape(show_io, show_user), width, 1)
 }
 
 #[cfg(test)]
@@ -3155,8 +3170,7 @@ pub fn min_width_for_io_for_test(show_user: bool) -> u16 {
 }
 
 fn min_width_for_io(show_user: bool) -> u16 {
-    let user = if show_user { USER_W } else { 0 };
-    FIXED_COLUMNS - USER_W + user + 9 + 9 + 11 + 16
+    table_request(&cpu_shape(true, show_user), 1) - MIN_COMMAND_W + COMMAND_WORTH_READING
 }
 
 /// The command column's own `Constraint::Min`, and so the narrowest it is ever
@@ -3215,7 +3229,7 @@ fn spark_header(ceiling: f32) -> String {
 
 /// Width of the `USER` column, and the width `COMMAND` gets back when it is
 /// folded into the title. See [`crate::app::App::one_user`].
-const USER_W: u16 = 10;
+pub const USER_W: u16 = 10;
 
 /// How much of the line is left for the command name.
 ///
@@ -3224,42 +3238,22 @@ const USER_W: u16 = 10;
 /// nineteen, one more than the two disk-rate columns together. Knowing the
 /// figure is what lets the name be elided deliberately rather than clipped by
 /// the terminal.
-fn command_width(
-    width: u16,
-    show_io: bool,
-    show_user: bool,
-    show_cid: bool,
-    dropped: u16,
-    taken: u16,
-) -> usize {
-    let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
-    // The container column and its gap. Left out, the elision arithmetic is
-    // thirteen columns too generous and the command is elided in the middle
-    // *and then* chopped at the right edge — losing the tail with no marker,
-    // which is the failure the comment below is about.
-    let (cid, columns) = if show_cid {
-        (CID_W + 1, columns + 1)
-    } else {
-        (0, columns)
-    };
-    let (user, columns) = if show_user {
-        (USER_W, columns)
-    } else {
-        (0, columns - 1)
-    };
-    // Floored at the column's own `Min`, not at one. Below that width ratatui
-    // stops honouring the fixed lengths and squeezes them instead, so the
-    // command cell is *wider* than this arithmetic says — and eliding against
-    // the arithmetic rendered `Google Chrome Helper (Renderer)` as the single
-    // letter `G` on an eighty-column terminal.
-    // `dropped` is the width a view has given back: the bars and the thread
-    // count are not always drawn, and the command gets what they were using.
-    // Left out, the elision is more cautious than it needs to be — a milder
-    // failure than the other direction, but still a name cut for no reason.
-    width
-        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + taken + (columns - 1))
-        .saturating_add(dropped)
-        .max(MIN_COMMAND_W) as usize
+///
+/// Asked of the same column list the table is laid out from, rather than added
+/// up again here. The hand-added version had to know which columns a view
+/// drops and which it adds, and it got that wrong three times: once too
+/// generous by thirteen columns and the command chopped at the right edge with
+/// no elision mark, once too cautious and a name cut for no reason, once
+/// thirty-five columns out on the memory tab. There is nothing left to get
+/// wrong when the two arithmetics are one arithmetic.
+///
+/// Floored at the column's own `Min`, because below that width ratatui stops
+/// honouring the fixed lengths and squeezes them instead — the command cell is
+/// then *wider* than this says, and eliding against the arithmetic rendered
+/// `Google Chrome Helper (Renderer)` as the single letter `G`.
+fn command_width(shape: &TableShape, width: u16, gap: u16) -> usize {
+    let others = table_request(shape, gap) - MIN_COMMAND_W;
+    width.saturating_sub(others).max(MIN_COMMAND_W) as usize
 }
 
 /// A signed byte delta, with the sign carried rather than implied.
@@ -3715,9 +3709,42 @@ pub struct TableShape {
     pub bars: bool,
     pub thr: bool,
     pub io: bool,
-    pub mem_cols: bool,
+    /// The memory tab's own columns, each on only where the platform has the
+    /// figure to put under it.
+    ///
+    /// One flag each rather than one for the set, because the set is never
+    /// whole: macOS publishes none of the three the kernel is asked for, and
+    /// Linux publishes proportional memory only to a process allowed to read
+    /// another's `smaps_rollup`. Thirty-one columns of em dash is the same
+    /// waste `App::one_user` exists to stop, and here it was crowding out the
+    /// RSS figure beside it.
+    pub pss: bool,
+    pub vsize: bool,
+    pub majflt: bool,
+    pub grow: bool,
+    /// The per-process history. The thing no other monitor draws, and so the
+    /// last picture given up — but it is a picture, and a figure beside it
+    /// that has been truncated to keep it is a worse trade than losing it.
+    pub spark: bool,
     pub user: bool,
     pub cid: bool,
+}
+
+/// What a shape's columns add up to, gaps and a readable command included.
+///
+/// Derived from [`table_columns`] rather than re-added by hand, for the reason
+/// that function exists: a second copy of this arithmetic agrees until it does
+/// not, and the way it fails here is silent.
+fn table_request(shape: &TableShape, gap: u16) -> u16 {
+    let (widths, _) = table_columns(shape);
+    let fixed: u16 = widths
+        .iter()
+        .map(|c| match c {
+            Constraint::Length(w) | Constraint::Min(w) => *w,
+            _ => 0,
+        })
+        .sum();
+    fixed + gap * (widths.len() as u16).saturating_sub(1)
 }
 
 pub fn table_shape(app: &App, area: Rect) -> TableShape {
@@ -3737,20 +3764,64 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
     let io = app.show_io
         && app.view.wants_io()
         && (app.view == crate::app::View::Disk || area.width >= min_width_for_io(user));
-    let given = i32::from(if bars { 0 } else { BAR_W as u16 * 2 + 3 }) + if thr { 0 } else { 5 }
-        - if mem_cols { 8 + 8 + 7 + 8 + 4i32 } else { 0 };
-    let (dropped, taken) = (given.max(0) as u16, (-given).max(0) as u16);
-    let cid = app.group != crate::app::Grouping::User
-        && app.any_container()
-        && command_width(area.width, io, user, true, dropped, taken) as u16 > MIN_COMMAND_W;
-    TableShape {
+    // A column nobody can fill is a column of em dashes. The platform decides
+    // three of these four: macOS publishes none of them, and on Linux
+    // proportional memory needs permission to read another process's
+    // `smaps_rollup`. Growth is poptop's own arithmetic over two samples and is
+    // always available, so the memory tab always has something on it.
+    let has = app.mem_columns_available();
+    let mut shape = TableShape {
         bars,
         thr,
         io,
-        mem_cols,
+        pss: mem_cols && has.pss,
+        vsize: mem_cols && has.vsize,
+        majflt: mem_cols && has.majflt,
+        grow: mem_cols,
+        spark: true,
         user,
-        cid,
+        cid: false,
+    };
+
+    // Drop columns until the rest fit, least identifying first.
+    //
+    // Every column but the command is a fixed `Length`, and ratatui squeezes a
+    // set of fixed lengths that does not fit rather than dropping any. A
+    // right-aligned figure squeezed by two columns keeps its tail: `301.7M`
+    // renders as `01.7M`, which is not a narrower number but a wrong one, and
+    // nothing on screen says so. `min_width_for_io` was this argument applied
+    // to the disk columns alone; below seventy-six columns the same thing was
+    // happening to CPU% and RSS, and on the memory tab it started at eighty.
+    //
+    // The order is what each column costs against what it says. The bars
+    // restate the figure beside them; the thread count and the owner are
+    // usually implied by the command; reserved address space says least of the
+    // four memory figures and proportional memory says most. A view's own
+    // columns go late, because without them it is not that view any more — but
+    // they do go: the disk tab exists to show figures the width test would
+    // otherwise hide, not to show them wrong.
+    let gap = app.density.column_gap();
+    for step in 0..9 {
+        if table_request(&shape, gap) <= area.width {
+            break;
+        }
+        match step {
+            0 => shape.bars = false,
+            1 => shape.thr = false,
+            2 => shape.vsize = false,
+            3 => shape.majflt = false,
+            4 => shape.user = false,
+            5 => shape.grow = false,
+            6 => shape.pss = false,
+            7 => shape.spark = false,
+            _ => shape.io = false,
+        }
     }
+
+    shape.cid = app.group != crate::app::Grouping::User
+        && app.any_container()
+        && command_width(&shape, area.width, gap) as u16 > MIN_COMMAND_W + CID_W + gap;
+    shape
 }
 
 /// The sort key of the column at `x`, for a table drawn in `area`.
@@ -3762,7 +3833,7 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
 /// answers — one derivation, so the caret and the click cannot disagree.
 pub fn sort_at(app: &App, area: Rect, x: u16) -> Option<crate::app::Sort> {
     let s = table_shape(app, area);
-    let (widths, sorts) = table_columns(s.bars, s.thr, s.io, s.mem_cols, s.user, s.cid);
+    let (widths, sorts) = table_columns(&s);
     let cells = Layout::horizontal(widths)
         .spacing(app.density.column_gap())
         .split(table_body(app, area));
@@ -3789,15 +3860,10 @@ pub struct Column {
 ///
 /// `None` is a column nothing can be sorted by — a bar, a state letter, the
 /// sparkline. Clicking one does nothing rather than doing something arbitrary.
-pub fn table_columns(
-    show_bars: bool,
-    show_thr: bool,
-    show_io: bool,
-    show_mem_cols: bool,
-    show_user: bool,
-    show_cid: bool,
-) -> (Vec<Constraint>, Vec<Column>) {
+pub fn table_columns(s: &TableShape) -> (Vec<Constraint>, Vec<Column>) {
     use crate::app::Sort;
+    let (show_bars, show_thr, show_io) = (s.bars, s.thr, s.io);
+    let (show_user, show_cid) = (s.user, s.cid);
     let mut widths = Vec::new();
     let mut sorts = Vec::new();
     // `numeric` is the alignment rule written down: figures right, text left,
@@ -3829,12 +3895,14 @@ pub fn table_columns(
         col(Constraint::Length(9), Some(Sort::Disk), true);
         col(Constraint::Length(9), None, true);
     }
-    if show_mem_cols {
-        for w in [8, 8, 7, 8] {
+    for (on, w) in [(s.pss, 8), (s.vsize, 8), (s.majflt, 7), (s.grow, 8)] {
+        if on {
             col(Constraint::Length(w), None, true);
         }
     }
-    col(Constraint::Length(SPARK_W as u16), None, false);
+    if s.spark {
+        col(Constraint::Length(SPARK_W as u16), None, false);
+    }
     col(Constraint::Length(7), Some(Sort::Pid), true);
     if show_user {
         col(Constraint::Length(USER_W), None, false);
@@ -3884,25 +3952,6 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // columns over one renderer, not a second renderer.
     let show_bars = shape.bars;
     let show_thr = shape.thr;
-    // The memory view's own columns: what a process's memory actually costs,
-    // what it has reserved, whether it is being paged in, and which way it is
-    // going.
-    let show_mem_cols = shape.mem_cols;
-    // What the view has given back, in columns, for the command to use — less
-    // what it has taken. The memory view drops the thread count and *adds* four
-    // columns of its own, so counting only the drops left the arithmetic
-    // thirty-five columns too generous, and the command was elided in the
-    // middle and then chopped at the right edge with no marker: the exact
-    // failure `command_width` exists to prevent.
-    let given = i32::from(if show_bars { 0 } else { BAR_W as u16 * 2 + 3 })
-        + if show_thr { 0 } else { 5 }
-        - if show_mem_cols {
-            8 + 8 + 7 + 8 + 4i32
-        } else {
-            0
-        };
-    let dropped = given.max(0) as u16;
-    let taken = (-given).max(0) as u16;
     // Dropped on a box running no containers, where it would be twelve columns
     // of nothing. The same rule as the user column, and why a process in no
     // container shows a blank rather than an em dash.
@@ -3918,12 +3967,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // `USER` two lines up.
     let show_cid = shape.cid;
     let cmd_w = command_width(
+        &shape,
         table_body(app, area).width,
-        show_io,
-        show_user,
-        show_cid,
-        dropped,
-        taken,
+        app.density.column_gap(),
     );
     // The same averaging the ordering used, so a row's figure and its position
     // are describing the same thing. Computed again rather than threaded
@@ -4082,18 +4128,25 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                     cells.push(num("—").style(app.theme.dim_style()));
                     cells.push(num("—").style(app.theme.dim_style()));
                 }
-                if show_mem_cols {
-                    // A thread has no memory of its own; it shares its
-                    // process's, one row up.
-                    for _ in 0..4 {
-                        cells.push(num("—").style(app.theme.dim_style()));
-                    }
+                // A thread has no memory of its own; it shares its process's,
+                // one row up. One dash per column actually drawn — a fixed four
+                // put the sparkline under `GROW` the moment a column was
+                // dropped for want of anything to put in it.
+                for _ in 0..[shape.pss, shape.vsize, shape.majflt, shape.grow]
+                    .iter()
+                    .filter(|on| **on)
+                    .count()
+                {
+                    cells.push(num("—").style(app.theme.dim_style()));
                 }
                 // No sparkline. The retained history is per process, so the
                 // only series available here is the parent's — drawing it on
                 // every thread row would put the same shape beside forty
-                // different numbers and invite reading it as each one's.
-                cells.push(Cell::from(""));
+                // different numbers and invite reading it as each one's. Blank
+                // rather than absent, because the column is still there.
+                if shape.spark {
+                    cells.push(Cell::from(""));
+                }
                 cells.push(num(th.tid.to_string()));
                 if show_user {
                     // The process's, one row up. A thread does not have its
@@ -4144,19 +4197,24 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
             }
-            if show_mem_cols {
-                // Never a zero for any of these: a share nobody measured, a
-                // size the platform does not publish and a fault count that was
-                // not collected are all "not known", and this table has one way
-                // of saying that.
+            // Never a zero for any of these: a share nobody measured, a size
+            // the platform does not publish and a fault count that was not
+            // collected are all "not known", and this table has one way of
+            // saying that. The column is there at all only where somebody
+            // answers — see `App::mem_columns_available`.
+            if shape.pss {
                 cells.push(num(match p.pss {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
+            }
+            if shape.vsize {
                 cells.push(num(match p.vsize {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
+            }
+            if shape.majflt {
                 cells.push(match p.majflt {
                     // Coloured against a *fault* threshold, not through
                     // `heat_style`: that compares against the warn and critical
@@ -4170,6 +4228,8 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                     Some(n) => num(n.to_string()),
                     None => num("—").style(app.theme.dim_style()),
                 });
+            }
+            if shape.grow {
                 // Not for a group. Its synthesised pid is the lowest member's
                 // and its `started` is `None`, so on a platform that also
                 // reports `None` there the lookup matches that one member and
@@ -4188,15 +4248,17 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             // column of shapes rather than hunting for it past ragged names —
             // and it makes the boundary between what a row *measures* and what
             // a row *is*.
-            cells.push(
-                Cell::from(sparkline(
-                    p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
-                    app.glyphs,
-                    spark_zoom,
-                    spark_ceiling,
-                ))
-                .style(app.theme.dim_style()),
-            );
+            if shape.spark {
+                cells.push(
+                    Cell::from(sparkline(
+                        p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
+                        app.glyphs,
+                        spark_zoom,
+                        spark_ceiling,
+                    ))
+                    .style(app.theme.dim_style()),
+                );
+            }
             // Identity, all of it together — see the note above `rows`.
             // A group has no pid — it is not a process. The column carries how
             // many were folded in instead, which is the fact that replaces it.
@@ -4258,14 +4320,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // alignment. The alignment used to be chosen by hand at each of fourteen
     // push sites, so a column could be declared numeric and drawn left with
     // nothing to say the two had parted company.
-    let (_, cols) = table_columns(
-        show_bars,
-        show_thr,
-        show_io,
-        show_mem_cols,
-        show_user,
-        show_cid,
-    );
+    let (_, cols) = table_columns(&shape);
     let mut nth = 0usize;
     let mut head = move |label: &str| {
         let col = cols.get(nth);
@@ -4302,13 +4357,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         header_cells.push(head("DISK R"));
         header_cells.push(head("DISK W"));
     }
-    if show_mem_cols {
-        header_cells.push(head("PSS"));
-        header_cells.push(head("VSZ"));
-        header_cells.push(head("MAJF/s"));
-        header_cells.push(head("GROW"));
+    for (on, label) in [
+        (shape.pss, "PSS"),
+        (shape.vsize, "VSZ"),
+        (shape.majflt, "MAJF/s"),
+        (shape.grow, "GROW"),
+    ] {
+        if on {
+            header_cells.push(head(label));
+        }
     }
-    header_cells.push(head(&spark_header(spark_ceiling)));
+    if shape.spark {
+        header_cells.push(head(&spark_header(spark_ceiling)));
+    }
     header_cells.push(head("PID"));
     if show_user {
         header_cells.push(head("USER"));
@@ -4585,14 +4646,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     ];
     let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
 
-    let (widths, sorts) = table_columns(
-        show_bars,
-        show_thr,
-        show_io,
-        show_mem_cols,
-        show_user,
-        show_cid,
-    );
+    let (widths, sorts) = table_columns(&shape);
     let _ = &sorts;
 
     f.render_widget(

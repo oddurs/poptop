@@ -6592,6 +6592,49 @@ fn the_io_columns_drop_rather_than_squeezing_the_table() {
 }
 
 #[test]
+fn no_width_and_no_view_can_squeeze_a_figure() {
+    // The sibling above, generalised. `min_width_for_io` was this argument
+    // applied to two columns, and the ladder stopped there: below seventy-six
+    // columns CPU% and RSS were being squeezed instead, and on the memory tab
+    // it started at eighty. A right-aligned cell squeezed by two columns keeps
+    // its tail, so `512.0M` renders as `2.0M` — not a narrower figure but a
+    // wrong one, with nothing on screen to say so.
+    use crate::app::View;
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs[0].io = Some(crate::sample::IoRates {
+        read: 2048,
+        write: 4096,
+    });
+    // A figure whose truncation is unmistakable: every suffix of it is also a
+    // plausible memory figure, which is exactly what makes the bug silent.
+    s.procs[0].rss = 512 << 20;
+    s.procs[0].cpu = 137.5;
+    s.procs[0].pss = Some(300 << 20);
+    s.procs[0].vsize = Some(4 << 30);
+    s.procs[0].majflt = Some(7);
+    app.push(s);
+
+    for view in View::ALL {
+        app.view = view;
+        for w in 40..=200u16 {
+            let out = render(&app, w, 30);
+            let row = out
+                .lines()
+                .find(|l| l.contains("512.0M"))
+                .unwrap_or_else(|| {
+                    panic!("{view:?} at w={w} truncated RSS:\n{out}");
+                });
+            assert!(
+                row.contains("137.5"),
+                "{view:?} at w={w} truncated CPU%:\n{out}"
+            );
+        }
+    }
+}
+
+#[test]
 // Linux only, because a kernel thread is a Linux notion and
 // `is_kernel_thread` now says so — pid 2 is `kthreadd` there and either absent
 // or an ordinary process here, and answering `true` for it on macOS would drop
@@ -7536,11 +7579,16 @@ fn folding_the_user_column_lets_the_io_columns_appear_sooner() {
     // `command_width` learned that the folded column's ten columns are free;
     // this sibling threshold did not, so the disk columns went on refusing to
     // appear until the terminal was ten columns wider than they needed.
+    //
+    // Eleven, not ten: a column that goes takes the space between it and its
+    // neighbour with it. The hand-added version counted the column and forgot
+    // the gap, which is the kind of off-by-one that stops happening once the
+    // threshold is asked of the same list the table is laid out from.
     let with_user = ui::min_width_for_io_for_test(true);
     let without = ui::min_width_for_io_for_test(false);
     assert_eq!(
         with_user - without,
-        10,
+        ui::USER_W + 1,
         "the threshold did not come down by the width of the column"
     );
 
@@ -10852,14 +10900,14 @@ fn the_disk_columns_are_reachable_on_a_narrow_terminal() {
     }];
     app.push(s);
 
-    let narrow = rows(&app, 90, 10).join("\n");
+    let narrow = rows(&app, 88, 10).join("\n");
     assert!(
         !narrow.contains("DISK R"),
         "the fixture is not narrow enough to test this:\n{narrow}"
     );
 
     app.view = View::Disk;
-    let shown = rows(&app, 90, 10).join("\n");
+    let shown = rows(&app, 88, 10).join("\n");
     assert!(
         shown.contains("DISK R") && shown.contains("DISK W"),
         "the disk view did not bring the columns back:\n{shown}"
@@ -11090,9 +11138,21 @@ fn a_field_the_platform_does_not_publish_is_a_dash_not_a_zero() {
     use crate::app::View;
     // macOS supplies none of these through sysinfo. A zero would say this
     // process takes no major faults and has reserved no address space.
+    //
+    // One process answers and one does not, so the columns are drawn at all:
+    // what is under test here is the cell. The column's own existence is the
+    // sibling below.
     let mut app = App::new(600);
     let mut s = sample(10.0);
-    s.procs = vec![proc_named(4001, "node", 12.0, 64 << 20)];
+    s.procs = vec![
+        ProcSample {
+            pss: Some(300 << 20),
+            vsize: Some(4 << 30),
+            majflt: Some(7),
+            ..proc_named(4002, "chrome", 1.0, 32 << 20)
+        },
+        proc_named(4001, "node", 12.0, 64 << 20),
+    ];
     app.push(s);
     app.view = View::Memory;
     let shown = rows(&app, 160, 10).join("\n");
@@ -11101,8 +11161,36 @@ fn a_field_the_platform_does_not_publish_is_a_dash_not_a_zero() {
         .find(|l| l.contains("node"))
         .expect("no row drawn");
     assert!(
-        row.matches('—').count() >= 3,
+        row.matches('\u{2014}').count() >= 3,
         "an unpublished figure was rendered as a number: {row}"
+    );
+}
+
+#[test]
+fn a_column_nobody_can_fill_is_not_drawn_at_all() {
+    use crate::app::View;
+    // The other half of the rule above, and why the memory tab was worth less
+    // than the tab beside it on a Mac: PSS, VSZ and MAJF/s were twenty-five
+    // columns of em dash, and the RSS figure they crowded out was being
+    // truncated to pay for them. The same argument as `App::one_user`.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(4001, "node", 12.0, 64 << 20)];
+    app.push(s);
+    app.view = View::Memory;
+
+    let shown = rows(&app, 160, 10).join("\n");
+    for gone in ["PSS", "VSZ", "MAJF/s"] {
+        assert!(
+            !shown.contains(gone),
+            "{gone} is a column of nothing and was drawn anyway:\n{shown}"
+        );
+    }
+    // Growth is poptop's own arithmetic over its own samples, so the tab is
+    // never empty of the thing it is for.
+    assert!(
+        shown.contains("GROW"),
+        "the memory tab lost the one column it can always fill:\n{shown}"
     );
 }
 
@@ -13670,14 +13758,7 @@ fn every_numeric_column_is_right_aligned_and_every_text_column_is_not() {
     let (w, h) = (170u16, 26u16);
     let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
     let shape = ui::table_shape(&app, panel);
-    let (widths, cols) = ui::table_columns(
-        shape.bars,
-        shape.thr,
-        shape.io,
-        shape.mem_cols,
-        shape.user,
-        shape.cid,
-    );
+    let (widths, cols) = ui::table_columns(&shape);
     // The same split the table lays itself out with.
     let cells = ratatui::layout::Layout::horizontal(widths)
         .spacing(1)

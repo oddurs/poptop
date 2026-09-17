@@ -177,6 +177,17 @@ const BUDGET_STRIKES: u32 = 3;
 ///
 /// `d` is neither: it changes the *timeline* panel, not the table, and calling
 /// it a table mode was the thing that made this look like four axes.
+/// Which of the memory tab's platform figures this machine actually publishes.
+///
+/// See [`App::mem_columns_available`]. Growth is not here: poptop computes it
+/// from two of its own samples, so it is available wherever the tab is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemColumns {
+    pub pss: bool,
+    pub vsize: bool,
+    pub majflt: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
     /// What poptop has always shown: CPU, memory, state, threads, history.
@@ -1217,6 +1228,26 @@ impl App {
         self.history
             .current()
             .is_some_and(|s| s.procs.iter().any(|p| p.container.is_some()))
+    }
+
+    /// Which of the memory tab's platform figures anybody actually reports.
+    ///
+    /// The same rule as [`App::any_container`] and [`App::one_user`], applied
+    /// to the three columns whose contents come from the kernel rather than
+    /// from poptop. macOS publishes none of them and Linux publishes
+    /// proportional memory only where the process is allowed to read another's
+    /// `smaps_rollup`, so on most machines this is three columns of em dash —
+    /// twenty-five columns spent saying nothing, next to an RSS figure the
+    /// table was truncating for want of them.
+    pub fn mem_columns_available(&self) -> MemColumns {
+        let Some(s) = self.history.current() else {
+            return MemColumns::default();
+        };
+        MemColumns {
+            pss: s.procs.iter().any(|p| p.pss.is_some()),
+            vsize: s.procs.iter().any(|p| p.vsize.is_some()),
+            majflt: s.procs.iter().any(|p| p.majflt.is_some()),
+        }
     }
 
     /// Kernel threads withheld from the table right now.
