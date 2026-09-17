@@ -55,6 +55,7 @@ pub enum Action {
     // Drawing.
     SetGlyphs(GlyphSet),
     SetAxis(Axis),
+    SetDensity(crate::ui::Density),
 
     // The process under the cursor.
     Signal(Signal),
@@ -159,6 +160,7 @@ impl Action {
 
             Self::SetGlyphs(g) => app.glyphs = g,
             Self::SetAxis(a) => app.axis = a,
+            Self::SetDensity(d) => app.density = d,
 
             Self::Signal(s) => app.ask_to_signal(s),
         }
@@ -178,6 +180,7 @@ impl Action {
             Self::ToggleKernel => app.show_kernel,
             Self::SetGlyphs(g) => app.glyphs == g,
             Self::SetAxis(a) => app.axis == a,
+            Self::SetDensity(d) => app.density == d,
             Self::GotoLive => app.history.is_live(),
             Self::SetView(v) => app.view == v,
             _ => return None,

@@ -72,6 +72,11 @@ USAGE:
                     changes — at the cost of drawing that panel as a line
                     rather than bars, since a bar on a truncated axis
                     misstates its own magnitude.
+    --density=HOW   compact, comfortable (default) or spacious. How much air
+                    the layout is given — the table's indent, the gap between
+                    header figures, and a blank row between the graph and the
+                    table. Every one of them is given up on a terminal too
+                    small to afford it. Also in the View menu.
     --surface=WHERE auto (default) or off. poptop asks the terminal for its
                     background colour and steps its panels a few per cent away
                     from it, so the layers match whatever scheme you already
@@ -713,6 +718,7 @@ fn main() -> io::Result<()> {
     app.theme = theme;
     app.glyphs = settings.glyphs;
     app.axis = settings.axis;
+    app.density = settings.density;
     app.signals = settings.signals;
 
     // Collect once before drawing so the first frame has real numbers. CPU

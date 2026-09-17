@@ -639,6 +639,29 @@ Both surfaces dispatch through one `Action`, and a test walks every item and
 checks its key hint against what that key actually does — so a menu that says
 `d` beside "Process detail" cannot drift into meaning something else.
 
+## Density
+
+`--density=compact|comfortable|spacious`, or the View menu. Three things move:
+
+| | compact | comfortable | spacious |
+|---|---|---|---|
+| indent either side of the table | 0 | 1 | 2 |
+| gap between two figures in a group | 2 | 3 | 4 |
+| blank row between the graph and the table | — | — | 1 |
+
+Every one of them is a *maximum*. A narrow terminal gives up the indent before
+it gives up a column of the command line, and a short one gives up the blank row
+before it gives up a row of the table — a process elided to `…derer)` is a worse
+loss than a row that touches the edge.
+
+The panel dividers stay full width whatever the setting: they are what tells you
+where a panel starts, and one stopping short reads as a box missing its corners.
+
+A wider gap between the table's own columns was tried and rejected. Thirteen
+gaps means thirteen columns off the command line, and the width would have to be
+known by `command_width` and by the click hit-testing as well — a third place
+for the same fact. The columns are already told apart by their alignment.
+
 ## Surfaces
 
 **The ground stays yours.** poptop asks the terminal for its background colour —

@@ -14217,7 +14217,10 @@ fn a_click_lands_on_the_column_the_air_moved() {
 
     let (w, h) = (150u16, 26u16);
     let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
-    assert!(ui::table_body(panel).x > panel.x, "no air to test against");
+    assert!(
+        ui::table_body(&app, panel).x > panel.x,
+        "no air to test against"
+    );
 
     app.sort = crate::app::Sort::Cpu;
     let head = table_rows(&app, w, h)
@@ -14573,5 +14576,151 @@ fn scrubbing_asks_about_the_moment_rather_than_the_boundary() {
         seen.len(),
         4,
         "scrubbing moved the cursor without moving the window: {seen:?}"
+    );
+}
+
+// ── density ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn each_density_is_roomier_than_the_one_below_it() {
+    // Three settings that all looked the same would be three settings nobody
+    // would use. Measured on a wide, tall terminal, where every comfort is
+    // actually granted.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..6)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let (w, h) = (170u16, 40u16);
+    let air = |app: &App| -> (u16, usize, u16) {
+        let panel = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+        let indent = ui::table_body(app, panel).x;
+        // The gap *between two named figures in the same group*, which is what
+        // `header_gap` sets. Taking the widest run of spaces anywhere on the
+        // row measured something else entirely and held whatever the setting
+        // said.
+        let header = header_rows(app, w, h)
+            .into_iter()
+            .find(|l| l.contains("MEM"))
+            .unwrap();
+        let gap = header
+            .find("SWP")
+            .map(|at| {
+                let head = &header[..at];
+                head.len() - head.trim_end().len()
+            })
+            .expect("no SWP figure to measure against");
+        (indent, gap, panel.y)
+    };
+
+    let mut seen = Vec::new();
+    for d in ui::Density::ALL {
+        app.density = d;
+        seen.push((d, air(&app)));
+    }
+    for pair in seen.windows(2) {
+        let ((da, a), (db, b)) = (pair[0], pair[1]);
+        assert!(
+            b.0 >= a.0 && b.1 >= a.1 && b.2 >= a.2,
+            "{db:?} is not roomier than {da:?}: {a:?} against {b:?}"
+        );
+    }
+    assert_ne!(
+        seen[0].1, seen[2].1,
+        "compact and spacious are the same layout"
+    );
+}
+
+#[test]
+fn comfort_is_the_first_thing_a_small_terminal_gives_up() {
+    // A process elided to `…derer)` is a worse loss than a row that touches the
+    // edge, and a graph too short to read is a worse loss than a blank line.
+    for d in ui::Density::ALL {
+        assert_eq!(d.inset(80), 0, "{d:?} indented an eighty-column table");
+        assert_eq!(d.panel_gap(24), 0, "{d:?} spent a row on air at 24 rows");
+    }
+    // And granted where there is room.
+    assert!(ui::Density::Spacious.inset(200) > ui::Density::Compact.inset(200));
+    assert_eq!(ui::Density::Spacious.panel_gap(40), 1);
+    assert_eq!(ui::Density::Comfortable.panel_gap(40), 0);
+}
+
+#[test]
+fn the_density_is_reachable_from_the_menu_and_the_config() {
+    let items: Vec<_> = crate::menu::bar()
+        .into_iter()
+        .flat_map(|t| t.items)
+        .collect();
+    for d in ui::Density::ALL {
+        assert!(
+            items
+                .iter()
+                .any(|i| i.action() == Some(crate::command::Action::SetDensity(d))),
+            "{d:?} is not in the menu"
+        );
+        assert_eq!(ui::Density::parse(&d.label().to_lowercase()), Some(d));
+    }
+    // And the one in force is ticked, so the menu says which you are in.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.density = ui::Density::Spacious;
+    assert_eq!(
+        crate::command::Action::SetDensity(ui::Density::Spacious).checked(&app),
+        Some(true)
+    );
+    assert_eq!(
+        crate::command::Action::SetDensity(ui::Density::Compact).checked(&app),
+        Some(false)
+    );
+}
+
+#[test]
+fn the_divider_spans_the_panel_whatever_the_density() {
+    // The dividers are what tell you where a panel starts. One stopping short
+    // of the edge reads as a box missing its corners.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for d in ui::Density::ALL {
+        app.density = d;
+        let title = table_rows(&app, 170, 40)
+            .into_iter()
+            .find(|l| l.contains("processes"))
+            .unwrap();
+        assert!(title.starts_with("──"), "{d:?}: {title:?}");
+        assert!(
+            title.trim_end().chars().count() >= 168,
+            "{d:?} inset the divider: {title:?}"
+        );
+    }
+}
+
+#[test]
+fn the_header_gap_widens_with_the_density() {
+    // Measured on the row itself rather than through `header_gap`, so a setting
+    // that is read and then ignored fails too.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let row = |app: &App| {
+        header_rows(app, 200, 30)
+            .into_iter()
+            .find(|l| l.contains("MEM") && l.contains("SWP"))
+            .expect("no header row with both figures")
+    };
+    let mut widths = Vec::new();
+    for d in ui::Density::ALL {
+        app.density = d;
+        let r = row(&app);
+        let at = r.find("SWP").unwrap();
+        let head = &r[..at];
+        widths.push(head.len() - head.trim_end().len());
+    }
+    assert!(
+        widths[0] < widths[1] && widths[1] < widths[2],
+        "the gap between two figures does not widen with the density: {widths:?}"
     );
 }

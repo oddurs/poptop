@@ -124,11 +124,17 @@ pub fn panels(app: &App, area: Rect) -> Panels {
     // Measured rather than assumed, so the node row is a row the layout knows
     // about instead of one drawn over the timeline.
     let header = header_height(app);
+    let gap = app.density.panel_gap(area.height);
     let c = Layout::vertical([
         Constraint::Length(MENU_H),
         Constraint::Length(tabs_height(area.height)),
         Constraint::Length(header),
-        Constraint::Length(timeline_height(area.height, header)),
+        Constraint::Length(timeline_height(area.height.saturating_sub(gap), header)),
+        // A blank row between the graph and the table, where the terminal is
+        // tall enough to give one up. Vertical space is the scarcest thing
+        // here, which is why this is the last comfort granted and the first
+        // withdrawn.
+        Constraint::Length(gap),
         // Whatever remains. `timeline_height` has already reserved the table's
         // share, and a `Min` here would outrank the timeline's `Length` and
         // silently shrink it below the height that function reports.
@@ -141,8 +147,8 @@ pub fn panels(app: &App, area: Rect) -> Panels {
         tabs: c[1],
         header: c[2],
         timeline: c[3],
-        table: c[4],
-        help: c[5],
+        table: c[5],
+        help: c[6],
     }
 }
 
@@ -767,13 +773,90 @@ fn fmt_uptime(d: Duration) -> String {
 ///
 /// What "wide enough for everything" means, and so what the heat legend has to
 /// fit alongside.
-/// Between two figures about the same resource.
-/// Between two figures about the same resource.
+/// How much air the layout is given.
 ///
-/// Three rather than two. The row carries eight to twelve figures and they were
-/// packed tight enough that `MEM 84.9% ██████████░░ 20.4G / 24.0G SWP 88.5%`
-/// read as one long number rather than three facts.
-const NEAR: &str = "   ";
+/// Every value here is a *maximum*. A narrow terminal gives them up before it
+/// gives up a column of the command line, and a short one before it gives up a
+/// row of the table — comfort is the first thing surrendered, because a process
+/// you cannot identify is a worse loss than a row that touches the edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Density {
+    /// Everything packed. What poptop looked like before this was a choice.
+    Compact,
+    #[default]
+    Comfortable,
+    /// For a wide terminal with room to spare.
+    Spacious,
+}
+
+impl Density {
+    pub const NAMES: &'static str = "compact, comfortable or spacious";
+    pub const ALL: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "compact" | "tight" => Some(Self::Compact),
+            "comfortable" | "normal" => Some(Self::Comfortable),
+            "spacious" | "loose" => Some(Self::Spacious),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Comfortable => "Comfortable",
+            Self::Spacious => "Spacious",
+        }
+    }
+
+    /// Columns of air either side of the table's content.
+    ///
+    /// The panel dividers stay full width whatever this says — they are what
+    /// tells you where a panel starts, and one stopping short of the edge reads
+    /// as a box missing its corners.
+    pub fn inset(self, width: u16) -> u16 {
+        let want = match self {
+            Self::Compact => 0,
+            Self::Comfortable => 1,
+            Self::Spacious => 2,
+        };
+        // A hundred and four columns is enough to draw a deep tree of Chrome
+        // helpers and not enough to spare two.
+        want.min(width.saturating_sub(104) / 16)
+    }
+
+    /// Columns between two of the table's columns.
+    ///
+    /// Always one, and this is deliberate. A second column of air between
+    /// thirteen columns is thirteen off the command line, and it has to be
+    /// known by `command_width` as well as by the hit-testing — a third place
+    /// for the same fact, which is the bug this interface keeps having. The
+    /// columns are already told apart by their alignment; the air goes into the
+    /// inset and the header instead, where it costs one column and none.
+    pub fn column_gap(self) -> u16 {
+        let _ = self;
+        1
+    }
+
+    /// The gap between two figures about the same resource, in the header.
+    pub fn header_gap(self) -> &'static str {
+        match self {
+            Self::Compact => "  ",
+            Self::Comfortable => "   ",
+            Self::Spacious => "    ",
+        }
+    }
+
+    /// A blank row above the process table, separating it from the timeline.
+    ///
+    /// Vertical space is the scarcest thing in a terminal, so this is the last
+    /// comfort granted and the first withdrawn.
+    pub fn panel_gap(self, height: u16) -> u16 {
+        u16::from(self == Self::Spacious && height >= 30)
+    }
+}
+
 /// Between two groups. Wider, and marked, because a group boundary that looks
 /// like the gap inside a group is not a boundary — and the mark carries on a
 /// terminal with no colour to spend.
@@ -782,7 +865,8 @@ const FAR: &str = "  │  ";
 /// Exposed for tests: the units the fitting arithmetic is done in.
 #[cfg(test)]
 pub fn separator_widths_for_test() -> (usize, usize, usize, usize) {
-    (sep_w(NEAR), NEAR.len(), sep_w(FAR), FAR.len())
+    let near = Density::default().header_gap();
+    (sep_w(near), near.len(), sep_w(FAR), FAR.len())
 }
 
 /// The columns a separator occupies.
@@ -827,7 +911,7 @@ fn sep_w(sep: &str) -> usize {
     cols(sep)
 }
 
-fn full_width(figures: &[Figure<'_>]) -> usize {
+fn full_width(figures: &[Figure<'_>], near: &str) -> usize {
     let mut order: Vec<&Figure<'_>> = figures.iter().collect();
     order.sort_by_key(|f| f.group);
     let mut w = 0;
@@ -835,7 +919,7 @@ fn full_width(figures: &[Figure<'_>]) -> usize {
     for f in order {
         w += match last {
             None => 0,
-            Some(g) if g == f.group => sep_w(NEAR),
+            Some(g) if g == f.group => sep_w(near),
             Some(_) => sep_w(FAR),
         } + f.spans.iter().map(|s| cols(&s.content)).sum::<usize>();
         last = Some(f.group);
@@ -843,7 +927,7 @@ fn full_width(figures: &[Figure<'_>]) -> usize {
     w
 }
 
-fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a>> {
+fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme, near: &str) -> Vec<Span<'a>> {
     let widths: Vec<usize> = figures
         .iter()
         .map(|f| f.spans.iter().map(|s| cols(&s.content)).sum())
@@ -865,7 +949,7 @@ fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a
         for &i in &shown {
             w += match last {
                 None => 0,
-                Some(g) if g == groups[i] => sep_w(NEAR),
+                Some(g) if g == groups[i] => sep_w(near),
                 Some(_) => sep_w(FAR),
             } + widths[i];
             last = Some(groups[i]);
@@ -906,7 +990,7 @@ fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a
     for &i in &shown {
         match last {
             None => {}
-            Some(g) if g == groups[i] => out.push(Span::raw(NEAR)),
+            Some(g) if g == groups[i] => out.push(Span::raw(near.to_string())),
             Some(_) => out.push(Span::styled(FAR, theme.chrome_style())),
         }
         last = Some(groups[i]);
@@ -1610,8 +1694,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // vanished from. Against the full set the condition depends on width alone,
     // and the scale is strictly the first thing given up — which is what the
     // ladder always said it was.
-    let scale = heat_scale(area.width, &app.theme)
-        .filter(|s| state_w + full_width(&figures) + 2 + cols(s) <= width);
+    let scale = heat_scale(area.width, &app.theme).filter(|s| {
+        state_w + full_width(&figures, app.density.header_gap()) + 2 + cols(s) <= width
+    });
     let reserved = scale.as_ref().map_or(0, |s| cols(s) + 2);
 
     let mut line = vec![state];
@@ -1619,6 +1704,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         figures,
         width.saturating_sub(state_w + reserved),
         &app.theme,
+        app.density.header_gap(),
     );
 
     line.extend(spans);
@@ -3537,29 +3623,13 @@ fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>
     Some(Line::from(spans))
 }
 
-/// Columns of air either side of the table's content, where there is room.
-///
-/// The panel dividers stay full width — they are the thing that says where a
-/// panel starts, and a divider stopping short of the edge would read as a box
-/// missing its corners. What gets the air is the content, which was flush
-/// against column zero and the right edge at the same time.
-///
-/// Given up first on a narrow terminal, like every other comfort here. A
-/// hundred and four columns is enough to draw a deep tree of Chrome helpers and
-/// not enough to spare two, so the threshold is where a terminal genuinely has
-/// slack rather than where it merely has room — a process elided to `…derer)`
-/// is a worse loss than a row that touches the edge.
-fn table_inset(width: u16) -> u16 {
-    u16::from(width >= 120)
-}
-
 /// Where the table's rows and headers are drawn, inside the panel.
 ///
 /// One derivation, because the mouse resolves a click through the same
 /// arithmetic — and a hit box an inset away from the column it is over is the
 /// bug this milestone has already had twice.
-pub fn table_body(area: Rect) -> Rect {
-    let inset = table_inset(area.width);
+pub fn table_body(app: &App, area: Rect) -> Rect {
+    let inset = app.density.inset(area.width);
     Rect {
         x: area.x + inset,
         width: area.width.saturating_sub(inset * 2),
@@ -3607,7 +3677,7 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
     // decision two columns too generous, and the command was elided to a width
     // it was then chopped at.
     let area = Rect {
-        width: table_body(area).width,
+        width: table_body(app, area).width,
         ..area
     };
     let one_user = app.one_user();
@@ -3645,8 +3715,8 @@ pub fn sort_at(app: &App, area: Rect, x: u16) -> Option<crate::app::Sort> {
     let s = table_shape(app, area);
     let (widths, sorts) = table_columns(s.bars, s.thr, s.io, s.mem_cols, s.user, s.cid);
     let cells = Layout::horizontal(widths)
-        .spacing(1)
-        .split(table_body(area));
+        .spacing(app.density.column_gap())
+        .split(table_body(app, area));
     cells
         .iter()
         .position(|r| x >= r.x && x < r.x + r.width)
@@ -3799,7 +3869,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     // `USER` two lines up.
     let show_cid = shape.cid;
     let cmd_w = command_width(
-        table_body(area).width,
+        table_body(app, area).width,
         show_io,
         show_user,
         show_cid,
@@ -4496,13 +4566,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             Rect {
                 y: area.y + 1,
                 height: 1,
-                x: table_body(area).x,
-                width: table_body(area).width,
+                x: table_body(app, area).x,
+                width: table_body(app, area).width,
             },
         );
     }
-    let table = Table::new(rows, widths).header(header);
-    f.render_widget(table, table_body(area));
+    // The same gap the hit-testing splits with. Left at ratatui's default of
+    // one while `sort_at` split with two, a click on a header landed a column
+    // short of the column it was over.
+    let table = Table::new(rows, widths)
+        .header(header)
+        .column_spacing(app.density.column_gap());
+    f.render_widget(table, table_body(app, area));
 }
 
 /// Width of the per-process history sparkline, in cells.

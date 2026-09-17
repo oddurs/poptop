@@ -25,6 +25,8 @@ use std::time::Duration;
 pub struct Settings {
     pub glyphs: GlyphSet,
     pub axis: Axis,
+    /// How much air the layout is given.
+    pub density: crate::ui::Density,
     /// Whether to take the mouse. Off gives terminal text selection back.
     pub mouse: bool,
     /// Whether to derive panel surfaces from the terminal's own background.
@@ -128,6 +130,7 @@ impl Settings {
         Self {
             glyphs: default_glyphs(),
             axis: Axis::default(),
+            density: crate::ui::Density::default(),
             mouse: true,
             surfaces: true,
             tier: Tier::detect(),
@@ -182,6 +185,7 @@ impl Settings {
         Self {
             glyphs: GlyphSet::default(),
             axis: Axis::default(),
+            density: crate::ui::Density::default(),
             mouse: true,
             surfaces: true,
             tier: Tier::TrueColor,
@@ -272,6 +276,10 @@ pub const KEYS: &[(&str, Apply)] = &[
     // the rows mean.
     ("scale", |s, v| {
         s.axis = Axis::parse(v).ok_or(Axis::NAMES)?;
+        Ok(())
+    }),
+    ("density", |s, v| {
+        s.density = crate::ui::Density::parse(v).ok_or(crate::ui::Density::NAMES)?;
         Ok(())
     }),
     ("mouse", |s, v| {

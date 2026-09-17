@@ -510,6 +510,8 @@ pub struct App {
     zoom_idx: usize,
     pub glyphs: GlyphSet,
     pub axis: crate::glyphs::Axis,
+    /// How much air the layout is given. See `ui::Density`.
+    pub density: crate::ui::Density,
     /// Which dropdown is open, if any. See `menu.rs`.
     pub menu: crate::menu::MenuState,
     /// Whether the inspector is open on the selected process. See `ui::draw_inspector`.
@@ -565,6 +567,7 @@ impl App {
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
             axis: crate::glyphs::Axis::default(),
+            density: crate::ui::Density::default(),
             menu: crate::menu::MenuState::default(),
             inspecting: false,
             theme: Theme::default(),
