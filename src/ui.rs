@@ -471,17 +471,30 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, box_area);
     f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
 
-    let title = format!(" {} · {} ", p.name, p.pid);
-    let bar = "─".repeat(w.saturating_sub(cols(&title)).max(1));
+    // Both ends of the box are drawn by this function, so both have to be
+    // measured by it. A line wider than `w` used to be laid down whole and
+    // clipped by the terminal, which ate the right border and left the command
+    // running into whatever was behind the box — on a full command line, which
+    // is most of them, the panel simply had no right-hand side.
+    let title = elide_middle(&format!(" {} · {} ", p.name, p.pid), w);
+    let bar = "─".repeat(w.saturating_sub(cols(&title)));
     let mut framed = vec![Line::from(Span::styled(
         format!("╭{title}{bar}╮"),
         app.theme.chrome_style(),
     ))];
     for l in lines.into_iter().take(h.saturating_sub(2)) {
-        let used: usize = l.spans.iter().map(|s| cols(&s.content)).sum();
         let mut spans = vec![Span::styled("│", app.theme.chrome_style())];
-        spans.extend(l.spans);
-        spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+        let mut used = 0usize;
+        for span in l.spans {
+            let room = w - used;
+            if room == 0 {
+                break;
+            }
+            let text = elide_middle(&span.content, room);
+            used += cols(&text);
+            spans.push(Span::styled(text, span.style));
+        }
+        spans.push(Span::raw(" ".repeat(w - used)));
         spans.push(Span::styled("│", app.theme.chrome_style()));
         framed.push(Line::from(spans));
     }

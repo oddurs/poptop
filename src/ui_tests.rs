@@ -13449,6 +13449,58 @@ fn the_peaks_come_from_the_buffer_and_say_what_they_cover() {
 }
 
 #[test]
+fn the_inspector_closes_its_box_whatever_is_in_it() {
+    // The first line is the full command, and a full command is longer than
+    // the panel. It was laid down whole and clipped by the terminal, which ate
+    // the right border and ran the text into whatever was behind the box — so
+    // on most processes the inspector simply had no right-hand side.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.selected = Some(crate::app::Watched::Process {
+        pid: 824,
+        started: Some(2),
+        name: std::sync::Arc::from(
+            "a-name-long-enough-to-overrun-any-terminal-this-test-will-ever-be-run-on",
+        ),
+    });
+    app.inspecting = true;
+
+    for w in 40..=200u16 {
+        let drawn = rows(&app, w, 26);
+        let first = drawn
+            .iter()
+            .position(|l| l.contains('\u{256d}'))
+            .unwrap_or_else(|| panic!("no box at w={w}"));
+        let last = drawn
+            .iter()
+            .position(|l| l.contains('\u{2570}'))
+            .unwrap_or_else(|| panic!("the box has no bottom at w={w}"));
+        let top = &drawn[first];
+        // Counted in characters, not bytes: every glyph the box is drawn from
+        // is three bytes wide and `find` answers in bytes.
+        let at = |line: &str, c: char| line.chars().position(|x| x == c);
+        let left = at(top, '\u{256d}').expect("no left corner");
+        let right = at(top, '\u{256e}').unwrap_or_else(|| {
+            panic!("the top border has no right corner at w={w}:\n{top}");
+        });
+        // Every row of the box reaches the same column and stops there.
+        for l in &drawn[first + 1..last] {
+            let bars: Vec<usize> = l
+                .chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '\u{2502}')
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                (bars.first().copied(), bars.last().copied()),
+                (Some(left), Some(right)),
+                "a line broke out of the box at w={w}:\n{l}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_inspector_does_not_disturb_the_timeline() {
     // `d` replaces the timeline with the process's history, which is a
     // different thing. This floats over the table and leaves the graph alone,
