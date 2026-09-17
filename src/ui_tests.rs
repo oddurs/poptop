@@ -14804,3 +14804,79 @@ fn a_divider_is_never_indented_with_the_content() {
         }
     }
 }
+
+#[test]
+fn the_summary_leads_with_whatever_the_tab_is_about() {
+    // The strip is inside the table panel and describes the rows in it, so a
+    // tab that changes the columns and leaves the summary reading the same way
+    // has only half-changed the question.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = (0..3)
+        .map(|i| ProcSample {
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 2 << 20,
+            }),
+            started: Some(i as u64),
+            ..proc_named(100 + i, "postgres", 10.0, 1 << 30)
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let first = |app: &App| {
+        let s = strip_of(app);
+        // The clause after the count.
+        s.split(" · ").nth(1).unwrap_or_default().to_string()
+    };
+
+    app.view = crate::app::View::Cpu;
+    assert!(first(&app).starts_with("CPU"), "{:?}", strip_of(&app));
+    app.view = crate::app::View::Memory;
+    assert!(first(&app).starts_with("MEM"), "{:?}", strip_of(&app));
+    app.view = crate::app::View::Disk;
+    assert!(first(&app).starts_with("DISK"), "{:?}", strip_of(&app));
+    // Three megabytes a second across three processes.
+    assert!(
+        strip_of(&app).contains("3.00M/s") || strip_of(&app).contains("3.0M/s"),
+        "the disk total is wrong: {:?}",
+        strip_of(&app)
+    );
+}
+
+#[test]
+fn a_disk_total_nobody_can_supply_falls_back_rather_than_lying() {
+    // A process whose IO could not be read is not an idle one. Summing the ones
+    // that answered would report a rate the machine never had.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 0,
+            }),
+            started: Some(1),
+            ..proc_named(100, "a", 10.0, 1 << 20)
+        },
+        ProcSample {
+            io: None,
+            started: Some(2),
+            ..proc_named(101, "b", 10.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.view = crate::app::View::Disk;
+    let strip = strip_of(&app);
+    assert!(
+        !strip.contains("DISK"),
+        "a partial disk total was presented as the whole: {strip:?}"
+    );
+    assert!(
+        strip.contains("CPU"),
+        "and it said nothing at all: {strip:?}"
+    );
+}

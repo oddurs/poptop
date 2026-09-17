@@ -3562,6 +3562,8 @@ pub struct Totals {
     pub threads: Option<u64>,
     /// How many of the rows are folded groups, if any are.
     pub groups: usize,
+    /// Bytes a second read and written, where the rows say.
+    pub disk: Option<(u64, u64)>,
 }
 
 /// Add up what is on screen.
@@ -3577,6 +3579,7 @@ pub fn totals(app: &App) -> Totals {
         rss: 0,
         threads: Some(0),
         groups: 0,
+        disk: Some((0, 0)),
     };
     for r in rows.iter().filter(|r| !r.is_thread()) {
         out.procs += r.count();
@@ -3585,6 +3588,10 @@ pub fn totals(app: &App) -> Totals {
         out.groups += usize::from(r.members.is_some());
         out.threads = match (out.threads, r.proc.threads) {
             (Some(n), Some(t)) => Some(n + u64::from(t)),
+            _ => None,
+        };
+        out.disk = match (out.disk, r.proc.io) {
+            (Some((r0, w0)), Some(io)) => Some((r0 + io.read, w0 + io.write)),
             _ => None,
         };
     }
@@ -3606,31 +3613,39 @@ fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>
     // Its own ladder, given up from the least diagnostic end. The count goes
     // last because the scope line already says it — this row is here for the
     // magnitudes, which nothing else states.
+    // Led by whatever the tab is about. The strip is inside the table panel and
+    // describes the rows in it, so on the Memory tab the first figure after the
+    // count should be memory — a tab that changes the columns and leaves the
+    // summary reading the same way has only half-changed the question.
+    let cpu = format!("CPU {:.1}%", t.cpu);
+    let mem = format!("MEM {}{share}", fmt_bytes(t.rss));
+    let disk = t
+        .disk
+        .map(|(r, w)| format!("DISK {} · {}", fmt_rate(r).trim(), fmt_rate(w).trim()));
+    let lead: Vec<String> = match app.view {
+        crate::app::View::Cpu => vec![cpu.clone(), mem.clone()],
+        crate::app::View::Memory => vec![mem.clone(), cpu.clone()],
+        crate::app::View::Disk => match &disk {
+            Some(d) => vec![d.clone(), cpu.clone()],
+            None => vec![cpu.clone(), mem.clone()],
+        },
+    };
     // Dropped rather than dashed when the platform will not say. An em dash
     // here is a clause that says nothing on every frame — and on macOS, where
     // a process poptop cannot open reports no thread count, that is most of
-    // them. A figure absent for a stated reason belongs on the row about that
-    // process; a permanent `— threads` is noise on the row about all of them.
+    // them.
     let mut rungs = Vec::new();
     if let Some(thr) = t.threads {
         rungs.push(format!(
-            " {} shown · CPU {:.1}% · MEM {}{} · {thr} threads",
+            " {} shown · {} · {thr} threads",
             t.procs,
-            t.cpu,
-            fmt_bytes(t.rss),
-            share
+            lead.join(" · ")
         ));
     }
     rungs.extend([
-        format!(
-            " {} shown · CPU {:.1}% · MEM {}{}",
-            t.procs,
-            t.cpu,
-            fmt_bytes(t.rss),
-            share
-        ),
-        format!(" CPU {:.1}% · MEM {}", t.cpu, fmt_bytes(t.rss)),
-        format!(" CPU {:.1}%", t.cpu),
+        format!(" {} shown · {}", t.procs, lead.join(" · ")),
+        format!(" {}", lead.join(" · ")),
+        format!(" {}", lead[0]),
     ]);
     let text = rungs.into_iter().find(|r| cols(r) <= width)?;
     let mut spans = vec![Span::styled(text, dim)];
