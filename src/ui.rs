@@ -4826,7 +4826,11 @@ fn io_cell(collected: bool, io: Option<IoRates>, write: bool, theme: &Theme) -> 
 /// it — while the rest explain why the columns are absent and need no action.
 /// The `bool` is what lets the two be drawn differently.
 fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
-    if !app.show_io {
+    // Nothing to report on a tab that does not carry these columns. The memory
+    // tab was announcing `! io: panel too narrow` at every width, about columns
+    // it would not have drawn at any of them — a warning that named a problem
+    // the reader could not have, next to the four columns they had asked for.
+    if !app.show_io || !app.view.wants_io() {
         return (String::new(), false);
     }
     // Asked for but not drawn. Without this the key is a silent no-op on a

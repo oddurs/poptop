@@ -11221,6 +11221,36 @@ fn a_field_the_platform_does_not_publish_is_a_dash_not_a_zero() {
 }
 
 #[test]
+fn a_tab_without_disk_columns_says_nothing_about_disk_columns() {
+    // The memory tab announced `! io: panel too narrow` at every width, about
+    // columns it would not have drawn at any of them. A warning naming a
+    // problem the reader cannot have is worse than none: it is the one clause
+    // the panel title goes out of its way to guarantee, so it has to mean
+    // something when it appears.
+    use crate::app::View;
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    app.push(s);
+    assert!(app.show_io, "the fixture is not testing what it claims");
+
+    app.view = View::Memory;
+    let mem = rows(&app, 140, 12).join("\n");
+    assert!(
+        !mem.contains("io:"),
+        "the memory tab reported on columns it does not carry:\n{mem}"
+    );
+
+    // And the tabs that do carry them still say why they are missing.
+    app.view = View::Cpu;
+    let narrow = rows(&app, 70, 12).join("\n");
+    assert!(
+        narrow.contains("io: panel too narrow"),
+        "the cpu tab dropped the columns silently:\n{narrow}"
+    );
+}
+
+#[test]
 fn a_column_nobody_can_fill_is_not_drawn_at_all() {
     use crate::app::View;
     // The other half of the rule above, and why the memory tab was worth less
