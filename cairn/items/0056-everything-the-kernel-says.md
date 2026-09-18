@@ -3,9 +3,9 @@ id: 56
 key: v2.1
 title: Everything the kernel says
 type: milestone
-status: backlog
+status: done
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-18
 priority: p2
 due: 2027-07-01
 ---

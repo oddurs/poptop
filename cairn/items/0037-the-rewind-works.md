@@ -3,8 +3,9 @@ id: 37
 key: v0.1
 title: The rewind works
 type: milestone
-status: backlog
+status: done
 created: 2026-09-07
+updated: 2026-09-18
 due: 2026-10-01
 ---
 
