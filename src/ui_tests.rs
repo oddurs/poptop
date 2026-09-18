@@ -12467,6 +12467,139 @@ fn clicking_the_bar_opens_the_title_under_the_pointer() {
 }
 
 #[test]
+fn the_averaging_window_is_a_setting_the_menu_can_reach() {
+    // The panel title has said `avg 5s` since smoothing landed, which tells a
+    // reader the figures are averaged and not where to change it. `--smooth`
+    // and the config file were the only answers, and neither is somewhere you
+    // look while the thing is running.
+    use crate::command::Action::SetSmooth;
+    use std::time::Duration;
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    let items = &crate::menu::bar()[2].items;
+    let spans: Vec<Duration> = items
+        .iter()
+        .filter_map(|i| match i.action() {
+            Some(SetSmooth(d)) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        spans.contains(&Duration::ZERO) && spans.contains(&Duration::from_secs(30)),
+        "the View menu does not offer the averaging window: {spans:?}"
+    );
+
+    // Exactly one of them is ticked, and it is the one in force.
+    fn ticked(app: &App) -> usize {
+        crate::menu::bar()[2]
+            .items
+            .iter()
+            .filter(|i| matches!(i.action(), Some(SetSmooth(_))))
+            .filter(|i| crate::menu::checked(i, app) == Some(true))
+            .count()
+    }
+    assert_eq!(
+        ticked(&app),
+        1,
+        "the menu does not say which window is in force"
+    );
+
+    SetSmooth(Duration::from_secs(30)).apply(&mut app);
+    assert_eq!(ticked(&app), 1, "the tick did not follow the choice");
+    let shown = rows(&app, 140, 12).join("\n");
+    assert!(
+        shown.contains("avg 30s"),
+        "the panel still names the old window:\n{shown}"
+    );
+
+    // And off is off rather than a one-sample average called something.
+    SetSmooth(Duration::ZERO).apply(&mut app);
+    assert_eq!(app.smooth, 1, "no averaging is still averaging");
+    let off = rows(&app, 140, 12).join("\n");
+    assert!(
+        !off.contains("avg"),
+        "the panel claims an average that is not being taken:\n{off}"
+    );
+}
+
+#[test]
+fn the_window_means_the_same_span_at_any_interval() {
+    use std::time::Duration;
+    // The buffer is counted in samples and the setting is stated in seconds,
+    // because the interval is a setting too. A menu offering "5 samples" would
+    // mean something different at every one of them.
+    let mut app = App::new(600);
+    for (interval, want) in [(500u64, 10usize), (1000, 5), (2500, 2)] {
+        app.interval = Duration::from_millis(interval);
+        app.set_smooth(Duration::from_secs(5));
+        assert_eq!(
+            app.smooth, want,
+            "five seconds at a {interval}ms interval is not {want} samples"
+        );
+    }
+    // An interval of zero has no notion of a sample count, and one sample is
+    // the floor everywhere else here.
+    app.interval = Duration::ZERO;
+    app.set_smooth(Duration::from_secs(5));
+    assert_eq!(app.smooth, 1);
+}
+
+#[test]
+fn a_dropdown_taller_than_the_screen_scrolls_to_the_highlight() {
+    // It used to be cut off at the bottom, which is worse than it sounds:
+    // `move_item` still walked onto the items nobody could see, so the
+    // highlight left the screen and the menu read as having stopped
+    // responding.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let (w, h) = (100u16, 26u16);
+    let area = ratatui::layout::Rect::new(0, 0, w, h);
+    app.menu.open = Some(2); // View, the tall one
+    let items = &crate::menu::bar()[2].items;
+    let rect = ui::dropdown_rect(&app, area).expect("no dropdown");
+    let shown = rect.height.saturating_sub(2) as usize;
+    assert!(
+        items.len() > shown,
+        "the fixture is not tall enough to test this"
+    );
+
+    for at in 0..items.len() {
+        app.menu.item = at;
+        let offset = ui::dropdown_offset(&app, area);
+        assert!(
+            (offset..offset + shown).contains(&at),
+            "item {at} is off screen at offset {offset}"
+        );
+        // And never scrolled further than it has to be.
+        assert!(offset <= items.len() - shown, "scrolled past the end");
+    }
+
+    // The first item puts the list back at the top, which is what wrapping
+    // round from the last one has to do.
+    app.menu.item = 0;
+    assert_eq!(ui::dropdown_offset(&app, area), 0);
+
+    // There is a mark saying the rest is there, or a reader has no reason to
+    // keep pressing.
+    app.menu.item = 0;
+    let top = rows(&app, w, h);
+    assert!(
+        top.iter().any(|l| l.contains('\u{2193}')),
+        "nothing says the list continues below:\n{}",
+        top.join("\n")
+    );
+    app.menu.item = items.len() - 1;
+    let bottom = rows(&app, w, h);
+    assert!(
+        bottom.iter().any(|l| l.contains('\u{2191}')),
+        "nothing says the list continues above:\n{}",
+        bottom.join("\n")
+    );
+}
+
+#[test]
 fn clicking_a_dropdown_item_runs_it_and_clicking_away_closes() {
     let mut app = App::new(600);
     for i in (0..30).rev() {
@@ -12482,8 +12615,17 @@ fn clicking_a_dropdown_item_runs_it_and_clicking_away_closes() {
         .position(|i| i.action() == Some(crate::command::Action::ToggleTree))
         .expect("no tree item");
 
+    // Scrolled to wherever that item actually is: the View menu is taller
+    // than a twenty-six row terminal, and a click has to land on the row under
+    // the pointer rather than on the row the unscrolled list would have put
+    // there.
+    app.menu.item = at;
+    let offset = ui::dropdown_offset(&app, area);
+    let row = rect.y + 1 + (at - offset) as u16;
+    assert!(row < rect.y + rect.height - 1, "the item is not on screen");
+
     let before = app.tree;
-    click(&mut app, rect.x + 3, rect.y + 1 + at as u16, 100, 26);
+    click(&mut app, rect.x + 3, row, 100, 26);
     assert_ne!(app.tree, before, "clicking the item did nothing");
     assert!(!app.menu.is_open(), "the menu stayed open after a click");
 

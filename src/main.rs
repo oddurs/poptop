@@ -709,12 +709,7 @@ fn main() -> io::Result<()> {
         .map_or(settings.history_len(), |s| s.len().max(1));
     let mut app = App::new(capacity);
     app.interval = settings.interval;
-    // In samples, because that is what the buffer is counted in — but stated in
-    // seconds, because the interval is itself a setting and "five seconds"
-    // means the same thing at either end of it.
-    app.smooth = (settings.smooth.as_secs_f64() / settings.interval.as_secs_f64())
-        .round()
-        .max(1.0) as usize;
+    app.set_smooth(settings.smooth);
     app.theme = theme;
     app.glyphs = settings.glyphs;
     app.axis = settings.axis;
@@ -1513,7 +1508,12 @@ pub fn handle_mouse(app: &mut App, ev: event::MouseEvent, area: ratatui::layout:
                     // The frame is not an item: the top and bottom rows are the
                     // border, and clicking a border should do nothing rather
                     // than run whatever is nearest.
-                    let row = y.saturating_sub(rect.y + 1) as usize;
+                    // Plus whatever the list is scrolled by, from the same
+                    // function the drawing asks — an offset worked out twice
+                    // would put the click on a different item from the one
+                    // under the pointer.
+                    let row =
+                        y.saturating_sub(rect.y + 1) as usize + ui::dropdown_offset(app, area);
                     let titles = menu::bar();
                     if y > rect.y
                         && y + 1 < rect.y + rect.height

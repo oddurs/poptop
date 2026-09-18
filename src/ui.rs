@@ -536,6 +536,35 @@ pub fn dropdown_rect(app: &App, area: Rect) -> Option<Rect> {
     Some(Rect::new(x, y, w as u16, h))
 }
 
+/// The first item drawn, when the dropdown is taller than the screen.
+///
+/// Shared with the mouse for the reason [`dropdown_rect`] is: an offset worked
+/// out twice puts the highlight on one item and the click on another.
+///
+/// The list used to be cut off at the bottom instead, which is worse than it
+/// sounds — `move_item` still walked onto the items nobody could see, so the
+/// highlight left the screen and the menu read as having stopped responding.
+pub fn dropdown_offset(app: &App, area: Rect) -> usize {
+    let Some(rect) = dropdown_rect(app, area) else {
+        return 0;
+    };
+    let titles = crate::menu::bar();
+    let Some(title) = app.menu.open.and_then(|i| titles.get(i)) else {
+        return 0;
+    };
+    let shown = rect.height.saturating_sub(2) as usize;
+    if shown == 0 || title.items.len() <= shown {
+        return 0;
+    }
+    // Scrolled no further than the highlight demands, so the list sits at its
+    // top until something below the fold is reached and returns there when it
+    // wraps round.
+    app.menu
+        .item
+        .saturating_sub(shown - 1)
+        .min(title.items.len() - shown)
+}
+
 fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
     let titles = crate::menu::bar();
     let Some(open) = app.menu.open else { return };
@@ -554,14 +583,27 @@ fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
 
     let inner = w.saturating_sub(2);
-    let mut lines = vec![Line::from(Span::styled(
-        format!("╭{}╮", "─".repeat(inner)),
-        app.theme.chrome_style(),
-    ))];
-    for (i, item) in title.items.iter().enumerate() {
-        if lines.len() + 1 >= h as usize {
-            break;
+    // A rule, with a mark on it when there is more list in that direction. In
+    // the border rather than on a row of its own: the reason the list is being
+    // scrolled is that rows are scarce.
+    let rule = |left: char, right: char, more: bool| {
+        let mut mid = "─".repeat(inner);
+        if more && inner >= 3 {
+            mid = format!(
+                "{}{}─",
+                "─".repeat(inner - 2),
+                if left == '╭' { '↑' } else { '↓' }
+            );
         }
+        Line::from(Span::styled(
+            format!("{left}{mid}{right}"),
+            app.theme.chrome_style(),
+        ))
+    };
+    let shown = (h as usize).saturating_sub(2);
+    let offset = dropdown_offset(app, area);
+    let mut lines = vec![rule('╭', '╮', offset > 0)];
+    for (i, item) in title.items.iter().enumerate().skip(offset).take(shown) {
         lines.push(match item {
             crate::menu::Item::Rule => Line::from(Span::styled(
                 format!("├{}┤", "─".repeat(inner)),
@@ -594,10 +636,7 @@ fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
         });
     }
     if lines.len() < h as usize {
-        lines.push(Line::from(Span::styled(
-            format!("╰{}╯", "─".repeat(inner)),
-            app.theme.chrome_style(),
-        )));
+        lines.push(rule('╰', '╯', offset + shown < title.items.len()));
     }
     f.render_widget(Paragraph::new(lines), box_area);
 }

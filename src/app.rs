@@ -1621,6 +1621,26 @@ impl App {
         })
     }
 
+    /// The averaging window in samples, for a span asked for in seconds.
+    ///
+    /// The buffer is counted in samples and the setting is stated in seconds,
+    /// because the interval is itself a setting: "five seconds" has to mean the
+    /// same thing at either end of it. One sample is the floor, and one sample
+    /// is what "off" is — an average of a single reading is that reading.
+    pub fn smooth_samples(&self, span: std::time::Duration) -> usize {
+        if self.interval.is_zero() {
+            return 1;
+        }
+        (span.as_secs_f64() / self.interval.as_secs_f64())
+            .round()
+            .max(1.0) as usize
+    }
+
+    /// Average the table's figures over this much time.
+    pub fn set_smooth(&mut self, span: std::time::Duration) {
+        self.smooth = self.smooth_samples(span);
+    }
+
     pub fn smoothing(&self) -> Smoothing {
         let window = self.smooth;
         if window <= 1 {

@@ -12,6 +12,7 @@
 use crate::app::App;
 use crate::command::Action;
 use crate::glyphs::{Axis, GlyphSet};
+use std::time::Duration;
 
 /// One row of a dropdown.
 pub enum Item {
@@ -93,6 +94,18 @@ pub fn bar() -> Vec<Title> {
                     SetDensity(crate::ui::Density::Comfortable),
                 ),
                 Do("Spacious", "", SetDensity(crate::ui::Density::Spacious)),
+                Rule,
+                // The other comfort setting, and the one nobody could find.
+                // The panel title has said `avg 5s` since smoothing landed,
+                // which tells a reader the figure is averaged and not where to
+                // change it; `--smooth` and the config file were the only
+                // answers, and neither is somewhere you look while the thing
+                // is running.
+                Do("No averaging", "", SetSmooth(Duration::ZERO)),
+                Do("Average 2s", "", SetSmooth(Duration::from_secs(2))),
+                Do("Average 5s", "", SetSmooth(Duration::from_secs(5))),
+                Do("Average 10s", "", SetSmooth(Duration::from_secs(10))),
+                Do("Average 30s", "", SetSmooth(Duration::from_secs(30))),
                 Rule,
                 Do("Axis from zero", "", SetAxis(Axis::Zero)),
                 Do("Axis fitted to data", "", SetAxis(Axis::Fit)),

@@ -56,6 +56,12 @@ pub enum Action {
     SetGlyphs(GlyphSet),
     SetAxis(Axis),
     SetDensity(crate::ui::Density),
+    /// How long the table's figures are averaged over. `ZERO` is off.
+    ///
+    /// Carried as a span rather than as a sample count, because the interval
+    /// is a setting too and a menu that offered "5 samples" would mean
+    /// something different at every one of them.
+    SetSmooth(std::time::Duration),
 
     // The process under the cursor.
     Signal(Signal),
@@ -152,6 +158,8 @@ impl Action {
             Self::SetAxis(a) => app.axis = a,
             Self::SetDensity(d) => app.density = d,
 
+            Self::SetSmooth(d) => app.set_smooth(d),
+
             Self::Signal(s) => app.ask_to_signal(s),
         }
     }
@@ -171,6 +179,7 @@ impl Action {
             Self::SetGlyphs(g) => app.glyphs == g,
             Self::SetAxis(a) => app.axis == a,
             Self::SetDensity(d) => app.density == d,
+            Self::SetSmooth(d) => app.smooth == app.smooth_samples(d),
             Self::GotoLive => app.history.is_live(),
             Self::SetView(v) => app.view == v,
             _ => return None,
