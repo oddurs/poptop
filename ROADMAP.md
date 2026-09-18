@@ -69,6 +69,60 @@ What makes atop something a fleet depends on rather than something you run:
 - [x] `0076` Nothing can be done to a process, only watched <sup>feature · p3</sup>
 - [x] `0077` The comparison table will be wrong the moment this lands <sup>docs · p2</sup>
 
+## r1 — Read nothing on trust
+
+`··········` 0% · 0 of 4 done
+
+Validation sprint. Every byte poptop reads that it did not write this second — the store, the daily logs, /proc, netlink replies, config, themes, the query and jump prompts — is fed by a fuzzer or a property test, not only by the inputs a test author thought of. 0059 found three ways to hang or crash the reader by reasoning; this sprint is so the next three are found by a machine.
+
+### backlog
+
+- [ ] `0082` The store and log readers have been fuzzed by hand, not by a fuzzer <sup>chore · p1 · validation</sup>
+- [ ] `0083` The /proc parsers are tested only against the files their author thought to write <sup>chore · p1 · validation</sup>
+- [ ] `0084` The query language, jump times and theme colours have no property tests <sup>chore · p2 · validation</sup>
+- [ ] `0085` A log directory poptop did not make is trusted as if it had <sup>bug · p1 · validation</sup>
+
+## r2 — Every unsafe line accounted for
+
+`··········` 0% · 0 of 5 done
+
+Code review sprint. Read the code for what the tests cannot show: the reasoning behind each `unsafe` block, the moments between a check and the action it guards, the panics a user can reach, and the 3,400 lines of `main.rs` and `app.rs` that have no unit tests of their own. Every finding is either fixed with a test that fails before the fix, or filed as its own item with the reasoning.
+
+### backlog
+
+- [ ] `0086` Nineteen unsafe blocks and five SAFETY comments <sup>chore · p1 · review</sup>
+- [ ] `0087` The identity check and the kill are two moments, not one <sup>bug · p1 · review</sup>
+- [ ] `0088` Three hundred unwraps, and nobody has counted how many a user can reach <sup>chore · p2 · review</sup>
+- [ ] `0089` main.rs and app.rs are 3,400 lines with no tests of their own <sup>chore · p2 · review</sup>
+- [ ] `0090` A jump to 02:30 on the night the clocks change has no defined answer <sup>bug · p2 · review</sup>
+
+## r3 — Tested as it is run
+
+`··········` 0% · 0 of 5 done
+
+Testing sprint. 593 unit tests exercise poptop from the inside. Nothing runs the binary the way a person or a script does. CI's live checks are `--once` and a closed pipe. This sprint tests from the outside: the command line, the export format against its own schema, the Linux backend against kernels other than the CI runner's, the TUI in a real pseudo-terminal, and signals sent to real processes.
+
+### backlog
+
+- [ ] `0091` No test runs the binary <sup>chore · p1 · testing</sup>
+- [ ] `0092` Export output is never checked against the schema it publishes <sup>chore · p1 · testing</sup>
+- [ ] `0093` The Linux backend is tested on one kernel: whatever GitHub runs <sup>chore · p1 · testing</sup>
+- [ ] `0094` The TUI has never been run in a terminal by a test <sup>chore · p2 · testing</sup>
+- [ ] `0095` Signals are tested against the test's own process <sup>chore · p2 · testing</sup>
+
+## r4 — Right, not just consistent
+
+`··········` 0% · 0 of 4 done
+
+Validation sprint. The tests show poptop agrees with itself. This sprint checks that it agrees with the machine: its numbers against other tools reading the same counters at the same moment, its performance against budgets that fail when they are broken, its stores against every format it promised to read forever, and its behaviour across hours, midnights and clock changes.
+
+### backlog
+
+- [ ] `0096` No number poptop shows has been checked against another tool at the same moment <sup>chore · p1 · validation</sup>
+- [ ] `0097` Performance budgets live in ignored tests nobody runs <sup>chore · p2 · validation</sup>
+- [ ] `0098` The promise to read every store since format 15 is kept by nothing <sup>chore · p1 · validation</sup>
+- [ ] `0099` Nobody has run poptop for a day and looked at what happened <sup>chore · p2 · validation</sup>
+
 ## v0.2 — Cheap enough to run
 
 `##########` 100% · 11 of 11 done · due 2026-11-01
