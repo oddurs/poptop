@@ -1730,6 +1730,45 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let mut all = vec![divider(&title, area.width, &app.theme)];
     all.extend(lines);
     f.render_widget(Paragraph::new(all), area);
+
+    // The time before the buffer starts, said rather than left blank.
+    //
+    // At the widest zoom the graph is anchored right and the left of the panel
+    // is time from before there was any history — meaningful, as
+    // `effective_zoom` says, and indistinguishable from a graph with nothing to
+    // show. For the first minutes that is most of the biggest panel (0109).
+    // Stretching the time axis to fill it was the other answer, and the wrong
+    // one: a scale that changed as history arrived would reshape every line on
+    // screen during exactly the minutes someone is watching an incident.
+    //
+    // A clock time rather than "poptop started", because a replayed day's
+    // buffer starts where its log does, not where this process did.
+    let used = shown.div_ceil(zoom).div_ceil(spc);
+    let empty = graph_w.saturating_sub(used);
+    if window_start == 0
+        && let Some(first) = window.first()
+    {
+        let since = crate::log::clock_string(first.at);
+        let label = [
+            format!("no history before {since} — it fills from the right"),
+            format!("no history before {since}"),
+            format!("before {since}"),
+        ]
+        .into_iter()
+        .find(|l| cols(l) + 4 <= empty);
+        if let Some(label) = label {
+            let w = cols(&label);
+            f.render_widget(
+                Paragraph::new(Span::styled(label, app.theme.dim_style())),
+                Rect {
+                    x: area.x + (gutter + (empty - w) / 2) as u16,
+                    y: area.y + 1 + (graph_rows / 2) as u16,
+                    width: w as u16,
+                    height: 1,
+                },
+            );
+        }
+    }
 }
 
 /// One row of graph. `row` counts from the top of a `rows`-tall graph.
