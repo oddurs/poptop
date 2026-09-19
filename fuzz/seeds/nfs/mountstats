@@ -1,0 +1,17 @@
+device /dev/vda1 mounted on / with fstype ext4
+device nfsd mounted on /proc/fs/nfsd with fstype nfsd
+device 10.0.0.1:/export mounted on /mnt/data with fstype nfs4 statvers=1.1
+	opts:	rw,vers=4.2,rsize=1048576,wsize=1048576
+	age:	12345
+	bytes:	900 800 0 0 4096 8192 1 2
+	RPC iostats version: 1.1  p/v: 100003/4 (nfs)
+	xprt:	tcp 0 0 1 0 5 1000 1000 0 1000 0 2 3 4
+	per-op statistics
+	        NULL: 1 1 0 44 24 0 4 8 0
+	     GETATTR: 100 104 0 1000 2000 0 296 400 0
+	       WRITE: 9 9 0 500 100 0 100 120 0
+device 10.0.0.2:/other mounted on /mnt/other with fstype nfs statvers=1.1
+	bytes:	1 2 3 4 5 6 7 8
+	per-op statistics
+	     GETATTR: 2 2 0 10 20 0 6 8 0
+device tmpfs mounted on /run with fstype tmpfs

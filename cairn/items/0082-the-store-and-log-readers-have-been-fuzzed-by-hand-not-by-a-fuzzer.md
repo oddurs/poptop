@@ -2,8 +2,10 @@
 id: 82
 title: The store and log readers have been fuzzed by hand, not by a fuzzer
 type: chore
-status: backlog
+status: doing
 milestone: r1
+assignee: Oddur Sigurdsson
+claimed: 2026-09-18
 labels:
 - validation
 created: 2026-09-18

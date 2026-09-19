@@ -621,6 +621,110 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_colour_is_written_one_of_exactly_three_ways() {
+        // The grammar, as a test. Hex with six digits, either case; an index
+        // from 0 to 255 written in digits alone; or one of the names.
+        let names = [
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "magenta",
+            "cyan",
+            "gray",
+            "grey",
+            "darkgray",
+            "darkgrey",
+            "lightred",
+            "lightgreen",
+            "lightyellow",
+            "lightblue",
+            "lightmagenta",
+            "lightcyan",
+            "white",
+            "default",
+            "reset",
+        ];
+        for n in names {
+            assert!(parse_color(n).is_some(), "{n} was refused");
+        }
+        for i in 0..=255u8 {
+            assert_eq!(parse_color(&i.to_string()), Some(Color::Indexed(i)));
+        }
+        assert_eq!(parse_color("#5CCFE6"), parse_color("#5ccfe6"));
+        for bad in [
+            "",
+            "#",
+            "#12345",
+            "#1234567",
+            "#gggggg",
+            "256",
+            "-1",
+            "+5",
+            " 5",
+            "5 ",
+            "05x",
+            "Red",
+            "light red",
+            "#\u{e9}\u{e9}\u{e9}",
+            "1e2",
+            "0x10",
+        ] {
+            assert_eq!(parse_color(bad), None, "{bad:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn every_colour_read_is_written_back_as_itself() {
+        // A theme file round-trips: what `write_color` prints, `parse_color`
+        // reads as the same colour, for every colour either can produce.
+        let mut rng = crate::mangle::Rng::new(7);
+        let mut all: Vec<Color> = (0..=255u8).map(Color::Indexed).collect();
+        all.extend((0..500).map(|_| {
+            let v = rng.next();
+            Color::Rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8)
+        }));
+        for n in [
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "magenta",
+            "cyan",
+            "gray",
+            "darkgray",
+            "lightred",
+            "lightgreen",
+            "lightyellow",
+            "lightblue",
+            "lightmagenta",
+            "lightcyan",
+            "white",
+            "default",
+        ] {
+            all.push(parse_color(n).unwrap());
+        }
+        for c in all {
+            assert_eq!(
+                parse_color(&write_color(c)),
+                Some(c),
+                "{c:?} did not survive"
+            );
+        }
+    }
+
+    #[test]
+    fn no_colour_can_panic_the_parser() {
+        for seed in ["#5ccfe6", "255", "lightmagenta", "#\u{e9}5ccfe"] {
+            for v in crate::mangle::text_variants(seed, 500) {
+                let _ = parse_color(&v);
+            }
+        }
+    }
+
+    #[test]
     fn heat_thresholds_are_inclusive_at_the_boundary() {
         let t = Theme::new(Palette::Classic, Tier::Ansi16);
         assert_eq!(t.heat(0.0), t.ok);

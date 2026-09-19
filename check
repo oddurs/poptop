@@ -17,21 +17,31 @@ set -eu
 
 usage() {
     cat <<'USAGE'
-usage: ./check [--linux] [--quick]
+usage: ./check [--linux] [--quick] [--fuzz[=SECONDS]]
 
   (no flags)  the host toolchain only
   --linux     also run everything inside rust:1-slim, which is the only way a
               Mac compiles the /proc backend
   --quick     fmt, build and test; skip clippy and the live-data smoke tests
+  --fuzz      also run every fuzz target for SECONDS each (default 60), from
+              fuzz/seeds; needs a nightly toolchain and cargo-fuzz. With
+              --linux, the /proc targets run in the container too. A crash
+              lands in fuzz/artifacts/<target>/ and fails the check.
+
+  For a long run of one target:
+    cd fuzz && cargo +nightly fuzz run store -- -max_total_time=3600
 USAGE
 }
 
 linux=no
 quick=no
+fuzz=0
 for arg in "$@"; do
     case "$arg" in
         --linux) linux=yes ;;
         --quick) quick=yes ;;
+        --fuzz) fuzz=60 ;;
+        --fuzz=*) fuzz=${arg#--fuzz=} ;;
         -h|--help) usage; exit 0 ;;
         *) echo "check: unknown option $arg" >&2; usage >&2; exit 2 ;;
     esac
@@ -120,6 +130,42 @@ if [ "$linux" = yes ]; then
                    cargo fmt --check
                    cargo test
                    cargo clippy --all-targets -- -D warnings'
+    fi
+fi
+
+# Every fuzz target, for a bounded time, from the committed seeds. The corpus
+# a run grows is kept in fuzz/corpus (ignored), so repeated runs go deeper.
+# The /proc, NFS and taskstats targets are empty on macOS; they only mean
+# anything on Linux, which is what --linux is for.
+fuzz_targets() {
+    sed -n 's/^name = "\(.*\)"$/\1/p' fuzz/Cargo.toml | grep -v '^poptop-fuzz$'
+}
+if [ "$fuzz" != 0 ]; then
+    echo
+    echo "fuzz: ${fuzz}s a target"
+    if need cargo-fuzz && cargo +nightly --version >/dev/null 2>&1; then
+        for t in $(fuzz_targets); do
+            mkdir -p "fuzz/corpus/$t"
+            run "fuzz $t" sh -c "cd fuzz && cargo +nightly fuzz run $t corpus/$t seeds/$t \
+                -- -max_total_time=$fuzz -timeout=1 -rss_limit_mb=1024 -malloc_limit_mb=1024"
+        done
+    else
+        echo "  nightly toolchain                 NOT INSTALLED"
+        echo "    rustup toolchain install nightly" >&2
+        fail=1
+    fi
+    if [ "$linux" = yes ] && need docker; then
+        run "fuzz the /proc targets on linux" \
+            docker run --rm -v "$PWD":/w -w /w/fuzz -e CARGO_TARGET_DIR=/tmp/t rust:1-slim \
+            sh -c "set -e
+                   apt-get update -qq && apt-get install -y -qq build-essential >/dev/null
+                   rustup toolchain install nightly --profile minimal
+                   cargo install cargo-fuzz --locked
+                   for t in proc_files nfs taskstats; do
+                       mkdir -p /tmp/c/\$t
+                       cargo +nightly fuzz run \$t /tmp/c/\$t seeds/\$t -- -max_total_time=$fuzz \
+                           -timeout=1 -rss_limit_mb=1024 -malloc_limit_mb=1024
+                   done"
     fi
 fi
 

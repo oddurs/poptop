@@ -339,64 +339,80 @@ impl Listener {
                 break;
             }
             let n = n as usize;
-            // A datagram can carry more than one netlink message. Bounding the
-            // body by the whole read treats the next message's header as
-            // attributes of this one, so each message is taken by its own
-            // `nlmsg_len`.
-            let mut at = 0;
-            while at + 20 <= n {
-                let len =
-                    u32::from_ne_bytes(self.buf[at..at + 4].try_into().unwrap_or([0; 4])) as usize;
-                if len < 20 || at + len > n {
-                    break;
-                }
-                let ty = u16::from_ne_bytes([self.buf[at + 4], self.buf[at + 5]]);
-                if ty == NLMSG_ERROR || ty == NLMSG_DONE {
-                    at += align(len);
-                    continue;
-                }
-                // Copied because `attrs` borrows the buffer while the closure
-                // needs the user cache, and the next read overwrites it anyway.
-                let body = self.buf[at + 20..at + len].to_vec();
-                at += align(len);
-
-                // A whole-group record when there is one, and the per-task
-                // record only otherwise. The kernel sends `AGGR_PID` for every
-                // *task* that exits and adds `AGGR_TGID` when the whole thread
-                // group is going — so taking `AGGR_PID` unconditionally put a
-                // dying process in the table twice, once as itself and once as
-                // its leader thread.
-                let mut best: Option<ProcSample> = None;
-                for want in [AGGR_TGID, AGGR_PID] {
-                    if best.is_some() {
-                        break;
-                    }
-                    attrs(&body, |ty, v| {
-                        if ty != want || best.is_some() {
-                            return;
-                        }
-                        let mut pid = 0i32;
-                        let mut stats: Option<&[u8]> = None;
-                        attrs(v, |ity, iv| match ity {
-                            TYPE_PID | TYPE_TGID if iv.len() >= 4 => {
-                                pid = i32::from_ne_bytes(iv[0..4].try_into().unwrap_or([0; 4]));
-                            }
-                            TYPE_STATS => stats = Some(iv),
-                            _ => {}
-                        });
-                        if let Some(s) = stats {
-                            let was = before.get(&pid).copied().unwrap_or(0);
-                            best = parse_exit(pid, s, elapsed_secs, boot, was, users);
-                        }
-                    });
-                }
-                if let Some(p) = best {
-                    out.push(p);
-                }
-            }
+            out.extend(exits_in(&self.buf[..n], elapsed_secs, boot, before, users));
         }
         out
     }
+}
+
+/// The exit records in one datagram from the taskstats socket.
+///
+/// Split from [`Listener::drain`] so the bytes can be tested — and fuzzed —
+/// without a socket: they come from the kernel, and every length in them is one
+/// this code trusts to index with.
+pub fn exits_in(
+    buf: &[u8],
+    elapsed_secs: f64,
+    boot: Boot,
+    before: &std::collections::HashMap<i32, u64>,
+    users: &mut UserCache,
+) -> Vec<ProcSample> {
+    let mut out = Vec::new();
+    // A datagram can carry more than one netlink message. Bounding the
+    // body by the whole read treats the next message's header as
+    // attributes of this one, so each message is taken by its own
+    // `nlmsg_len`.
+    let mut at = 0;
+    while at + 20 <= buf.len() {
+        let len = u32::from_ne_bytes(buf[at..at + 4].try_into().unwrap_or([0; 4])) as usize;
+        if len < 20 || at + len > buf.len() {
+            break;
+        }
+        let ty = u16::from_ne_bytes([buf[at + 4], buf[at + 5]]);
+        if ty == NLMSG_ERROR || ty == NLMSG_DONE {
+            at += align(len);
+            continue;
+        }
+        // Copied because `attrs` borrows the buffer while the closure
+        // needs the user cache, and the next read overwrites it anyway.
+        let body = buf[at + 20..at + len].to_vec();
+        at += align(len);
+
+        // A whole-group record when there is one, and the per-task
+        // record only otherwise. The kernel sends `AGGR_PID` for every
+        // *task* that exits and adds `AGGR_TGID` when the whole thread
+        // group is going — so taking `AGGR_PID` unconditionally put a
+        // dying process in the table twice, once as itself and once as
+        // its leader thread.
+        let mut best: Option<ProcSample> = None;
+        for want in [AGGR_TGID, AGGR_PID] {
+            if best.is_some() {
+                break;
+            }
+            attrs(&body, |ty, v| {
+                if ty != want || best.is_some() {
+                    return;
+                }
+                let mut pid = 0i32;
+                let mut stats: Option<&[u8]> = None;
+                attrs(v, |ity, iv| match ity {
+                    TYPE_PID | TYPE_TGID if iv.len() >= 4 => {
+                        pid = i32::from_ne_bytes(iv[0..4].try_into().unwrap_or([0; 4]));
+                    }
+                    TYPE_STATS => stats = Some(iv),
+                    _ => {}
+                });
+                if let Some(s) = stats {
+                    let was = before.get(&pid).copied().unwrap_or(0);
+                    best = parse_exit(pid, s, elapsed_secs, boot, was, users);
+                }
+            });
+        }
+        if let Some(p) = best {
+            out.push(p);
+        }
+    }
+    out
 }
 
 /// Resolve a uid to a name, reusing the collector's cache.
@@ -560,6 +576,7 @@ fn classify(e: io::Error) -> Unavailable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     const BOOT: Boot = Boot {
         epoch_secs: 1_788_800_000,
@@ -727,5 +744,77 @@ mod tests {
         )
         .expect("no parse");
         assert_eq!(&*p.name, "sh", "the NUL padding came with the name");
+    }
+
+    /// One netlink attribute, padded as the kernel pads it.
+    fn attr(ty: u16, payload: &[u8]) -> Vec<u8> {
+        let mut a = ((4 + payload.len()) as u16).to_ne_bytes().to_vec();
+        a.extend(ty.to_ne_bytes());
+        a.extend(payload);
+        a.resize(align(a.len()), 0);
+        a
+    }
+
+    /// A datagram carrying one exit record, framed the way the kernel frames
+    /// it: a netlink header, a generic-netlink header, then the aggregate
+    /// attribute with the pid and the stats nested inside.
+    fn datagram(pid: i32, stats: &[u8]) -> Vec<u8> {
+        let mut inner = attr(TYPE_TGID, &pid.to_ne_bytes());
+        inner.extend(attr(TYPE_STATS, stats));
+        let body = attr(AGGR_TGID, &inner);
+        let len = 20 + body.len();
+        let mut m = (len as u32).to_ne_bytes().to_vec();
+        m.extend(0x15u16.to_ne_bytes()); // a family id, as the kernel assigns
+        m.extend([0u8; 10]); // flags, sequence, port
+        m.extend([2u8, 1, 0, 0]); // genl: cmd NEW, version 1
+        m.extend(body);
+        m
+    }
+
+    #[test]
+    fn a_whole_datagram_is_read_as_the_exit_it_carries() {
+        let r = record(
+            4021,
+            "backup.sh",
+            812,
+            1_000_000,
+            500_000,
+            8_192,
+            1_788_800_060,
+        );
+        let mut two = datagram(4021, &r);
+        two.extend(datagram(
+            4022,
+            &record(4022, "tar", 812, 1, 1, 1, 1_788_800_060),
+        ));
+        let rows = exits_in(&two, 1.0, BOOT, &HashMap::new(), &mut UserCache::new());
+        let got: Vec<(i32, &str)> = rows.iter().map(|p| (p.pid, &*p.name)).collect();
+        assert_eq!(got, [(4021, "backup.sh"), (4022, "tar")]);
+    }
+
+    #[test]
+    fn no_datagram_can_panic_the_reader() {
+        // Every length in a datagram is one this code indexes with. They come
+        // from the kernel, which is trusted to write them correctly — and a
+        // reader that panics when one is not takes the whole program with it.
+        let r = record(
+            4021,
+            "backup.sh",
+            812,
+            1_000_000,
+            500_000,
+            8_192,
+            1_788_800_060,
+        );
+        let mut seed = datagram(4021, &r);
+        seed.extend(datagram(4022, &r));
+        let before = HashMap::from([(4021, u64::MAX)]);
+        for bytes in crate::mangle::variants(&seed, 2_000) {
+            let _ = exits_in(&bytes, 1.0, BOOT, &before, &mut UserCache::new());
+            let _ = exits_in(&bytes, 0.0, BOOT, &before, &mut UserCache::new());
+        }
+        for bytes in crate::mangle::variants(&r, 2_000) {
+            let _ = parse_exit(4021, &bytes, 1.0, BOOT, u64::MAX, &mut UserCache::new());
+        }
     }
 }
