@@ -303,6 +303,12 @@ const OFF_THREADNUM: usize = 84;
 /// `pti_virtual_size`, the first of the six `uint64_t`s.
 const OFF_VIRTUAL: usize = 0;
 const _: () = assert!(OFF_THREADNUM + 4 <= TASKINFO_SIZE as usize);
+/// `pti_numrunning`, the next `int32_t` after the thread count: how many of the
+/// task's threads are runnable at this instant. The difference between `R` and
+/// `S`, which the BSD `p_stat` sysinfo reports cannot make — it is `SRUN` for a
+/// process that has been asleep for a week.
+const OFF_NUMRUNNING: usize = 88;
+const _: () = assert!(OFF_NUMRUNNING + 4 <= TASKINFO_SIZE as usize);
 
 /// What `proc_taskinfo` says about one process.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -312,6 +318,8 @@ pub struct Task {
     /// includes the shared region every process maps, so hundreds of
     /// gigabytes is normal and says nothing about the process itself.
     pub vsize: u64,
+    /// Threads runnable at the moment of the call. See [`OFF_NUMRUNNING`].
+    pub running: u32,
 }
 
 /// How many threads a process has and how much address space it maps, or
@@ -353,11 +361,13 @@ pub fn task(pid: i32) -> Option<Task> {
     }
     let v = i32::from_ne_bytes(buf[OFF_THREADNUM..OFF_THREADNUM + 4].try_into().ok()?);
     let vsize = u64::from_ne_bytes(buf[OFF_VIRTUAL..OFF_VIRTUAL + 8].try_into().ok()?);
+    let running = i32::from_ne_bytes(buf[OFF_NUMRUNNING..OFF_NUMRUNNING + 4].try_into().ok()?);
     // A live task always has at least one thread. Zero or negative means the
     // offset is not pointing at a thread count.
-    (v > 0).then_some(Task {
+    (v > 0 && (0..=v).contains(&running)).then_some(Task {
         threads: v as u32,
         vsize,
+        running: running as u32,
     })
 }
 
