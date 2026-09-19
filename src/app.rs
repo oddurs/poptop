@@ -362,6 +362,8 @@ pub struct App {
     /// What the last signal did, or why it did not.
     pub signal_note: Option<String>,
     pub should_quit: bool,
+    /// Whether the `?` list of every key is open. See `ui::draw_key_list`.
+    pub show_help: bool,
     pub tree: bool,
     /// Whether the IO columns are shown.
     pub show_io: bool,
@@ -495,6 +497,7 @@ impl App {
             pending: None,
             signal_note: None,
             should_quit: false,
+            show_help: false,
             tree: false,
             // On by default. The header may have just told the user their
             // machine is blocked on IO, and the table is where the culprit is

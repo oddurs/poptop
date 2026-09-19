@@ -214,6 +214,15 @@ KEYS:
                     several times over on a many-core box, and none of them is
                     what anyone opened a monitor to find. The number hidden is
                     in the panel title. Does nothing on macOS, which has none.
+    v               the next view: memory (what each process's memory
+                    costs, what it has reserved, whether it is being paged
+                    in), then disk (the throughput columns, whatever the
+                    width), then back.
+    y               expand the selected process into its threads — the
+                    selected one only, so the table does not grow ninefold.
+    C               show cgroups in place of processes: what each is using and
+                    how stalled it is. Linux, cgroup v2.
+    ?               list every key.
     i               show or hide the per-process disk IO columns. Shown by
                     default where they can be read: `/proc/<pid>/io` needs
                     CAP_SYS_PTRACE for other users' processes, so on a box
@@ -1529,6 +1538,12 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         app.should_quit = true;
         return;
     }
+    // The key list is modal and any key puts it away — without also being
+    // acted on, so `q` closes it rather than quitting behind it.
+    if app.show_help {
+        app.show_help = false;
+        return;
+    }
     // A chord typed into a text box is not text. Ctrl-U or Alt-B arrive as
     // the letter with a modifier, and were appended as `u` and `b`.
     let typed =
@@ -1589,6 +1604,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     }
     match code {
         KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('?') => app.show_help = true,
         // Back out one level, as Esc does from the filter and the jump box: a
         // selection first, then the program.
         KeyCode::Esc => {

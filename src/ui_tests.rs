@@ -7013,13 +7013,77 @@ fn the_footer_drops_whole_hints_rather_than_cutting_one() {
             line.chars().count() <= w as usize,
             "the footer overflowed at {w}: {line:?}"
         );
-        for hint in line.split(" · ") {
+        for hint in line.split(" · ").filter(|h| *h != "? more") {
             assert!(
                 ui::KEY_HINTS.contains(&hint),
                 "a hint was cut in half at {w}: {hint:?}"
             );
         }
     }
+}
+
+#[test]
+fn every_key_is_in_the_help_and_the_help_is_in_usage() {
+    // 0113. Three lists of keys — the footer, the help overlay and `--help` —
+    // and they had drifted: `--help` never mentioned `v`, `y` or `C`, which the
+    // footer advertised. The overlay's table is the one list; the footer's
+    // hints must all be in it, and every key in it must be in `--help`.
+    // With its leading newline, so the first key is found like every other.
+    let usage_keys = crate::USAGE
+        .split("\nKEYS:")
+        .nth(1)
+        .and_then(|k| k.split("\nON MACOS:").next())
+        .expect("no KEYS section in --help");
+    for hint in ui::KEY_HINTS {
+        let key = hint.split(' ').next().unwrap();
+        assert!(
+            ui::HELP.iter().any(|h| h.0.split(", ").any(|k| k == key)),
+            "the footer's `{hint}` is not in the help"
+        );
+    }
+    for (shown, usage, _) in ui::HELP {
+        assert!(
+            usage_keys.contains(&format!("\n    {usage}")),
+            "`{shown}` is in the help but not in --help (as `{usage}`)"
+        );
+    }
+}
+
+#[test]
+fn a_footer_that_drops_hints_says_where_the_rest_are() {
+    // 0113. At 120 columns six of the keys — `d`, `g`, `y` among them — never
+    // appeared, and nothing said there were more.
+    let at_120 = ui::fit_hints_for_test(120);
+    assert!(at_120.ends_with("? more"), "{at_120:?}");
+    assert!(at_120.chars().count() <= 120);
+    let everything: usize = ui::KEY_HINTS
+        .iter()
+        .map(|h| h.chars().count() + 3)
+        .sum::<usize>()
+        .saturating_sub(3);
+    assert!(
+        !ui::fit_hints_for_test(everything as u16).contains("? more"),
+        "offered more when nothing was left out"
+    );
+}
+
+#[test]
+fn question_mark_shows_every_key_and_any_key_puts_it_away() {
+    let mut app = App::new(60);
+    app.push(sample(10.0));
+    crate::handle_key_for_test(&mut app, KeyCode::Char('?'));
+    let screen = rows(&app, 120, 40).join("\n");
+    for (shown, _, _) in ui::HELP {
+        assert!(
+            screen.contains(shown),
+            "`{shown}` is not in the help overlay"
+        );
+    }
+    // Any key closes it, and is not also acted on: `q` puts the help away
+    // rather than quitting behind it.
+    crate::handle_key_for_test(&mut app, KeyCode::Char('q'));
+    assert!(!app.show_help, "the help stayed open");
+    assert!(!app.should_quit, "a key that closed the help also quit");
 }
 
 #[test]
