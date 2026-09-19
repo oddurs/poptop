@@ -136,6 +136,7 @@ UI sprint, from a critique of the running program: the release build on a Mac, c
 ### backlog
 
 - [ ] `0108` The header's network figure changes interface and counts loopback <sup>bug · p2 · ui</sup>
+- [ ] `0109` The timeline is the biggest panel and is empty for its first minutes <sup>feature · p2 · ui</sup>
 - [ ] `0110` The history column is the same picture in every row <sup>feature · p2 · ui</sup>
 - [ ] `0111` Columns spend width on nothing while the command is squeezed <sup>feature · p2 · ui</sup>
 - [ ] `0112` The default table spends its rows on copies of one program <sup>feature · p2 · ui</sup>
@@ -147,7 +148,6 @@ UI sprint, from a critique of the running program: the release build on a Mac, c
 - [x] `0105` A narrow table cuts the leading digits off its numbers <sup>bug · p0 · ui</sup>
 - [x] `0106` Nearly every process reads as running on macOS <sup>bug · p1 · ui</sup>
 - [x] `0107` The tree view opens on a page of question marks on macOS <sup>bug · p1 · ui</sup>
-- [x] `0109` The timeline is the biggest panel and is empty for its first minutes <sup>feature · p2 · ui</sup>
 
 ## v0.2 — Cheap enough to run
 
