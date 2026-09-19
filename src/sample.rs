@@ -233,6 +233,12 @@ impl ProcSample {
         self.rss == 0 && self.threads.is_none()
     }
 
+    /// Whether the process's owner is unknown: the kernel would not say whose
+    /// it is, and the collector wrote `?` rather than guess.
+    pub fn owner_unknown(&self) -> bool {
+        &*self.user == "?"
+    }
+
     /// What to write in the identity column: the command line if there is one,
     /// and `comm` if there is not.
     ///

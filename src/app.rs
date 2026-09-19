@@ -1419,7 +1419,13 @@ impl App {
         // about the lines directly under it.
         let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
         for s in self.history.window(Self::CONSTANT_FOR) {
-            for p in s.procs.iter().filter(shown) {
+            // An owner the kernel would not name is not a second user. On
+            // macOS every process this user may not read comes back as `?` —
+            // two hundred of them on an ordinary Mac — so the column never
+            // folded, and ten columns said `oddurs` twenty times beside a
+            // command elided for want of them (0111). Those rows already say
+            // they could not be read, in every figure; the title says how many.
+            for p in s.procs.iter().filter(shown).filter(|p| !p.owner_unknown()) {
                 any = true;
                 match only {
                     None => only = Some(&p.user),
@@ -1429,6 +1435,18 @@ impl App {
             }
         }
         any.then(|| only.cloned()).flatten()
+    }
+
+    /// Processes in the displayed sample whose owner the kernel would not name,
+    /// among those the table shows. See [`Self::one_user`].
+    pub fn unknown_owners(&self) -> usize {
+        self.history.current().map_or(0, |s| {
+            s.procs
+                .iter()
+                .filter(|p| self.show_kernel || !p.is_kernel_thread())
+                .filter(|p| p.owner_unknown())
+                .count()
+        })
     }
 
     /// How many samples a column must have been constant over before its width
