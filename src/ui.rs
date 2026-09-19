@@ -3531,9 +3531,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         .sum();
 
     // What the column said, said once.
+    // Unknown owners are counted, not claimed: `all oddurs` over a table with
+    // two hundred root-owned daemons in it would be false, and the column that
+    // would have said otherwise has been folded.
     let all_one = one_user
         .as_deref()
-        .map_or(String::new(), |u| format!(" · all {u}"));
+        .map_or(String::new(), |u| match app.unknown_owners() {
+            0 => format!(" · all {u}"),
+            n => format!(" · all {u} but {n} unknown"),
+        });
 
     // Ranked, and given up from the least important end, because at eighty
     // columns not all of it fits and a clipped title reads as a message called

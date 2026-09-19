@@ -8329,6 +8329,53 @@ fn grouping_folds_a_worker_pool_into_one_row_that_sums() {
 }
 
 #[test]
+fn owners_the_kernel_would_not_name_do_not_keep_the_user_column_open() {
+    // 0111. On macOS every process this user may not read comes back with
+    // owner `?` — two hundred on an ordinary Mac — and each counted as a
+    // second user, so the column never folded: ten columns saying `oddurs`
+    // beside a command elided for want of them. An unknown owner is not a
+    // second user; the title counts them instead of claiming `all oddurs`.
+    let fixture = |second: &str| {
+        let mut app = App::new(60);
+        for _ in 0..App::CONSTANT_FOR {
+            let mut s = sample(10.0);
+            let mut hidden = proc_named(400, "trustd", 0.0, 0);
+            hidden.threads = None;
+            hidden.user = std::sync::Arc::from(second);
+            s.procs = vec![
+                ProcSample {
+                    user: std::sync::Arc::from("oddurs"),
+                    ..proc_named(1, "rsst", 20.0, 1 << 20)
+                },
+                ProcSample {
+                    user: std::sync::Arc::from("oddurs"),
+                    ..proc_named(2, "ghostty", 8.0, 1 << 20)
+                },
+                hidden,
+            ];
+            app.push(s);
+        }
+        rows(&app, 140, 30)
+    };
+    let unknown = fixture("?");
+    let header = unknown.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(
+        !header.contains("USER"),
+        "an unknown owner kept the column: {header:?}"
+    );
+    assert!(
+        unknown
+            .iter()
+            .any(|r| r.contains("all oddurs but 1 unknown")),
+        "the title claimed more than it knows"
+    );
+    // A second user who is known is a second user.
+    let two = fixture("root");
+    let header = two.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(header.contains("USER"), "{header:?}");
+}
+
+#[test]
 fn a_group_states_nothing_it_cannot_sum() {
     let mut app = App::new(60);
     worker_pool(&mut app, None);
