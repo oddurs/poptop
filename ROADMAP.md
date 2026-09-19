@@ -127,6 +127,25 @@ Validation sprint. The tests show poptop agrees with itself. This sprint checks 
 - [x] `0097` Performance budgets live in ignored tests nobody runs <sup>chore · p2 · validation</sup>
 - [x] `0098` The promise to read every store since format 15 is kept by nothing <sup>chore · p1 · validation</sup>
 
+## r5 — What the screen says
+
+`··········` 0% · 0 of 10 done
+
+UI sprint, from a critique of the running program: the release build on a Mac, captured through a terminal emulator at 120×40, 80×24, 64 and 60 columns, after 45 seconds of history and after the keys people press. The first four items are bugs that put wrong or missing information on the screen. The next three are about space spent on nothing. The last three are design decisions about the default view.
+
+### backlog
+
+- [ ] `0105` A narrow table cuts the leading digits off its numbers <sup>bug · p0 · ui</sup>
+- [ ] `0106` Nearly every process reads as running on macOS <sup>bug · p1 · ui</sup>
+- [ ] `0107` The tree view opens on a page of question marks on macOS <sup>bug · p1 · ui</sup>
+- [ ] `0108` The header's network figure changes interface and counts loopback <sup>bug · p2 · ui</sup>
+- [ ] `0109` The timeline is the biggest panel and is empty for its first minutes <sup>feature · p2 · ui</sup>
+- [ ] `0110` The history column is the same picture in every row <sup>feature · p2 · ui</sup>
+- [ ] `0111` Columns spend width on nothing while the command is squeezed <sup>feature · p2 · ui</sup>
+- [ ] `0112` The default table spends its rows on copies of one program <sup>feature · p2 · ui</sup>
+- [ ] `0113` Most of the keys can't be discovered from the screen <sup>feature · p2 · ui</sup>
+- [ ] `0114` The selected row moves every second and its highlight is faint <sup>feature · p3 · ui</sup>
+
 ## v0.2 — Cheap enough to run
 
 `##########` 100% · 11 of 11 done · due 2026-11-01
