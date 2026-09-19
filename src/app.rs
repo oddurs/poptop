@@ -617,6 +617,25 @@ impl App {
         };
     }
 
+    /// Let go of the selected process, and of the view that was about it.
+    /// `false` if nothing was selected.
+    ///
+    /// The one way back to following nothing. The arrow keys set a selection
+    /// and nothing cleared it, so a process picked once was followed for the
+    /// rest of the run (0102). The per-process history goes with it: it is a
+    /// view *of* the selection, and left on it would show the machine's
+    /// timeline captioned with an instruction to pick a process.
+    ///
+    /// Threads stay as they are. `show_threads` is a way of looking at
+    /// whichever process is selected next, not a fact about this one.
+    pub fn deselect(&mut self) -> bool {
+        if self.selected.take().is_none() {
+            return false;
+        }
+        self.detail = false;
+        true
+    }
+
     /// Ask to signal the selected process, if signalling is allowed at all.
     ///
     /// Opens a question rather than acting: the number is the part that gets

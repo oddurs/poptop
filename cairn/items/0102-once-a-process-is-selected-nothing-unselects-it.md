@@ -2,10 +2,8 @@
 id: 102
 title: Once a process is selected, nothing unselects it
 type: bug
-status: doing
+status: done
 milestone: later
-assignee: Oddur Sigurdsson
-claimed: 2026-09-19
 labels:
 - review
 created: 2026-09-18
@@ -29,3 +27,11 @@ A key that clears the selection. The natural one is Esc, but in the main table E
 
 1. Press Down to select a process.
 2. Try to return to no selection.
+
+## How it was resolved
+
+**Esc backs out one level, and a selection is now one of the levels.** Esc already worked that way in the filter box, the jump box and the signal prompt: leave what's open, and quit only when nothing is. The selection was the one mode without a way out, so it joins the list rather than getting a key of its own. With a process selected, the first Esc lets go of it and the second quits. `q` still quits at once, so nobody who quits with `q` notices a difference. Someone who quit with Esc while a process was selected now presses it twice, and the first press visibly does something.
+
+`App::deselect` clears the per-process history view (`d`) along with the selection. That view is *of* the selection, and left on it would show the machine's timeline captioned "pick a process first". Thread expansion (`y`) is kept: it's a way of looking at whichever process gets selected next.
+
+Tested in `a_selection_is_a_mode_and_esc_leaves_it_before_it_quits`. The `--help` text and the README's key table say what Esc does.
