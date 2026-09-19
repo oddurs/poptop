@@ -1403,8 +1403,9 @@ impl App {
     /// over. Ending at the cursor, like every other window here, so scrubbing
     /// back follows the interface that was busy then.
     ///
-    /// Ties go to the interface listed first in the newest sample, as they do
-    /// in [`crate::sample::NetStat::busiest`].
+    /// Ties go to the interface listed first in the newest sample: on an idle
+    /// machine every interface is at zero, and naming whichever sorted last
+    /// reads as a claim about which one poptop is watching.
     pub fn headline_link(&self) -> Option<std::sync::Arc<str>> {
         let mut totals: Vec<(&std::sync::Arc<str>, u64)> = Vec::new();
         for s in self.history.window(Self::NET_WINDOW) {
