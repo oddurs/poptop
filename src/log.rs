@@ -475,11 +475,7 @@ pub fn read_blocks(bytes: &[u8], name: &str) -> (Vec<Sample>, Vec<String>) {
     // The entry read last, until something shows whether it was whole.
     let mut last: Option<Last> = None;
     loop {
-        let step = if at + LEN <= bytes.len() {
-            step(bytes, at)
-        } else {
-            Step::End
-        };
+        let step = step(bytes, at);
         let failed = match step {
             Step::Read { to, samples, said } => {
                 last = Some(Last {
@@ -603,8 +599,17 @@ enum Step {
     End,
 }
 
+/// The length an entry at `at` opens with, or `None` if fewer than `LEN` bytes
+/// are left for one.
+fn length_at(bytes: &[u8], at: usize) -> Option<usize> {
+    let header = bytes.get(at..)?.first_chunk::<LEN>()?;
+    Some(u32::from_le_bytes(*header) as usize)
+}
+
 fn step(bytes: &[u8], at: usize) -> Step {
-    let len = u32::from_le_bytes(bytes[at..at + LEN].try_into().unwrap()) as usize;
+    let Some(len) = length_at(bytes, at) else {
+        return Step::End;
+    };
     let from = at + LEN;
     if len == 0 {
         return Step::Zeroes;
@@ -653,10 +658,9 @@ fn note_once(notes: &mut Vec<String>, said: Vec<String>) {
 /// the magic" inside a whole entry, and the reader threw the real entry away as
 /// torn — which let anyone who can name a process erase a stretch of the log.
 fn starts_block(bytes: &[u8], at: usize) -> bool {
-    let Some(header) = bytes.get(at..at + LEN) else {
+    let Some(len) = length_at(bytes, at) else {
         return false;
     };
-    let len = u32::from_le_bytes(header.try_into().unwrap()) as usize;
     let from = at + LEN;
     len > 0
         && from.checked_add(len).is_some_and(|to| to <= bytes.len())
