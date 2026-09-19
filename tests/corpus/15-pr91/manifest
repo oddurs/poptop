@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=cf9845f6787c990c64ae4b7708389820395c1213
+subject=feat(nfs): report NFS, and write down what poptop is allowed to read (#91)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824827
+written_to=1789824829

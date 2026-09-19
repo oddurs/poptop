@@ -1633,3 +1633,178 @@ mod boot {
         }
     }
 }
+
+/// Whether a store was written by a build with exactly this build's schema.
+#[cfg(test)]
+fn written_with_this_schema(bytes: &[u8]) -> bool {
+    let Some(rest) = bytes.strip_prefix(MAGIC) else {
+        return false;
+    };
+    let mut r = In::new(rest, 0, Vec::new());
+    u32::read_raw(&mut r) == Some(VERSION)
+        && r.schema_block(&schemas()).is_some_and(|reg| reg.exact)
+}
+
+/// The promise 0059 made — every file from format 15 on, forever — held to
+/// files the old versions actually wrote.
+///
+/// `tests/corpus` has one directory per version that changed what a sample
+/// holds, each written by that version by `tests/corpus/write`: a store with
+/// one sample, and from the first version with a day log, a day with two. The
+/// manifest beside them says what was run and facts about the machine that
+/// wrote them, taken from the machine rather than from poptop.
+#[cfg(test)]
+mod corpus {
+    use super::*;
+    use std::collections::HashMap;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    struct Entry {
+        label: String,
+        dir: PathBuf,
+        m: HashMap<String, String>,
+    }
+
+    impl Entry {
+        fn num(&self, k: &str) -> u64 {
+            self.m
+                .get(k)
+                .unwrap_or_else(|| panic!("{}: no `{k}` in the manifest", self.label))
+                .parse()
+                .unwrap()
+        }
+    }
+
+    fn entries() -> Vec<Entry> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
+        let mut out: Vec<Entry> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("manifest").is_file())
+            .map(|dir| Entry {
+                label: dir.file_name().unwrap().to_string_lossy().into_owned(),
+                m: std::fs::read_to_string(dir.join("manifest"))
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .filter_map(|l| l.split_once('='))
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                dir,
+            })
+            .collect();
+        out.sort_by(|a, b| a.label.cmp(&b.label));
+        out
+    }
+
+    /// What every sample an entry's version wrote must say.
+    fn check(e: &Entry, what: &str, samples: &[Sample]) {
+        let (from, to) = (e.num("written_from"), e.num("written_to"));
+        for s in samples {
+            let at = s.at.duration_since(UNIX_EPOCH).unwrap_or_default();
+            assert!(
+                at >= Duration::from_secs(from - 1) && at <= Duration::from_secs(to + 1),
+                "{} {what}: taken at {at:?}, written between {from} and {to}",
+                e.label
+            );
+            assert_eq!(
+                s.cpu_per_core.len() as u64,
+                e.num("cores"),
+                "{} {what}: cores",
+                e.label
+            );
+            assert_eq!(
+                s.mem.total,
+                e.num("mem_total"),
+                "{} {what}: memory",
+                e.label
+            );
+            assert!(!s.procs.is_empty(), "{} {what}: no processes", e.label);
+        }
+    }
+
+    #[test]
+    fn every_store_since_format_15_is_read_whole() {
+        let mut read = 0;
+        for e in entries().iter().filter(|e| e.num("format") >= 15) {
+            let bytes = std::fs::read(e.dir.join("history")).unwrap();
+            let (samples, notes) = decode_reporting(&bytes);
+            let samples = samples.unwrap_or_else(|| panic!("{}: refused: {notes:?}", e.label));
+            // Nothing the old version wrote was dropped: every field it had,
+            // this build still has.
+            assert!(notes.is_empty(), "{}: {notes:?}", e.label);
+            assert_eq!(samples.len() as u64, e.num("store_samples"), "{}", e.label);
+            check(e, "store", &samples);
+            read += 1;
+        }
+        assert!(read >= 12, "only {read} stores in the corpus");
+    }
+
+    #[test]
+    fn every_day_log_is_read_whole() {
+        let mut read = 0;
+        for e in entries().iter().filter(|e| e.num("log_samples") > 0) {
+            let dir = e.dir.join("log");
+            let name = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .next()
+                .unwrap()
+                .file_name();
+            let date = crate::log::date_in_name(&name.to_string_lossy()).unwrap();
+            let (samples, notes) =
+                crate::log::open_day(&dir, date).unwrap_or_else(|why| panic!("{}: {why}", e.label));
+            assert!(notes.is_empty(), "{}: {notes:?}", e.label);
+            assert_eq!(samples.len() as u64, e.num("log_samples"), "{}", e.label);
+            check(e, "log", &samples);
+            read += 1;
+        }
+        // One from before entry checksums, one after.
+        assert!(read >= 2, "only {read} day logs in the corpus");
+    }
+
+    #[test]
+    fn a_store_from_before_format_15_is_refused_by_its_version() {
+        let old: Vec<Entry> = entries()
+            .into_iter()
+            .filter(|e| e.num("format") < 15)
+            .collect();
+        assert!(!old.is_empty(), "no pre-15 store in the corpus");
+        for e in old {
+            let bytes = std::fs::read(e.dir.join("history")).unwrap();
+            let (samples, notes) = decode_reporting(&bytes);
+            assert!(samples.is_none(), "{}: a pre-15 store was read", e.label);
+            let format = e.num("format");
+            assert_eq!(
+                notes,
+                [format!(
+                    "the stored history is format {format}, this poptop reads {VERSION}; discarded"
+                )],
+                "{}",
+                e.label
+            );
+        }
+    }
+
+    #[test]
+    fn the_corpus_has_a_file_with_this_builds_schema() {
+        // What makes a new version add to the corpus: change what a sample
+        // holds, and this fails until `tests/corpus/write HEAD <label>` has
+        // written a file with the new shape.
+        assert!(
+            entries().iter().any(|e| {
+                written_with_this_schema(&std::fs::read(e.dir.join("history")).unwrap())
+            }),
+            "no store in tests/corpus has this build's schema; run \
+             tests/corpus/write HEAD 15-prNN and commit it (see tests/corpus/README.md)"
+        );
+        // And the check can fail: a file from before the last schema change is
+        // not taken for one with this build's shape.
+        let pr77 = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/15-pr77/history"),
+        )
+        .unwrap();
+        assert!(!written_with_this_schema(&pr77));
+    }
+}

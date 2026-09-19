@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=e3666ad17343deef8944420e7212b75179022b87
+subject=expand a process into its threads (#78)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824742
+written_to=1789824744

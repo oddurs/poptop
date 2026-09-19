@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=9d6c2a688194328d72de1e1e6b3e5a50398a844c
+subject=partition what the memory is holding (#86)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824796
+written_to=1789824799

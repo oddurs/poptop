@@ -1,0 +1,13 @@
+# Releasing
+
+Before tagging a version:
+
+1. `./check --linux --fuzz` passes: fmt, clippy, every test on both platforms,
+   and every fuzz target for a minute.
+2. **Stores and logs.** If this release changed what a sample holds,
+   `tests/corpus` has a file written by it — `tests/corpus/write HEAD 15-prNN`.
+   CI fails without one; this is the reminder to write it from the release
+   commit itself.
+3. **The schema.** If `tests/golden/schema.json` changed since the last
+   release, the change is listed in the release notes as compatible or
+   breaking, by the rules under "Stability" in the README.
