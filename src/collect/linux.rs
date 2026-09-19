@@ -1922,6 +1922,10 @@ const FS_BAVAIL: usize = 32;
 fn statfs_at(mount: &str) -> Option<(u64, u64)> {
     let path = std::ffi::CString::new(mount).ok()?;
     let mut buf = [0u8; STATFS_BUF];
+    // SAFETY: `path` is NUL-terminated and outlives the call. `buf` is 256
+    // writable bytes, and the kernel writes `sizeof(struct statfs)`, which is
+    // 120 on x86_64 and aarch64 (checked against glibc's headers on both), into
+    // it. A kernel with a larger struct would have to be a different ABI.
     let rc = unsafe { statfs(path.as_ptr(), buf.as_mut_ptr().cast()) };
     if rc != 0 {
         return None;

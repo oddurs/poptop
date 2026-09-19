@@ -70,9 +70,19 @@ use std::sync::Arc;
 // `libproc`, and Apple's alone — unlike `sysctl`, which every BSD has. Split
 // into its own block so a non-Apple target does not fail to *link* over a
 // symbol this module is careful to degrade from at runtime.
+//
+// Every signature and offset in this file was checked against the macOS SDK's
+// headers compiled for both arm64 and x86_64, which agree on all of them.
 #[cfg(target_vendor = "apple")]
 unsafe extern "C" {
     fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut c_void, buffersize: i32) -> i32;
+    // On x86_64 the bare symbol is the pre-10.6 call, which fills the old
+    // `struct statfs` with 32-bit inode numbers: a different size and
+    // different offsets from `STATFS_SIZE` and `OFF`. The SDK header renames
+    // it to this suffix for any C program; a hand declaration has to do the
+    // same or it links the old one and reads garbage. arm64 has only the new
+    // layout, under the bare name.
+    #[cfg_attr(target_arch = "x86_64", link_name = "getfsstat$INODE64")]
     fn getfsstat(buf: *mut c_void, bufsize: i32, flags: i32) -> i32;
 }
 
@@ -103,6 +113,9 @@ const OFF_PID: usize = 40;
 /// and for a plausible `kinfo_proc`. A kernel reporting anything else is one
 /// this module does not understand.
 const PLAUSIBLE: std::ops::RangeInclusive<usize> = 128..=8192;
+// Both offsets lie inside the smallest record `accept` will take, so neither
+// read can leave a record whose length has been checked.
+const _: () = assert!(OFF_PID + 4 <= *PLAUSIBLE.start() && OFF_STARTTIME + 12 <= OFF_PID);
 
 pub struct Kinfo {
     /// Bytes per record, measured from the kernel's own answer rather than
@@ -129,6 +142,10 @@ impl Kinfo {
         ];
         let mut buf = vec![0u8; *PLAUSIBLE.end()];
         let mut len = buf.len();
+        // SAFETY: `mib` is four initialised ints and four is passed. `buf` is
+        // `len` writable bytes, and the kernel writes at most `len` of them and
+        // stores how many it wrote back in `len`, which `accept` checks against
+        // the buffer before reading. Nothing is written (`newp` is null).
         let rc = unsafe {
             sysctl(
                 mib.as_mut_ptr(),
@@ -171,6 +188,8 @@ impl Kinfo {
     pub fn starts(&mut self) -> HashMap<i32, u64> {
         let mut mib = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0];
         let mut len = 0usize;
+        // SAFETY: a null `oldp` asks only for the size, which the kernel stores
+        // in `len`, a live local. `mib` is four ints, as in `probe`.
         let rc = unsafe {
             sysctl(
                 mib.as_mut_ptr(),
@@ -196,6 +215,9 @@ impl Kinfo {
         self.buf.clear();
         self.buf.resize(len + self.stride * 64, 0);
         len = self.buf.len();
+        // SAFETY: `buf` is `len` initialised, exclusively borrowed bytes; the
+        // kernel writes at most `len` and reports how many, which is checked
+        // against the buffer before anything is sliced by it.
         let rc = unsafe {
             sysctl(
                 mib.as_mut_ptr(),
@@ -237,6 +259,7 @@ const TASKINFO_SIZE: i32 = 96;
 /// `pti_messages_sent` 64, `_received` 68, `pti_syscalls_mach` 72,
 /// `_unix` 76, `pti_csw` 80, then `pti_threadnum` at 84.
 const OFF_THREADNUM: usize = 84;
+const _: () = assert!(OFF_THREADNUM + 4 <= TASKINFO_SIZE as usize);
 
 /// How many threads a process has, or `None` if the kernel will not say.
 ///
@@ -259,6 +282,9 @@ pub fn threads(_pid: i32) -> Option<u32> {
 #[cfg(target_vendor = "apple")]
 pub fn threads(pid: i32) -> Option<u32> {
     let mut buf = [0u8; TASKINFO_SIZE as usize];
+    // SAFETY: `buf` is exactly `TASKINFO_SIZE` writable bytes, which is the
+    // size passed; the call writes no more than that and returns how many it
+    // did, which must be all of them before a byte is read.
     let n = unsafe {
         proc_pidinfo(
             pid,
@@ -287,6 +313,10 @@ const MNT_NOWAIT: i32 = 2;
 /// on uses. Checked at runtime rather than trusted — see [`filesystems`].
 #[cfg(target_vendor = "apple")]
 const STATFS_SIZE: usize = 2168;
+// The last name array ends inside the record, before `f_flags_ext` and the
+// seven reserved words that fill it out.
+#[cfg(target_vendor = "apple")]
+const _: () = assert!(OFF.from + 1024 + 4 + 7 * 4 == STATFS_SIZE);
 /// `f_bsize` 0, `f_iosize` 4, `f_blocks` 8, `f_bfree` 16, `f_bavail` 24,
 /// `f_files` 32, `f_ffree` 40, `f_fsid` 48, `f_owner` 56, `f_type` 60,
 /// `f_flags` 64, `f_fssubtype` 68, then the three name arrays.
@@ -333,13 +363,21 @@ fn cstr(b: &[u8]) -> &str {
 /// this believes and nothing here is reported.
 #[cfg(target_vendor = "apple")]
 pub fn filesystems() -> Option<Vec<FsStat>> {
+    // SAFETY: a null buffer asks only for the count; nothing is written.
     let n = unsafe { getfsstat(std::ptr::null_mut(), 0, MNT_NOWAIT) };
     if n <= 0 {
         return None;
     }
     // Slack, because a volume can be mounted between the two calls.
     let mut buf = vec![0u8; STATFS_SIZE * (n as usize + 8)];
-    let got = unsafe { getfsstat(buf.as_mut_ptr().cast(), buf.len() as i32, MNT_NOWAIT) };
+    let Ok(size) = i32::try_from(buf.len()) else {
+        return None;
+    };
+    // SAFETY: `buf` is `size` writable bytes and `size` is what is passed;
+    // the kernel fills at most `size / sizeof(struct statfs)` records and
+    // returns the count. `parse_statfs` reads each record through `get`, so a
+    // count larger than the buffer holds stops at the buffer.
+    let got = unsafe { getfsstat(buf.as_mut_ptr().cast(), size, MNT_NOWAIT) };
     if got <= 0 {
         return None;
     }
@@ -708,6 +746,7 @@ mod tests {
         // only an unprivileged caller is refused, and this project supports
         // running as root precisely so that more of the table becomes readable.
         // Asserting unconditionally would fail under `sudo cargo test`.
+        // SAFETY: takes nothing, returns an integer, cannot fail.
         if unsafe { geteuid() } != 0 {
             assert_eq!(threads(1), None, "a thread count was invented for launchd");
         }

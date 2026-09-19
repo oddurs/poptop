@@ -70,6 +70,10 @@ const TYPE_STATS: u16 = 3;
 /// was caught by printing the echoed sequence number.
 const SEQ_REGISTER: u32 = 0x707470;
 
+// Checked against glibc's headers on x86_64 and aarch64: `socklen_t` is four
+// bytes, `ssize_t` is `isize`, and `struct sockaddr_nl` is the twelve bytes
+// `open` builds by hand. The constants above match `<linux/netlink.h>`,
+// `<linux/genetlink.h>` and `<linux/taskstats.h>` on both.
 unsafe extern "C" {
     fn socket(domain: i32, ty: i32, proto: i32) -> i32;
     fn bind(fd: i32, addr: *const u8, len: u32) -> i32;
@@ -126,6 +130,8 @@ impl Drop for Listener {
     fn drop(&mut self) {
         // Deregistration is implicit: the kernel drops the listener when the
         // socket closes.
+        // SAFETY: `fd` is the socket `open` created, owned by this value alone
+        // and closed only here, so no other descriptor can be closed by it.
         unsafe { close(self.fd) };
     }
 }
@@ -171,39 +177,48 @@ fn attrs<'a>(body: &'a [u8], mut f: impl FnMut(u16, &'a [u8])) {
 impl Listener {
     /// Register for exit records, or say why not.
     pub fn open() -> Result<Listener, Unavailable> {
-        unsafe {
-            let fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_GENERIC);
-            if fd < 0 {
-                return Err(classify(io::Error::last_os_error()));
-            }
-            let mut me = Listener {
-                fd,
-                buf: vec![0; 64 << 10],
-            };
-
-            let mut addr = [0u8; 12];
-            addr[0..2].copy_from_slice(&(AF_NETLINK as u16).to_ne_bytes());
-            if bind(fd, addr.as_ptr(), 12) < 0 {
-                return Err(classify(io::Error::last_os_error()));
-            }
-            // Exit records arrive in bursts — that is the whole point — and a
-            // small socket buffer turns a burst into a hole. Measured: 20,000
-            // exits in one second overran a 4 MB buffer and the kernel dropped
-            // every record of the burst this feature exists to catch.
-            //
-            // `SO_RCVBUFFORCE` first, because plain `SO_RCVBUF` is silently
-            // clamped to `net.core.rmem_max`. Falls back for a kernel that
-            // refuses it.
-            let size: i32 = 16 << 20;
-            let ptr = (&raw const size).cast::<u8>();
-            if setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, ptr, 4) < 0 {
-                setsockopt(fd, SOL_SOCKET, SO_RCVBUF, ptr, 4);
-            }
-
-            let family = me.family()?;
-            me.register(family)?;
-            Ok(me)
+        // SAFETY: three integers in, a descriptor or -1 out; nothing of ours
+        // is touched.
+        let fd = unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_GENERIC) };
+        if fd < 0 {
+            return Err(classify(io::Error::last_os_error()));
         }
+        // Owned from here, so every early return below closes it.
+        let mut me = Listener {
+            fd,
+            buf: vec![0; 64 << 10],
+        };
+
+        // `struct sockaddr_nl`: family, two bytes of padding, port id, groups.
+        // All zero but the family asks the kernel to choose the port.
+        let mut addr = [0u8; 12];
+        addr[0..2].copy_from_slice(&(AF_NETLINK as u16).to_ne_bytes());
+        // SAFETY: `addr` is twelve initialised bytes and the length says
+        // twelve; the kernel reads it and keeps nothing.
+        if unsafe { bind(fd, addr.as_ptr(), addr.len() as u32) } < 0 {
+            return Err(classify(io::Error::last_os_error()));
+        }
+        // Exit records arrive in bursts — that is the whole point — and a
+        // small socket buffer turns a burst into a hole. Measured: 20,000
+        // exits in one second overran a 4 MB buffer and the kernel dropped
+        // every record of the burst this feature exists to catch.
+        //
+        // `SO_RCVBUFFORCE` first, because plain `SO_RCVBUF` is silently
+        // clamped to `net.core.rmem_max`. Falls back for a kernel that
+        // refuses it.
+        let size: i32 = 16 << 20;
+        let ptr = (&raw const size).cast::<u8>();
+        let len = size_of::<i32>() as u32;
+        // SAFETY: `ptr` points at a live `i32` for the length given, and the
+        // kernel copies it before returning.
+        if unsafe { setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, ptr, len) } < 0 {
+            // SAFETY: as above.
+            unsafe { setsockopt(fd, SOL_SOCKET, SO_RCVBUF, ptr, len) };
+        }
+
+        let family = me.family()?;
+        me.register(family)?;
+        Ok(me)
     }
 
     /// Resolve the `TASKSTATS` family id.
@@ -219,18 +234,7 @@ impl Listener {
         );
         self.send(&m)?;
         let n = self.blocking_read()?;
-        let mut id = 0u16;
-        if n > 20 {
-            attrs(&self.buf[20..n], |ty, v| {
-                if ty == CTRL_ATTR_FAMILY_ID && v.len() >= 2 {
-                    id = u16::from_ne_bytes([v[0], v[1]]);
-                }
-            });
-        }
-        if id == 0 {
-            return Err(Unavailable::NoFamily);
-        }
-        Ok(id)
+        family_in(&self.buf[..n])
     }
 
     /// Ask for every CPU's exits.
@@ -257,28 +261,9 @@ impl Listener {
         // `SEQ_REGISTER`.
         for _ in 0..8 {
             let n = self.blocking_read()?;
-            if n < 20 {
-                continue;
+            if let Some(answer) = registration_in(&self.buf[..n]) {
+                return answer;
             }
-            let seq = u32::from_ne_bytes(self.buf[8..12].try_into().unwrap_or([0; 4]));
-            if seq != SEQ_REGISTER {
-                continue;
-            }
-            let ty = u16::from_ne_bytes([self.buf[4], self.buf[5]]);
-            if ty != NLMSG_ERROR {
-                return Ok(());
-            }
-            let err = i32::from_ne_bytes(self.buf[16..20].try_into().unwrap_or([0; 4]));
-            return match -err {
-                0 => Ok(()),
-                1 | 13 => Err(Unavailable::Permission),
-                // The namespace gate returns this for a mask the kernel has
-                // already parsed successfully — the boundary sits exactly at
-                // `nr_cpu_ids`, so a mask wider than the machine gives `ERANGE`
-                // and a valid one from the wrong namespace gives `EINVAL`.
-                22 => Err(Unavailable::Namespace),
-                e => Err(Unavailable::Other(io::Error::from_raw_os_error(e))),
-            };
         }
         Err(Unavailable::Other(io::Error::other(
             "no answer to the listener registration",
@@ -286,6 +271,8 @@ impl Listener {
     }
 
     fn send(&self, m: &[u8]) -> Result<(), Unavailable> {
+        // SAFETY: `m` is a live slice and its own length is passed; the kernel
+        // copies it out and keeps no pointer.
         let sent = unsafe { send(self.fd, m.as_ptr(), m.len(), 0) };
         if sent < 0 {
             return Err(classify(io::Error::last_os_error()));
@@ -294,11 +281,16 @@ impl Listener {
     }
 
     fn blocking_read(&mut self) -> Result<usize, Unavailable> {
+        // SAFETY: the kernel writes at most `buf.len()` bytes into `buf`, which
+        // is initialised and exclusively borrowed for the call. Without
+        // `MSG_TRUNC` it returns how many it wrote, never the datagram's full
+        // length, so `n <= buf.len()` — clamped anyway, since every slice
+        // taken from here on is `buf[..n]`.
         let n = unsafe { recv(self.fd, self.buf.as_mut_ptr(), self.buf.len(), 0) };
         if n < 0 {
             return Err(classify(io::Error::last_os_error()));
         }
-        Ok(n as usize)
+        Ok((n as usize).min(self.buf.len()))
     }
 
     /// Everything that has exited since the last call.
@@ -314,6 +306,7 @@ impl Listener {
     ) -> Vec<ProcSample> {
         let mut out = Vec::new();
         loop {
+            // SAFETY: as `blocking_read`.
             let n = unsafe { recv(self.fd, self.buf.as_mut_ptr(), self.buf.len(), MSG_DONTWAIT) };
             if n < 0 {
                 let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -338,11 +331,95 @@ impl Listener {
             if n == 0 {
                 break;
             }
-            let n = n as usize;
+            let n = (n as usize).min(self.buf.len());
             out.extend(exits_in(&self.buf[..n], elapsed_secs, boot, before, users));
         }
         out
     }
+}
+
+/// Each netlink message in a datagram, as `(type, sequence, payload)`, where the
+/// payload is what follows the sixteen-byte header.
+///
+/// Taken by each message's own `nlmsg_len`, and ended at the first one whose
+/// length is shorter than a header or runs past what was read: every index into
+/// the buffer after this is inside a length the kernel stated and the read
+/// confirmed.
+fn messages(buf: &[u8]) -> impl Iterator<Item = (u16, u32, &[u8])> {
+    let mut at = 0usize;
+    std::iter::from_fn(move || {
+        let head = buf.get(at..at.checked_add(16)?)?;
+        let len = u32::from_ne_bytes(head[0..4].try_into().ok()?) as usize;
+        if len < 16 {
+            return None;
+        }
+        let whole = buf.get(at..at.checked_add(len)?)?;
+        at = at.checked_add(align(len))?;
+        let ty = u16::from_ne_bytes([head[4], head[5]]);
+        let seq = u32::from_ne_bytes(head[8..12].try_into().ok()?);
+        Some((ty, seq, &whole[16..]))
+    })
+}
+
+/// The kernel's `errno` in an `NLMSG_ERROR` payload, which is `0` for an ack.
+///
+/// `None` for `i32::MIN`, which is no errno and has no negation.
+fn error_of(payload: &[u8]) -> Option<i32> {
+    i32::from_ne_bytes(payload.get(0..4)?.try_into().ok()?).checked_neg()
+}
+
+/// The `TASKSTATS` family id out of the reply to `CTRL_CMD_GETFAMILY`.
+///
+/// Split from the socket so the reply can be handed bytes the kernel did not
+/// write. An error in place of the reply is the kernel's own reason, not a
+/// payload to go looking for attributes in.
+fn family_in(buf: &[u8]) -> Result<u16, Unavailable> {
+    for (ty, _, payload) in messages(buf) {
+        if ty == NLMSG_ERROR {
+            match error_of(payload) {
+                // An ack, which the request asked for. Not the answer.
+                Some(0) => continue,
+                // `ENOENT`: the controller has no family by that name.
+                Some(2) | None => return Err(Unavailable::NoFamily),
+                Some(e) => return Err(classify(io::Error::from_raw_os_error(e))),
+            }
+        }
+        // The four-byte generic-netlink header, then the attributes.
+        let Some(body) = payload.get(4..) else {
+            continue;
+        };
+        let mut id = 0u16;
+        attrs(body, |ty, v| {
+            if ty == CTRL_ATTR_FAMILY_ID && v.len() >= 2 {
+                id = u16::from_ne_bytes([v[0], v[1]]);
+            }
+        });
+        if id != 0 {
+            return Ok(id);
+        }
+    }
+    Err(Unavailable::NoFamily)
+}
+
+/// The answer to the listener registration, if this datagram holds it.
+///
+/// `None` for a datagram that is about something else — see `SEQ_REGISTER` for
+/// why there is one to skip.
+fn registration_in(buf: &[u8]) -> Option<Result<(), Unavailable>> {
+    let (ty, _, payload) = messages(buf).find(|&(_, seq, _)| seq == SEQ_REGISTER)?;
+    if ty != NLMSG_ERROR {
+        return Some(Ok(()));
+    }
+    Some(match error_of(payload)? {
+        0 => Ok(()),
+        1 | 13 => Err(Unavailable::Permission),
+        // The namespace gate returns this for a mask the kernel has
+        // already parsed successfully — the boundary sits exactly at
+        // `nr_cpu_ids`, so a mask wider than the machine gives `ERANGE`
+        // and a valid one from the wrong namespace gives `EINVAL`.
+        22 => Err(Unavailable::Namespace),
+        e => Err(Unavailable::Other(io::Error::from_raw_os_error(e))),
+    })
 }
 
 /// The exit records in one datagram from the taskstats socket.
@@ -816,5 +893,122 @@ mod tests {
         for bytes in crate::mangle::variants(&r, 2_000) {
             let _ = parse_exit(4021, &bytes, 1.0, BOOT, u64::MAX, &mut UserCache::new());
         }
+    }
+
+    /// One netlink message: the sixteen-byte header, then `payload`.
+    fn message(ty: u16, seq: u32, payload: &[u8]) -> Vec<u8> {
+        let len = 16 + payload.len();
+        let mut m = (len as u32).to_ne_bytes().to_vec();
+        m.extend(ty.to_ne_bytes());
+        m.extend(0u16.to_ne_bytes());
+        m.extend(seq.to_ne_bytes());
+        m.extend(0u32.to_ne_bytes());
+        m.extend(payload);
+        m.resize(align(m.len()), 0);
+        m
+    }
+
+    /// An `NLMSG_ERROR` carrying `errno`, or an ack for zero.
+    fn error(seq: u32, errno: i32) -> Vec<u8> {
+        let mut p = (-errno).to_ne_bytes().to_vec();
+        p.extend([0u8; 16]); // the header of the request it answers
+        message(NLMSG_ERROR, seq, &p)
+    }
+
+    fn family_reply(id: u16) -> Vec<u8> {
+        let mut p = vec![1u8, 2, 0, 0]; // genl: CTRL_CMD_NEWFAMILY, version 2
+        p.extend(attr(CTRL_ATTR_FAMILY_NAME, b"TASKSTATS\0"));
+        p.extend(attr(CTRL_ATTR_FAMILY_ID, &id.to_ne_bytes()));
+        message(GENL_ID_CTRL, 1, &p)
+    }
+
+    #[test]
+    fn the_family_id_is_read_from_the_reply_and_not_from_an_error() {
+        assert_eq!(family_in(&family_reply(0x15)).ok(), Some(0x15));
+        // The ack the request asks for can share the datagram, either side.
+        let mut both = error(1, 0);
+        both.extend(family_reply(0x17));
+        assert_eq!(family_in(&both).ok(), Some(0x17));
+        // An error where the reply should be: its payload is the request that
+        // failed, and was once searched for attributes as if it were a reply.
+        assert!(matches!(
+            family_in(&error(1, 2)),
+            Err(Unavailable::NoFamily)
+        ));
+        assert!(matches!(
+            family_in(&error(1, 1)),
+            Err(Unavailable::Permission)
+        ));
+        assert!(matches!(family_in(&[]), Err(Unavailable::NoFamily)));
+    }
+
+    #[test]
+    fn the_registration_answer_is_the_one_with_our_sequence_number() {
+        // The lookup's own ack, which once read as "registered".
+        assert!(registration_in(&error(1, 0)).is_none());
+        assert!(matches!(
+            registration_in(&error(SEQ_REGISTER, 0)),
+            Some(Ok(()))
+        ));
+        assert!(matches!(
+            registration_in(&error(SEQ_REGISTER, 1)),
+            Some(Err(Unavailable::Permission))
+        ));
+        assert!(matches!(
+            registration_in(&error(SEQ_REGISTER, 22)),
+            Some(Err(Unavailable::Namespace))
+        ));
+        let mut later = error(1, 0);
+        later.extend(error(SEQ_REGISTER, 13));
+        assert!(matches!(
+            registration_in(&later),
+            Some(Err(Unavailable::Permission))
+        ));
+        // A header whose length runs past the read is not a message.
+        let mut cut = error(SEQ_REGISTER, 1);
+        cut.truncate(12);
+        assert!(registration_in(&cut).is_none());
+    }
+
+    #[test]
+    fn no_control_reply_can_panic_the_reader() {
+        let mut seed = error(1, 0);
+        seed.extend(family_reply(0x15));
+        seed.extend(error(SEQ_REGISTER, 22));
+        for bytes in crate::mangle::variants(&seed, 2_000) {
+            let _ = family_in(&bytes);
+            let _ = registration_in(&bytes);
+        }
+    }
+
+    #[test]
+    fn the_live_socket_hears_a_real_exit_or_says_why_not() {
+        // The only test that goes through `socket`, `bind`, `setsockopt`,
+        // `send` and `recv` for real. Unprivileged it proves the refusal is
+        // one of the reasons this module can name; with `CAP_NET_ADMIN` in
+        // the initial namespaces it proves a process that lived a moment is
+        // heard. Run that way under AddressSanitizer in a privileged
+        // container, every buffer handed across the boundary is checked.
+        let mut l = match Listener::open() {
+            Ok(l) => l,
+            Err(why) => {
+                assert!(!why.why().is_empty());
+                return;
+            }
+        };
+        let child = std::process::Command::new("true")
+            .status()
+            .expect("cannot run `true`");
+        assert!(child.success());
+        let mut seen = Vec::new();
+        for _ in 0..50 {
+            seen.extend(l.drain(1.0, BOOT, &HashMap::new(), &mut UserCache::new()));
+            if seen.iter().any(|p| &*p.name == "true") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let names: Vec<&str> = seen.iter().map(|p| &*p.name).collect();
+        panic!("registered, but `true` never arrived; heard {names:?}");
     }
 }

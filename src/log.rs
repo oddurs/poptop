@@ -100,9 +100,16 @@ struct Tm {
     wday: i32,
     yday: i32,
     isdst: i32,
-    gmtoff: i64,
-    zone: *const i8,
+    gmtoff: std::ffi::c_long,
+    zone: *const std::ffi::c_char,
 }
+
+// Fifty-six bytes, with `tm_gmtoff` at 40 and `tm_zone` at 48: glibc on x86_64
+// and aarch64 and the macOS SDK on arm64 and x86_64, checked against each one's
+// headers. `localtime_r` writes the whole struct, so a short mirror is a write
+// past the end of a stack local. `time_t` is 64 bits on all four; a 32-bit
+// target, where it may not be, fails here rather than at run time.
+const _: () = assert!(size_of::<Tm>() == 56 && align_of::<Tm>() == 8);
 
 unsafe extern "C" {
     fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
@@ -253,8 +260,9 @@ fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<SystemTime> {
         ..Tm::default()
     };
     // SAFETY: `mktime` reads and normalises the caller's `struct tm`, which is
-    // a stack local of the right layout. It is not reentrant only with respect
-    // to the timezone, which poptop never sets.
+    // a stack local of the right layout (asserted beside `Tm`). It reads the
+    // environment's `TZ`, which poptop never writes, so no other thread can
+    // be changing it underneath the call.
     let t = unsafe { mktime(&mut tm) };
     (t >= 0).then(|| UNIX_EPOCH + std::time::Duration::from_secs(t as u64))
 }
