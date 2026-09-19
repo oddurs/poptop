@@ -134,6 +134,15 @@ OPTIONS:
     -h, --help      show this help
     -V, --version   show version
 
+EXIT STATUS:
+    0               done as asked
+    1               could not: a recorded day that cannot be read, a failure
+                    reading the machine, or a --check-theme verdict other
+                    than PASS
+    2               would not: a command line or setting that cannot be run
+                    as written, no state directory for a command that needs
+                    one, or the interactive monitor without a terminal
+
 HEADER:
     CLK             how much of the processor's nominal clock the kernel is
                     currently allowing. Shown only when it is below nominal,
@@ -628,6 +637,20 @@ fn main() -> io::Result<()> {
         Command::Tui { day } => day,
     };
 
+    // The monitor draws on a terminal and reads keys from one. Without both
+    // it used to panic inside ratatui, exit 101, and leave escape codes in
+    // whatever stdout was redirected to. Checked before anything is read, so
+    // a cron line that forgot `--once` costs nothing and says what it meant.
+    use std::io::IsTerminal as _;
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        fail(
+            &warnings,
+            "the monitor needs a terminal on stdin and stdout; for a script, \
+             `--once` prints a sample and `--export=json` every metric",
+            2,
+        );
+    }
+
     // Reported here rather than beside the other config warnings, because
     // these are about what you will *see*. Emitting them before the argument
     // paths branch put a note about the configured theme on top of
@@ -756,7 +779,11 @@ fn main() -> io::Result<()> {
         ));
     }
 
-    let mut terminal = ratatui::init();
+    let mut terminal = ratatui::try_init().unwrap_or_else(|e| {
+        // Half an initialisation is still a changed terminal.
+        ratatui::restore();
+        fail(&warnings, format!("could not take the terminal: {e}"), 1)
+    });
     TERMINAL_TAKEN.store(true, std::sync::atomic::Ordering::Relaxed);
     show_cursor_on_panic();
     let mut said = Vec::new();

@@ -1124,6 +1124,14 @@ name means it, and `null` because poptop chose not to ask is indistinguishable
 from `null` because the kernel does not publish it. It is also safe to pipe into
 `head` — a broken pipe ends the output rather than the process.
 
+**Exit status.** Data goes to stdout and every complaint to stderr, one
+`poptop:` line each. `0` is done as asked. `1` is could not: a recorded day
+that cannot be read, a failure reading the machine, or a `--check-theme`
+verdict other than PASS. `2` is would not: a command line or setting that
+cannot be run as written, no state directory for a command that needs one, or
+the interactive monitor started without a terminal. `tests/cli.rs` runs the
+built binary and holds each of these to it.
+
 **The schema is emitted, not documented.** atop's label set lives in its man
 page, which is a second thing to keep in step with the code. poptop already
 declares every record and field once — for the store's codec — and the walk over
