@@ -3,7 +3,7 @@ id: 104
 key: r5
 title: What the screen says
 type: milestone
-status: backlog
+status: done
 labels:
 - ui
 created: 2026-09-19
