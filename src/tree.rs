@@ -109,7 +109,17 @@ pub fn build<'a>(
     for kids in children.values_mut() {
         kids.sort_by(|a, b| sort.compare(a, b));
     }
-    roots.sort_by(|a, b| sort.compare(a, b));
+    // Roots by their whole branch, not by themselves. On macOS, launchd is a
+    // root the kernel will not describe — zero CPU, zero memory — and it is the
+    // parent of every process the user owns, while 189 unreadable daemons are
+    // roots beside it with the same zeros. Ordered by their own figures they
+    // tied, and the tree opened on a page of `?` (0107). A branch's figure is
+    // its busiest member's, so the root that holds the work comes first.
+    let peak = branch_peaks(&roots, &children, sort);
+    roots.sort_by(|a, b| {
+        let (pa, pb) = (&peak[&a.pid], &peak[&b.pid]);
+        sort.compare(pa, pb).then_with(|| sort.compare(a, b))
+    });
 
     let mut out = Vec::with_capacity(procs.len());
     let mut visited = HashSet::new();
@@ -142,6 +152,38 @@ pub fn build<'a>(
         }
     }
     out
+}
+
+/// For each root, the member of its branch that sorts first — the busiest
+/// process under it, for a resource sort.
+///
+/// Iterative, and each process visited once, so a deep chain cannot overflow
+/// the stack and a cycle cannot loop: anything already seen is not descended
+/// into again.
+fn branch_peaks<'a>(
+    roots: &[&'a ProcSample],
+    children: &HashMap<i32, Vec<&'a ProcSample>>,
+    sort: Sort,
+) -> HashMap<i32, &'a ProcSample> {
+    let mut peaks = HashMap::with_capacity(roots.len());
+    let mut seen = HashSet::new();
+    for &root in roots {
+        let mut best = root;
+        let mut stack = vec![root];
+        while let Some(p) = stack.pop() {
+            if !seen.insert(p.pid) {
+                continue;
+            }
+            if sort.compare(p, best).is_lt() {
+                best = p;
+            }
+            if let Some(kids) = children.get(&p.pid) {
+                stack.extend(kids.iter().copied());
+            }
+        }
+        peaks.insert(root.pid, best);
+    }
+    peaks
 }
 
 /// Expand a match set to include every ancestor of every match.
@@ -186,9 +228,15 @@ fn walk<'a>(
     } else {
         let mut s = String::new();
         // Every ancestor above the immediate parent contributes either a
-        // continuing spine or blank space.
-        for &last in &ancestors_last[..ancestors_last.len() - 1] {
-            s.push_str(if last { "   " } else { "│  " });
+        // continuing spine or blank space — except a root's, whose siblings
+        // are other roots and are drawn with no connector at all. A spine
+        // there hung in the first column under every root but the last,
+        // joining nothing to nothing.
+        for (depth, &last) in ancestors_last[..ancestors_last.len() - 1]
+            .iter()
+            .enumerate()
+        {
+            s.push_str(if last || depth == 0 { "   " } else { "│  " });
         }
         s.push_str(if is_last { "└─ " } else { "├─ " });
         s
@@ -346,5 +394,50 @@ mod tests {
             .collect();
         let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(names(&rows), vec!["d1", "└─ d2", "   └─ d3", "      └─ d4"]);
+    }
+    /// A process the kernel would not describe to this user, as macOS reports
+    /// one: no parent it will name, no memory, no thread count, no owner.
+    fn unreadable(pid: i32, name: &str) -> ProcSample {
+        ProcSample {
+            rss: 0,
+            threads: None,
+            user: Arc::from("?"),
+            ..p(pid, 0, name, 0.0)
+        }
+    }
+
+    #[test]
+    fn the_busy_branch_comes_first_whatever_its_root_shows() {
+        // 0107. On macOS, sysinfo cannot read another user's processes and
+        // gives each a parent of 0, so every root-owned daemon becomes a root
+        // — 189 of them — and so does launchd, which is unreadable too and
+        // holds every process the user owns. Ordered by their own figures, the
+        // 189 zeros and launchd tied, and the tree opened on a page of `?`
+        // with the user's processes somewhere below. A root sorts by its whole
+        // branch; one the kernel told nothing about sorts after one it did.
+        let mut launchd = unreadable(1, "launchd");
+        launchd.ppid = 0;
+        let procs = vec![
+            unreadable(400, "cfprefsd"),
+            unreadable(401, "trustd"),
+            launchd,
+            p(500, 1, "ghostty", 2.0),
+            p(501, 500, "cargo", 90.0),
+            p(600, 0, "idle-root", 0.0),
+            unreadable(402, "backupd"),
+        ];
+        let rows = build(&refs(&procs), Sort::Cpu, None);
+        assert_eq!(
+            names(&rows),
+            vec![
+                "launchd",
+                "└─ ghostty",
+                "   └─ cargo",
+                "idle-root",
+                "cfprefsd",
+                "trustd",
+                "backupd"
+            ]
+        );
     }
 }

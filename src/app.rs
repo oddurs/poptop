@@ -70,8 +70,13 @@ impl Sort {
     pub fn compare(self, a: &ProcSample, b: &ProcSample) -> Ordering {
         match self {
             // Descending for resource columns: the interesting rows go top.
-            Sort::Cpu => b.cpu.total_cmp(&a.cpu),
-            Sort::Mem => b.rss.cmp(&a.rss),
+            // A process the kernel said nothing about goes after one it did,
+            // not among the idle — its zeros were never measured.
+            Sort::Cpu => a
+                .unmeasured()
+                .cmp(&b.unmeasured())
+                .then(b.cpu.total_cmp(&a.cpu)),
+            Sort::Mem => a.unmeasured().cmp(&b.unmeasured()).then(b.rss.cmp(&a.rss)),
             // Unreadable sorts last, not as zero. A process whose IO could not
             // be read is not an idle one, and putting it among the idle ones
             // would be the fabricated zero this codebase refuses everywhere

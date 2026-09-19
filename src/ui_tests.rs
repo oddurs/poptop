@@ -11295,3 +11295,34 @@ fn the_columns_that_are_drawn_always_fit() {
         assert!(wide.spark && wide.bars && wide.user && wide.pid && wide.rss);
     }
 }
+
+#[test]
+fn a_process_the_kernel_would_not_describe_shows_dashes_not_zeros() {
+    // 0107. Another user's process on macOS comes back with no memory and no
+    // thread count, and the row said `0.0  0B` beside `—` for threads — a
+    // process using nothing, next to an admission of not knowing. Both are
+    // `—`: an unreadable process is not an idle one.
+    let mut s = sample(40.0);
+    let mut hidden = proc_named(400, "trustd", 0.0, 0);
+    hidden.threads = None;
+    hidden.user = std::sync::Arc::from("?");
+    s.procs = vec![proc_named(42, "postgres", 3.0, 512 << 20), hidden];
+    let mut app = App::new(60);
+    app.push(s);
+    let screen = rows(&app, 120, 30);
+    let row = screen.iter().find(|r| r.contains("trustd")).unwrap();
+    assert!(
+        !row.contains("0B"),
+        "an unreadable process showed zero memory: {row:?}"
+    );
+    assert!(
+        !row.contains("0.0"),
+        "an unreadable process showed zero CPU: {row:?}"
+    );
+    // And it sorts after one that is really idle, not among them.
+    let order: Vec<usize> = ["postgres", "trustd"]
+        .iter()
+        .map(|n| screen.iter().position(|r| r.contains(n)).unwrap())
+        .collect();
+    assert!(order[0] < order[1]);
+}
