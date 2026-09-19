@@ -1880,4 +1880,109 @@ mod tests {
         a.toggle_io();
         assert!(a.show_io && a.needs().asked(Source::Io));
     }
+
+    /// A live monitor with a real collector, signals on, and the newest sample
+    /// taken after `child` started.
+    fn watching(child: &std::process::Child) -> (App, Platform) {
+        let mut collector = Platform::new().expect("no collector");
+        let mut a = App::new(60);
+        a.signals = true;
+        // Two samples, as the monitor has by its second second; the pid is
+        // checked in the newest.
+        for _ in 0..2 {
+            let s = collector.sample(a.needs()).expect("no sample");
+            a.push(s);
+        }
+        assert!(
+            a.history
+                .newest()
+                .is_some_and(|s| s.procs.iter().any(|p| p.pid == child.id() as i32)),
+            "the collector did not see the child"
+        );
+        (a, collector)
+    }
+
+    /// Select one process the way a person would: filter to its pid, then Down.
+    fn select(a: &mut App, pid: u32) {
+        keys(a, &[KeyCode::Char('/')]);
+        for c in format!("pid = {pid}").chars() {
+            keys(a, &[KeyCode::Char(c)]);
+        }
+        keys(a, &[KeyCode::Enter, KeyCode::Down]);
+    }
+
+    fn sleeper() -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("cannot run sleep")
+    }
+
+    #[test]
+    fn x_then_y_signals_a_process_the_collector_found_and_it_receives_it() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child = sleeper();
+        let (mut a, _collector) = watching(&child);
+        select(&mut a, child.id());
+        keys(&mut a, &[KeyCode::Char('x')]);
+        let p = a.pending.as_ref().expect("x asked nothing");
+        assert_eq!(p.pid, child.id() as i32, "x asked about another process");
+        assert_eq!(&*p.name, "sleep");
+        keys(&mut a, &[KeyCode::Char('y')]);
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(15), "the child did not die of TERM");
+        assert_eq!(
+            a.signal_note.as_deref(),
+            Some(&*format!("sent TERM to sleep (pid {})", child.id()))
+        );
+    }
+
+    #[test]
+    fn a_stale_identity_is_refused_by_name_and_the_process_is_untouched() {
+        // The pid a reader chose now belongs to another process: the one on
+        // screen started at a different moment. Arranged with a real process
+        // by asking about its pid with the start time of an earlier one, since
+        // making the kernel hand out a particular pid again needs root.
+        let mut child = sleeper();
+        let (mut a, _collector) = watching(&child);
+        select(&mut a, child.id());
+        keys(&mut a, &[KeyCode::Char('X')]);
+        let p = a.pending.as_mut().expect("X asked nothing");
+        p.started = p.started.map(|t| t - 1);
+        p.name = "postgres".into();
+        keys(&mut a, &[KeyCode::Char('y')]);
+        let alive = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            a.signal_note.as_deref(),
+            Some(&*format!(
+                "pid {} is sleep now, not postgres — nothing was sent",
+                child.id()
+            ))
+        );
+        assert!(alive, "a process that was not chosen was signalled");
+    }
+
+    #[test]
+    fn a_process_that_exited_after_the_sample_is_refused_and_not_signalled() {
+        // Exited and reaped after the newest sample, which still shows it.
+        // The sample says yes; the kernel, asked at the moment of sending, says
+        // it is gone — or, if its pid has been handed on already, that it is
+        // another process. Either is a refusal.
+        let mut child = sleeper();
+        let (mut a, _collector) = watching(&child);
+        select(&mut a, child.id());
+        keys(&mut a, &[KeyCode::Char('x')]);
+        assert!(a.pending.is_some());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        keys(&mut a, &[KeyCode::Char('y')]);
+        let note = a.signal_note.clone().unwrap_or_default();
+        assert!(
+            note == format!("sleep (pid {}) is no longer running", child.id())
+                || note.contains("is another process now"),
+            "{note}"
+        );
+    }
 }
