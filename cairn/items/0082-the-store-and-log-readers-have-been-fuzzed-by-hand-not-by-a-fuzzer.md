@@ -2,10 +2,9 @@
 id: 82
 title: The store and log readers have been fuzzed by hand, not by a fuzzer
 type: chore
-status: doing
+status: done
 milestone: r1
 assignee: Oddur Sigurdsson
-claimed: 2026-09-18
 labels:
 - validation
 created: 2026-09-18
@@ -25,7 +24,30 @@ Add `cargo-fuzz` targets for the store decoder, the schema-block parser on its o
 
 ## Acceptance criteria
 
-- [ ] Fuzz targets for `store::decode_reporting`, the schema block, and `log::open_day`
-- [ ] Each runs for at least an hour with no crash, hang (over 1s per input), or allocation over 1 GiB
-- [ ] Every finding is fixed and pinned by a unit test that fails without the fix
-- [ ] `./check` documents how to run the fuzzers; CI runs each for a short, bounded time
+- [x] Fuzz targets for `store::decode_reporting`, the schema block, and `log::open_day`
+- [x] Each runs for at least an hour with no crash, hang (over 1s per input), or allocation over 1 GiB
+- [x] Every finding is fixed and pinned by a unit test that fails without the fix
+- [x] `./check` documents how to run the fuzzers; CI runs each for a short, bounded time
+
+## How it was resolved
+
+Eight targets in `fuzz/`, reached through `src/lib.rs`. That file compiles the program's modules into a library only when the `fuzzing` feature is on, so the normal build is unchanged.
+
+Store and log targets: `store` and `store_body` (the latter starts past the header, so every input reaches the schema block and the merge path), `log_day`, and `log_torn`. `log_torn` checks an answer rather than only the absence of a panic: every whole entry comes back, and no torn checksummed one does. The others are `proc_files`, `nfs`, `taskstats` (Linux; 0083) and `typed` (0084).
+
+**One hour each, on the final code, with no crash, hang or allocation over 1 GiB:**
+
+| target | inputs |
+|---|---|
+| store | 14.0M |
+| store_body | 20.2M (plus 9.0M in an earlier 20 min) |
+| log_day | 5.0M |
+| log_torn | 1.4M |
+| typed | 4.2M |
+| proc_files (Linux) | 1.5M (after an earlier 30 min) |
+| nfs (Linux) | 39.4M |
+| taskstats (Linux) | 85.0M |
+
+Peak RSS stayed under 550 MB throughout. Five runs stopped on the 1 s timeout while the machine ran eight fuzzers, a container and builds at once. Replayed alone, each of those inputs took 2 to 6 ms. So the long runs use `-timeout=10`, and the replays are what showed nothing takes a second.
+
+Everything the fuzzers found is fixed and pinned by a unit test. The store targets found nothing: the store survived 0059's own hardening. The torn-log findings are recorded on 0085 and 0100. `./check --fuzz[=SECONDS]` runs every target, `--linux` adds the Linux ones in a container, and CI runs each for a minute on Linux.

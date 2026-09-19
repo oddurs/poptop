@@ -3,7 +3,7 @@ id: 78
 key: r1
 title: Read nothing on trust
 type: milestone
-status: backlog
+status: done
 labels:
 - validation
 created: 2026-09-18
