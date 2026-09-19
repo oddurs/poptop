@@ -11230,3 +11230,68 @@ fn an_unresolvable_owner_is_not_folded_into_one_user() {
         "two processes with unlookupable owners were folded into one user"
     );
 }
+
+#[test]
+fn a_narrow_table_drops_columns_rather_than_digits() {
+    // 0105. Every column was a fixed length, and below about sixty-six columns
+    // ratatui squeezed them rather than dropping any — a right-aligned number
+    // squeezed loses its leading digits, so 100.9% read `00.9` and 1.2M read
+    // `.2M`. A column goes before a digit does, at every width.
+    let mut s = sample(40.0);
+    s.procs = vec![
+        proc_named(42, "postgres", 100.9, 1_258_291),
+        proc_named(99, "nginx", 17.2, 15_309_209),
+    ];
+    let mut app = App::new(60);
+    app.push(s);
+    let known = [
+        "CPU%", "RSS", "S", "THR", "PID", "USER", "COMMAND", "DISK", "R", "W", "CID",
+    ];
+    for w in 20..=160u16 {
+        let screen = rows(&app, w, 30);
+        let header = screen
+            .iter()
+            .find(|r| r.contains("CPU%"))
+            .unwrap_or_else(|| panic!("no table header at {w} columns:\n{}", screen.join("\n")));
+        for word in header.split_whitespace() {
+            assert!(
+                known.contains(&word) || word.starts_with("HIST") || word.starts_with('≤'),
+                "a header clipped to `{word}` at {w} columns: {header:?}"
+            );
+        }
+        let shows_rss = header.split_whitespace().any(|h| h == "RSS");
+        for (name, cpu, rss) in [("postgres", "100.9", "1.2M"), ("nginx", "17.2", "14.6M")] {
+            let row = screen
+                .iter()
+                .find(|r| r.contains(name))
+                .unwrap_or_else(|| panic!("no {name} row at {w} columns"));
+            let words: Vec<&str> = row.split_whitespace().collect();
+            assert!(
+                words.contains(&cpu),
+                "{name}'s CPU is not {cpu} at {w} columns: {row:?}"
+            );
+            if shows_rss {
+                assert!(
+                    words.contains(&rss),
+                    "{name}'s RSS is not {rss} at {w} columns: {row:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_columns_that_are_drawn_always_fit() {
+    // What the ladder promises, checked against its own arithmetic: at every
+    // width from the narrowest that can hold CPU% and a name, the fixed columns
+    // leave the command its minimum — so nothing is left for ratatui to squeeze.
+    for all in [false, true] {
+        for w in 17..=200u16 {
+            let (cols, fixed) = ui::fitted_columns_for_test(w, all);
+            assert!(fixed + 10 <= w, "{fixed} fixed at {w} columns: {cols:?}");
+        }
+        // And nothing is dropped that did not have to be.
+        let (wide, _) = ui::fitted_columns_for_test(250, all);
+        assert!(wide.spark && wide.bars && wide.user && wide.pid && wide.rss);
+    }
+}
