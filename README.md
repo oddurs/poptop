@@ -22,7 +22,7 @@ WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤
 2m25s shown, 1s/slot — ←/→ scrub, +/- zoom
 ── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
   CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
-  88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿     824 postgres
+  88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣠⣾     824 postgres
   12.5 ▌        32.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    1190 nginx
    4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node
    0.1          12.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀       1 systemd

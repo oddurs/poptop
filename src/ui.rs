@@ -2935,38 +2935,6 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         && app.any_container()
         && command_width(area.width, show_io, show_user, true, dropped, taken) as u16
             > MIN_COMMAND_W;
-    let mut columns = Columns {
-        bars: show_bars,
-        rss: true,
-        state: true,
-        thr: show_thr,
-        io: show_io,
-        mem: show_mem_cols,
-        spark: true,
-        pid: true,
-        user: show_user,
-        cid: show_cid,
-    };
-    columns.fit(area.width);
-    let Columns {
-        bars: show_bars,
-        rss: show_rss,
-        state: show_state,
-        thr: show_thr,
-        io: show_io,
-        mem: show_mem_cols,
-        spark: show_spark,
-        pid: show_pid,
-        user: show_user,
-        cid: show_cid,
-    } = columns;
-    // What the fixed columns leave, measured by the same description that
-    // lays them out. Floored at the column's own `Min`, and above it exactly:
-    // an elision against a guess is either too cautious or chopped at the edge.
-    let cmd_w = area
-        .width
-        .saturating_sub(columns.fixed())
-        .max(MIN_COMMAND_W) as usize;
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -3020,6 +2988,56 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             .map(|p| p.cpu)
             .fold(0.0_f32, f32::max),
     );
+    // The history column earns its width by showing change. The CPU% beside
+    // it already says how busy each process is; what only the sparkline can
+    // say is how that moved. When no row on screen moved — every line flat,
+    // which on a quiet machine is every line — it was ten columns repeating
+    // the CPU column as a picture, while the command was elided for want of
+    // room (0110). So it is drawn when some row's history moves, on the one
+    // shared scale, and otherwise gives its width back and says why.
+    //
+    // Not a log scale, which was tried: four levels cannot be both fine at the
+    // bottom and readable at the top, and the top is where a process pinning
+    // several cores lives.
+    //
+    // Not judged until there is history to judge: before
+    // `App::CONSTANT_FOR` samples nothing has had time to move, and a column
+    // that appeared a few seconds after start would move the layout under the
+    // reader for no reason. The same threshold the user column folds on.
+    let history_moves =
+        app.history.len() < crate::app::App::CONSTANT_FOR || any_history_moves(app, spark_ceiling);
+    let mut columns = Columns {
+        bars: show_bars,
+        rss: true,
+        state: true,
+        thr: show_thr,
+        io: show_io,
+        mem: show_mem_cols,
+        spark: history_moves,
+        pid: true,
+        user: show_user,
+        cid: show_cid,
+    };
+    columns.fit(area.width);
+    let Columns {
+        bars: show_bars,
+        rss: show_rss,
+        state: show_state,
+        thr: show_thr,
+        io: show_io,
+        mem: show_mem_cols,
+        spark: show_spark,
+        pid: show_pid,
+        user: show_user,
+        cid: show_cid,
+    } = columns;
+    // What the fixed columns leave, measured by the same description that
+    // lays them out. Floored at the column's own `Min`, and above it exactly:
+    // an elision against a guess is either too cautious or chopped at the edge.
+    let cmd_w = area
+        .width
+        .saturating_sub(columns.fixed())
+        .max(MIN_COMMAND_W) as usize;
     let collected = app.history.current().is_some_and(|s| s.io_collected);
     let rows_visible = area.height.saturating_sub(2) as usize;
 
@@ -3538,6 +3556,17 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         // the byte budget, or the disk.
         (23, logging, app.theme.warning_style()),
         (28, threads, plain),
+        // Why the history column is missing, when that is the reason: said,
+        // because a column that comes and goes unexplained reads as a bug.
+        (
+            35,
+            if history_moves {
+                String::new()
+            } else {
+                " · history flat".to_string()
+            },
+            plain,
+        ),
         (
             40,
             // Both named, because `s` now cycles within the view and the two
@@ -3632,6 +3661,32 @@ fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling
             set.glyph(l, r)
         })
         .collect()
+}
+
+/// Whether any process in the buffer has a history that moves: whether, on the
+/// shared scale, any of them was ever drawn at two different heights.
+///
+/// Over the whole buffer and every process in it, like the scale itself — not
+/// over the rows on screen. Judged from the visible rows, scrolling the one
+/// busy process out of view took the column away, and the table changed shape
+/// because of where the list was sitting.
+///
+/// One pass, stopping at the first process seen at a second height, which on a
+/// real machine is within the first few samples. Measured per sample rather
+/// than per drawn slot: a process whose samples differ in height is one whose
+/// line is not flat, whatever the zoom packs together.
+fn any_history_moves(app: &App, ceiling: f32) -> bool {
+    let mut first: std::collections::HashMap<(i32, u64), usize> = std::collections::HashMap::new();
+    for s in app.history.iter() {
+        for p in &s.procs {
+            let Some(key) = p.key() else { continue };
+            let level = glyphs::level_in_row_scaled(p.cpu, 0, 1, ceiling);
+            if *first.entry(key).or_insert(level) != level {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Width of a process-table bar. Four cells at eight sub-steps is thirty-two
