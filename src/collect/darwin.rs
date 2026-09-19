@@ -396,19 +396,22 @@ impl Collector for SysinfoCollector {
 
 /// The single-letter state `ps` would print.
 ///
-/// sysinfo's status is the BSD `p_stat`, and on macOS that is `SRUN` for nearly
-/// every process, running or asleep — the real state is in the threads. So a
-/// process sysinfo calls running is `R` only if one of its threads is runnable
-/// right now, and `S` if none is, which is how `ps` tells them apart (0106).
-/// Where the kernel will not say — another user's process — it is `?`, not a
-/// guess: a column of `R` that means nothing is worse than a column that
-/// admits it cannot tell. Stopped and zombie come from `p_stat` as they are.
+/// From the threads, not from sysinfo's status, which means different things
+/// on different releases of macOS. On one it is the BSD `p_stat` — `SRUN` for
+/// nearly every process, so the table said `R` for twenty rows in twenty-three
+/// while `ps` counted 730 sleeping. On another it said `Sleep` for a process
+/// spinning flat out, whose task reported a thread runnable (0106; the CI
+/// runner's log is on the item). `proc_taskinfo`'s count of runnable threads is
+/// right on both: `R` if any is, `S` if none is — which is how `ps` decides.
+/// Where the kernel will not say, `?`, not a guess. Stopped and zombie come
+/// from the process table, which is where those states live.
 fn state_of(s: sysinfo::ProcessStatus, task: Option<procinfo::Task>) -> char {
+    use sysinfo::ProcessStatus::{Stop, Zombie};
     match (s, task) {
-        (sysinfo::ProcessStatus::Run, Some(t)) if t.running > 0 => 'R',
-        (sysinfo::ProcessStatus::Run, Some(_)) => 'S',
-        (sysinfo::ProcessStatus::Run, None) => '?',
-        (other, _) => status_char(other),
+        (Stop | Zombie, _) => status_char(s),
+        (_, Some(t)) if t.running > 0 => 'R',
+        (_, Some(_)) => 'S',
+        (_, None) => '?',
     }
 }
 

@@ -31,16 +31,18 @@ Derive the state from what `ps` uses: the task's thread states via `proc_pidinfo
 
 ## How it was resolved
 
-sysinfo's status on macOS is the BSD `p_stat`, which is `SRUN` for nearly every process, running or asleep; the real state is in the threads. The answer was already inside a call poptop makes for every process it owns: `proc_taskinfo`, read for the thread count, also carries `pti_numrunning`, the number of threads runnable right now. A process `p_stat` calls running now shows:
+sysinfo's status on macOS is the BSD `p_stat`, which is `SRUN` for nearly every process, running or asleep; the real state is in the threads. The answer was already inside a call poptop makes for every process it owns: `proc_taskinfo`, read for the thread count, also carries `pti_numrunning`, the number of threads runnable right now. The state now comes from the threads alone:
 
-- `R` if any of its threads is runnable, as `ps` decides it.
+- `R` if any thread is runnable, as `ps` decides it.
 - `S` if none is.
 - `?` for a process whose task info the kernel won't give this user.
 
-Stopped and zombie still come from `p_stat`.
+Stopped and zombie still come from the process table.
+
+**sysinfo's status can't be used even as a gate.** The first version kept sysinfo's `Run` and refined only that case. The CI runner's macOS showed why that was wrong: there, sysinfo reported `Sleep` for a process spinning flat out, whose task said one thread was runnable (`status Some(Sleep), task Some(Task { threads: 2, …, running: 1 })`, twenty samples in a row). So sysinfo's status means `p_stat` on one release and something else on another, while the runnable-thread count is right on both.
 
 The offset (88, straight after `pti_threadnum`) is checked at compile time against the structure's size, and the value is rejected unless it lies between 0 and the thread count. There are no new system calls.
 
-Live on this Mac: the top 29 rows went from about 20 `R` to 2 `R` and 27 `S`, in line with `ps` (5 R of 755). `a_sleeping_process_is_not_reported_as_running` collects a real `sleep` child (must read S) and a real `yes` (must read R) through the real collector. It fails on the old code, and passed 15 runs out of 15.
+Live on this Mac: the top 29 rows went from about 20 `R` to 2 `R` and 27 `S`, in line with `ps` (5 R of 755). `a_sleeping_process_is_not_reported_as_running` collects a real `sleep` child and a real `yes` through the real collector over up to twenty samples. The sleeper must never read as running, and the spinner must read as running at least once, which is the claim that holds on a loaded three-core runner. If it fails, the message carries each sample's sysinfo status, task info and CPU, which is how the CI case above was diagnosed.
 
 Linux is unchanged: `/proc/<pid>/stat` states were already right.
