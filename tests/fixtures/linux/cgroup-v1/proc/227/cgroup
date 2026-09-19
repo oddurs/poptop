@@ -1,0 +1,5 @@
+5:pids:/system.slice/systemd-udevd.service/udev
+4:memory:/system.slice/systemd-udevd.service/udev
+3:cpu,cpuacct:/system.slice/systemd-udevd.service/udev
+2:blkio:/system.slice/systemd-udevd.service/udev
+1:name=systemd:/system.slice/systemd-udevd.service/udev

@@ -1,0 +1,5 @@
+5:pids:/system.slice/systemd-networkd.service
+4:memory:/system.slice/systemd-networkd.service
+3:cpu,cpuacct:/system.slice/systemd-networkd.service
+2:blkio:/system.slice/systemd-networkd.service
+1:name=systemd:/system.slice/systemd-networkd.service

@@ -1,0 +1,5 @@
+5:pids:/system.slice/systemd-resolved.service
+4:memory:/system.slice/systemd-resolved.service
+3:cpu,cpuacct:/system.slice/systemd-resolved.service
+2:blkio:/system.slice/systemd-resolved.service
+1:name=systemd:/system.slice/systemd-resolved.service

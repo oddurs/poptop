@@ -1,0 +1,37 @@
+name: record-fixtures
+
+# Records the /proc and /sys files poptop reads on GitHub's own machines, for
+# tests/fixtures/linux. Run it by hand, or by pushing a branch of this name;
+# download the artifacts, read them, and commit the ones worth keeping. See
+# tests/fixtures/linux/README.md.
+on:
+  workflow_dispatch:
+  push:
+    branches: [record-fixtures]
+
+jobs:
+  record:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            name: ubuntu-x86_64
+          - runner: ubuntu-22.04
+            name: ubuntu-22.04-x86_64
+          - runner: ubuntu-24.04-arm
+            name: ubuntu-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get install -y strace
+      - run: cargo build --release
+      - run: tests/fixtures/linux/record target/release/poptop "fixture/${{ matrix.name }}"
+      - run: uname -a > "fixture/${{ matrix.name }}/uname"
+      # A tarball, because an artifact upload drops empty directories.
+      - run: tar -C fixture -czf "${{ matrix.name }}.tar.gz" "${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.tar.gz

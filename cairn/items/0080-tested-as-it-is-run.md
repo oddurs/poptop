@@ -3,11 +3,11 @@ id: 80
 key: r3
 title: Tested as it is run
 type: milestone
-status: backlog
+status: done
 labels:
 - testing
 created: 2026-09-18
-updated: 2026-09-18
+updated: 2026-09-19
 priority: p2
 ---
 

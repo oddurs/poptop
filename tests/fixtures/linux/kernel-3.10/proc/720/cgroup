@@ -1,0 +1,5 @@
+5:pids:/system.slice/snapd.service
+4:memory:/system.slice/snapd.service
+3:cpu,cpuacct:/system.slice/snapd.service
+2:blkio:/system.slice/snapd.service
+1:name=systemd:/system.slice/snapd.service
