@@ -1012,10 +1012,18 @@ hazard none of them have — and the identity poptop already uses everywhere,
 - **The pair is rechecked against the newest sample**, not against the row you
   selected. A process that has exited is named as gone; a pid the kernel has
   since handed to something else is refused *by name* — `pid 4823 is sshd now,
-  not postgres — nothing was sent`. "Newest" is the honest word: that sample is
-  at most one `--interval` old, so a process that exits inside that window and
-  has its pid handed on is a gap this cannot close. At the default it is one
-  second.
+  not postgres — nothing was sent`.
+- **And then against the kernel, at the moment of sending.** The newest sample
+  can be a whole `--interval` old, and a pid can be handed on inside one. So
+  the start time is read again from the kernel, not from a sample, just
+  before the signal goes. On Linux 5.3 and later that read is made through a
+  pidfd, and the signal is sent through the same descriptor. It names the
+  process, not the number, so if the process exits in between, nothing is
+  signalled. On macOS, or where `pidfd_open` is missing or filtered, the
+  signal is an ordinary `kill` straight after the read. The process would
+  have to exit, and its pid be given to a new one, between two consecutive
+  system calls. That window is narrow, but it is not zero, and poptop does not
+  claim it is.
 
 A process whose start time the platform would not report is never signalled at
 all, because without it a recycled pid cannot be told from the one you picked.

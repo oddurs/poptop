@@ -21,10 +21,29 @@
 //!
 //! - Nothing is sent while scrubbing. The reader is looking at the past.
 //! - The `(pid, started)` pair — the identity poptop already uses everywhere —
-//!   is checked against the newest sample at the moment of sending. A pid that
-//!   has been recycled is refused by name, not signalled by number.
+//!   is checked against the newest sample, and then against the kernel itself
+//!   at the moment of sending. A pid that has been recycled is refused by name,
+//!   not signalled by number.
+//!
+//! # What each platform guarantees
+//!
+//! The last check and the signal are two system calls, and a pid can be handed
+//! on between any two. How much of that gap is closed depends on the platform:
+//!
+//! - **Linux 5.3 and later: none of it is left.** [`send`] opens a pidfd, then
+//!   reads the start time from `/proc`. A process that still has the selected
+//!   start time now has held that pid since before the pidfd was opened, so
+//!   the pidfd is that process. The signal goes through the pidfd, which names
+//!   a process rather than a number: if it exits first, nothing is signalled.
+//! - **macOS, and a Linux kernel or sandbox without `pidfd_open`: microseconds
+//!   are left.** The start time is read from the kernel immediately before
+//!   `kill`. A process would have to exit, and its pid be handed to a new one,
+//!   between two consecutive system calls. That is far narrower than the
+//!   sample interval every other monitor leaves open, but it is not nothing,
+//!   and it is not claimed to be.
 
 use crate::sample::{ProcSample, Sample};
+use std::io;
 use std::sync::Arc;
 
 // `int kill(pid_t, int)`, and `pid_t` is an `int` on Linux and macOS alike.
@@ -185,8 +204,8 @@ pub enum Refused {
     ///
     /// `kill(0, …)` signals poptop's whole process group — the reader's shell
     /// included — and a negative pid signals a group by number. Nothing routes
-    /// one here, and this is the one `unsafe` call in the feature, so it is
-    /// checked rather than reasoned about.
+    /// one here, and a signal is the one thing poptop does that it cannot take
+    /// back, so it is checked rather than reasoned about.
     NotAProcess,
 }
 
@@ -217,10 +236,9 @@ impl Refused {
 /// Split from the sending so the whole decision is testable without a process
 /// to kill. `live` is the newest sample, not the one under the cursor — and
 /// "newest" is the honest word: it is at most one sample interval old, so a
-/// process that exited within that interval and had its pid handed on is a gap
-/// this cannot close. At the default one-second interval that gap is a second;
-/// at `--interval=60s` it is a minute, and the confirmation is worth answering
-/// promptly.
+/// process that exited within that interval and had its pid handed on would
+/// pass here. That gap is [`send`]'s to close, and it does, by asking the
+/// kernel rather than a sample.
 pub fn check(
     p: &Pending,
     live: Option<&Sample>,
@@ -255,27 +273,140 @@ pub fn check(
     }
 }
 
-/// Send it, having checked.
-///
-/// The `Err` is the operating system's own words — `Operation not permitted`
-/// for somebody else's process is the answer, and dressing it up would only
-/// hide which of the several reasons it was.
-pub fn send(p: &Pending) -> std::io::Result<()> {
-    // `check` refuses these already; this is the one `unsafe` call in the
-    // feature and `kill(0, SIGKILL)` signals poptop's whole process group,
-    // the reader's shell included. Worth a second line rather than an argument
-    // about which caller could reach it.
-    if p.pid <= 0 {
-        return Err(std::io::Error::other("not one process"));
+/// Why a signal that passed [`check`] was not delivered.
+#[derive(Debug)]
+pub enum Failed {
+    /// The kernel, asked at the moment of sending, disagreed with the sample.
+    Refused(Refused),
+    /// The operating system's own words — `Operation not permitted` for
+    /// somebody else's process is the answer, and dressing it up would only
+    /// hide which of the several reasons it was.
+    Os(io::Error),
+}
+
+impl Failed {
+    pub fn why(&self, p: &Pending) -> String {
+        match self {
+            Failed::Refused(r) => r.why(Some(p)),
+            Failed::Os(e) => format!("could not signal {} (pid {}): {e}", p.name, p.pid),
+        }
     }
+}
+
+/// Send it, having checked — and checking once more, against the kernel.
+///
+/// See the module notes for what each platform guarantees about the moment
+/// between that check and the signal.
+pub fn send(p: &Pending) -> Result<(), Failed> {
+    // `check` refuses these already, and `kill(0, SIGKILL)` signals poptop's
+    // whole process group, the reader's shell included. Worth a second line
+    // rather than an argument about which caller could reach it.
+    if p.pid <= 0 {
+        return Err(Failed::Refused(Refused::NotAProcess));
+    }
+    let Some(started) = p.started else {
+        return Err(Failed::Refused(Refused::Unidentifiable));
+    };
+    #[cfg(target_os = "linux")]
+    match pidfd::Pidfd::open(p.pid) {
+        Ok(fd) => {
+            is_still(p, started)?;
+            return fd.signal(p.signal.number()).map_err(Failed::Os);
+        }
+        Err(e) if e.raw_os_error() == Some(pidfd::ESRCH) => {
+            return Err(Failed::Refused(Refused::Gone));
+        }
+        // `ENOSYS` before 5.3, or `EPERM` from a seccomp filter that has not
+        // heard of the call. The check below still holds, with the window the
+        // module notes describe.
+        Err(_) => {}
+    }
+    is_still(p, started)?;
     // SAFETY: `kill` takes two integers and touches nothing of ours. The pid
-    // is positive, was read from a live sample, and has just been checked
-    // against the newest one.
+    // is positive, and the process holding it has just been confirmed, by the
+    // kernel, to be the one the reader chose.
     let rc = unsafe { kill(p.pid, p.signal.number()) };
     if rc == 0 {
         Ok(())
     } else {
-        Err(std::io::Error::last_os_error())
+        Err(Failed::Os(io::Error::last_os_error()))
+    }
+}
+
+/// Whether the process on `p.pid` is still the one that started at `started`,
+/// asked of the kernel now rather than of a sample.
+fn is_still(p: &Pending, started: u64) -> Result<(), Failed> {
+    match crate::collect::start_of(p.pid) {
+        Some(t) if t == started => Ok(()),
+        Some(_) => Err(Failed::Refused(Refused::Recycled(Arc::from(
+            "another process",
+        )))),
+        None => Err(Failed::Refused(Refused::Gone)),
+    }
+}
+
+/// A process named by a file descriptor rather than by a number.
+///
+/// Signals through it reach the process it was opened on or nothing: once that
+/// process exits, the descriptor refers to a process that is gone, whatever
+/// the pid it had is given to next.
+#[cfg(target_os = "linux")]
+mod pidfd {
+    use std::ffi::c_long;
+    use std::io;
+
+    pub const ESRCH: i32 = 3;
+    // The same numbers on x86_64 and aarch64: both were added after the
+    // architectures' tables were unified, and checked against the headers of
+    // both.
+    const SYS_PIDFD_SEND_SIGNAL: c_long = 424;
+    const SYS_PIDFD_OPEN: c_long = 434;
+
+    unsafe extern "C" {
+        fn syscall(num: c_long, ...) -> c_long;
+        fn close(fd: i32) -> i32;
+    }
+
+    pub struct Pidfd(i32);
+
+    impl Pidfd {
+        pub fn open(pid: i32) -> io::Result<Pidfd> {
+            // SAFETY: `pidfd_open(pid, flags)` takes two integers, passed as
+            // `long` as the variadic `syscall` reads them, and returns a new
+            // descriptor or -1. Nothing of ours is read or written.
+            let fd = unsafe { syscall(SYS_PIDFD_OPEN, pid as c_long, 0 as c_long) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Pidfd(fd as i32))
+        }
+
+        pub fn signal(&self, sig: i32) -> io::Result<()> {
+            // SAFETY: `pidfd_send_signal(fd, sig, info, flags)`. The descriptor
+            // is our own open pidfd, and a null `info` asks the kernel to fill
+            // in what `kill` would; nothing is read through a pointer of ours.
+            let rc = unsafe {
+                syscall(
+                    SYS_PIDFD_SEND_SIGNAL,
+                    self.0 as c_long,
+                    sig as c_long,
+                    std::ptr::null::<u8>(),
+                    0 as c_long,
+                )
+            };
+            if rc < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Pidfd {
+        fn drop(&mut self) {
+            // SAFETY: the descriptor `open` returned, owned by this value and
+            // closed only here.
+            unsafe { close(self.0) };
+        }
     }
 }
 
@@ -470,5 +601,85 @@ mod tests {
             std::io::Error::last_os_error().raw_os_error().is_some(),
             "no errno for a failed kill"
         );
+    }
+
+    /// A child that will outlive the test unless it is signalled, and the
+    /// `Pending` a reader would build for it from a sample.
+    fn sleeper(signal: Signal) -> (std::process::Child, Pending) {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("cannot run sleep");
+        let pid = child.id() as i32;
+        let started = crate::collect::start_of(pid).expect("no start time for a live child");
+        let p = Pending::new(&proc(pid, "sleep", Some(started)), signal);
+        (child, p)
+    }
+
+    #[test]
+    fn a_process_that_is_still_the_one_chosen_is_signalled() {
+        use std::os::unix::process::ExitStatusExt;
+        let (mut child, p) = sleeper(Signal::Term);
+        send(&p).expect("the chosen process was not signalled");
+        assert_eq!(child.wait().unwrap().signal(), Some(15));
+    }
+
+    #[test]
+    fn a_live_process_with_another_start_time_is_refused_and_untouched() {
+        // What a pid handed on after the newest sample looks like to `send`:
+        // alive, and not the process that was chosen.
+        let (mut child, mut p) = sleeper(Signal::Kill);
+        p.started = p.started.map(|t| t + 1);
+        let sent = send(&p);
+        let alive = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            matches!(sent, Err(Failed::Refused(Refused::Recycled(_)))),
+            "{sent:?}"
+        );
+        assert!(alive, "a process that was not chosen was signalled");
+    }
+
+    #[test]
+    fn a_process_that_exited_after_the_sample_is_gone_and_not_signalled() {
+        let (mut child, p) = sleeper(Signal::Term);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        // Reaped, so its pid is free: either nobody holds it, or somebody new
+        // does. Both are refusals, and neither is a signal.
+        let sent = send(&p);
+        assert!(
+            matches!(
+                sent,
+                Err(Failed::Refused(Refused::Gone | Refused::Recycled(_)))
+            ),
+            "{sent:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pidfd_outlives_its_process_and_signals_nothing_after_it() {
+        // The property the Linux path rests on. The descriptor is opened on
+        // a live process; the process exits and is reaped, so its pid is free
+        // to be handed to anything. A signal through the descriptor must then
+        // fail rather than reach whatever holds that number.
+        let (mut child, p) = sleeper(Signal::Term);
+        let fd = match pidfd::Pidfd::open(p.pid) {
+            Ok(fd) => fd,
+            // A kernel before 5.3, or a sandbox that filters the call: the
+            // fallback is what runs there, and the tests above cover it.
+            Err(e) => {
+                eprintln!("no pidfd here ({e}); the fallback is what runs");
+                child.kill().unwrap();
+                child.wait().unwrap();
+                return;
+            }
+        };
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let e = fd.signal(15).expect_err("signalled a process that is gone");
+        assert_eq!(e.raw_os_error(), Some(pidfd::ESRCH));
     }
 }

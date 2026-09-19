@@ -529,6 +529,14 @@ use darwin as backend;
 #[cfg(not(target_os = "linux"))]
 pub use darwin::SysinfoCollector as Platform;
 
+/// When a process started, read from the kernel now, in the unit the
+/// platform's samples carry in `ProcSample::started`. `None` if there is no
+/// such process.
+#[cfg(target_os = "linux")]
+pub use linux::start_of;
+#[cfg(not(target_os = "linux"))]
+pub use procinfo::start_of;
+
 #[cfg(test)]
 mod tests {
     use super::*;

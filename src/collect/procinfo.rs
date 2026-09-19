@@ -235,15 +235,56 @@ impl Kinfo {
             .chunks_exact(self.stride)
             .filter_map(|r| {
                 let pid = i32::from_ne_bytes(r[OFF_PID..OFF_PID + 4].try_into().ok()?);
-                let sec = i64::from_ne_bytes(r[OFF_STARTTIME..OFF_STARTTIME + 8].try_into().ok()?);
-                let usec =
-                    i32::from_ne_bytes(r[OFF_STARTTIME + 8..OFF_STARTTIME + 12].try_into().ok()?);
-                // A non-positive start time is not a time. Dropped rather than
-                // passed on as a token, so the identity stays honest.
-                (sec > 0).then(|| (pid, sec as u64 * 1_000_000 + usec.max(0) as u64))
+                Some((pid, start_in(r)?))
             })
             .collect()
     }
+}
+
+/// The start time in one record, in microseconds since the epoch.
+fn start_in(r: &[u8]) -> Option<u64> {
+    let sec = i64::from_ne_bytes(r.get(OFF_STARTTIME..OFF_STARTTIME + 8)?.try_into().ok()?);
+    let usec = i32::from_ne_bytes(
+        r.get(OFF_STARTTIME + 8..OFF_STARTTIME + 12)?
+            .try_into()
+            .ok()?,
+    );
+    // A non-positive start time is not a time. Dropped rather than passed on
+    // as a token, so the identity stays honest.
+    (sec > 0).then(|| (sec as u64).saturating_mul(1_000_000) + usec.max(0) as u64)
+}
+
+/// When `pid` started, as `ProcSample::started` carries it here.
+///
+/// Asked of the kernel at the moment of asking, for `signal` to check just
+/// before it sends. Held to the same layout check as [`Kinfo::probe`]: the
+/// record has to read back the pid it was asked for. `None` for a pid with no
+/// process, and on a kernel whose `kinfo_proc` this module does not
+/// understand, where the collector is not using these start times either.
+pub fn start_of(pid: i32) -> Option<u64> {
+    if pid <= 0 {
+        return None;
+    }
+    let mut mib = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid];
+    let mut buf = vec![0u8; *PLAUSIBLE.end()];
+    let mut len = buf.len();
+    // SAFETY: as `Kinfo::probe`: four ints named, `len` writable bytes offered
+    // and the written length checked by `accept` before any read.
+    let rc = unsafe {
+        sysctl(
+            mib.as_mut_ptr(),
+            4,
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    accept(len, &buf, pid)?;
+    start_in(&buf)
 }
 
 /// `PROC_PIDTASKINFO`, and the size `struct proc_taskinfo` has to be for the
