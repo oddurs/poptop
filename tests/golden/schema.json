@@ -1,0 +1,166 @@
+{
+  "version": "0.1.0",
+  "records": {
+    "MemStat": [
+      {"name": "total", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "used", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "available", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "free", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "swap_total", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "swap_used", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "dirty", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "slab", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "slab_reclaimable", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "shmem", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "page_tables", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "huge_total", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "huge_used", "type": "integer", "unit": "bytes", "optional": true}
+    ],
+    "Stall": [
+      {"name": "some", "type": "number", "unit": "percent", "optional": false},
+      {"name": "full", "type": "number", "unit": "percent", "optional": false}
+    ],
+    "Pressure": [
+      {"name": "cpu", "type": "Stall", "unit": "none", "optional": false},
+      {"name": "io", "type": "Stall", "unit": "none", "optional": false},
+      {"name": "memory", "type": "Stall", "unit": "bytes", "optional": false}
+    ],
+    "FsStat": [
+      {"name": "mount", "type": "string", "unit": "none", "optional": false},
+      {"name": "total", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "avail", "type": "integer", "unit": "bytes", "optional": false}
+    ],
+    "Link": [
+      {"name": "name", "type": "string", "unit": "none", "optional": false},
+      {"name": "rx", "type": "integer", "unit": "bytes_per_second", "optional": false},
+      {"name": "tx", "type": "integer", "unit": "bytes_per_second", "optional": false},
+      {"name": "rx_packets", "type": "integer", "unit": "per_second", "optional": false},
+      {"name": "tx_packets", "type": "integer", "unit": "per_second", "optional": false}
+    ],
+    "NetStat": [
+      {"name": "links", "type": "[Link]", "unit": "none", "optional": false},
+      {"name": "errors", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "drops", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "retrans", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "listen_drops", "type": "integer", "unit": "per_second", "optional": true}
+    ],
+    "DiskStat": [
+      {"name": "name", "type": "string", "unit": "none", "optional": false},
+      {"name": "read", "type": "integer", "unit": "bytes_per_second", "optional": false},
+      {"name": "write", "type": "integer", "unit": "bytes_per_second", "optional": false},
+      {"name": "reads", "type": "integer", "unit": "per_second", "optional": false},
+      {"name": "writes", "type": "integer", "unit": "per_second", "optional": false},
+      {"name": "util", "type": "number", "unit": "percent", "optional": false},
+      {"name": "await_ms", "type": "number", "unit": "milliseconds", "optional": true},
+      {"name": "queue", "type": "number", "unit": "count", "optional": false}
+    ],
+    "IoRates": [
+      {"name": "read", "type": "integer", "unit": "bytes_per_second", "optional": false},
+      {"name": "write", "type": "integer", "unit": "bytes_per_second", "optional": false}
+    ],
+    "ThreadSample": [
+      {"name": "pid", "type": "integer", "unit": "count", "optional": false},
+      {"name": "tid", "type": "integer", "unit": "count", "optional": false},
+      {"name": "name", "type": "string", "unit": "none", "optional": false},
+      {"name": "state", "type": "string", "unit": "none", "optional": false},
+      {"name": "cpu", "type": "number", "unit": "percent", "optional": false}
+    ],
+    "CgroupStat": [
+      {"name": "path", "type": "string", "unit": "none", "optional": false},
+      {"name": "depth", "type": "integer", "unit": "count", "optional": false},
+      {"name": "cpu", "type": "number", "unit": "percent", "optional": true},
+      {"name": "cpu_max", "type": "number", "unit": "percent", "optional": true},
+      {"name": "mem", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "mem_max", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "read", "type": "integer", "unit": "bytes_per_second", "optional": true},
+      {"name": "write", "type": "integer", "unit": "bytes_per_second", "optional": true},
+      {"name": "pressure", "type": "Pressure", "unit": "none", "optional": true},
+      {"name": "procs", "type": "integer", "unit": "count", "optional": true}
+    ],
+    "NodeStat": [
+      {"name": "id", "type": "integer", "unit": "count", "optional": false},
+      {"name": "total", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "free", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "file", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "dirty", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "shmem", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "cpu", "type": "number", "unit": "percent", "optional": true}
+    ],
+    "NfsMount": [
+      {"name": "mount", "type": "string", "unit": "none", "optional": false},
+      {"name": "server", "type": "string", "unit": "none", "optional": false},
+      {"name": "read", "type": "integer", "unit": "bytes_per_second", "optional": false},
+      {"name": "write", "type": "integer", "unit": "bytes_per_second", "optional": false},
+      {"name": "ops", "type": "integer", "unit": "per_second", "optional": false},
+      {"name": "retrans", "type": "integer", "unit": "per_second", "optional": false},
+      {"name": "rtt_ms", "type": "number", "unit": "milliseconds", "optional": true}
+    ],
+    "NfsStat": [
+      {"name": "mounts", "type": "[NfsMount]", "unit": "none", "optional": false},
+      {"name": "client_calls", "type": "integer", "unit": "per_second", "optional": false},
+      {"name": "client_retrans", "type": "integer", "unit": "per_second", "optional": false},
+      {"name": "server_calls", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "server_read", "type": "integer", "unit": "bytes_per_second", "optional": true},
+      {"name": "server_write", "type": "integer", "unit": "bytes_per_second", "optional": true},
+      {"name": "server_hits", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "server_misses", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "server_badauth", "type": "integer", "unit": "per_second", "optional": true}
+    ],
+    "ProcSample": [
+      {"name": "pid", "type": "integer", "unit": "count", "optional": false},
+      {"name": "ppid", "type": "integer", "unit": "count", "optional": false},
+      {"name": "name", "type": "string", "unit": "none", "optional": false},
+      {"name": "user", "type": "string", "unit": "none", "optional": false},
+      {"name": "cpu", "type": "number", "unit": "percent", "optional": false},
+      {"name": "rss", "type": "integer", "unit": "bytes", "optional": false},
+      {"name": "threads", "type": "integer", "unit": "count", "optional": true},
+      {"name": "state", "type": "string", "unit": "none", "optional": false},
+      {"name": "started", "type": "integer", "unit": "none", "optional": true},
+      {"name": "cmd", "type": "string", "unit": "none", "optional": true},
+      {"name": "io", "type": "IoRates", "unit": "none", "optional": true},
+      {"name": "container", "type": "string", "unit": "none", "optional": true},
+      {"name": "minflt", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "majflt", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "vsize", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "nice", "type": "integer", "unit": "count", "optional": true},
+      {"name": "pss", "type": "integer", "unit": "bytes", "optional": true}
+    ],
+    "Sample": [
+      {"name": "at", "type": "epoch", "unit": "epoch_seconds", "optional": false},
+      {"name": "cpu_total", "type": "number", "unit": "percent", "optional": false},
+      {"name": "cpu_per_core", "type": "[number]", "unit": "percent", "optional": false},
+      {"name": "iowait", "type": "number", "unit": "percent", "optional": true},
+      {"name": "steal", "type": "number", "unit": "percent", "optional": true},
+      {"name": "guest", "type": "number", "unit": "percent", "optional": true},
+      {"name": "irq", "type": "number", "unit": "percent", "optional": true},
+      {"name": "softirq", "type": "number", "unit": "percent", "optional": true},
+      {"name": "ctxt", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "intr", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "running", "type": "integer", "unit": "count", "optional": true},
+      {"name": "blocked", "type": "integer", "unit": "count", "optional": true},
+      {"name": "mem", "type": "MemStat", "unit": "none", "optional": false},
+      {"name": "load", "type": "[number; 3]", "unit": "count", "optional": false},
+      {"name": "procs", "type": "[ProcSample]", "unit": "count", "optional": false},
+      {"name": "uptime", "type": "duration", "unit": "seconds", "optional": false},
+      {"name": "forks", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "io_supported", "type": "boolean", "unit": "none", "optional": false},
+      {"name": "io_collected", "type": "boolean", "unit": "none", "optional": false},
+      {"name": "io_denied", "type": "integer", "unit": "count", "optional": false},
+      {"name": "disks", "type": "[DiskStat]", "unit": "none", "optional": true},
+      {"name": "pressure", "type": "Pressure", "unit": "none", "optional": true},
+      {"name": "clock_ceiling", "type": "number", "unit": "percent", "optional": true},
+      {"name": "pgin", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "pgout", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "swin", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "swout", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "oom_kills", "type": "integer", "unit": "per_second", "optional": true},
+      {"name": "net", "type": "NetStat", "unit": "none", "optional": true},
+      {"name": "filesystems", "type": "[FsStat]", "unit": "none", "optional": true},
+      {"name": "tasks", "type": "[ThreadSample]", "unit": "none", "optional": true},
+      {"name": "exited", "type": "[ProcSample]", "unit": "none", "optional": true},
+      {"name": "cgroups", "type": "[CgroupStat]", "unit": "none", "optional": true},
+      {"name": "nodes", "type": "[NodeStat]", "unit": "none", "optional": true},
+      {"name": "nfs", "type": "NfsStat", "unit": "none", "optional": true}
+    ]
+  }
+}

@@ -1187,13 +1187,46 @@ row of its own, only its children's.
 poptop reports is an `f32`; widening one by a cast gives `51.70830535888672`,
 ten digits of arithmetic nobody measured.
 
+**The line format's grammar**, which `tests/export.rs` reads every export
+back by:
+
+```text
+stream  = { header | row }
+header  = "#" label { TAB column } NL     once per label, before its first row
+row     = label { TAB value } NL          exactly as many values as its header
+label   = "sample" { "." field }
+value   = "-" | number | "1" | "0" | text
+```
+
+`-` is absent. A boolean is `1` or `0`. Text holds no TAB, CR or LF: each is
+written as a space. Every sample's own `sample` row comes after the rows of
+the records inside it, so a reader can collect rows until it sees one. The
+format is lossy for text in exactly those three characters, and in one more
+case: an optional text field whose value is exactly `-` reads as absent. When
+text has to survive intact, use JSON. The test reads the line export of a
+recorded day and checks each value against the JSON export of the same day.
+
 **Stability.** The names are the store's field names, and the store's format is
 already versioned: a file written by another version is discarded rather than
 guessed at. The same promise applies here — within a version the names, units
 and shapes do not change, and `--schema` carries the version so a consumer can
-check rather than assume. Across versions fields may be added, and a consumer
-that ignores names it does not know will keep working; a field that is *removed*
-or *renamed* is a breaking change and will be one deliberately.
+check rather than assume.
+
+Across versions, what a consumer can rely on:
+
+- **Compatible:** a new field or a new record. A consumer that ignores names it
+  does not know keeps working. In the line format a new field is a new column,
+  so a consumer should find columns by the header's names, not by position.
+- **Breaking:** a field removed or renamed, its type or unit changed, a list
+  becoming a record or the reverse, or a field that was never `null` becoming
+  one in JSON. These happen deliberately, in a version that says so.
+
+The schema is checked into the repository as `tests/golden/schema.json`, and a
+test fails if `--schema` differs from it. Changing the schema means
+regenerating that file, so every change is a diff someone reviews against the
+list above. Every exported JSON sample in the tests, live and recorded, is
+validated against the schema the same binary prints: every field present,
+none extra, each of its declared type, and `null` only where it is optional.
 
 ### Opening yesterday
 
