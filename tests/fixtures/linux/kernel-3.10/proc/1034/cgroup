@@ -1,0 +1,5 @@
+5:pids:/user.slice/user-1001.slice/user@1001.service/user.slice/podman-pause-3438847193641814025.scope
+4:memory:/user.slice/user-1001.slice/user@1001.service/user.slice/podman-pause-3438847193641814025.scope
+3:cpu,cpuacct:/user.slice/user-1001.slice/user@1001.service/user.slice/podman-pause-3438847193641814025.scope
+2:blkio:/user.slice/user-1001.slice/user@1001.service/user.slice/podman-pause-3438847193641814025.scope
+1:name=systemd:/user.slice/user-1001.slice/user@1001.service/user.slice/podman-pause-3438847193641814025.scope

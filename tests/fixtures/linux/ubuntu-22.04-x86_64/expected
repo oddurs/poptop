@@ -1,0 +1,16 @@
+# Worked out from the recorded files by tests/fixtures/linux/record,
+# not by poptop. Checked by the Linux collector's fixture test.
+cores=4
+mem_total=16765407232
+mem_available=15767269376
+swap_total=3221221376
+load1=1.22
+uptime=863
+procs=152
+pressure=yes
+cgroup=v2
+page_size=4096
+pid1_name=systemd
+pid1_rss_pages=3188
+interfaces=enP41655s1,eth0,lo
+nfs=no

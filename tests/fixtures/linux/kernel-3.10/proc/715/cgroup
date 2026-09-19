@@ -1,0 +1,5 @@
+5:pids:/system.slice/rsyslog.service
+4:memory:/system.slice/rsyslog.service
+3:cpu,cpuacct:/system.slice/rsyslog.service
+2:blkio:/system.slice/rsyslog.service
+1:name=systemd:/system.slice/rsyslog.service

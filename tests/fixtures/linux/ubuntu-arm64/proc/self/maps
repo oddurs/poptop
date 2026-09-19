@@ -1,0 +1,31 @@
+ab3cdfbb0000-ab3cdfbb7000 r-xp 00000000 08:01 24063                      /usr/bin/cat
+ab3cdfbcf000-ab3cdfbd0000 r--p 0000f000 08:01 24063                      /usr/bin/cat
+ab3cdfbd0000-ab3cdfbd1000 rw-p 00010000 08:01 24063                      /usr/bin/cat
+ab3ce6d9b000-ab3ce6dbc000 rw-p 00000000 00:00 0                          [heap]
+ffb95d400000-ffb95d6eb000 r--p 00000000 08:01 7617                       /usr/lib/locale/locale-archive
+ffb95d815000-ffb95d837000 rw-p 00000000 00:00 0 
+ffb95d837000-ffb95d890000 r--p 00000000 08:01 7623                       /usr/lib/locale/C.utf8/LC_CTYPE
+ffb95d890000-ffb95da2a000 r-xp 00000000 08:01 6230                       /usr/lib/aarch64-linux-gnu/libc.so.6
+ffb95da2a000-ffb95da3d000 ---p 0019a000 08:01 6230                       /usr/lib/aarch64-linux-gnu/libc.so.6
+ffb95da3d000-ffb95da40000 r--p 0019d000 08:01 6230                       /usr/lib/aarch64-linux-gnu/libc.so.6
+ffb95da40000-ffb95da42000 rw-p 001a0000 08:01 6230                       /usr/lib/aarch64-linux-gnu/libc.so.6
+ffb95da42000-ffb95da4e000 rw-p 00000000 00:00 0 
+ffb95da4e000-ffb95da4f000 r--p 00000000 08:01 7628                       /usr/lib/locale/C.utf8/LC_NUMERIC
+ffb95da4f000-ffb95da50000 r--p 00000000 08:01 7631                       /usr/lib/locale/C.utf8/LC_TIME
+ffb95da50000-ffb95da51000 r--p 00000000 08:01 7622                       /usr/lib/locale/C.utf8/LC_COLLATE
+ffb95da51000-ffb95da78000 r-xp 00000000 08:01 6227                       /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+ffb95da78000-ffb95da79000 r--p 00000000 08:01 7626                       /usr/lib/locale/C.utf8/LC_MONETARY
+ffb95da79000-ffb95da7a000 r--p 00000000 08:01 7620                       /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+ffb95da7a000-ffb95da7b000 r--p 00000000 08:01 7629                       /usr/lib/locale/C.utf8/LC_PAPER
+ffb95da7b000-ffb95da7c000 r--p 00000000 08:01 7627                       /usr/lib/locale/C.utf8/LC_NAME
+ffb95da7c000-ffb95da7d000 r--p 00000000 08:01 7621                       /usr/lib/locale/C.utf8/LC_ADDRESS
+ffb95da7d000-ffb95da7e000 r--p 00000000 08:01 7630                       /usr/lib/locale/C.utf8/LC_TELEPHONE
+ffb95da7e000-ffb95da7f000 r--p 00000000 08:01 7625                       /usr/lib/locale/C.utf8/LC_MEASUREMENT
+ffb95da7f000-ffb95da86000 r--s 00000000 08:01 5142                       /usr/lib/aarch64-linux-gnu/gconv/gconv-modules.cache
+ffb95da86000-ffb95da87000 r--p 00000000 08:01 7624                       /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+ffb95da87000-ffb95da89000 rw-p 00000000 00:00 0 
+ffb95da89000-ffb95da8d000 r--p 00000000 00:00 0                          [vvar]
+ffb95da8d000-ffb95da8f000 r-xp 00000000 00:00 0                          [vdso]
+ffb95da8f000-ffb95da91000 r--p 0002e000 08:01 6227                       /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+ffb95da91000-ffb95da93000 rw-p 00030000 08:01 6227                       /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+ffffe66dc000-ffffe66fe000 rw-p 00000000 00:00 0                          [stack]

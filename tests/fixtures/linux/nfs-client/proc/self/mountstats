@@ -1,0 +1,34 @@
+device overlay mounted on / with fstype overlay
+device proc mounted on /proc with fstype proc
+device tmpfs mounted on /dev with fstype tmpfs
+device devpts mounted on /dev/pts with fstype devpts
+device sysfs mounted on /sys with fstype sysfs
+device cgroup mounted on /sys/fs/cgroup with fstype cgroup2
+device mqueue mounted on /dev/mqueue with fstype mqueue
+device shm mounted on /dev/shm with fstype tmpfs
+device mac mounted on /w with fstype virtiofs
+device /dev/vdb1 mounted on /tmp/t with fstype btrfs 
+device /dev/vdb1 mounted on /etc/resolv.conf with fstype btrfs 
+device /dev/vdb1 mounted on /etc/hostname with fstype btrfs 
+device /dev/vdb1 mounted on /etc/hosts with fstype btrfs 
+device /dev/vdb1 mounted on /usr/local/cargo/registry with fstype btrfs 
+device proc mounted on /proc/bus with fstype proc
+device proc mounted on /proc/fs with fstype proc
+device proc mounted on /proc/irq with fstype proc
+device proc mounted on /proc/sys with fstype proc
+device proc mounted on /proc/sysrq-trigger with fstype proc
+device tmpfs mounted on /proc/asound with fstype tmpfs
+device tmpfs mounted on /proc/interrupts with fstype tmpfs
+device tmpfs mounted on /proc/keys with fstype tmpfs
+device tmpfs mounted on /proc/timer_list with fstype tmpfs
+device tmpfs mounted on /sys/firmware with fstype tmpfs
+device 10.0.0.1:/export mounted on /mnt/data with fstype nfs4 statvers=1.1
+	opts:	rw,vers=4.2,rsize=1048576,wsize=1048576,proto=tcp,timeo=600,retrans=2
+	age:	12345
+	bytes:	900 800 0 0 4096 8192 1 2
+	RPC iostats version: 1.1  p/v: 100003/4 (nfs)
+	xprt:	tcp 0 0 1 0 5 1000 1000 0 1000 0 2 3 4
+	per-op statistics
+	        NULL: 1 1 0 44 24 0 4 8 0
+	     GETATTR: 100 104 0 1000 2000 0 296 400 0
+	       WRITE: 9 9 0 500 100 0 100 120 0

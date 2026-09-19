@@ -20,6 +20,7 @@
 //! arithmetic, not poptop's, and a parent will read higher than any one child
 //! rather than equal to the sum of the rows below it.
 
+use super::at;
 use crate::sample::{CgroupStat, Pressure, Stall};
 use std::collections::HashMap;
 use std::fs;
@@ -37,7 +38,7 @@ pub use super::{CGROUP_DEPTH as DEFAULT_DEPTH, CGROUP_MAX_NODES as MAX_NODES};
 /// cgroup v1 has no `cpu.stat` in this shape, no unified tree and no PSI, so
 /// there is nothing to walk. Saying so beats showing an empty table.
 pub fn v2_available() -> bool {
-    fs::metadata(format!("{ROOT}/cgroup.controllers")).is_ok()
+    fs::metadata(at(format!("{ROOT}/cgroup.controllers"))).is_ok()
 }
 
 /// Cumulative counters from the previous sample, for the ones that are rates.
@@ -73,7 +74,7 @@ fn parse_pressure(text: &str) -> Option<Stall> {
 }
 
 fn read_num(path: &str) -> Option<u64> {
-    fs::read_to_string(path).ok()?.trim().parse().ok()
+    fs::read_to_string(at(path)).ok()?.trim().parse().ok()
 }
 
 /// `usage_usec` from a `cpu.stat`.
@@ -141,7 +142,7 @@ pub fn read(prev: &mut Prev, elapsed_secs: f64, depth: u32) -> Vec<CgroupStat> {
         let dir = format!("{ROOT}{rel}");
 
         if d < depth
-            && let Ok(entries) = fs::read_dir(&dir)
+            && let Ok(entries) = fs::read_dir(at(&dir))
         {
             for e in entries.flatten() {
                 if e.file_type().is_ok_and(|t| t.is_dir())
@@ -153,7 +154,7 @@ pub fn read(prev: &mut Prev, elapsed_secs: f64, depth: u32) -> Vec<CgroupStat> {
         }
 
         let name: Arc<str> = Arc::from(if rel.is_empty() { "/" } else { rel.as_str() });
-        let cpu_usec = fs::read_to_string(format!("{dir}/cpu.stat"))
+        let cpu_usec = fs::read_to_string(at(format!("{dir}/cpu.stat")))
             .ok()
             .and_then(|t| parse_cpu_stat(&t));
         // A rate needs two readings. A node seen for the first time reports no
@@ -167,7 +168,7 @@ pub fn read(prev: &mut Prev, elapsed_secs: f64, depth: u32) -> Vec<CgroupStat> {
             seen_cpu.insert(name.clone(), now);
         }
 
-        let io = fs::read_to_string(format!("{dir}/io.stat"))
+        let io = fs::read_to_string(at(format!("{dir}/io.stat")))
             .ok()
             .map(|t| parse_io_stat(&t));
         let io_rate = io.and_then(|(r, w)| {
@@ -183,7 +184,7 @@ pub fn read(prev: &mut Prev, elapsed_secs: f64, depth: u32) -> Vec<CgroupStat> {
         }
 
         let pressure = |what: &str| {
-            fs::read_to_string(format!("{dir}/{what}.pressure"))
+            fs::read_to_string(at(format!("{dir}/{what}.pressure")))
                 .ok()
                 .and_then(|t| parse_pressure(&t))
         };
@@ -199,17 +200,17 @@ pub fn read(prev: &mut Prev, elapsed_secs: f64, depth: u32) -> Vec<CgroupStat> {
             path: name,
             depth: d,
             cpu,
-            cpu_max: fs::read_to_string(format!("{dir}/cpu.max"))
+            cpu_max: fs::read_to_string(at(format!("{dir}/cpu.max")))
                 .ok()
                 .and_then(|t| parse_cpu_max(&t)),
             mem: read_num(&format!("{dir}/memory.current")),
-            mem_max: fs::read_to_string(format!("{dir}/memory.max"))
+            mem_max: fs::read_to_string(at(format!("{dir}/memory.max")))
                 .ok()
                 .and_then(|t| t.trim().parse().ok()),
             read: io_rate.map(|(r, _)| r),
             write: io_rate.map(|(_, w)| w),
             pressure,
-            procs: fs::read_to_string(format!("{dir}/cgroup.procs"))
+            procs: fs::read_to_string(at(format!("{dir}/cgroup.procs")))
                 .ok()
                 .map(|t| t.lines().count() as u32),
         });

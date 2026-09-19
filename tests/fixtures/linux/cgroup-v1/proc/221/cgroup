@@ -1,0 +1,5 @@
+5:pids:/system.slice/multipathd.service
+4:memory:/system.slice/multipathd.service
+3:cpu,cpuacct:/system.slice/multipathd.service
+2:blkio:/system.slice/multipathd.service
+1:name=systemd:/system.slice/multipathd.service

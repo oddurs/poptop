@@ -1,0 +1,87 @@
+#!/bin/sh
+# Make a fixture for a machine that could not be recorded, from one that was.
+#
+#   tests/fixtures/linux/derive KIND RECORDED_DIR OUT_DIR
+#
+# KIND is one of:
+#
+#   kernel-3.10  what an old LTS kernel does not publish: no /proc/pressure
+#                (4.20), no MemAvailable (3.14), no smaps_rollup (4.14), and
+#                cgroup v1 (see below)
+#   cgroup-v1    the v1 hierarchy: one directory per controller under
+#                /sys/fs/cgroup, no cgroup.controllers, and v1 lines in
+#                /proc/<pid>/cgroup
+#   page-64k     a 64 KiB page size in the auxiliary vector, as arm64 kernels
+#                built with CONFIG_ARM64_64K_PAGES report it
+#   nfs-client   one NFSv4 mount, in /proc/mounts, /proc/self/mountstats and
+#                /proc/net/rpc/nfs, in the shapes the kernel writes them
+#
+# Each change is the documented difference and nothing more, and OUT_DIR/derived
+# says what it was derived from and how. A recorded fixture from such a machine
+# is better than any of these: `record` makes one.
+set -eu
+
+kind=${1:?usage: derive KIND RECORDED_DIR OUT_DIR}
+src=${2:?usage: derive KIND RECORDED_DIR OUT_DIR}
+out=${3:?usage: derive KIND RECORDED_DIR OUT_DIR}
+here=$(dirname "$0")
+[ -e "$out" ] && { echo "derive: $out exists" >&2; exit 1; }
+cp -R "$src" "$out"
+rm -f "$out/expected" "$out/derived"
+
+cgroup_v1() {
+    rm -rf "$out/sys/fs/cgroup"
+    for c in blkio cpu,cpuacct memory pids systemd; do
+        mkdir -p "$out/sys/fs/cgroup/$c"
+        touch "$out/sys/fs/cgroup/$c/.keep"
+    done
+    # `0::/path` becomes one line per hierarchy, as v1 writes them.
+    for f in "$out"/proc/[0-9]*/cgroup; do
+        [ -f "$f" ] || continue
+        perl -i -pe 's{^0::(.*)$}{5:pids:$1\n4:memory:$1\n3:cpu,cpuacct:$1\n2:blkio:$1\n1:name=systemd:$1}' "$f"
+    done
+}
+
+case $kind in
+kernel-3.10)
+    rm -rf "$out/proc/pressure"
+    perl -i -ne 'print unless /^MemAvailable:/' "$out/proc/meminfo"
+    rm -f "$out"/proc/[0-9]*/smaps_rollup
+    cgroup_v1
+    ;;
+cgroup-v1)
+    cgroup_v1
+    ;;
+page-64k)
+    # AT_PAGESZ (6) is a pair of 64-bit words in the auxiliary vector.
+    perl -e 'binmode STDIN; binmode STDOUT; local $/; my @v = unpack("Q<*", <STDIN>);
+        for (my $i = 0; $i < @v; $i += 2) { $v[$i + 1] = 65536 if $v[$i] == 6 }
+        print pack("Q<*", @v)' <"$src/proc/self/auxv" >"$out/proc/self/auxv"
+    ;;
+nfs-client)
+    echo "10.0.0.1:/export /mnt/data nfs4 rw,relatime,vers=4.2,rsize=1048576,wsize=1048576 0 0" \
+        >>"$out/proc/mounts"
+    printf '%s\n' \
+        "device 10.0.0.1:/export mounted on /mnt/data with fstype nfs4 statvers=1.1" \
+        "	opts:	rw,vers=4.2,rsize=1048576,wsize=1048576,proto=tcp,timeo=600,retrans=2" \
+        "	age:	12345" \
+        "	bytes:	900 800 0 0 4096 8192 1 2" \
+        "	RPC iostats version: 1.1  p/v: 100003/4 (nfs)" \
+        "	xprt:	tcp 0 0 1 0 5 1000 1000 0 1000 0 2 3 4" \
+        "	per-op statistics" \
+        "	        NULL: 1 1 0 44 24 0 4 8 0" \
+        "	     GETATTR: 100 104 0 1000 2000 0 296 400 0" \
+        "	       WRITE: 9 9 0 500 100 0 100 120 0" \
+        >>"$out/proc/self/mountstats"
+    mkdir -p "$out/proc/net/rpc"
+    printf 'net 0 0 0 0\nrpc 4096 17 4096\nproc4 69 0 0\n' >"$out/proc/net/rpc/nfs"
+    ;;
+*)
+    echo "derive: no kind $kind" >&2
+    exit 1
+    ;;
+esac
+
+"$here/record" --expected "$out"
+echo "derived from $(basename "$src") by: derive $kind" >"$out/derived"
+echo "derived $out"

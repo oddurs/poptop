@@ -4,6 +4,7 @@
 //! a delta between the previous read and this one, which is why the collector
 //! is stateful and why the very first sample reports zero busy time.
 
+use super::at;
 use super::{Collector, Needs, Source, cgroups, nfs, taskstats};
 
 /// Every optional source this backend reads.
@@ -328,7 +329,7 @@ struct StatRead {
 impl ProcFs {
     pub fn new() -> io::Result<Self> {
         let (page_size, notes) = read_page_size();
-        let io_supported = std::fs::File::open("/proc/self/io").is_ok();
+        let io_supported = std::fs::File::open(at("/proc/self/io")).is_ok();
         Ok(Self {
             io_supported,
             numa: Topology::new(),
@@ -528,7 +529,7 @@ impl ProcFs {
     /// same way the first sample's CPU is: a rate needs two reads, and the
     /// alternative is a graph that starts one sample later than every other.
     fn read_diskstats(&mut self, elapsed: Duration) -> Option<Vec<DiskStat>> {
-        let text = fs::read_to_string("/proc/diskstats").ok()?;
+        let text = fs::read_to_string(at("/proc/diskstats")).ok()?;
         Some(self.diskstats_from(&text, elapsed))
     }
 
@@ -581,7 +582,7 @@ impl ProcFs {
     /// a partial read means something stranger is happening than a missing
     /// config option, and half an answer is worse than none.
     fn read_pressure(&self) -> Option<Pressure> {
-        let one = |what: &str| fs::read_to_string(format!("/proc/pressure/{what}")).ok();
+        let one = |what: &str| fs::read_to_string(at(format!("/proc/pressure/{what}"))).ok();
         pressure_from(
             one("cpu").as_deref(),
             one("io").as_deref(),
@@ -599,13 +600,13 @@ impl ProcFs {
     fn read_nfs(&mut self, elapsed: Duration) -> Option<NfsStat> {
         let stats = read_lossy("/proc/self/mountstats")?;
         let mounts = nfs::parse_mountstats(&stats);
-        let server = fs::read_to_string("/proc/net/rpc/nfsd")
+        let server = fs::read_to_string(at("/proc/net/rpc/nfsd"))
             .ok()
             .and_then(|t| nfs::parse_rpc_nfsd(&t));
         // `None` here is "this machine has no NFS", which `step` treats as a
         // reason to forget the last reading rather than to keep it.
         let now = (!mounts.is_empty() || server.is_some()).then(|| {
-            let (client_calls, client_retrans) = fs::read_to_string("/proc/net/rpc/nfs")
+            let (client_calls, client_retrans) = fs::read_to_string(at("/proc/net/rpc/nfs"))
                 .ok()
                 .and_then(|t| nfs::parse_rpc_nfs(&t))
                 .unwrap_or((0, 0));
@@ -632,8 +633,8 @@ impl ProcFs {
         // does not publish retransmits and one reporting none are opposite
         // answers, and only `/proc/net/dev` is required for the rest to mean
         // anything.
-        let snmp = fs::read_to_string("/proc/net/snmp").unwrap_or_default();
-        let netstat = fs::read_to_string("/proc/net/netstat").unwrap_or_default();
+        let snmp = fs::read_to_string(at("/proc/net/snmp")).unwrap_or_default();
+        let netstat = fs::read_to_string(at("/proc/net/netstat")).unwrap_or_default();
         Some(self.net_from(&dev, &snmp, &netstat, elapsed))
     }
 
@@ -825,11 +826,13 @@ impl ProcFs {
             // `btime` in `/proc/stat` is the epoch second the machine booted.
             // Exact, and read once: a derivation from `uptime` would drift by
             // however long this sample took.
-            self.boot_epoch = std::fs::read_to_string("/proc/stat").ok().and_then(|s| {
-                s.lines()
-                    .find_map(|l| l.strip_prefix("btime "))
-                    .and_then(|v| v.trim().parse().ok())
-            });
+            self.boot_epoch = std::fs::read_to_string(at("/proc/stat"))
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find_map(|l| l.strip_prefix("btime "))
+                        .and_then(|v| v.trim().parse().ok())
+                });
         }
         if self.exits.is_none() && self.exits_why.is_none() {
             match taskstats::Listener::open() {
@@ -938,7 +941,7 @@ impl ProcFs {
         let mut seen_tasks = HashMap::new();
         let elapsed_secs = elapsed.as_secs_f64();
 
-        for entry in fs::read_dir("/proc")? {
+        for entry in fs::read_dir(at("/proc"))? {
             let Ok(entry) = entry else { continue };
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
@@ -1098,7 +1101,9 @@ fn read_tasks(
 ) {
     path.clear();
     let _ = write!(path, "/proc/{pid}/task");
-    let Ok(dir) = fs::read_dir(&path) else { return };
+    let Ok(dir) = fs::read_dir(at(&path)) else {
+        return;
+    };
     for entry in dir {
         let Ok(entry) = entry else { continue };
         let name = entry.file_name();
@@ -1260,7 +1265,7 @@ fn read_proc_io(
 /// individually cost 15us and 128 cost 150us, against a whole sample of about
 /// 630us. Per policy it is a rounding error on any machine.
 fn nominal_clocks() -> Vec<(String, u64)> {
-    let Ok(dir) = fs::read_dir(format!("{CPUFREQ}/cpufreq")) else {
+    let Ok(dir) = fs::read_dir(at(format!("{CPUFREQ}/cpufreq"))) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -1270,7 +1275,7 @@ fn nominal_clocks() -> Vec<(String, u64)> {
             continue;
         };
         let path = format!("{CPUFREQ}/cpufreq/{name}/cpuinfo_max_freq");
-        if let Some(khz) = fs::read_to_string(&path)
+        if let Some(khz) = fs::read_to_string(at(&path))
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .filter(|k| *k > 0)
@@ -1480,7 +1485,7 @@ fn stat_text(raw: &[u8]) -> std::borrow::Cow<'_, str> {
 /// because this is what `signal` checks immediately before sending: a sample
 /// is up to an interval old, and a pid can be handed on inside one.
 pub fn start_of(pid: i32) -> Option<u64> {
-    let raw = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+    let raw = std::fs::read(at(format!("/proc/{pid}/stat"))).ok()?;
     start_in(&stat_text(&raw))
 }
 
@@ -1942,7 +1947,9 @@ const FS_BAVAIL: usize = 32;
 /// asked.
 #[cfg(target_pointer_width = "64")]
 fn statfs_at(mount: &str) -> Option<(u64, u64)> {
-    let path = std::ffi::CString::new(mount).ok()?;
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = at(mount);
+    let path = std::ffi::CString::new(AsRef::<Path>::as_ref(&path).as_os_str().as_bytes()).ok()?;
     let mut buf = [0u8; STATFS_BUF];
     // SAFETY: `path` is NUL-terminated and outlives the call. `buf` is 256
     // writable bytes, and the kernel writes `sizeof(struct statfs)`, which is
@@ -2108,7 +2115,7 @@ const SECTOR: u64 = 512;
 /// `sysfs` — and [`ProcFs::is_whole_device`] treats that as "cannot tell", which
 /// keeps every device rather than silently dropping them all.
 fn read_block_devices() -> std::collections::HashSet<Arc<str>> {
-    fs::read_dir("/sys/block")
+    fs::read_dir(at("/sys/block"))
         .into_iter()
         .flatten()
         .flatten()
@@ -2136,7 +2143,7 @@ fn read_block_devices() -> std::collections::HashSet<Arc<str>> {
 /// all: the two files are read microseconds apart and RSS moves in between,
 /// which measured 4084 against a real 4096.
 fn read_page_size() -> (u64, Vec<String>) {
-    page_size_from(std::fs::read("/proc/self/auxv").ok().as_deref())
+    page_size_from(std::fs::read(at("/proc/self/auxv")).ok().as_deref())
 }
 
 /// The file split out, so the fallback can be tested on a machine that can read
@@ -2205,7 +2212,7 @@ fn read_into<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b str> {
 /// it. Lossy, the odd name is wrong (and the mount behind it fails its
 /// `statfs` and is left out) and everything else in the file is read.
 fn read_lossy(path: &str) -> Option<String> {
-    fs::read(path)
+    fs::read(at(path))
         .ok()
         .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
@@ -2229,7 +2236,7 @@ fn read_bytes<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b [u8]> {
 /// the collector's shared buffer and it ratchets up and never shrinks — would
 /// leave every later read in the sample carrying that allocation.
 fn read_capped<'b>(path: &str, buf: &'b mut Vec<u8>, cap: usize) -> io::Result<&'b [u8]> {
-    let mut f = File::open(path)?;
+    let mut f = File::open(at(path))?;
     if buf.len() < READ_BUF {
         buf.resize(READ_BUF, 0);
     }
@@ -2275,7 +2282,7 @@ fn parse_proc_io(text: &str) -> Option<(u64, u64)> {
 /// back to their numeric form at lookup time.
 fn parse_passwd() -> HashMap<u32, Arc<str>> {
     let mut map = HashMap::new();
-    if let Ok(text) = fs::read_to_string("/etc/passwd") {
+    if let Ok(text) = fs::read_to_string(at("/etc/passwd")) {
         for line in text.lines() {
             let mut f = line.split(':');
             let (Some(name), Some(_pw), Some(uid)) = (f.next(), f.next(), f.next()) else {
@@ -4482,7 +4489,7 @@ fn read_nodes_in(
     core_ids: &[u32],
 ) -> Option<Vec<NodeStat>> {
     let nodes = topology.get_or_init(|| {
-        let mut ids: Vec<u32> = fs::read_dir(root)
+        let mut ids: Vec<u32> = fs::read_dir(at(root))
             .into_iter()
             .flatten()
             .flatten()
@@ -4496,7 +4503,7 @@ fn read_nodes_in(
         }
         ids.into_iter()
             .map(|id| {
-                let cpus = fs::read_to_string(root.join(format!("node{id}")).join("cpulist"))
+                let cpus = fs::read_to_string(at(root.join(format!("node{id}")).join("cpulist")))
                     .map(|l| cpu_list(&l))
                     .unwrap_or_default();
                 (id, cpus)
@@ -4509,7 +4516,8 @@ fn read_nodes_in(
     let stats: Vec<NodeStat> = nodes
         .iter()
         .filter_map(|(id, cpus)| {
-            let mem = fs::read_to_string(root.join(format!("node{id}")).join("meminfo")).ok()?;
+            let mem =
+                fs::read_to_string(at(root.join(format!("node{id}")).join("meminfo"))).ok()?;
             parse_node_meminfo(*id, &mem, node_cpu(cpus, per_core, core_ids))
         })
         .collect();
@@ -4896,5 +4904,150 @@ mod mangled {
         let row = sample.procs.iter().find(|p| p.pid == pid);
         let row = row.unwrap_or_else(|| panic!("pid {pid} is missing from the table"));
         assert!(row.name.ends_with("hidden"), "{:?}", row.name);
+    }
+}
+
+/// The collector against machines other than the one running the tests.
+///
+/// Each directory in `tests/fixtures/linux` is the `/proc`, `/sys` and
+/// `/etc/passwd` files poptop read on one machine, recorded by
+/// `tests/fixtures/linux/record`, with `expected` beside them: facts worked out
+/// from those files by awk rather than by poptop. See the README there for
+/// which are recorded and which are derived from a recorded one.
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+    use crate::collect::{Collector, FIXTURE_ROOT, Needs, Source};
+    use std::path::PathBuf;
+
+    fn trees() -> Vec<PathBuf> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/linux");
+        let mut out: Vec<PathBuf> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("expected").is_file())
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn expected(tree: &Path) -> HashMap<String, String> {
+        fs::read_to_string(tree.join("expected"))
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// Two samples from the tree, the second of which is checked: rates need
+    /// a first to difference against, and a static tree gives zero for them.
+    fn sample_of(tree: &Path) -> Sample {
+        FIXTURE_ROOT.with(|r| *r.borrow_mut() = Some(tree.to_path_buf()));
+        // Everything poptop can be asked for but exit records, which come
+        // from a netlink socket and not from a file.
+        let needs = Source::ALL
+            .into_iter()
+            .filter(|s| *s != Source::Exited)
+            .fold(Needs::NONE, |n, s| n.with(s));
+        let mut c = ProcFs::new().unwrap();
+        let first = c.sample(needs);
+        let second = c.sample(needs);
+        FIXTURE_ROOT.with(|r| *r.borrow_mut() = None);
+        first.unwrap();
+        second.unwrap()
+    }
+
+    #[test]
+    fn there_are_fixtures_to_read() {
+        assert!(trees().len() >= 5, "{:?}", trees());
+    }
+
+    #[test]
+    fn every_fixture_reads_as_its_files_say() {
+        for tree in trees() {
+            let name = tree.file_name().unwrap().to_string_lossy().into_owned();
+            let want = expected(&tree);
+            let get = |k: &str| {
+                want.get(k)
+                    .unwrap_or_else(|| panic!("{name}: no `{k}` in expected"))
+                    .clone()
+            };
+            let num = |k: &str| get(k).parse::<u64>().unwrap();
+            let s = sample_of(&tree);
+
+            assert_eq!(s.cpu_per_core.len() as u64, num("cores"), "{name}: cores");
+            assert_eq!(s.mem.total, num("mem_total"), "{name}: memory");
+            assert_eq!(s.mem.available, num("mem_available"), "{name}: available");
+            assert_eq!(s.mem.swap_total, num("swap_total"), "{name}: swap");
+            let load1: f64 = get("load1").parse().unwrap();
+            assert!(
+                (s.load[0] - load1).abs() < 0.005,
+                "{name}: load {}",
+                s.load[0]
+            );
+            assert_eq!(s.uptime.as_secs(), num("uptime"), "{name}: uptime");
+            assert_eq!(s.procs.len() as u64, num("procs"), "{name}: processes");
+
+            // The page size, through the one figure it multiplies: pid 1's
+            // resident memory. 0023 was this being wrong on 64k pages.
+            if let Some(pid1) = want.get("pid1_name") {
+                let p = s
+                    .procs
+                    .iter()
+                    .find(|p| p.pid == 1)
+                    .unwrap_or_else(|| panic!("{name}: no pid 1"));
+                assert_eq!(&*p.name, pid1, "{name}: pid 1's name");
+                assert_eq!(
+                    p.rss,
+                    num("pid1_rss_pages") * num("page_size"),
+                    "{name}: pid 1's memory"
+                );
+            }
+
+            let mut links: Vec<&str> = s
+                .net
+                .as_ref()
+                .map(|n| n.links.iter().map(|l| &*l.name).collect())
+                .unwrap_or_default();
+            links.sort();
+            assert_eq!(links.join(","), get("interfaces"), "{name}: interfaces");
+
+            // A subsystem the machine does not have is absent, not zero.
+            match get("pressure").as_str() {
+                "yes" => assert!(s.pressure.is_some(), "{name}: pressure unread"),
+                _ => assert!(s.pressure.is_none(), "{name}: pressure invented"),
+            }
+            match get("cgroup").as_str() {
+                "v2" => assert!(
+                    s.cgroups.as_ref().is_some_and(|c| !c.is_empty()),
+                    "{name}: cgroups unread"
+                ),
+                _ => assert!(
+                    s.cgroups.as_ref().is_none_or(|c| c.is_empty()),
+                    "{name}: cgroups invented"
+                ),
+            }
+            match get("nfs").as_str() {
+                "yes" => assert!(
+                    s.nfs.as_ref().is_some_and(|n| !n.mounts.is_empty()),
+                    "{name}: NFS unread"
+                ),
+                _ => assert!(
+                    s.nfs.as_ref().is_none_or(|n| n.mounts.is_empty()),
+                    "{name}: NFS invented"
+                ),
+            }
+            // Proportional memory where the kernel publishes smaps_rollup
+            // (4.14 and later), and nothing rather than zero where it does not.
+            for p in &s.procs {
+                let has = tree.join(format!("proc/{}/smaps_rollup", p.pid)).is_file();
+                if !has {
+                    assert_eq!(p.pss, None, "{name}: pid {} has a PSS from nowhere", p.pid);
+                }
+            }
+        }
     }
 }
