@@ -11,3 +11,7 @@ Before tagging a version:
 3. **The schema.** If `tests/golden/schema.json` changed since the last
    release, the change is listed in the release notes as compatible or
    breaking, by the rules under "Stability" in the README.
+4. **The numbers.** `validate/run` agrees on every metric, on Linux and on
+   macOS: run it on each, or run the `validate` workflow. Keep the output in
+   `validate/results/` when it says something new, and fix or file every
+   disagreement before tagging.

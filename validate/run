@@ -1,0 +1,227 @@
+#!/bin/sh
+# Check poptop's numbers against other tools reading the same machine at the
+# same moment, under a load whose size is known.
+#
+#   validate/run [POPTOP_BINARY]        default: target/release/poptop
+#
+# The tests show poptop agrees with itself. This is the check that it agrees
+# with the machine: 0023, 0024 and 0027 were each consistent and wrong. It
+# starts known loads (two busy loops, 256 MiB held by one process, a disk
+# writer, loopback traffic), takes `poptop --export=line` over a window, runs
+# the platform's own tools over the same window, and prints every metric with
+# the reference it was compared to, the tolerance, and why that tolerance.
+# Exit status is the number of metrics that disagree.
+#
+# Linux: free, vmstat, ps, top, getconf, perl. macOS: sysctl,
+# memory_pressure, iostat, netstat, ps, top, perl. Nothing needs root. Takes about fifteen
+# seconds.
+set -eu
+# VALIDATE_TRACE=1 prints every command with the time it ran.
+if [ -n "${VALIDATE_TRACE:-}" ]; then PS4='+ $(date +%T) '; set -x; fi
+
+bin=${1:-target/release/poptop}
+[ -x "$bin" ] || { echo "validate: no poptop at $bin (cargo build --release)" >&2; exit 2; }
+os=$(uname -s)
+tmp=$(mktemp -d)
+pids=""
+cleanup() {
+    for p in $pids; do kill "$p" 2>/dev/null || true; done
+    rm -rf "$tmp"
+}
+trap cleanup EXIT INT TERM
+
+WINDOW=3
+bad=0
+
+# A value from poptop's line export: `get LABEL COLUMN [KEYCOL KEYVAL]`. The
+# header names the columns, so nothing here depends on their order.
+get() {
+    awk -F '\t' -v label="$1" -v col="$2" -v kc="${3:-}" -v kv="${4:-}" '
+        $1 == "#" label { for (i = 2; i <= NF; i++) h[$i] = i; next }
+        $1 == label && (kc == "" || $h[kc] == kv) { print $h[col]; exit }
+    ' "$tmp/poptop"
+}
+
+# `row METRIC POPTOP REFERENCE TOLERANCE WHY [REFERENCE_NAME]`, where
+# TOLERANCE is `N` (absolute) or `N%` (of the reference).
+row() {
+    verdict=$(awk -v a="$2" -v b="$3" -v t="$4" 'BEGIN {
+        if (a == "" || a == "-" || b == "") { print "MISSING"; exit }
+        d = a - b; if (d < 0) d = -d
+        if (t ~ /%$/) { lim = (substr(t, 1, length(t) - 1) / 100) * (b < 0 ? -b : b) }
+        else lim = t
+        print (d <= lim) ? "ok" : "DISAGREES"
+    }')
+    printf '%-34s %16s %16s %8s  %-9s %s\n' "$1" "$2" "$3" "$4" "$verdict" "$5"
+    [ "$verdict" = ok ] || bad=$((bad + 1))
+}
+
+# ── the loads ─────────────────────────────────────────────────────────────
+sh -c 'while :; do :; done' & burn1=$!; pids="$pids $burn1"
+sh -c 'while :; do :; done' & burn2=$!; pids="$pids $burn2"
+# Random bytes, not a repeated one: macOS compresses a page of one byte to
+# almost nothing, and a run of "a" held in memory read as 2 MB resident.
+# It says when it holds them: reading 256 MiB of random takes seconds.
+READY=$tmp/ready perl -e 'open my $f, "<", "/dev/urandom" or die;
+    read $f, my $x, 256 * 1024 * 1024; open my $r, ">", $ENV{READY}; close $r; sleep 120' &
+hog=$!
+pids="$pids $hog"
+if [ "$os" = Linux ]; then
+    # Direct, so what is written reaches the device inside the window, and
+    # the per-process figure (write_bytes, what reached storage) and the
+    # file's growth describe the same bytes.
+    # At most 4 GiB: a fast disk writes that in well under the window's
+    # lead-in and length, and an uncapped one filled 92 GB on a runner.
+    dd if=/dev/zero of="$tmp/disk" bs=1M count=4096 oflag=direct 2>/dev/null & disk=$!
+    pids="$pids $disk"
+fi
+# Loopback traffic, sent and received by perl: nc differs between the two
+# platforms in ways that ended the transfer before the window opened.
+perl -MIO::Socket::INET -e '
+    my $l = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 47311,
+        Listen => 1, ReuseAddr => 1) or die;
+    if (fork) { my $c = $l->accept; my $b; 1 while sysread $c, $b, 65536; exit }
+    my $s = IO::Socket::INET->new("127.0.0.1:47311") or die;
+    # 64 KiB a millisecond, about 64 MB/s: enough to measure, not so much
+    # that it takes the cores the busy loops are measured on.
+    my $z = "\0" x 65536; while (syswrite $s, $z) { select undef, undef, undef, 0.001 }' 2>/dev/null &
+net=$!
+pids="$pids $net"
+sleep 2 # let every load reach its pace
+while [ ! -e "$tmp/ready" ]; do sleep 0.2; done
+
+# ── one window, poptop and the references side by side ────────────────────
+# From the inode: `wc -c` read the whole file to count it, which on a runner
+# was 92 GB and seven minutes.
+size() { stat -c %s "$1" 2>/dev/null || echo 0; }
+[ "$os" = Linux ] && disk0=$(size "$tmp/disk") && t0=$(date +%s.%N)
+if [ "$os" = Linux ]; then
+    vmstat "$WINDOW" 2 >"$tmp/vmstat" &
+    ref=$!
+else
+    iostat -n0 -C -c 2 -w "$WINDOW" >"$tmp/iostat" &
+    ref=$!
+fi
+# top over the same window: its second report covers the interval since its
+# first, where ps's %cpu is the lifetime average.
+if [ "$os" = Linux ]; then
+    top -b -n 2 -d "$WINDOW" -p "$burn1" >"$tmp/top" &
+else
+    top -l 2 -s "$WINDOW" -pid "$burn1" -stats pid,cpu >"$tmp/top" &
+fi
+tops=$!
+lo=lo; [ "$os" = Darwin ] && lo=lo0
+lo_bytes() {
+    if [ "$os" = Linux ]; then
+        awk -v n="$lo:" '$1 == n { print $2 }' /proc/net/dev
+    else
+        # The link row has no address, so Ibytes is counted from the end.
+        netstat -ib -I "$lo" | awk '/<Link/ { print $(NF - 4); exit }'
+    fi
+}
+lo0=$(lo_bytes); lt0=$(date +%s)
+"$bin" --export=line --interval="${WINDOW}s" >"$tmp/poptop"
+lo1=$(lo_bytes); lt1=$(date +%s)
+wait "$ref" "$tops"
+[ "$os" = Linux ] && disk1=$(size "$tmp/disk") && t1=$(date +%s.%N)
+if [ "$os" = Linux ]; then
+    top_burn=$(awk -v p="$burn1" '$1 == p { v = $9 } END { print v }' "$tmp/top")
+else
+    top_burn=$(awk -v p="$burn1" '$1 == p { v = $2 } END { print v }' "$tmp/top")
+fi
+
+echo "poptop validation, $(date '+%Y-%m-%d %H:%M'), $(uname -srm)"
+echo "$("$bin" --version), window ${WINDOW}s"
+echo
+printf '%-34s %16s %16s %8s  %-9s %s\n' metric poptop reference tolerance verdict why
+echo
+
+# ── the machine ───────────────────────────────────────────────────────────
+cores=$(get sample.cpu_per_core 0 >/dev/null; awk -F '\t' '$1 == "sample.cpu_per_core" { print NF - 1; exit }' "$tmp/poptop")
+row "cores" "$cores" "$(getconf _NPROCESSORS_ONLN)" 0 "a count; nothing to round"
+
+if [ "$os" = Linux ]; then
+    free -b >"$tmp/free"
+    row "memory total, bytes" "$(get sample.mem total)" "$(awk '/^Mem:/ { print $2 }' "$tmp/free")" 0 \
+        "the same MemTotal, read by free"
+    row "memory available, bytes" "$(get sample.mem available)" "$(awk '/^Mem:/ { print $7 }' "$tmp/free")" 3% \
+        "moves between the two reads"
+    row "swap used, bytes" "$(get sample.mem swap_used)" "$(awk '/^Swap:/ { print $3 }' "$tmp/free")" "67108864" \
+        "moves between the two reads; 64 MiB"
+    row "uptime, s" "$(get sample uptime | cut -d. -f1)" "$(cut -d. -f1 /proc/uptime)" 5 \
+        "read seconds apart"
+else
+    row "memory total, bytes" "$(get sample.mem total)" "$(sysctl -n hw.memsize)" 0 \
+        "hw.memsize, the figure sysinfo reads"
+    # The kernel's own answer: memory_pressure's "free percentage" is XNU's
+    # available-memory figure (active + inactive + free + speculative, per
+    # its memorystatus documentation), which is what sysinfo reads too. A
+    # sum of vm_stat's free, inactive and purgeable pages is a different
+    # definition, and disagreed by half: that was this script's mistake.
+    avail=$(memory_pressure | awk -v t="$(sysctl -n hw.memsize)" \
+        '/free percentage/ { sub(/%/, "", $NF); printf "%.0f", $NF / 100 * t }')
+    row "memory available, bytes" "$(get sample.mem available)" "$avail" 5% \
+        "memory_pressure's free percentage, a whole percent"
+    swap=$(sysctl -n vm.swapusage | awk '{ v = $6; u = substr(v, length(v)); v += 0
+        if (u == "G") v *= 1024; printf "%.0f", v * 1048576 }')
+    row "swap used, bytes" "$(get sample.mem swap_used)" "$swap" 67108864 \
+        "vm.swapusage, rounded to 0.01M; 64 MiB"
+    boot=$(sysctl -n kern.boottime | sed 's/^{ sec = \([0-9]*\),.*/\1/')
+    row "uptime, s" "$(get sample uptime | cut -d. -f1)" "$(($(date +%s) - boot))" 5 \
+        "kern.boottime; read seconds apart"
+fi
+
+nps=$(ps -A -o pid= | wc -l | tr -d ' ')
+row "processes" "$(awk -F '\t' '$1 == "sample.procs" { n++ } END { print n }' "$tmp/poptop")" \
+    "$nps" "$(awk -v n="$nps" 'BEGIN { t = n * 0.05; print (t > 3) ? int(t) : 3 }')" \
+    "5% or 3: processes come and go, and ps and its shell are two of them"
+
+# ── the loads, measured ───────────────────────────────────────────────────
+# Held only where there was a core to spare: on a saturated machine a loop
+# that never sleeps still gets less than one, and top agreeing is the check.
+if awk -v c="$(get sample cpu_total)" 'BEGIN { exit !(c < 75) }'; then
+    row "a busy loop, % of a core" "$(get sample.procs cpu pid "$burn1")" 100 15 \
+        "known: it never sleeps, and the machine had a core to spare"
+else
+    printf '%-34s %16s %16s %8s  %-9s %s\n' "a busy loop, % of a core" \
+        "$(get sample.procs cpu pid "$burn1")" 100 15 skipped \
+        "the machine was saturated, so a whole core was not on offer"
+fi
+row "the same loop, against top" "$(get sample.procs cpu pid "$burn1")" "$top_burn" 15 \
+    "top's own interval, the same window"
+if [ "$os" = Linux ]; then
+    # us + sy. Not 100 - id, which counts waiting on IO as busy: poptop
+    # reports iowait on a line of its own, and the disk writer makes plenty.
+    ref_cpu=$(tail -1 "$tmp/vmstat" | awk '{ print $13 + $14 }')
+    ref_name="vmstat, user + system"
+else
+    ref_cpu=$(tail -1 "$tmp/iostat" | awk '{ print $1 + $2 }')
+    ref_name="iostat, user + system"
+fi
+row "CPU, whole machine %" "$(get sample cpu_total)" "$ref_cpu" 10 "$ref_name, same window"
+hog_rss=$(get sample.procs rss pid "$hog")
+row "256 MiB held, bytes" "$hog_rss" "$(($(ps -o rss= -p "$hog" | tr -d ' ') * 1024))" 2% \
+    "ps rss, a moment later"
+# Known in size, not in residence: under memory pressure the kernel may page
+# it out, so resident is compared with ps, and the known size with virtual.
+row "256 MiB held, virtual at least" \
+    "$(awk -v r="$(get sample.procs vsize pid "$hog")" 'BEGIN {
+        if (r == "" || r == "-") print "-"; else print (r >= 268435456) ? 1 : 0 }')" 1 0 \
+    "known: it read 256 MiB into one string"
+
+if [ "$os" = Linux ]; then
+    i=$(awk -F '\t' -v p="$disk" '$1 == "#sample.procs" { for (c = 2; c <= NF; c++) h[$c] = c }
+        $1 == "sample.procs" && $h["pid"] == p { print $h["i"] }' "$tmp/poptop")
+    written=$(get sample.procs.io write i "$i")
+    grew=$(awk -v a="$disk0" -v b="$disk1" -v s="$t0" -v e="$t1" 'BEGIN { printf "%.0f", (b - a) / (e - s) }')
+    row "direct writes, bytes/s" "$written" "$grew" 25% \
+        "the file's growth over a longer window than poptop's"
+fi
+
+row "loopback received, bytes/s" "$(get sample.net.links rx name "$lo")" \
+    "$(awk -v a="$lo0" -v b="$lo1" -v s="$lt0" -v e="$lt1" 'BEGIN { printf "%.0f", (b - a) / (e - s) }')" 30% \
+    "the interface's own counter, over a window read to the second"
+
+echo
+[ "$bad" = 0 ] && echo "every metric agrees" || echo "$bad metrics disagree"
+exit "$bad"

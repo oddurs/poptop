@@ -451,8 +451,9 @@ is unchanged — the cap is 64 MB — but it is the largest single increase any 
 these fields has cost, and every optional pays its tag byte whether or not the
 platform answers it.
 
-Not on macOS: sysinfo publishes no PSS, virtual size or fault counts, so those
-three are em dashes rather than zeros. `GROW` works there — it is derived from
+Not on macOS: sysinfo publishes no PSS or fault counts, so those are em dashes
+rather than zeros. Virtual size is read from `proc_taskinfo` with the thread
+count, for the processes you own. `GROW` works there — it is derived from
 RSS, which sysinfo does publish.
 
 ### What the table shows

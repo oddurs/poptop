@@ -1,0 +1,20 @@
+poptop validation, 2026-09-19 14:15, Linux 7.0.14-orbstack-00380-ga7e0a2dc9535 aarch64
+poptop 0.1.0, window 3s
+
+metric                                       poptop        reference tolerance  verdict   why
+
+cores                                            10               10        0  ok        a count; nothing to round
+memory total, bytes                      8393289728       8393289728        0  ok        the same MemTotal, read by free
+memory available, bytes                  7459913728       7458783232       3%  ok        moves between the two reads
+swap used, bytes                                  0                0 67108864  ok        moves between the two reads; 64 MiB
+uptime, s                                    130034           130034        5  ok        read seconds apart
+processes                                        10               12        3  ok        5% or 3: processes come and go, and ps and its shell are two of them
+a busy loop, % of a core                   99.82074              100       15  ok        known: it never sleeps, and the machine had a core to spare
+the same loop, against top                 99.82074            100.0       15  ok        top's own interval, the same window
+CPU, whole machine %                      27.766253               28       10  ok        vmstat, user + system, same window
+256 MiB held, bytes                       272613376        272711680       2%  ok        ps rss, a moment later
+256 MiB held, virtual at least                    1                1        0  ok        known: it read 256 MiB into one string
+direct writes, bytes/s                    489617420        504672673      25%  ok        the file's growth over a longer window than poptop's
+loopback received, bytes/s                 26556478         26868028      30%  ok        the interface's own counter, over a window read to the second
+
+every metric agrees

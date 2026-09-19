@@ -244,6 +244,7 @@ impl Collector for SysinfoCollector {
             .iter()
             .map(|(pid, p)| {
                 let id = pid.as_u32() as i32;
+                let task = procinfo::task(id);
                 let started = match &starts {
                     Some(table) => table.get(&id).copied(),
                     // No usable `kinfo_proc`. sysinfo counts whole seconds, so
@@ -275,7 +276,7 @@ impl Collector for SysinfoCollector {
                     // sysinfo exposes tasks only on Linux, so this is read
                     // directly — a flat `1` beside a CPU figure of several
                     // hundred percent was the table contradicting itself.
-                    threads: procinfo::threads(id),
+                    threads: task.map(|t| t.threads),
                     state: status_char(p.status()),
                     started,
                     // Free here: `refresh_processes` already reads `argv`, so
@@ -295,7 +296,11 @@ impl Collector for SysinfoCollector {
                     container: None,
                     minflt: None,
                     majflt: None,
-                    vsize: None,
+                    // From the same `proc_taskinfo` as the thread count.
+                    // It was `None` here, on a note that sysinfo publishes no
+                    // virtual size, until checking poptop against `ps` found
+                    // the figure already in hand.
+                    vsize: task.map(|t| t.vsize),
                     nice: None,
                     pss: None,
                     io: needs

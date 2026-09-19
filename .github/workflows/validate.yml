@@ -1,0 +1,33 @@
+name: validate
+
+# poptop's numbers against other tools on the same machine, under a known
+# load: validate/run. Before a release (RELEASING.md), by hand or by pushing
+# a branch of this name. The output is kept as an artifact, and a
+# disagreement fails the job.
+on:
+  workflow_dispatch:
+  push:
+    branches: [validate]
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release
+      - name: validate/run
+        env:
+          VALIDATE_TRACE: ${{ github.ref == 'refs/heads/validate' && '1' || '' }}
+        run: |
+          set -o pipefail
+          validate/run target/release/poptop | tee "validate-${{ matrix.os }}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validate-${{ matrix.os }}
+          path: validate-${{ matrix.os }}.txt
