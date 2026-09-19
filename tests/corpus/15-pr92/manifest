@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=c5087be63e37395a2f3662f3501aede5b74dca4e
+subject=feat(log): history that outlives the process, addressable by date (#92)
+format=15
+store_samples=1
+log_samples=2
+cores=10
+mem_total=8393289728
+written_from=1789824833
+written_to=1789824838

@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=db158463de221f815a8d1c4fa061adbd1711d177
+subject=NUMA: per-node memory and CPU, on machines that have more than one node (#89)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824812
+written_to=1789824815

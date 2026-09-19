@@ -1,0 +1,82 @@
+#!/bin/sh
+# Write the files one version of poptop writes, for the corpus that holds
+# today's poptop to the promise of reading them.
+#
+#   tests/corpus/write COMMIT LABEL
+#
+# Exports poptop as it was at COMMIT and, in a Linux container, builds it and
+# runs it in an empty home: once on a terminal with --store=on, quitting before
+# a second sample, so the store holds exactly one; and, where that version has
+# a day log, `--once --log=on` twice, so the day holds exactly two. Then writes
+# tests/corpus/LABEL/manifest: what was run, and facts about the machine that
+# wrote it (cores, memory) taken from /proc, not from poptop.
+#
+# In a container, because a store is a whole process table: written on your
+# own machine it would carry every command line you were running, and this
+# repository is public. Needs docker. A minute or so a version.
+set -eu
+
+commit=${1:?usage: write COMMIT LABEL}
+label=${2:?usage: write COMMIT LABEL}
+repo=$(git rev-parse --show-toplevel)
+out=tests/corpus/$label
+[ -e "$repo/$out" ] && { echo "write: $out exists" >&2; exit 1; }
+
+# Inside the repository so the container can see it; target/ is ignored.
+src=target/corpus-src/$label
+rm -rf "${repo:?}/$src"
+mkdir -p "$repo/$src"
+git -C "$repo" archive "$commit" | tar -x -C "$repo/$src"
+# `git archive` dates every file at its commit, older than whatever the shared
+# target directory last built, and cargo would call the old binary fresh and
+# write every version's files with it. Now-dated sources rebuild the crate;
+# the dependencies stay built.
+find "$repo/$src" -type f -exec touch {} +
+format=$(git -C "$repo" show "$commit:src/store.rs" | sed -n 's/.*const VERSION: u32 = \([0-9]*\);/\1/p')
+full=$(git -C "$repo" rev-parse "$commit")
+subject=$(git -C "$repo" log -1 --format=%s "$commit")
+
+docker run --rm -v "$repo":/w -w "/w/$src" \
+    -v poptop-corpus-target:/t -v poptop-reg:/usr/local/cargo/registry \
+    -e CARGO_TARGET_DIR=/t -e OUT="/w/$out" -e FORMAT="$format" \
+    -e COMMIT="$full" -e SUBJECT="$subject" -e OWNER="$(id -u):$(id -g)" \
+    rust:1-slim sh -eu -c '
+        cargo build -q
+        bin=/t/debug/poptop
+        # The binary this run built, and not one left from another version.
+        [ "$bin" -nt Cargo.toml ] || { echo "write: $bin was not rebuilt" >&2; exit 1; }
+        home=$(mktemp -d)
+        run() { env -i PATH="$PATH" HOME="$home" XDG_STATE_HOME="$home/state" TERM=xterm "$bin" "$@"; }
+        from=$(date +%s)
+        # The first sample is taken at start; the next would be five seconds on.
+        (sleep 2.5; printf q) | env -i PATH="$PATH" HOME="$home" XDG_STATE_HOME="$home/state" \
+            TERM=xterm script -qec "$bin --store=on --interval=5s" /dev/null >/dev/null
+        logged=0
+        if "$bin" --help 2>/dev/null | grep -q -- "--log=on"; then
+            run --once --log=on --interval=1s >/dev/null
+            run --once --log=on --interval=1s >/dev/null
+            logged=2
+        fi
+        to=$(date +%s)
+        mkdir -p "$OUT"
+        cp "$home/state/poptop/history" "$OUT/history"
+        if [ "$logged" != 0 ]; then
+            mkdir -p "$OUT/log"
+            cp "$home/state/poptop/log/"poptop-* "$OUT/log/"
+        fi
+        {
+            echo "# Written by tests/corpus/write. Checked by store::corpus."
+            echo "commit=$COMMIT"
+            echo "subject=$SUBJECT"
+            echo "format=$FORMAT"
+            echo "store_samples=1"
+            echo "log_samples=$logged"
+            echo "cores=$(grep -c "^cpu[0-9]" /proc/stat)"
+            echo "mem_total=$(awk "/^MemTotal:/ { printf \"%.0f\", \$2 * 1024 }" /proc/meminfo)"
+            echo "written_from=$from"
+            echo "written_to=$to"
+        } >"$OUT/manifest"
+        chown -R "$OWNER" "$OUT"
+    '
+rm -rf "${repo:?}/$src"
+echo "wrote $out"
