@@ -512,6 +512,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let mut c = SysinfoCollector::new().unwrap();
         let mut spinner_ran = false;
+        let mut seen = Vec::new();
         for _ in 0..20 {
             let s = c.collect(Needs::default()).unwrap();
             let state = |pid: u32| {
@@ -526,7 +527,17 @@ mod tests {
                 'S',
                 "a sleeping process read as running"
             );
-            if state(spinner.id()) == 'R' {
+            let spin = state(spinner.id());
+            // What the kernel said, so a failure on a machine this cannot be
+            // run on by hand explains itself.
+            let pid = sysinfo::Pid::from_u32(spinner.id());
+            seen.push(format!(
+                "{spin}: status {:?}, task {:?}, cpu {:?}",
+                c.sys.process(pid).map(sysinfo::Process::status),
+                procinfo::task(spinner.id() as i32),
+                c.sys.process(pid).map(sysinfo::Process::cpu_usage),
+            ));
+            if spin == 'R' {
                 spinner_ran = true;
                 break;
             }
@@ -536,7 +547,8 @@ mod tests {
         let _ = (sleeper.wait(), spinner.wait());
         assert!(
             spinner_ran,
-            "a spinning process never read as running in twenty samples"
+            "a spinning process never read as running in twenty samples:\n{}",
+            seen.join("\n")
         );
     }
 
