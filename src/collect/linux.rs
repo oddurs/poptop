@@ -1473,6 +1473,28 @@ fn stat_text(raw: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(raw)
 }
 
+/// When `pid` started, as `ProcSample::started` carries it here: clock ticks
+/// since boot, field 22 of `/proc/<pid>/stat`.
+///
+/// Read from the kernel at the moment of asking rather than from a sample,
+/// because this is what `signal` checks immediately before sending: a sample
+/// is up to an interval old, and a pid can be handed on inside one.
+pub fn start_of(pid: i32) -> Option<u64> {
+    let raw = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+    start_in(&stat_text(&raw))
+}
+
+/// Field 22 of a `stat` line, counted from the last `)` as `parse_proc_stat`
+/// counts it, since the name before it may hold spaces and parentheses.
+fn start_in(stat: &str) -> Option<u64> {
+    let close = stat.rfind(')')?;
+    stat.get(close + 1..)?
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
 /// Turn one `/proc/<pid>/stat` line into a sample.
 #[allow(clippy::too_many_arguments)]
 fn parse_proc_stat(
@@ -3745,6 +3767,36 @@ mod tests {
 
         let mounts = "/dev/vda1 /mnt/my\\040disk ext4 rw 0 0\n";
         assert_eq!(mount_points(mounts)[0].1, "/mnt/my disk");
+    }
+
+    #[test]
+    fn the_start_time_read_for_a_signal_is_the_one_the_table_carries() {
+        // A name built to shift a whitespace split: the start time is field 22
+        // counted from the last `)`, as the sample counts it.
+        let line = "4021 (a) (b c) S 1 4021 4021 0 -1 4194304 1 2 3 4 5 6 7 8 20 0 1 0 \
+                    987654 1000 25 18446744073709551615";
+        assert_eq!(start_in(line), Some(987654));
+        let me = std::process::id() as i32;
+        let raw = std::fs::read(format!("/proc/{me}/stat")).unwrap();
+        let mut seen = HashMap::new();
+        let row = parse_proc_stat(
+            me,
+            &stat_text(&raw),
+            1.0,
+            Arc::from("me"),
+            &mut seen,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &StatCtx {
+                prev_jiffies: &HashMap::new(),
+                prev_faults: &HashMap::new(),
+                ticks_per_sec: 100.0,
+                page_size: 4096,
+            },
+        )
+        .expect("our own stat did not parse");
+        assert_eq!(start_of(me), row.started);
+        assert_eq!(start_of(i32::MAX), None);
     }
 
     #[test]

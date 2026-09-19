@@ -690,10 +690,7 @@ impl App {
         self.signal_note = Some(match checked {
             Err(why) => why.why(Some(&p)),
             Ok(()) => match crate::signal::send(&p) {
-                // The operating system's own words. `Operation not permitted`
-                // for somebody else's process is the answer, and dressing it up
-                // would hide which of several reasons it was.
-                Err(e) => format!("could not signal {} (pid {}): {e}", p.name, p.pid),
+                Err(why) => why.why(&p),
                 Ok(()) => format!("sent {} to {} (pid {})", p.signal.name(), p.name, p.pid),
             },
         });

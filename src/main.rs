@@ -215,8 +215,10 @@ KEYS:
 
                       · nothing is sent while scrubbing. That table is history.
                       · the (pid, start time) pair is rechecked against the
-                        newest sample as the signal is sent. A pid the kernel
-                        has since handed to something else is refused by name.
+                        newest sample, and then against the kernel as the
+                        signal is sent — through a pidfd on Linux 5.3 and
+                        later. A pid the kernel has since handed to something
+                        else is refused by name.
 
     /               filter. A bare word is a substring match on the name, the
                     command line, the user or the pid, as before. It is also a
