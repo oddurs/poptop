@@ -327,8 +327,13 @@ macro_rules! out {
 /// it. A warning nobody can see is not a warning, so the interactive path
 /// waits until the terminal is its own again.
 fn flush(warnings: &[config::Warning]) {
+    // Written rather than `eprintln!`ed: that panics when stderr cannot be
+    // written — a terminal that has gone away, `2>&-` — and a warning that
+    // cannot be delivered is not a reason to crash on the way out.
+    use std::io::Write as _;
+    let mut err = io::stderr().lock();
     for w in warnings {
-        eprintln!("poptop: {w}");
+        let _ = writeln!(err, "poptop: {w}");
     }
 }
 
@@ -434,6 +439,29 @@ fn command(args: &[String]) -> Result<Command, Usage> {
 
 /// Whether the terminal is in raw mode on the alternate screen, for [`exit`].
 static TERMINAL_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the terminal has gone away underneath poptop — an ssh session
+/// dropped, a terminal emulator killed — rather than been handed back.
+///
+/// Once it has, nothing may be written to it. Restoring it fails with EIO, and
+/// ratatui reports that failure with `eprintln!`, which panics when stderr is
+/// the dead terminal too: the hangup that should have been a clean exit ended
+/// in an abort (0115).
+static TERMINAL_GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `Ok(None)` if `r` failed because the terminal is gone, noting it. EIO is
+/// what a read or write of a terminal whose far side has closed returns, on
+/// both platforms; ENXIO is the device itself disappearing.
+fn while_attached<T>(r: io::Result<T>) -> io::Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if matches!(e.raw_os_error(), Some(5 | 6)) => {
+            TERMINAL_GONE.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
 
 /// Leave the process, giving the terminal back first if poptop has it.
 ///
@@ -809,7 +837,26 @@ fn main() -> io::Result<()> {
         replaying,
         &mut said,
     );
-    ratatui::restore();
+    // Given back if it is still there. If it has gone, restoring it fails and
+    // ratatui says so with `eprintln!`, which panics on a dead stderr — and so
+    // would the `Terminal`'s drop, which shows the cursor it hid. Neither is
+    // attempted: the terminal is not anyone's to give back any more.
+    //
+    // Found out here as well as in the loop. A hangup signal and a dead
+    // terminal arrive together, and when the signal wins the race the loop
+    // ends normally without ever reading the EIO — so the restore is what
+    // discovers it, and must not report it on the terminal it failed to reach.
+    let gone = TERMINAL_GONE.load(std::sync::atomic::Ordering::Relaxed)
+        || while_attached(ratatui::try_restore())
+            .map(|r| r.is_none())
+            .unwrap_or_else(|e| {
+                use std::io::Write as _;
+                let _ = writeln!(io::stderr(), "poptop: could not restore the terminal: {e}");
+                false
+            });
+    if gone {
+        std::mem::forget(terminal);
+    }
     TERMINAL_TAKEN.store(false, std::sync::atomic::Ordering::Relaxed);
     warnings.extend(said.into_iter().map(config::Warning));
     // A source that is only opened when a view is — an exit listener, a cgroup
@@ -1333,7 +1380,11 @@ fn run(
     #[cfg(debug_assertions)]
     let mut forced = std::env::var_os("POPTOP_PANIC_AFTER_FIRST_FRAME").is_some();
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        // A terminal that has gone away is a request to quit, like the
+        // hangup signal that comes with it — not an error to report on it.
+        if while_attached(terminal.draw(|f| ui::draw(f, app)))?.is_none() {
+            return Ok(());
+        }
         #[cfg(debug_assertions)]
         if std::mem::take(&mut forced) {
             panic!("forced by POPTOP_PANIC_AFTER_FIRST_FRAME");
@@ -1347,8 +1398,14 @@ fn run(
                 return Ok(());
             }
             let left = next_sample.saturating_duration_since(Instant::now());
-            if event::poll(left.min(STOP_CHECK))? {
-                break match event::read()? {
+            let Some(ready) = while_attached(event::poll(left.min(STOP_CHECK)))? else {
+                return Ok(());
+            };
+            if ready {
+                let Some(event) = while_attached(event::read())? else {
+                    return Ok(());
+                };
+                break match event {
                     Event::Key(k) if k.kind == KeyEventKind::Press => Some(k),
                     _ => None,
                 };

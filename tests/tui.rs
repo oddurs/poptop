@@ -55,6 +55,8 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn ioctl(fd: c_int, req: c_ulong, ...) -> c_int;
     fn setsid() -> c_int;
+    fn close(fd: c_int) -> c_int;
+    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn tcgetattr(fd: c_int, t: *mut Termios) -> c_int;
     fn kill(pid: c_int, sig: c_int) -> c_int;
 }
@@ -382,4 +384,151 @@ fn a_recorded_day_opens_on_a_terminal_and_q_leaves_it() {
     t.wait_for(b"PAUSED", "the recorded day");
     t.keys(b"q");
     t.exits(Some(0), "q in a recorded day");
+}
+
+#[test]
+fn a_terminal_that_goes_away_takes_poptop_with_it() {
+    // 0115. `sighup_exits_and_gives_the_terminal_back` sends the signal while
+    // the terminal is still there. An ssh session dropping, or a terminal
+    // emulator killed, takes the terminal away as well — and then every read
+    // of it returns end-of-file, which crossterm's default input source read in
+    // a loop that never ended. poptop was left orphaned at 100% of a core,
+    // with its stop flag set and never looked at.
+    hang_up(false);
+}
+
+#[test]
+fn a_hangup_that_beats_the_dead_terminal_still_exits_cleanly() {
+    // The same, with the signal landing first — which in a release build it
+    // did. The loop then ended normally, the restore failed with EIO, and
+    // ratatui's `eprintln!` of that failure panicked on the dead stderr: an
+    // abort where a clean exit was due.
+    hang_up(true);
+}
+
+fn hang_up(signal_first: bool) {
+    // Its own pty, not `Tui`'s: that one keeps the terminal open through its
+    // reader thread, which is exactly what this must not do.
+    let (mut m, mut s) = (-1, -1);
+    let size = Winsize {
+        rows: 30,
+        cols: 100,
+        ..Winsize::default()
+    };
+    // SAFETY: as in `Tui::start_in`.
+    let rc = unsafe {
+        openpty(
+            &mut m,
+            &mut s,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &size,
+        )
+    };
+    assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+    // SAFETY: both were just returned by openpty and are owned here alone.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
+    let home = Home::new();
+    let mut cmd = home.cmd(&[]);
+    cmd.env("TERM", "xterm-256color")
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave));
+    // SAFETY: `setsid`, `ioctl` and `close`, all async-signal-safe. The close
+    // matters: openpty's descriptors are not close-on-exec, so poptop would
+    // inherit the far side of its own terminal and hold it open — and then
+    // closing ours would take nothing away.
+    unsafe {
+        cmd.pre_exec(move || {
+            close(m);
+            if setsid() < 0 || ioctl(0, TIOCSCTTY, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().expect("cannot start poptop");
+    drop(cmd);
+
+    // Read without blocking, and keep reading, as a terminal emulator does
+    // until the moment it dies. A reader that stopped after the first frame
+    // left poptop blocked writing the next one into a full pty — a hang this
+    // test would then have been measuring instead of the hangup.
+    const F_GETFL: c_int = 3;
+    const F_SETFL: c_int = 4;
+    #[cfg(target_os = "linux")]
+    const O_NONBLOCK: c_int = 0o4000;
+    #[cfg(not(target_os = "linux"))]
+    const O_NONBLOCK: c_int = 0x4;
+    // SAFETY: an open descriptor this test owns; flags read and written back.
+    unsafe {
+        let flags = fcntl(master.as_raw_fd(), F_GETFL);
+        assert!(fcntl(master.as_raw_fd(), F_SETFL, flags | O_NONBLOCK) >= 0);
+    }
+    let mut master = std::fs::File::from(master);
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut drain = |master: &mut std::fs::File, seen: &mut Vec<u8>, until: Instant| {
+        while Instant::now() < until {
+            match master.read(&mut buf) {
+                Ok(0) => return,
+                Ok(n) => seen.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        }
+    };
+    // Until the first frame, so the hangup reaches a poptop that is running,
+    // and a little past it so nothing is left unread.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while find(&seen, b"CPU").is_none() {
+        assert!(Instant::now() < deadline, "no first frame in 20s");
+        drain(
+            &mut master,
+            &mut seen,
+            Instant::now() + Duration::from_millis(50),
+        );
+    }
+    drain(
+        &mut master,
+        &mut seen,
+        Instant::now() + Duration::from_millis(300),
+    );
+
+    // The terminal goes away: the only handle on its far side is closed. With
+    // the signal first, poptop's loop ends on the stop flag before any read
+    // fails, and it is the restore that meets the dead terminal — the path a
+    // release build took, where the other test's debug build did not.
+    if signal_first {
+        // SAFETY: a signal to our own child, which is still running.
+        assert_eq!(unsafe { kill(child.id() as c_int, 1) }, 0);
+    }
+    drop(master);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            // Gone, and gone cleanly: a hangup is a request to quit, not a
+            // crash, even with no terminal left to give back.
+            assert!(
+                status.signal().is_none(),
+                "poptop died of signal {:?} when its terminal went away",
+                status.signal()
+            );
+            assert!(status.success(), "poptop exited {status} on a hangup");
+            return;
+        }
+        if Instant::now() > deadline {
+            let ps = std::process::Command::new("ps")
+                .args(["-o", "stat=,%cpu=", "-p", &child.id().to_string()])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("poptop was still running five seconds after its terminal went away ({ps})");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
