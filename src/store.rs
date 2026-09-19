@@ -993,7 +993,9 @@ mod tests {
             ("later", file_from_a_later_poptop(&[&small, &small])),
         ];
         let header = MAGIC.len() + 4;
-        let framed = |blocks: &[&[u8]]| {
+        // Framed the way `log::append` frames them — and one day in the
+        // framing from before checksums, which the reader still takes.
+        let legacy = |blocks: &[&[u8]]| {
             let mut day = Vec::new();
             for b in blocks {
                 day.extend((b.len() as u32).to_le_bytes());
@@ -1001,9 +1003,20 @@ mod tests {
             }
             day
         };
+        let checked = |samples: &[&Sample]| {
+            let mut day = Vec::new();
+            for s in samples {
+                day.extend(crate::log::frame(&[*s]).unwrap());
+            }
+            day
+        };
         let days = [
-            ("one", framed(&[&stores[0].1])),
-            ("mixed", framed(&[&stores[0].1, &stores[2].1, &stores[1].1])),
+            ("one", checked(&[&small])),
+            ("mixed", checked(&[&small, &busy, &small])),
+            (
+                "before-checksums",
+                legacy(&[&stores[0].1, &stores[2].1, &stores[1].1]),
+            ),
         ];
         for (dir, files) in [
             (
