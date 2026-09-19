@@ -696,6 +696,13 @@ impl App {
     }
 
     /// The process under the cursor in the sample under the cursor.
+    #[cfg(test)]
+    pub fn selected_name_for_test(&self) -> Arc<str> {
+        self.selected_process()
+            .map(|p| p.name)
+            .expect("nothing selected")
+    }
+
     fn selected_process(&self) -> Option<ProcSample> {
         // A *process*, not a group. `g` folds rows together and a folded row is
         // several processes; signalling "the one under the cursor" there would

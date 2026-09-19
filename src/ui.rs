@@ -3018,7 +3018,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         user: show_user,
         cid: show_cid,
     };
-    columns.fit(area.width);
+    // One column reserved at the left for the selection mark (0114), so the
+    // table is laid out one narrower than the panel.
+    let table_w = area.width.saturating_sub(MARK_W);
+    columns.fit(table_w);
     let Columns {
         bars: show_bars,
         rss: show_rss,
@@ -3034,10 +3037,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // What the fixed columns leave, measured by the same description that
     // lays them out. Floored at the column's own `Min`, and above it exactly:
     // an elision against a guess is either too cautious or chopped at the edge.
-    let cmd_w = area
-        .width
-        .saturating_sub(columns.fixed())
-        .max(MIN_COMMAND_W) as usize;
+    let cmd_w = table_w.saturating_sub(columns.fixed()).max(MIN_COMMAND_W) as usize;
     let collected = app.history.current().is_some_and(|s| s.io_collected);
     let rows_visible = area.height.saturating_sub(2) as usize;
 
@@ -3626,12 +3626,39 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         table,
         Rect {
+            x: area.x + MARK_W,
             y: area.y + 1,
+            width: table_w,
             height: area.height.saturating_sub(1),
-            ..area
         },
     );
+    // The selection's mark, in the margin where the eye starts reading a row.
+    // The row's own highlight was a dark background and bold — faint on most
+    // themes, among rows that reorder every second (0114). Below the title and
+    // the header, at the row's place in the scrolled list.
+    if let Some(i) = selected.filter(|i| (offset..offset + rows_visible).contains(i)) {
+        let y = area.y + 2 + (i - offset) as u16;
+        if y < area.y + area.height && area.width > 0 {
+            let mark = if app.glyphs == GlyphSet::Ascii {
+                ">"
+            } else {
+                "▶"
+            };
+            f.render_widget(
+                Paragraph::new(Span::styled(mark, app.theme.live_style())),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: MARK_W.min(area.width),
+                    height: 1,
+                },
+            );
+        }
+    }
 }
+
+/// The margin the selection mark is drawn in. See the end of the table.
+const MARK_W: u16 = 1;
 
 /// Width of the per-process history sparkline, in cells.
 pub const SPARK_W: usize = 10;

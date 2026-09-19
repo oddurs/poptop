@@ -5353,7 +5353,9 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     app.tree = true;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let rows: Vec<String> = rows(&app, 104, 24)
+    // 105, not 104: one column is the selection margin (0114), and this is
+    // calibrated to the command width 104 used to give.
+    let rows: Vec<String> = rows(&app, 105, 24)
         .into_iter()
         .filter(|l| l.contains("Chrome") || l.contains('…'))
         .collect();
@@ -5496,7 +5498,8 @@ fn processes_that_differ_only_by_a_suffix_are_told_apart() {
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let shown: Vec<String> = rows(&app, 104, 20)
+    // 105: see the selection margin note in `a_deep_tree_never_leaves_a_row_without_a_name`.
+    let shown: Vec<String> = rows(&app, 105, 20)
         .into_iter()
         .filter(|l| l.contains("Chrome") || l.contains('…'))
         .map(|l| l.trim_end().to_string())
@@ -11399,5 +11402,38 @@ fn the_history_column_is_drawn_when_something_moved_and_says_so_when_nothing_did
     assert!(
         command(&flat) > command(&moving),
         "the history column's width did not go to the command"
+    );
+}
+
+#[test]
+fn the_selected_row_is_marked_in_the_margin() {
+    // 0114. The selection was a dark grey background and bold — faint on most
+    // themes, among rows that reorder every second. A mark in a one-column
+    // margin, in the accent colour, where the eye starts reading a row.
+    let mut app = App::new(60);
+    app.push(sample(10.0));
+    crate::handle_key_for_test(&mut app, KeyCode::Down);
+    let screen = rows(&app, 120, 30);
+    let marked: Vec<&String> = screen.iter().filter(|r| r.starts_with('▶')).collect();
+    assert_eq!(marked.len(), 1, "not exactly one marked row: {marked:?}");
+    let chosen = app.selected_name_for_test();
+    assert!(
+        marked[0].contains(&*chosen),
+        "{:?} is not {chosen}",
+        marked[0]
+    );
+
+    // ASCII has no triangle.
+    app.glyphs = crate::glyphs::GlyphSet::Ascii;
+    let screen = rows(&app, 120, 30);
+    assert_eq!(screen.iter().filter(|r| r.starts_with('>')).count(), 1);
+
+    // Nothing selected, nothing marked.
+    crate::handle_key_for_test(&mut app, KeyCode::Esc);
+    let screen = rows(&app, 120, 30);
+    assert!(
+        !screen
+            .iter()
+            .any(|r| r.starts_with('▶') || r.starts_with('>'))
     );
 }
