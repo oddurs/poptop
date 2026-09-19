@@ -1431,6 +1431,37 @@ impl App {
     /// interval — long enough not to flicker, short enough to follow a change.
     pub const NET_WINDOW: usize = 60;
 
+    /// The program crowding the table, if one is: the name with the most
+    /// processes in the displayed sample, when there are at least
+    /// [`Self::CROWD`] of them and the table is neither grouped nor a tree.
+    ///
+    /// For offering `g`, never for acting on it (0112). Across the sample
+    /// rather than the rows on screen, so scrolling does not make the offer
+    /// come and go.
+    pub fn crowding(&self) -> Option<(std::sync::Arc<str>, usize)> {
+        if self.tree || self.group != Grouping::Off {
+            return None;
+        }
+        let s = self.history.current()?;
+        let mut counts: Vec<(&std::sync::Arc<str>, usize)> = Vec::new();
+        for p in s
+            .procs
+            .iter()
+            .filter(|p| self.show_kernel || !p.is_kernel_thread())
+        {
+            match counts.iter_mut().find(|(n, _)| **n == p.name) {
+                Some((_, c)) => *c += 1,
+                None => counts.push((&p.name, 1)),
+            }
+        }
+        let (name, n) = counts.into_iter().max_by_key(|(_, c)| *c)?;
+        (n >= Self::CROWD).then(|| (name.clone(), n))
+    }
+
+    /// How many processes of one name make a table crowded: five, which is a
+    /// fifth of a normal terminal's rows.
+    pub const CROWD: usize = 5;
+
     /// The one user every process belongs to, if there is only one.
     ///
     /// `USER` was measured at ten columns — more than `CPU%` — to repeat the

@@ -3599,6 +3599,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {} is the constraint (S)", c.name())
         });
 
+    // The same principle for the view that folds a crowd. Twelve rows of one
+    // program crowded out everything else while the key that folds them was
+    // off screen and unadvertised (0112) — so it is named when it would help,
+    // and `g` acts on it.
+    let crowd = app.crowding().map_or(String::new(), |(name, n)| {
+        format!(" · {n} {name} (g folds them)")
+    });
+
     // A filter that could not be parsed is filtering nothing, which is a
     // surprising thing for the table to be doing silently once the filter box
     // has closed.
@@ -3647,6 +3655,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         // narrow terminal drops is one nobody can act on, but it is still
         // advice rather than a fact about the data.
         (45, constraint, plain),
+        (46, crowd, plain),
         (
             50,
             match (app.tree, app.group) {
