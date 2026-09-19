@@ -7125,6 +7125,47 @@ fn the_footer_gives_up_the_least_useful_key_first() {
 }
 
 #[test]
+fn a_table_crowded_by_one_program_offers_to_fold_it() {
+    // 0112. Twelve rows of one program crowded out everything else, and the
+    // view that folds them — `g` — was off screen and unadvertised. Offered,
+    // not imposed: grouping by default would take `x` and the pid away from
+    // the rows, and a table that changes mode under the reader is worse than
+    // one that does not.
+    let fixture = |workers: i32| {
+        let mut app = App::new(60);
+        let mut s = sample(10.0);
+        s.procs = (0..workers)
+            .map(|i| proc_named(100 + i, "worker", 2.0, 1 << 20))
+            .chain([proc_named(1, "postgres", 30.0, 1 << 20)])
+            .collect();
+        app.push(s);
+        app
+    };
+    let title = |app: &App| {
+        rows(app, 160, 30)
+            .into_iter()
+            .find(|r| r.contains("processes ("))
+            .unwrap()
+    };
+    let crowded = fixture(8);
+    assert!(
+        title(&crowded).contains("8 worker (g folds them)"),
+        "{:?}",
+        title(&crowded)
+    );
+    assert!(!title(&fixture(3)).contains("g folds"), "offered for three");
+    let mut grouped = fixture(8);
+    grouped.group = crate::app::Grouping::Name;
+    assert!(
+        !title(&grouped).contains("g folds"),
+        "offered while already grouped"
+    );
+    let mut tree = fixture(8);
+    tree.tree = true;
+    assert!(!title(&tree).contains("g folds"), "offered in the tree");
+}
+
+#[test]
 fn the_column_headers_name_the_columns_under_them() {
     // `Table` pairs header and body cells by index, and the two lists had
     // diverged: with the IO columns shown, `HISTORY` sat over DISK R, `DISK R`
