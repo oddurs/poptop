@@ -113,7 +113,7 @@ Testing sprint. 593 unit tests exercise poptop from the inside. Nothing runs the
 
 ## r4 — Right, not just consistent
 
-`########··` 75% · 3 of 4 done
+`########··` 80% · 4 of 5 done
 
 Validation sprint. The tests show poptop agrees with itself. This sprint checks that it agrees with the machine: its numbers against other tools reading the same counters at the same moment, its performance against budgets that fail when they are broken, its stores against every format it promised to read forever, and its behaviour across hours, midnights and clock changes.
 
@@ -126,6 +126,7 @@ Validation sprint. The tests show poptop agrees with itself. This sprint checks 
 - [x] `0096` No number poptop shows has been checked against another tool at the same moment <sup>chore · p1 · validation</sup>
 - [x] `0097` Performance budgets live in ignored tests nobody runs <sup>chore · p2 · validation</sup>
 - [x] `0098` The promise to read every store since format 15 is kept by nothing <sup>chore · p1 · validation</sup>
+- [x] `0115` A poptop whose terminal goes away spins at 100% CPU forever <sup>bug · p0 · validation</sup>
 
 ## r5 — What the screen says
 
