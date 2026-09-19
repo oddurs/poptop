@@ -1461,38 +1461,6 @@ mod tests {
 }
 
 #[cfg(test)]
-mod cost {
-    use super::tests_support::*;
-    use super::*;
-
-    #[test]
-    #[ignore]
-    fn show_startup_cost_with_a_full_store() {
-        // The item asks for this measured. A full store is the whole ring
-        // buffer at a realistic process count: 600 samples of 400 processes,
-        // which is the default window at one sample a second.
-        let all: Vec<Sample> = (0..600).map(|i| big_sample(i as f32, 400)).collect();
-        let refs: Vec<&Sample> = all.iter().collect();
-
-        let t0 = std::time::Instant::now();
-        let bytes = encode(&refs);
-        let write = t0.elapsed();
-
-        let t0 = std::time::Instant::now();
-        let back = decode(&bytes).expect("round trip");
-        let read = t0.elapsed();
-
-        println!(
-            "{} samples x 400 procs: {:.1} MB, encode {write:?}, decode {read:?}, \
-             schema {} bytes",
-            back.len(),
-            bytes.len() as f64 / 1e6,
-            schema_bytes().len()
-        );
-    }
-}
-
-#[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
     use crate::sample::{MemStat, ProcSample};
