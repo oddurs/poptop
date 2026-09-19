@@ -95,6 +95,17 @@ need cargo || exit 1
 run "cargo fmt --check" cargo fmt --check
 run "cargo build --all-targets" cargo build --all-targets
 run "cargo test" cargo test
+# The other macOS ABI, under Rosetta. Hand-declared FFI is where the two differ.
+if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
+    if rustup target list --installed 2>/dev/null | grep -q '^x86_64-apple-darwin$' &&
+        arch -x86_64 /usr/bin/true 2>/dev/null; then
+        run "cargo test, x86_64 under Rosetta" cargo test --target x86_64-apple-darwin
+    else
+        echo "  x86_64 macOS                      NOT INSTALLED"
+        echo "    rustup target add x86_64-apple-darwin; softwareupdate --install-rosetta" >&2
+        fail=1
+    fi
+fi
 
 if [ "$quick" = no ]; then
     # Not folded into `run`: a missing clippy has to be louder than a lint.

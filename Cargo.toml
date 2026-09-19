@@ -19,6 +19,12 @@ unicode-width = "0.2.2"
 # every normal build, where the library is empty; see src/lib.rs.
 fuzzing = []
 
+# Every `unsafe` block says why it is sound, in a `// SAFETY:` comment directly
+# above it. All of them are calls across FFI declared by hand, which is exactly
+# where a reason nobody wrote down goes stale unnoticed.
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = "0.38.4"
 

@@ -40,6 +40,15 @@ jobs:
       - run: cargo build --all-targets
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
+      # Intel Macs, under Rosetta on the arm64 runner. The two macOS ABIs
+      # differ where poptop declares FFI by hand: on x86_64 the bare
+      # `getfsstat` symbol is the pre-10.6 call with a different
+      # `struct statfs`, and only this run links it.
+      - name: test the x86_64 macOS build
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo test --target x86_64-apple-darwin
       - name: smoke test the collector against live data
         run: cargo run --release -- --once
       # Piped into a reader that stops early. Rust ignores SIGPIPE and turns
@@ -50,6 +59,23 @@ jobs:
           set -o pipefail
           cargo run --release -- --once | head -1
           cargo run --release -- --help | head -1
+
+  # The whole suite under AddressSanitizer. All of poptop's `unsafe` is calls
+  # into libc declared by hand, which Miri cannot execute; ASan intercepts
+  # those same calls and checks every buffer handed across. Linux only: on
+  # macOS it stops at a read past a string literal inside sysinfo (0101).
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test under AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+        run: cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --bin poptop
 
   # Every fuzz target for a minute, from the committed seeds, on Linux: the
   # only platform where the /proc, NFS and taskstats targets are compiled at

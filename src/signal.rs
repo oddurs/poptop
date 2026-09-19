@@ -27,6 +27,7 @@
 use crate::sample::{ProcSample, Sample};
 use std::sync::Arc;
 
+// `int kill(pid_t, int)`, and `pid_t` is an `int` on Linux and macOS alike.
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
@@ -463,6 +464,7 @@ mod tests {
         assert_eq!(unsafe { kill(me, 0) }, 0, "poptop cannot signal itself");
         // A pid that cannot exist: the check fails and the error is the
         // operating system's own.
+        // SAFETY: as above; signal 0 to a pid nobody holds.
         assert_eq!(unsafe { kill(i32::MAX, 0) }, -1);
         assert!(
             std::io::Error::last_os_error().raw_os_error().is_some(),
