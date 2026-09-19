@@ -88,13 +88,9 @@ Validation sprint. Every byte poptop reads that it did not write this second —
 
 ## r2 — Every unsafe line accounted for
 
-`########··` 80% · 4 of 5 done
+`##########` 100% · 5 of 5 done
 
 Code review sprint. Read the code for what the tests cannot show: the reasoning behind each `unsafe` block, the moments between a check and the action it guards, the panics a user can reach, and the 3,400 lines of `main.rs` and `app.rs` that have no unit tests of their own. Every finding is either fixed with a test that fails before the fix, or filed as its own item with the reasoning.
-
-### backlog
-
-- [ ] `0090` A jump to 02:30 on the night the clocks change has no defined answer <sup>bug · p2 · review</sup>
 
 ### done
 
@@ -102,6 +98,7 @@ Code review sprint. Read the code for what the tests cannot show: the reasoning 
 - [x] `0087` The identity check and the kill are two moments, not one <sup>bug · p1 · review</sup>
 - [x] `0088` Three hundred unwraps, and nobody has counted how many a user can reach <sup>chore · p2 · review</sup>
 - [x] `0089` main.rs and app.rs are 3,400 lines with no tests of their own <sup>chore · p2 · review</sup>
+- [x] `0090` A jump to 02:30 on the night the clocks change has no defined answer <sup>bug · p2 · review</sup>
 
 ## r3 — Tested as it is run
 

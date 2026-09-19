@@ -9,7 +9,7 @@ use std::time::{Duration, UNIX_EPOCH};
 fuzz_target!(|bytes: &[u8]| {
     let text = String::from_utf8_lossy(bytes);
     let _ = poptop::query::parse(&text);
-    let _ = poptop::log::parse_when(&text, UNIX_EPOCH + Duration::from_secs(1_800_000_000));
+    let _ = poptop::log::parse_when_noting(&text, UNIX_EPOCH + Duration::from_secs(1_800_000_000));
     // A colour that reads must write back as itself: that is what lets a
     // theme file round-trip.
     if let Some(c) = poptop::theme::parse_color(&text) {

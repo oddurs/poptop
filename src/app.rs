@@ -581,9 +581,24 @@ impl App {
         // means two hours before the end of the day being read rather than two
         // hours before lunchtime today.
         let origin = self.history.newest().map_or(now, |s| s.at);
-        self.jump_note = match crate::log::parse_when(&text, origin) {
+        self.jump_note = match crate::log::parse_when_noting(&text, origin) {
             Err(why) => Some(why),
-            Ok(at) => match self.history.seek(at, self.interval) {
+            // The clocks changing is said first, and survives whatever the
+            // landing has to add: it is about which moment this is at all.
+            Ok((at, Some(shift))) => Some(match self.history.seek(at, self.interval) {
+                crate::history::Landing::Empty => format!("{shift} — nothing is retained yet"),
+                crate::history::Landing::Live if self.replaying => {
+                    self.history.goto_newest();
+                    format!("{shift} — the end of this day")
+                }
+                crate::history::Landing::Live => format!("{shift} — live"),
+                crate::history::Landing::On => shift,
+                crate::history::Landing::Nearest(off) => format!(
+                    "{shift} — nothing recorded then, nearest sample is {} away",
+                    crate::ui::fmt_lag(off)
+                ),
+            }),
+            Ok((at, None)) => match self.history.seek(at, self.interval) {
                 crate::history::Landing::Empty => Some("nothing is retained yet".into()),
                 // In a recorded day there is no live tail to resume: the
                 // buffer never receives a sample, and `LIVE` over a week-old
