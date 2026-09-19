@@ -916,15 +916,26 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // explains a slow machine — so it sits below memory and is given up before
     // it. The interface is named because a laptop has twenty-odd and only one
     // of them is carrying anything.
-    if let Some(l) = s.net.as_ref().and_then(NetStat::busiest) {
+    //
+    // Which interface is chosen over a window, not per sample, and never
+    // loopback — see `App::headline_link`. The two directions are labelled:
+    // `46.4K/s 2.1M/s` could be either way round.
+    if let Some(name) = app.headline_link() {
+        let link = s.net.iter().flat_map(|n| &n.links).find(|l| l.name == name);
+        let (rx, tx) = link.map_or((0, 0), |l| (l.rx, l.tx));
+        let (down, up) = if app.glyphs == crate::glyphs::GlyphSet::Ascii {
+            ("rx ", "tx ")
+        } else {
+            ("↓", "↑")
+        };
         figures.push(Figure {
             group: Group::Network,
             rank: 55,
             spans: vec![
-                Span::styled(format!("{} ", l.name), dim),
-                Span::styled(format!("{}/s", fmt_bytes(l.rx)), dim),
+                Span::styled(format!("{name} "), dim),
+                Span::styled(format!("{down}{}/s", fmt_bytes(rx)), dim),
                 Span::styled(" ", dim),
-                Span::styled(format!("{}/s", fmt_bytes(l.tx)), dim),
+                Span::styled(format!("{up}{}/s", fmt_bytes(tx)), dim),
             ],
         });
     }
@@ -1407,19 +1418,25 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // The busiest link rather than the sum, matching the header figure and for
     // the same reason: a machine can have a dozen interfaces and the panel has
     // room for one row, so the one carrying the most is the honest summary.
-    if app.history.current().is_some_and(|s| s.net.is_some()) {
+    //
+    // One interface for the whole line — the header's, chosen over a window.
+    // Picking the busiest per sample spliced interfaces together: the line was
+    // lo0 where lo0 won and en0 where en0 did (0108).
+    if let Some(name) = app
+        .headline_link()
+        .filter(|_| app.history.current().is_some_and(|s| s.net.is_some()))
+    {
         candidates.push((
             "NET",
             window
                 .iter()
                 .map(|s| {
                     s.net
-                        .as_ref()
-                        .and_then(|n| n.busiest())
-                        // `Link::bytes`, not `rx + tx`: that function is what
-                        // `busiest` selects on, so re-deriving it here would
-                        // keep the "matches the header figure" claim true in
-                        // two places instead of one.
+                        .iter()
+                        .flat_map(|n| &n.links)
+                        .find(|l| l.name == name)
+                        // `Link::bytes`, not `rx + tx`: the same measure the
+                        // headline interface is chosen by.
                         .map_or(0.0, |l| l.bytes() as f32)
                 })
                 .collect(),

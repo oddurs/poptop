@@ -1389,6 +1389,45 @@ impl App {
         agreed.filter(|c| *c != Constraint::Disk || self.io_collected())
     }
 
+    /// The interface the header and the NET graph follow: the one that carried
+    /// the most over the last [`Self::NET_WINDOW`] samples, never loopback.
+    ///
+    /// Chosen over a window, not per sample. Per sample, the header named
+    /// `lo0` one second and `en0` the next, and the graph was worse — one line
+    /// spliced from whichever interface won each sample, so a spike could be
+    /// one interface's and the trough beside it another's (0108). Over a
+    /// minute, the choice moves only when another interface has really taken
+    /// over. Ending at the cursor, like every other window here, so scrubbing
+    /// back follows the interface that was busy then.
+    ///
+    /// Ties go to the interface listed first in the newest sample, as they do
+    /// in [`crate::sample::NetStat::busiest`].
+    pub fn headline_link(&self) -> Option<std::sync::Arc<str>> {
+        let mut totals: Vec<(&std::sync::Arc<str>, u64)> = Vec::new();
+        for s in self.history.window(Self::NET_WINDOW) {
+            for l in s.net.iter().flat_map(|n| &n.links) {
+                if l.is_loopback() {
+                    continue;
+                }
+                match totals.iter_mut().find(|(n, _)| **n == l.name) {
+                    Some((_, t)) => *t = t.saturating_add(l.bytes()),
+                    None => totals.push((&l.name, l.bytes())),
+                }
+            }
+        }
+        let mut best: Option<(&std::sync::Arc<str>, u64)> = None;
+        for (n, t) in totals {
+            if best.is_none_or(|(_, b)| t > b) {
+                best = Some((n, t));
+            }
+        }
+        best.map(|(n, _)| n.clone())
+    }
+
+    /// Samples the headline interface is chosen over: a minute at the default
+    /// interval — long enough not to flicker, short enough to follow a change.
+    pub const NET_WINDOW: usize = 60;
+
     /// The one user every process belongs to, if there is only one.
     ///
     /// `USER` was measured at ten columns — more than `CPU%` — to repeat the
