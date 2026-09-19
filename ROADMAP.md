@@ -182,13 +182,9 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`########··` 80% · 4 of 5 done
+`##########` 100% · 5 of 5 done
 
 Good ideas without a date yet.
-
-### in progress
-
-- [ ] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
 
 ### done
 
@@ -196,4 +192,5 @@ Good ideas without a date yet.
 - [x] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 - [x] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
 - [x] `0101` sysinfo hands sysctlbyname a name with no NUL at its end <sup>bug · p2 · review</sup>
+- [x] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
 

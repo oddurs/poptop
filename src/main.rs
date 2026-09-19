@@ -156,8 +156,9 @@ HEADER:
                     hardware capping that reports through counters instead.
 
 KEYS:
-    q, Esc          quit. Esc in the filter or jump box, or at a signal
-                    prompt, leaves that instead.
+    q, Esc          quit. Esc backs out one level first: it leaves the
+                    filter or jump box, cancels a signal, or lets go of the
+                    selected process, and quits only when there is none.
     Left/Right      scrub through history (Shift for 10 at a time)
     b               jump to a moment, as atop's -b does. Takes a distance or
                     a time: `-2h`,
@@ -1440,7 +1441,14 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         app.signal_note = None;
     }
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+        KeyCode::Char('q') => app.should_quit = true,
+        // Back out one level, as Esc does from the filter and the jump box: a
+        // selection first, then the program.
+        KeyCode::Esc => {
+            if !app.deselect() {
+                app.should_quit = true;
+            }
+        }
         KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
 
         // Scrubbing. Shift jumps ten samples at a time for crossing a long
@@ -1775,6 +1783,31 @@ mod tests {
         // Only then does Esc quit.
         keys(&mut a, &[KeyCode::Esc]);
         assert!(a.should_quit);
+    }
+
+    #[test]
+    fn a_selection_is_a_mode_and_esc_leaves_it_before_it_quits() {
+        // 0102: the arrow keys set a selection and nothing cleared it, so once
+        // a process had been picked poptop followed it for the rest of the run
+        // — `d` showed its history rather than the machine's, and after it
+        // exited the table kept saying it was gone. Esc backs out one level, as
+        // it does from the filter and the jump box: first the selection, and
+        // what hangs off it; then the program. `q` still quits at once.
+        let mut a = App::new(60);
+        a.push(store::tests_support::big_sample(1.0, 3));
+        keys(&mut a, &[KeyCode::Down, KeyCode::Char('d')]);
+        assert!(a.selected.is_some() && a.detail);
+        keys(&mut a, &[KeyCode::Esc]);
+        assert!(a.selected.is_none(), "Esc did not let go of the process");
+        assert!(!a.detail, "its history outlived the selection");
+        assert!(!a.should_quit, "Esc quit with something selected");
+        keys(&mut a, &[KeyCode::Esc]);
+        assert!(a.should_quit, "Esc with nothing selected no longer quits");
+
+        let mut a = App::new(60);
+        a.push(store::tests_support::big_sample(1.0, 3));
+        keys(&mut a, &[KeyCode::Down, KeyCode::Char('q')]);
+        assert!(a.should_quit, "q waited for the selection to be cleared");
     }
 
     #[test]
