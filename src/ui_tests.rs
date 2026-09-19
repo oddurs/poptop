@@ -11437,3 +11437,73 @@ fn the_selected_row_is_marked_in_the_margin() {
             .any(|r| r.starts_with('▶') || r.starts_with('>'))
     );
 }
+fn with_links(links: &[(&str, u64, u64)]) -> Sample {
+    let mut s = sample(10.0);
+    s.net = Some(poptop_net(links));
+    s
+}
+
+fn poptop_net(links: &[(&str, u64, u64)]) -> crate::sample::NetStat {
+    crate::sample::NetStat {
+        links: links
+            .iter()
+            .map(|&(name, rx, tx)| crate::sample::Link {
+                name: std::sync::Arc::from(name),
+                rx,
+                tx,
+                rx_packets: 0,
+                tx_packets: 0,
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_header_names_one_real_interface_and_says_which_way_the_bytes_go() {
+    // 0108. The header picked the busiest interface each sample, loopback
+    // included: `lo0 14.4K/s 14.4K/s` in one run and `en0 46.4K/s 2.1M/s` in
+    // the next, with nothing saying which figure was received and which sent.
+    let mut app = App::new(600);
+    // en0 carries more over the minute, though en1 wins some single samples
+    // and lo0 out-carries both every time.
+    for i in 0..30 {
+        let (en0, en1) = if i % 3 == 0 {
+            (1_000, 5_000)
+        } else {
+            (40_000, 100)
+        };
+        app.push(with_links(&[
+            ("lo0", 900_000, 900_000),
+            ("en0", en0, 2_000),
+            ("en1", en1, 0),
+        ]));
+        // From the second sample: after the first, en1 really has carried
+        // more, and saying so is right. What must not happen is the choice
+        // following each sample once there is a minute to judge by.
+        if i > 0 {
+            assert_eq!(
+                app.headline_link().as_deref(),
+                Some("en0"),
+                "the headline moved at sample {i}"
+            );
+        }
+    }
+    let screen = rows(&app, 160, 40);
+    let header = &screen[0];
+    assert!(header.contains("en0"), "{header:?}");
+    assert!(
+        !header.contains("lo0"),
+        "loopback named as the network: {header:?}"
+    );
+    assert!(
+        header.contains('↓') && header.contains('↑'),
+        "unlabelled: {header:?}"
+    );
+
+    // A machine whose only interface is loopback has no network figure.
+    let mut app = App::new(600);
+    app.push(with_links(&[("lo", 5, 5)]));
+    assert_eq!(app.headline_link(), None);
+    assert!(!rows(&app, 160, 40)[0].contains("lo "));
+}

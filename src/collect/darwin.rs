@@ -613,7 +613,13 @@ mod tests {
         let secs = opened.elapsed().as_secs_f64();
         let s = c.collect(Needs::default()).unwrap();
         let net = s.net.expect("no network");
-        let busiest = net.busiest().expect("no interface carried anything");
+        // Sent over 127.0.0.1, so it is loopback that carried it — found by
+        // name, since `busiest` rightly never names loopback.
+        let busiest = net
+            .links
+            .iter()
+            .find(|l| l.is_loopback())
+            .expect("no loopback interface");
 
         // Compared against a computed expectation rather than against the count
         // itself. TCP framing puts a few percent more on the wire than was
