@@ -88,13 +88,12 @@ Validation sprint. Every byte poptop reads that it did not write this second —
 
 ## r2 — Every unsafe line accounted for
 
-`######····` 60% · 3 of 5 done
+`########··` 80% · 4 of 5 done
 
 Code review sprint. Read the code for what the tests cannot show: the reasoning behind each `unsafe` block, the moments between a check and the action it guards, the panics a user can reach, and the 3,400 lines of `main.rs` and `app.rs` that have no unit tests of their own. Every finding is either fixed with a test that fails before the fix, or filed as its own item with the reasoning.
 
 ### backlog
 
-- [ ] `0089` main.rs and app.rs are 3,400 lines with no tests of their own <sup>chore · p2 · review</sup>
 - [ ] `0090` A jump to 02:30 on the night the clocks change has no defined answer <sup>bug · p2 · review</sup>
 
 ### done
@@ -102,6 +101,7 @@ Code review sprint. Read the code for what the tests cannot show: the reasoning 
 - [x] `0086` Nineteen unsafe blocks and five SAFETY comments <sup>chore · p1 · review</sup>
 - [x] `0087` The identity check and the kill are two moments, not one <sup>bug · p1 · review</sup>
 - [x] `0088` Three hundred unwraps, and nobody has counted how many a user can reach <sup>chore · p2 · review</sup>
+- [x] `0089` main.rs and app.rs are 3,400 lines with no tests of their own <sup>chore · p2 · review</sup>
 
 ## r3 — Tested as it is run
 
@@ -188,13 +188,14 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`########··` 75% · 3 of 4 done
+`######····` 60% · 3 of 5 done
 
 Good ideas without a date yet.
 
 ### backlog
 
 - [ ] `0101` sysinfo hands sysctlbyname a name with no NUL at its end <sup>bug · p2 · review</sup>
+- [ ] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
 
 ### done
 

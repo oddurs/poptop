@@ -190,7 +190,7 @@ cargo build --release
 
 | Key | Action |
 | --- | --- |
-| `q` | quit |
+| `q`, `Esc` | quit (`Esc` first leaves the filter or jump box, or cancels a signal) |
 | `←` / `→` | scrub through history (hold `Shift` for ten at a time) |
 | `b` | jump to a moment: `-2h`, `03:00`, `2026-09-08 03:00` (atop's `-b`) |
 | `x` / `X` | send `TERM` / `KILL` to the selected process (needs `signals = on`) |

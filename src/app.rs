@@ -699,11 +699,18 @@ impl App {
     /// Show or hide the IO columns. Showing them starts collection; hiding them
     /// does not stop it. See [`App::io_ratchet`].
     pub fn toggle_io(&mut self) {
-        self.show_io = !self.show_io;
-        self.io_ratchet |= self.show_io;
         if self.show_io {
-            self.insist(Source::Io);
+            self.show_io = false;
+        } else {
+            self.reveal_io();
         }
+    }
+
+    /// Show the IO columns, and collect what they show.
+    pub fn reveal_io(&mut self) {
+        self.show_io = true;
+        self.io_ratchet = true;
+        self.insist(Source::Io);
     }
 
     /// How much a process's memory grew since the previous sample.
