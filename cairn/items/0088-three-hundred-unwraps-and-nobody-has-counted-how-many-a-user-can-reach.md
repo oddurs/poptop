@@ -24,7 +24,7 @@ Classify every non-test site into three groups: proven infallible (leave it and 
 ## Acceptance criteria
 
 - [x] Every non-test `unwrap` is replaced, or turned into an `expect` whose message says why it cannot fail
-- [ ] A test (or the pty harness from the r3 sprint) proves a panic restores the terminal
+- [x] A test (or the pty harness from the r3 sprint) proves a panic restores the terminal
 - [x] `clippy::unwrap_used` is denied outside tests, with justified exceptions
 
 ## How it was resolved
@@ -40,5 +40,5 @@ Out of scope, and noted: indexing and slicing, about 350 sites outside tests by 
 
 **The terminal after a panic.** `ratatui::init` installs a hook that leaves raw mode and the alternate screen, then prints the panic. poptop has no threads outside tests, so a panic always unwinds through the one `Terminal`. No `process::exit` runs while the terminal is raw: all of them run before `ratatui::init` or after `ratatui::restore`. One gap: the hook does not show the cursor. It came back only when `Terminal` dropped during unwinding, which would not happen under an abort. poptop's hook now shows it first and then calls ratatui's. Checked by hand by injecting a panic after the first frame and running the binary in a pty (`script`). The output reads: enter the alternate screen, hide the cursor, show the cursor, leave the alternate screen, then the message.
 
-The criterion for a test that proves this is left unticked here. It needs the pty harness, and is the third criterion of 0094 in r3.
+The test that proves it came with the pty harness in 0094: `a_panic_gives_the_terminal_back` forces a panic after the first frame in a debug build, then checks the terminal's settings, the alternate screen, the cursor, and that the message was printed after the screen was restored.
 

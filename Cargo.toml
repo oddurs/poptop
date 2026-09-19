@@ -13,6 +13,10 @@ ratatui = "0.30.2"
 # ratatui, which uses it for the same reason; declared directly because this
 # crate calls it directly.
 unicode-width = "0.2.2"
+# SIGTERM and SIGHUP as a flag the main loop reads, so either quits like `q`
+# and gives the terminal back. Already here through crossterm, which uses it
+# for SIGWINCH.
+signal-hook = "0.3.18"
 
 [features]
 # Compiles the program's modules into the library as well, for `fuzz/`. Off in

@@ -33,8 +33,10 @@ mod ui_tests;
 
 use app::App;
 use collect::{Collector, Needs, Platform, Source};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
@@ -1306,17 +1308,48 @@ fn run(
     // whole graph as seams. The interval is a schedule, so schedule against it.
     let mut next_sample = Instant::now() + interval;
 
+    // SIGTERM is how a service manager or `kill` asks a program to stop, and
+    // SIGHUP is the terminal going away. Either used to end the process on
+    // the spot, leaving the shell in raw mode on the alternate screen and the
+    // history unsaved. Now each is a request to quit, answered like `q`.
+    let stop = Arc::new(AtomicBool::new(false));
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+        signal_hook::flag::register(sig, stop.clone())?;
+    }
+
+    // How the pty tests prove a panic gives the terminal back. Read only by a
+    // debug build, so no release binary has a way to be told to die.
+    #[cfg(debug_assertions)]
+    let mut forced = std::env::var_os("POPTOP_PANIC_AFTER_FIRST_FRAME").is_some();
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
+        #[cfg(debug_assertions)]
+        if std::mem::take(&mut forced) {
+            panic!("forced by POPTOP_PANIC_AFTER_FIRST_FRAME");
+        }
 
-        // Poll with whatever is left of the sample interval: input stays
-        // responsive without spinning, and sampling stays on schedule.
-        let timeout = next_sample.saturating_duration_since(Instant::now());
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            handle_key(app, key.code, key.modifiers);
+        // Wait for a key until the next sample is due, in slices short enough
+        // to notice a stop request: the signal handler only sets a flag, and
+        // the poll underneath is restarted rather than interrupted by it.
+        let key = loop {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let left = next_sample.saturating_duration_since(Instant::now());
+            if event::poll(left.min(STOP_CHECK))? {
+                break match event::read()? {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => Some(k),
+                    _ => None,
+                };
+            }
+            if left <= STOP_CHECK {
+                break None;
+            }
+        };
+        if let Some(key) = key {
+            for k in rejoin(key, next_key) {
+                handle_key(app, k.code, k.modifiers);
+            }
         }
 
         if Instant::now() >= next_sample {
@@ -1390,6 +1423,91 @@ fn run(
 /// Exposed because the modal boxes are state machines: what `Ctrl-C` does while
 /// the jump box is open, and what an arrow key does to the last jump's answer,
 /// are properties of the handler and cannot be checked by poking the `App`.
+/// How often a wait for input looks at the stop flag.
+const STOP_CHECK: Duration = Duration::from_millis(100);
+
+/// How long a lone Esc waits for the rest of an escape sequence.
+///
+/// Long enough for the next read over a slow link or a busy machine, short
+/// enough that a real Esc, which backs out or quits, is not felt to lag. Vim's
+/// `ttimeoutlen` in `defaults.vim`. 50ms, Neovim's, was not enough on a loaded
+/// CI runner: the second half arrived after it and the arrow quit poptop.
+const ESC_WAIT: Duration = Duration::from_millis(100);
+
+/// The next key press, if one arrives within [`ESC_WAIT`].
+fn next_key() -> Option<KeyEvent> {
+    loop {
+        if !event::poll(ESC_WAIT).ok()? {
+            return None;
+        }
+        match event::read().ok()? {
+            Event::Key(k) if k.kind == KeyEventKind::Press => return Some(k),
+            Event::Key(_) => continue,
+            _ => return None,
+        }
+    }
+}
+
+/// A key press, with an escape sequence that arrived split across two reads
+/// put back together.
+///
+/// The terminal sends Down as three bytes, `ESC [ B`. When they arrive in one
+/// read, crossterm sees Down. Over a slow link they can arrive as `ESC`, then
+/// `[B`, and crossterm, seeing an `ESC` with nothing after it, reports Esc,
+/// then `[`, then `B`. Esc backs out of whatever is open, and with nothing
+/// open it quits. So a lone Esc asks for what follows, and a
+/// `[` or `O` straight after it is read as the rest of a sequence. A sequence
+/// this does not know is dropped whole, rather than half of it being typed.
+fn rejoin(first: KeyEvent, mut next: impl FnMut() -> Option<KeyEvent>) -> Vec<KeyEvent> {
+    let plain = |k: &KeyEvent| k.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+    if first.code != KeyCode::Esc || !first.modifiers.is_empty() {
+        return vec![first];
+    }
+    let Some(second) = next() else {
+        return vec![first];
+    };
+    let intro = match second.code {
+        KeyCode::Char(c @ ('[' | 'O')) if plain(&second) => c,
+        _ => return vec![first, second],
+    };
+    // Parameters, then one final byte: `A`, `5~`, `1;2C`.
+    let mut params = String::new();
+    let final_byte = loop {
+        match next() {
+            Some(KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            }) if params.len() < 8 => {
+                if matches!(c, '0'..='9' | ';') {
+                    params.push(c);
+                } else {
+                    break c;
+                }
+            }
+            // Cut off, or not a sequence after all: nothing of it is a key.
+            _ => return Vec::new(),
+        }
+    };
+    let modifiers = match params.split_once(';').map(|(_, m)| m) {
+        Some("2") => KeyModifiers::SHIFT,
+        Some("3") => KeyModifiers::ALT,
+        Some("5") => KeyModifiers::CONTROL,
+        _ => KeyModifiers::NONE,
+    };
+    let code = match (intro, params.split(';').next().unwrap_or(""), final_byte) {
+        (_, _, 'A') => KeyCode::Up,
+        (_, _, 'B') => KeyCode::Down,
+        (_, _, 'C') => KeyCode::Right,
+        (_, _, 'D') => KeyCode::Left,
+        (_, _, 'H') | ('[', "1" | "7", '~') => KeyCode::Home,
+        (_, _, 'F') | ('[', "4" | "8", '~') => KeyCode::End,
+        ('[', "5", '~') => KeyCode::PageUp,
+        ('[', "6", '~') => KeyCode::PageDown,
+        _ => return Vec::new(),
+    };
+    vec![KeyEvent::new(code, modifiers)]
+}
+
 #[cfg(test)]
 pub fn handle_key_for_test(app: &mut App, code: KeyCode) {
     handle_key(app, code, KeyModifiers::NONE);
@@ -1984,5 +2102,72 @@ mod tests {
                 || note.contains("is another process now"),
             "{note}"
         );
+    }
+
+    fn k(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// `rejoin` fed the keys crossterm reports for `rest` arriving after a
+    /// lone ESC: each byte a character, uppercase with Shift.
+    fn after_esc(rest: &str) -> Vec<KeyEvent> {
+        let mut rest: std::collections::VecDeque<KeyEvent> = rest
+            .chars()
+            .map(|c| {
+                let shift = if c.is_ascii_uppercase() {
+                    KeyModifiers::SHIFT
+                } else {
+                    KeyModifiers::NONE
+                };
+                KeyEvent::new(KeyCode::Char(c), shift)
+            })
+            .collect();
+        rejoin(k(KeyCode::Esc), || rest.pop_front())
+    }
+
+    #[test]
+    fn an_escape_sequence_split_after_its_esc_is_put_back_together() {
+        let rows: &[(&str, KeyCode, KeyModifiers)] = &[
+            ("[A", KeyCode::Up, KeyModifiers::NONE),
+            ("[B", KeyCode::Down, KeyModifiers::NONE),
+            ("[C", KeyCode::Right, KeyModifiers::NONE),
+            ("[D", KeyCode::Left, KeyModifiers::NONE),
+            ("OA", KeyCode::Up, KeyModifiers::NONE),
+            ("[H", KeyCode::Home, KeyModifiers::NONE),
+            ("[F", KeyCode::End, KeyModifiers::NONE),
+            ("[1~", KeyCode::Home, KeyModifiers::NONE),
+            ("[4~", KeyCode::End, KeyModifiers::NONE),
+            ("[5~", KeyCode::PageUp, KeyModifiers::NONE),
+            ("[6~", KeyCode::PageDown, KeyModifiers::NONE),
+            // Shift-Right is ten samples at a time.
+            ("[1;2C", KeyCode::Right, KeyModifiers::SHIFT),
+            ("[1;2D", KeyCode::Left, KeyModifiers::SHIFT),
+        ];
+        for (rest, code, mods) in rows {
+            assert_eq!(
+                after_esc(rest),
+                vec![KeyEvent::new(*code, *mods)],
+                "ESC then {rest}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_esc_is_still_esc_and_nothing_half_read_is_typed() {
+        // Alone, it is Esc: nothing followed within the wait.
+        assert_eq!(after_esc(""), vec![k(KeyCode::Esc)]);
+        // Followed by something that does not start a sequence: both.
+        assert_eq!(after_esc("q"), vec![k(KeyCode::Esc), k(KeyCode::Char('q'))]);
+        // A sequence cut off, or one poptop has no key for: dropped whole,
+        // not typed into a filter as `[3` and `~`.
+        assert_eq!(after_esc("["), vec![]);
+        assert_eq!(after_esc("[5"), vec![]);
+        assert_eq!(after_esc("[3~"), vec![]);
+        assert_eq!(after_esc("[123456789~"), vec![]);
+        // Only a bare Esc waits; anything else is itself.
+        let up = k(KeyCode::Up);
+        assert_eq!(rejoin(up, || panic!("waited after Up")), vec![up]);
+        let alt_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT);
+        assert_eq!(rejoin(alt_esc, || panic!("waited")), vec![alt_esc]);
     }
 }
