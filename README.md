@@ -190,7 +190,7 @@ cargo build --release
 
 | Key | Action |
 | --- | --- |
-| `q` | quit |
+| `q` | quit. `SIGTERM`, `SIGHUP` and Ctrl-C quit the same way, and give the terminal back |
 | `Esc` | back out one level: leave the filter or jump box, cancel a signal, let go of the selected process — and with none of those, quit |
 | `←` / `→` | scrub through history (hold `Shift` for ten at a time) |
 | `b` | jump to a moment: `-2h`, `03:00`, `2026-09-08 03:00` (atop's `-b`) |

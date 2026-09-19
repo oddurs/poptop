@@ -99,19 +99,19 @@ Code review sprint. Read the code for what the tests cannot show: the reasoning 
 
 ## r3 — Tested as it is run
 
-`######····` 60% · 3 of 5 done
+`########··` 80% · 4 of 5 done
 
 Testing sprint. 593 unit tests exercise poptop from the inside. Nothing runs the binary the way a person or a script does. CI's live checks are `--once` and a closed pipe. This sprint tests from the outside: the command line, the export format against its own schema, the Linux backend against kernels other than the CI runner's, the TUI in a real pseudo-terminal, and signals sent to real processes.
 
 ### backlog
 
 - [ ] `0093` The Linux backend is tested on one kernel: whatever GitHub runs <sup>chore · p1 · testing</sup>
-- [ ] `0094` The TUI has never been run in a terminal by a test <sup>chore · p2 · testing</sup>
 
 ### done
 
 - [x] `0091` No test runs the binary <sup>chore · p1 · testing</sup>
 - [x] `0092` Export output is never checked against the schema it publishes <sup>chore · p1 · testing</sup>
+- [x] `0094` The TUI has never been run in a terminal by a test <sup>chore · p2 · testing</sup>
 - [x] `0095` Signals are tested against the test's own process <sup>chore · p2 · testing</sup>
 
 ## r4 — Right, not just consistent

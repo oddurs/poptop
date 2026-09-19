@@ -913,6 +913,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "ratatui",
+ "signal-hook",
  "sysinfo",
  "unicode-width",
 ]
