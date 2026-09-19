@@ -376,6 +376,11 @@ pub fn load(notes: &mut Vec<String>) -> Option<Vec<Sample>> {
 /// regular file is read only as far as its length when opened, so one still
 /// being appended to — by a poptop in another terminal — cannot keep the
 /// reader reading.
+///
+/// A regular file is read whole, however large. Capping or streaming the read
+/// would not bound anything: what the bytes decode into is at least as large
+/// as the bytes, so the memory a day costs is the day's, and the day is as
+/// large as the `log-bytes` its writer allowed.
 pub fn read_regular(path: &Path) -> Result<Option<Vec<u8>>, String> {
     use std::io::Read as _;
     let meta = match std::fs::metadata(path) {

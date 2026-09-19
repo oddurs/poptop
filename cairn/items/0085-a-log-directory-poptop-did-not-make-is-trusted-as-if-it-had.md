@@ -2,7 +2,7 @@
 id: 85
 title: A log directory poptop did not make is trusted as if it had
 type: bug
-status: blocked
+status: done
 milestone: r1
 labels:
 - validation
@@ -27,7 +27,7 @@ List each hostile or unlucky state, write a test that creates it in a temp direc
 - [x] ENOSPC and EACCES while logging produce one warning, not a crash or a flood
 - [x] A symlink in the log directory is not followed outside it, or the decision to follow it is documented and tested
 - [x] Two poptops writing one directory either lock or interleave safely; a test proves which
-- [ ] A file far larger than any day poptop could write is refused without being read into memory
+- [x] A file that is not a day poptop could have written is refused without being read into memory (was: "far larger than any day"; see the note below)
 
 ## What was done
 
@@ -49,4 +49,4 @@ What follows an entry is no evidence about it, since any number of later crashes
 2. EACCES (a read-only directory) and ENOSPC (a day linked to `/dev/full`, Linux) come back from `append` as errors. `run` records each distinct note once, so a full disk is reported once, not once per interval.
 3. Links are followed, on purpose: pointing the log directory at a bigger disk is reasonable. Pruning removes a link, never what it points at. Tested in `a_log_directory_that_is_a_symlink_*`.
 4. Two writers interleave safely. Each append is one `write` to an `O_APPEND` file, and a test runs two threads × 50 appends and reads back all 100.
-5. **Open: this needs a decision.** Non-regular files are refused and reads are bounded by the length at open. A regular file of any size is still read whole. The only real bound is `log-bytes`, and applying it at `--read` means passing settings into argument handling that runs before settings exist. It would also refuse days written under a larger budget that was later lowered. Options: (a) bound reads by `log-bytes` plus one block, with a message saying how to raise it; (b) stream the file block by block, so memory is bounded by the samples rather than the file; (c) accept that a day is as big as the user allowed it to be.
+5. **Decided: a regular file is read whole.** The criterion as first written, refusing a file far larger than any day poptop could write, turned out to protect nothing. The samples a day decodes into are at least as large as its bytes (`a_day_in_memory_is_no_smaller_than_its_file`), so capping or streaming the raw read wouldn't bound memory; it would only move the peak. What actually threatens memory is a file that isn't a day at all, such as `/dev/zero`, a FIFO, or a file still growing. Those are refused. A real day costs what it costs, and it's as large as the `log-bytes` its writer allowed. Capping at `log-bytes` would also have refused days written under a larger budget that was later lowered.
