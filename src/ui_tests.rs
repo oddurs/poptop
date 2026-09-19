@@ -4603,11 +4603,14 @@ fn an_unknown_thread_count_is_a_dash_not_a_one() {
         }];
         app.push(s);
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-        render(&app, 200, 40)
-            .lines()
+        // The row itself, not the screen: `render` joins every cell with no
+        // line breaks, so `.lines()` on it is the whole frame — and the count
+        // below then counted a `36` anywhere on screen, including a clock time
+        // in the timeline that happened to read `17:36`.
+        rows(&app, 200, 40)
+            .into_iter()
             .find(|l| l.contains("zzsentinel"))
             .expect("no process row")
-            .to_string()
     };
 
     let unknown = row(None);
