@@ -277,7 +277,7 @@ impl Collector for SysinfoCollector {
                     // directly — a flat `1` beside a CPU figure of several
                     // hundred percent was the table contradicting itself.
                     threads: task.map(|t| t.threads),
-                    state: status_char(p.status()),
+                    state: state_of(p.status(), task),
                     started,
                     // Free here: `refresh_processes` already reads `argv`, so
                     // unlike the `/proc` backend there is no extra syscall to
@@ -394,6 +394,27 @@ impl Collector for SysinfoCollector {
     }
 }
 
+/// The single-letter state `ps` would print.
+///
+/// From the threads, not from sysinfo's status, which means different things
+/// on different releases of macOS. On one it is the BSD `p_stat` — `SRUN` for
+/// nearly every process, so the table said `R` for twenty rows in twenty-three
+/// while `ps` counted 730 sleeping. On another it said `Sleep` for a process
+/// spinning flat out, whose task reported a thread runnable (0106; the CI
+/// runner's log is on the item). `proc_taskinfo`'s count of runnable threads is
+/// right on both: `R` if any is, `S` if none is — which is how `ps` decides.
+/// Where the kernel will not say, `?`, not a guess. Stopped and zombie come
+/// from the process table, which is where those states live.
+fn state_of(s: sysinfo::ProcessStatus, task: Option<procinfo::Task>) -> char {
+    use sysinfo::ProcessStatus::{Stop, Zombie};
+    match (s, task) {
+        (Stop | Zombie, _) => status_char(s),
+        (_, Some(t)) if t.running > 0 => 'R',
+        (_, Some(_)) => 'S',
+        (_, None) => '?',
+    }
+}
+
 /// Collapse to the single-letter states `ps` uses, so both backends agree.
 fn status_char(s: sysinfo::ProcessStatus) -> char {
     use sysinfo::ProcessStatus::*;
@@ -469,6 +490,70 @@ fn cached<T: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sleeping_process_is_not_reported_as_running() {
+        // 0106. sysinfo's status on macOS is the BSD `p_stat`, which is `SRUN`
+        // for nearly every process whether or not it is doing anything — the
+        // table said `R` for twenty rows in twenty-three while `ps` counted
+        // 730 sleeping and 5 running. A child blocked in `sleep` must read S,
+        // and one spinning must read R.
+        let mut sleeper = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut spinner = std::process::Command::new("/usr/bin/yes")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // Several samples, not one. A state is an instant, and on a loaded
+        // machine — a CI runner with three cores running the suite in parallel
+        // — a spinning process can be caught between time slices; one sample
+        // failed there that way. So the claims are the two that hold at any
+        // load: a sleeping process is never seen running, and a spinning one
+        // is seen running at least once.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut c = SysinfoCollector::new().unwrap();
+        let mut spinner_ran = false;
+        let mut seen = Vec::new();
+        for _ in 0..20 {
+            let s = c.collect(Needs::default()).unwrap();
+            let state = |pid: u32| {
+                s.procs
+                    .iter()
+                    .find(|p| p.pid == pid as i32)
+                    .map(|p| p.state)
+                    .unwrap_or_else(|| panic!("pid {pid} was not collected"))
+            };
+            assert_eq!(
+                state(sleeper.id()),
+                'S',
+                "a sleeping process read as running"
+            );
+            let spin = state(spinner.id());
+            // What the kernel said, so a failure on a machine this cannot be
+            // run on by hand explains itself.
+            let pid = sysinfo::Pid::from_u32(spinner.id());
+            seen.push(format!(
+                "{spin}: status {:?}, task {:?}, cpu {:?}",
+                c.sys.process(pid).map(sysinfo::Process::status),
+                procinfo::task(spinner.id() as i32),
+                c.sys.process(pid).map(sysinfo::Process::cpu_usage),
+            ));
+            if spin == 'R' {
+                spinner_ran = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = (sleeper.kill(), spinner.kill());
+        let _ = (sleeper.wait(), spinner.wait());
+        assert!(
+            spinner_ran,
+            "a spinning process never read as running in twenty samples:\n{}",
+            seen.join("\n")
+        );
+    }
 
     #[test]
     fn sysinfo_is_never_asked_for_the_cpu_frequency() {
