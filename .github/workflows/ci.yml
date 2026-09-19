@@ -64,8 +64,18 @@ jobs:
   # into libc declared by hand, which Miri cannot execute; ASan intercepts
   # those same calls and checks every buffer handed across. Linux only: on
   # macOS it stops at a read past a string literal inside sysinfo (0101).
+  # Both platforms: the one report ASan has ever made here was in sysinfo,
+  # which only the macOS backend links (0101).
   asan:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -75,7 +85,7 @@ jobs:
       - name: cargo test under AddressSanitizer
         env:
           RUSTFLAGS: -Zsanitizer=address
-        run: cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --bin poptop
+        run: cargo test -Zbuild-std --target ${{ matrix.target }} --bin poptop
 
   # Every fuzz target for a minute, from the committed seeds, on Linux: the
   # only platform where the /proc, NFS and taskstats targets are compiled at

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use sysinfo::{Networks, ProcessesToUpdate, System, Users};
+use sysinfo::{CpuRefreshKind, Networks, ProcessesToUpdate, RefreshKind, System, Users};
 
 /// The fastest sysinfo can be sampled and still report the truth.
 ///
@@ -89,7 +89,7 @@ impl SysinfoCollector {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             primed: false,
-            sys: System::new_all(),
+            sys: System::new_with_specifics(everything_but_frequency()),
             users: Users::new_with_refreshed_list(),
             names: HashMap::new(),
             nets: Networks::new_with_refreshed_list(),
@@ -102,9 +102,22 @@ impl SysinfoCollector {
     }
 }
 
+/// What `System::new_all` asks for, less the CPU's clock frequency.
+///
+/// poptop never reads the frequency, and asking for it is how sysinfo reaches
+/// `sysctlbyname("hw.cpufrequency".as_ptr(), …)` — a Rust literal with no NUL
+/// on the end, which the C function reads past until it finds one. Undefined
+/// behaviour on every macOS start, and the one report AddressSanitizer makes
+/// for the whole suite (0101). Not asking for it is the whole fix on this side;
+/// `refresh_cpu_usage` below, rather than `refresh_cpu_all`, keeps it that way
+/// after the first sample.
+fn everything_but_frequency() -> RefreshKind {
+    RefreshKind::everything().with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+}
+
 impl Collector for SysinfoCollector {
     fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
-        // `System::new_all` has already refreshed by the time this runs, and
+        // `System::new_with_specifics` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
         // needs between CPU refreshes. So the first sample's CPU figures are
         // exactly what the interval floor exists to refuse, and they would
@@ -117,7 +130,7 @@ impl Collector for SysinfoCollector {
         // frame arrive a fifth of a second late.
         let first = !self.primed;
         self.primed = true;
-        self.sys.refresh_cpu_all();
+        self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
 
@@ -451,6 +464,18 @@ fn cached<T: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sysinfo_is_never_asked_for_the_cpu_frequency() {
+        // Asking is what reaches the unterminated `sysctlbyname` name in
+        // sysinfo (0101). The `asan` job on macOS catches the read itself;
+        // this says why, and catches the request before anything is run.
+        let kind = everything_but_frequency();
+        let cpu = kind.cpu().expect("CPU usage is no longer asked for");
+        assert!(cpu.cpu_usage(), "CPU usage is no longer asked for");
+        assert!(!cpu.frequency(), "the CPU frequency is asked for again");
+        assert!(kind.memory().is_some() && kind.processes().is_some());
+    }
 
     #[test]
     fn interface_counts_are_turned_into_rates() {
