@@ -654,6 +654,26 @@ really are more than one tick apart and the seams are telling you so. Gaps aggre
 the same reason values aggregate by peak — zooming out must not be able to
 erase an event, least of all at the zoom where the whole buffer is on screen.
 
+**Budgets that fail.** What poptop itself may cost is written down in
+`src/budget.rs`, each figure with the measurement it was set from, and
+`./check --perf` fails a release build that goes over one:
+
+| | measured, Mac / Linux container | budget |
+| --- | --- | --- |
+| a sample, whole | 6.3 ms / 0.17 ms | 25 ms |
+| a sample, per process (from 100 processes) | 8.8 µs | 30 µs |
+| a 200×60 frame, 900 processes × 600 samples | 4.4 ms / 7.7 ms | 25 ms |
+| encode a full store (600 × 400) | 29 ms / 30 ms | 90 ms |
+| decode it | 7.7 ms / 11.6 ms | 35 ms |
+| its size | 25.0 MB | 30 MB |
+| a full store to the first frame | 10.2 ms / 10.5 ms | 35 ms |
+| memory after an hour at 400 processes | 66 MB / 62 MB | 100 MB |
+| memory growth after the buffer is full | 96 KB / 0 | 8 MB |
+| 100 NFSv4.2 mounts' `mountstats` (Linux) | 0.5 ms | 1.5 ms |
+
+CI prints the same figures on every run without enforcing them, because a
+shared runner's timing is noise.
+
 ## Reading the table
 
 The per-process disk IO columns are **shown by default**, because the header

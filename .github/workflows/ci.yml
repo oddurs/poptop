@@ -49,6 +49,12 @@ jobs:
         run: |
           rustup target add x86_64-apple-darwin
           cargo test --target x86_64-apple-darwin
+      # Reported, not enforced: a shared runner's timing is noise. `./check
+      # --perf` is where a budget fails. See src/budget.rs.
+      - name: performance budgets, reported
+        env:
+          POPTOP_BUDGET: report
+        run: "cargo test --release --bin poptop budget:: -- --ignored --test-threads=1 --nocapture"
       - name: smoke test the collector against live data
         run: cargo run --release -- --once
       # Piped into a reader that stops early. Rust ignores SIGPIPE and turns

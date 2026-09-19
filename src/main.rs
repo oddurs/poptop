@@ -8,6 +8,8 @@
 //! any later version. See the LICENSE file for details.
 
 mod app;
+#[cfg(test)]
+mod budget;
 mod check;
 mod collect;
 mod config;

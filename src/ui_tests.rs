@@ -4640,30 +4640,6 @@ fn a_process_absent_from_a_sample_leaves_a_gap_not_a_zero() {
     assert!(s[5..].iter().all(Option::is_some), "presence became a gap");
 }
 
-#[test]
-#[ignore = "measurement"]
-fn measure_render_with_sparklines() {
-    let mut app = App::new(600);
-    for i in (0..600).rev() {
-        let mut s = sample_at((i as f32 * 1.7) % 100.0, i as u64);
-        s.procs = (0..900)
-            .map(|p| proc_named(p, "some-process-name", (p as f32) % 100.0, 1 << 20))
-            .collect();
-        app.push(s);
-    }
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let mut term = Terminal::new(TestBackend::new(200, 60)).unwrap();
-    let n = 50;
-    let t0 = std::time::Instant::now();
-    for _ in 0..n {
-        term.draw(|f| ui::draw(f, &app)).unwrap();
-    }
-    println!(
-        "  render: {:?}/frame at 900 procs x 600 samples, 200x60",
-        t0.elapsed() / n
-    );
-}
-
 /// The rendered frame as one string per terminal row, for tests that care
 /// about geometry rather than the presence of a substring.
 /// The row carrying the header figures.
