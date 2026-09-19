@@ -3791,11 +3791,17 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
         } else {
             (Some(222), 2.0)
         };
-        s.procs = vec![ProcSample {
-            cpu,
-            started,
-            ..proc_named(4242, "recycled", 0.0, 1 << 20)
-        }];
+        s.procs = vec![
+            ProcSample {
+                cpu,
+                started,
+                ..proc_named(4242, "recycled", 0.0, 1 << 20)
+            },
+            // A neighbour whose history moves, so the column is drawn: it is
+            // left out when no row's history moves (0110). Below the old
+            // occupant's 90%, so the shared ceiling is unchanged.
+            proc_named(4243, "neighbour", (i % 7) as f32 * 10.0, 1 << 20),
+        ];
         app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -3869,7 +3875,9 @@ fn scrolling_the_list_does_not_rescale_everybody_else_history() {
         // One heavy process, then a long tail of quiet ones. The heavy one
         // sorts to the top, so scrolling down takes it off screen.
         s.procs = vec![ProcSample {
-            cpu: 900.0,
+            // Wobbling, so there is history to draw (0110); the peak, and so
+            // the shared ceiling, is the 900% it always was.
+            cpu: if i % 2 == 0 { 900.0 } else { 500.0 },
             ..proc_named(1, "vm", 0.0, 1 << 20)
         }];
         s.procs.extend((2..40).map(|pid| ProcSample {
@@ -7002,7 +7010,7 @@ fn the_column_headers_name_the_columns_under_them() {
     // over DISK W, and `DISK W` over the sparkline. Every one of the three
     // named the column beside it.
     let mut app = App::new(60);
-    for _ in 0..App::CONSTANT_FOR {
+    for i in 0..App::CONSTANT_FOR {
         let mut s = sample(10.0);
         s.io_collected = true;
         s.procs = vec![ProcSample {
@@ -7010,7 +7018,8 @@ fn the_column_headers_name_the_columns_under_them() {
                 read: 1 << 20,
                 write: 1 << 21,
             }),
-            ..proc_named(101, "postgres", 20.0, 1 << 20)
+            // Varying, so the history column is drawn (0110).
+            ..proc_named(101, "postgres", 20.0 + 15.0 * i as f32, 1 << 20)
         }];
         app.push(s);
     }
@@ -7234,7 +7243,7 @@ fn the_columns_that_identify_a_process_are_adjacent() {
     // so reading a row meant starting at the left, jumping seventy columns
     // right to find out what it was, and coming back.
     let mut app = App::new(60);
-    for _ in 0..App::CONSTANT_FOR {
+    for i in 0..App::CONSTANT_FOR {
         let mut s = sample(10.0);
         s.io_collected = true;
         // Two users, so the USER column is not folded into the title — this
@@ -7249,7 +7258,8 @@ fn the_columns_that_identify_a_process_are_adjacent() {
                 cmd: Some(std::sync::Arc::from("node /srv/api/server.js")),
                 ..proc_named(4821, "node", 31.2, 1 << 30)
             },
-            proc_named(4822, "cron", 1.0, 1 << 20),
+            // Varying, so the history column is drawn (0110).
+            proc_named(4822, "cron", 1.0 + 10.0 * i as f32, 1 << 20),
         ];
         app.push(s);
     }
@@ -7419,22 +7429,26 @@ fn the_readme_shows_the_table_this_version_draws() {
     // different table.
     let readme = include_str!("../README.md");
     let mut app = App::new(60);
-    for _ in 0..App::CONSTANT_FOR {
+    for i in 0..App::CONSTANT_FOR {
+        // Climbing to the README's figures, which the last sample shows: a
+        // machine whose processes never moved draws no history column
+        // (0110), and the README should look like a machine doing something.
+        let k = (i + 1) as f32 / App::CONSTANT_FOR as f32;
         let mut s = sample(10.0);
         // The README's own four, so the count in the title matches too.
         s.procs = vec![
             ProcSample {
-                cpu: 88.4,
+                cpu: 88.4 * k,
                 rss: 512 << 20,
                 ..proc_named(824, "postgres", 0.0, 0)
             },
             ProcSample {
-                cpu: 12.5,
+                cpu: 12.5 * k,
                 rss: 32 << 20,
                 ..proc_named(1190, "nginx", 0.0, 0)
             },
             ProcSample {
-                cpu: 4.2,
+                cpu: 4.2 * k,
                 rss: 148 << 20,
                 ..proc_named(2077, "node", 0.0, 0)
             },
@@ -11325,4 +11339,65 @@ fn a_process_the_kernel_would_not_describe_shows_dashes_not_zeros() {
         .map(|n| screen.iter().position(|r| r.contains(n)).unwrap())
         .collect();
     assert!(order[0] < order[1]);
+}
+
+#[test]
+fn the_history_column_is_drawn_when_something_moved_and_says_so_when_nothing_did() {
+    // 0110. Every row drew the same flat line: the CPU% column's level as a
+    // picture, ten columns wide, beside a command elided for want of room.
+    // The column is for change, so it is drawn when some process's history
+    // moves, and otherwise gives its width to the command and says why.
+    let quiet = |moving: bool| {
+        let mut app = App::new(600);
+        for i in 0..30 {
+            let mut s = sample_at(10.0, 30 - i);
+            s.procs = vec![
+                ProcSample {
+                    cmd: Some(std::sync::Arc::from(
+                        "postgres: checkpointer process for the main cluster",
+                    )),
+                    ..proc_named(1, "postgres", 3.0, 1 << 20)
+                },
+                proc_named(
+                    2,
+                    "nginx",
+                    if moving && i % 2 == 0 { 60.0 } else { 3.0 },
+                    1 << 20,
+                ),
+            ];
+            app.push(s);
+        }
+        rows(&app, 100, 30)
+    };
+    let flat = quiet(false);
+    let header = flat.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(
+        !header.contains("HIST"),
+        "a flat buffer drew the history: {header:?}"
+    );
+    assert!(
+        flat.iter().any(|r| r.contains("history flat")),
+        "the column went without saying why"
+    );
+    // The width went to the command: more of it is shown than beside a drawn
+    // history column.
+    let command = |screen: &[String]| {
+        let row = screen.iter().find(|r| r.contains("postgres")).unwrap();
+        row[row.find("postgres").unwrap()..]
+            .trim_end()
+            .chars()
+            .count()
+    };
+
+    let moving = quiet(true);
+    let header = moving.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(
+        header.contains("HIST"),
+        "a moving history was not drawn: {header:?}"
+    );
+    assert!(!moving.iter().any(|r| r.contains("history flat")));
+    assert!(
+        command(&flat) > command(&moving),
+        "the history column's width did not go to the command"
+    );
 }
