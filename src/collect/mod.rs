@@ -509,6 +509,14 @@ pub mod nfs;
 pub mod taskstats;
 #[cfg(target_os = "linux")]
 use linux as backend;
+/// Every `/proc` parser on one input, for `fuzz/`. Linux only, because that is
+/// the only place they are compiled.
+#[cfg(all(feature = "fuzzing", target_os = "linux"))]
+// Called only by the library `fuzz/` links; the program compiles it, unused.
+#[allow(dead_code)]
+pub fn fuzz_proc(bytes: &[u8]) {
+    linux::fuzz(bytes);
+}
 #[cfg(target_os = "linux")]
 pub use linux::ProcFs as Platform;
 

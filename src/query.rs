@@ -818,4 +818,74 @@ mod review_tests {
             assert!(!parsed.matches(&other), "`{q}` matched postgres");
         }
     }
+
+    /// Queries people type, and the ones that broke this parser before: a
+    /// multi-byte letter whose lowercase is longer than itself, `and` at every
+    /// edge, operators with nothing around them.
+    const TYPED: &[&str] = &[
+        "cpu > 5 and user = root",
+        "state = D",
+        "write > 1mb and read >= 500k",
+        "threads > 100",
+        "task = D",
+        "chrome --type=renderer",
+        "İİİ and İ",
+        "and",
+        "android",
+        " and and and ",
+        ">=<=!=",
+        "cpu >",
+        "= 5",
+        "mem < 2g and pid != 1 and name = node",
+    ];
+
+    #[test]
+    fn no_typed_filter_can_panic_the_parser() {
+        // The filter parses on every keystroke, so every prefix of every query
+        // is an input — and a panic there leaves the terminal in raw mode.
+        for q in TYPED {
+            for (i, _) in q.char_indices().chain([(q.len(), ' ')]) {
+                let _ = parse(&q[..i]);
+            }
+            for v in crate::mangle::text_variants(q, 300) {
+                let _ = parse(&v);
+            }
+        }
+    }
+
+    #[test]
+    fn an_error_quotes_what_was_typed() {
+        // A one-line box has no room for anything but the error, so it has to
+        // point at something the reader can find in what they typed.
+        for q in TYPED {
+            for v in crate::mangle::text_variants(q, 300) {
+                let Err(e) = parse(&v) else { continue };
+                // Every error quotes one thing, so the quote runs from the first
+                // backtick to the last — the thing quoted may contain one.
+                let (Some(open), Some(close)) = (e.find('`'), e.rfind('`')) else {
+                    panic!("{v:?} gave an error that quotes nothing: {e}");
+                };
+                assert!(open < close, "{v:?} gave an error that quotes nothing: {e}");
+                let q = &e[open + 1..close];
+                assert!(
+                    v.to_lowercase().contains(&q.to_lowercase()),
+                    "{v:?} gave an error quoting `{q}`, which is not in it: {e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spacing_and_case_do_not_change_a_query() {
+        // `CPU>5` and `cpu > 5` are one question. Nothing in the grammar needs
+        // the space, and the filter box is typed into in a hurry.
+        for (a, b) in [
+            ("cpu > 5", "CPU>5"),
+            ("state = D", "  State=d  "),
+            ("write > 1mb and user = root", "WRITE>1MB AND USER=ROOT"),
+            ("mem <= 2g", "mem<=2G"),
+        ] {
+            assert_eq!(parse(a), parse(b), "{a:?} and {b:?}");
+        }
+    }
 }

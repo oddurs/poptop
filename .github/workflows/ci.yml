@@ -50,3 +50,32 @@ jobs:
           set -o pipefail
           cargo run --release -- --once | head -1
           cargo run --release -- --help | head -1
+
+  # Every fuzz target for a minute, from the committed seeds, on Linux: the
+  # only platform where the /proc, NFS and taskstats targets are compiled at
+  # all. A minute finds regressions in what the seeds already reach; the long
+  # runs that find new things are `./check --fuzz=3600`, by hand.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+          cache-all-crates: true
+      - run: cargo install cargo-fuzz --locked
+      - name: every target, sixty seconds each
+        working-directory: fuzz
+        run: |
+          for t in $(sed -n 's/^name = "\(.*\)"$/\1/p' Cargo.toml | grep -v '^poptop-fuzz$'); do
+            mkdir -p corpus/$t
+            cargo fuzz run $t corpus/$t seeds/$t -- -max_total_time=60 \
+              -timeout=1 -rss_limit_mb=1024 -malloc_limit_mb=1024
+          done
+      - name: keep what crashed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts

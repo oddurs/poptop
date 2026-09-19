@@ -1,0 +1,4 @@
+glyphs = block
+color = mono # c
+interval = 500ms
+log-bytes = 512mb

@@ -14,6 +14,11 @@ ratatui = "0.30.2"
 # crate calls it directly.
 unicode-width = "0.2.2"
 
+[features]
+# Compiles the program's modules into the library as well, for `fuzz/`. Off in
+# every normal build, where the library is empty; see src/lib.rs.
+fuzzing = []
+
 [target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = "0.38.4"
 

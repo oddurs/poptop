@@ -85,14 +85,14 @@ fn parse_cpu_stat(text: &str) -> Option<u64> {
 
 /// Read and write bytes, summed across devices.
 fn parse_io_stat(text: &str) -> (u64, u64) {
-    let mut read = 0;
-    let mut write = 0;
+    let mut read = 0u64;
+    let mut write = 0u64;
     for line in text.lines() {
         for field in line.split_whitespace() {
             if let Some(v) = field.strip_prefix("rbytes=") {
-                read += v.parse::<u64>().unwrap_or(0);
+                read = v.parse::<u64>().map_or(read, |v| read.saturating_add(v));
             } else if let Some(v) = field.strip_prefix("wbytes=") {
-                write += v.parse::<u64>().unwrap_or(0);
+                write = v.parse::<u64>().map_or(write, |v| write.saturating_add(v));
             }
         }
     }
@@ -102,9 +102,11 @@ fn parse_io_stat(text: &str) -> (u64, u64) {
 /// `cpu.max` as a percentage of one core, or `None` for `max`.
 fn parse_cpu_max(text: &str) -> Option<f32> {
     let mut it = text.split_whitespace();
-    let quota: f64 = it.next()?.parse().ok()?;
-    let period: f64 = it.next()?.parse().ok()?;
-    (period > 0.0).then_some((quota / period * 100.0) as f32)
+    // Integers, as the kernel writes them. Read as floats, `nan` and `inf`
+    // parsed, and a limit of NaN percent of a core went on to the screen.
+    let quota: u64 = it.next()?.parse().ok()?;
+    let period: u64 = it.next()?.parse().ok()?;
+    (period > 0).then_some((quota as f64 / period as f64 * 100.0) as f32)
 }
 
 /// How stalled a cgroup is, for the ordering the view exists to provide.
@@ -302,6 +304,29 @@ mod tests {
         assert_eq!(parse_cpu_max("50000 100000"), Some(50.0));
         assert_eq!(parse_cpu_max("200000 100000"), Some(200.0));
         assert_eq!(parse_cpu_max("max 100000"), None);
+    }
+
+    #[test]
+    fn no_cgroup_parser_panics_on_a_mangled_file() {
+        // Under a delegated subtree an unprivileged user writes the names, and
+        // on some kernels the files themselves are a user's to fill.
+        for seed in [
+            "some avg10=1.25 avg60=0.40 avg300=0.10 total=616\nfull avg10=0.75 avg60=0.20 avg300=0.05 total=96\n",
+            "usage_usec 17971\nuser_usec 3171\nsystem_usec 14800\n",
+            "8:0 rbytes=4096 wbytes=8192 rios=1 wios=2 dbytes=0 dios=0\n259:0 rbytes=1 wbytes=2\n",
+            "50000 100000\n",
+            "0::/system.slice/docker-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.scope\n",
+        ] {
+            for text in crate::mangle::text_variants(seed, 400) {
+                let _ = parse_pressure(&text);
+                let _ = parse_cpu_stat(&text);
+                let _ = parse_io_stat(&text);
+                if let Some(pct) = parse_cpu_max(&text) {
+                    assert!(pct.is_finite(), "{text:?} gave a CPU limit of {pct}");
+                }
+                let _ = container_of(&text);
+            }
+        }
     }
 }
 

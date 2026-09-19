@@ -1,0 +1,72 @@
+[package]
+name = "poptop-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+poptop = { path = "..", features = ["fuzzing"] }
+
+# Its own workspace, so the program's `cargo build` never sees this crate or
+# the nightly-only libFuzzer it links.
+[workspace]
+
+[[bin]]
+name = "store"
+path = "fuzz_targets/store.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_body"
+path = "fuzz_targets/store_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log_day"
+path = "fuzz_targets/log_day.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log_torn"
+path = "fuzz_targets/log_torn.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proc_files"
+path = "fuzz_targets/proc_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nfs"
+path = "fuzz_targets/nfs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "taskstats"
+path = "fuzz_targets/taskstats.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "typed"
+path = "fuzz_targets/typed.rs"
+test = false
+doc = false
+bench = false

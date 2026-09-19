@@ -16,6 +16,8 @@ mod export;
 mod glyphs;
 mod history;
 mod log;
+#[cfg(test)]
+mod mangle;
 mod persist;
 mod query;
 mod report;
