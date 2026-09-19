@@ -220,6 +220,19 @@ impl ProcSample {
         cfg!(target_os = "linux") && (self.pid == KTHREADD || self.ppid == KTHREADD)
     }
 
+    /// Whether the kernel told this user nothing about the process's resources.
+    ///
+    /// No resident memory and no thread count together. A live process always
+    /// has resident pages, and the one kind that has none — a kernel thread —
+    /// still has a thread count, so the pair only coincides where the figures
+    /// were withheld: another user's process on macOS, which sysinfo returns
+    /// with zero memory, zero CPU and no owner. Those zeros are not
+    /// measurements, and a row that prints them says the process is idle
+    /// (0107).
+    pub fn unmeasured(&self) -> bool {
+        self.rss == 0 && self.threads.is_none()
+    }
+
     /// What to write in the identity column: the command line if there is one,
     /// and `comm` if there is not.
     ///

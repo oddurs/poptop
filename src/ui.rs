@@ -3122,29 +3122,43 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 ])));
                 return Row::new(cells).style(style);
             }
-            let mut cells = vec![
-                num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu)),
-                // A bar beside the number turns a column that must be read
-                // into one that can be scanned. htop does the same, for the
-                // same reason.
-                //
-                // Both bars are neutral. Length already carries the magnitude,
-                // and the number beside each one already carries its status
-                // colour — colouring the bar too would spend a third channel
-                // on the same fact. Using a series hue here was worse still:
-                // that is an identity token, and a share of memory is not an
-                // identity. The C6 test caught it.
-            ];
+            // Withheld, not zero: see `ProcSample::unmeasured`.
+            let unmeasured = p.unmeasured();
+            let mut cells = vec![if unmeasured {
+                num("—").style(app.theme.dim_style())
+            } else {
+                num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu))
+            }];
+            // A bar beside the number turns a column that must be read into
+            // one that can be scanned. htop does the same, for the same reason.
+            //
+            // Both bars are neutral. Length already carries the magnitude, and
+            // the number beside each one already carries its status colour —
+            // colouring the bar too would spend a third channel on the same
+            // fact. Using a series hue here was worse still: that is an
+            // identity token, and a share of memory is not an identity. The C6
+            // test caught it. An unmeasured process has no bar: a bar of
+            // nothing is a measurement of nothing.
             if show_bars {
-                cells.push(Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style()));
+                cells.push(if unmeasured {
+                    Cell::from("")
+                } else {
+                    Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style())
+                });
             }
             if show_rss {
-                cells.push(num(fmt_bytes(p.rss)));
+                cells.push(if unmeasured {
+                    num("—").style(app.theme.dim_style())
+                } else {
+                    num(fmt_bytes(p.rss))
+                });
                 if show_bars {
-                    cells.push(
+                    cells.push(if unmeasured {
+                        Cell::from("")
+                    } else {
                         Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
-                            .style(app.theme.dim_style()),
-                    );
+                            .style(app.theme.dim_style())
+                    });
                 }
             }
             if show_state {
