@@ -182,13 +182,12 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`######····` 60% · 3 of 5 done
+`########··` 80% · 4 of 5 done
 
 Good ideas without a date yet.
 
-### backlog
+### in progress
 
-- [ ] `0101` sysinfo hands sysctlbyname a name with no NUL at its end <sup>bug · p2 · review</sup>
 - [ ] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
 
 ### done
@@ -196,4 +195,5 @@ Good ideas without a date yet.
 - [x] `0014` Persist history across restarts <sup>feature · p3</sup>
 - [x] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 - [x] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
+- [x] `0101` sysinfo hands sysctlbyname a name with no NUL at its end <sup>bug · p2 · review</sup>
 

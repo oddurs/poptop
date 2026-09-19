@@ -2,12 +2,14 @@
 id: 102
 title: Once a process is selected, nothing unselects it
 type: bug
-status: backlog
+status: doing
 milestone: later
+assignee: Oddur Sigurdsson
+claimed: 2026-09-19
 labels:
 - review
 created: 2026-09-18
-updated: 2026-09-18
+updated: 2026-09-19
 priority: p3
 effort: s
 area: app
