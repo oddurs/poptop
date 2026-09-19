@@ -3575,6 +3575,39 @@ fn the_axis_states_the_ceiling_it_scaled_to() {
 }
 
 #[test]
+fn the_empty_start_of_the_timeline_says_what_it_is() {
+    // 0109. For the first minutes most of the biggest panel is blank: the time
+    // axis is fixed, and the left of it is time from before poptop was
+    // running. That is meaningful — but a blank panel reads as a broken one.
+    // The empty region says so, in the empty region only, and goes once
+    // history reaches the edge.
+    let mut app = App::new(600);
+    for age in (0..20).rev() {
+        app.push(sample_at(30.0, age));
+    }
+    let screen = rows(&app, 120, 40);
+    let line = screen
+        .iter()
+        .find(|r| r.contains("no history before"))
+        .unwrap_or_else(|| panic!("the empty timeline says nothing:\n{}", screen.join("\n")));
+    // Left of the data, never over it: twenty samples fill ten braille cells
+    // at the right edge.
+    let at = line.find("no history before").unwrap();
+    assert!(line[..at].chars().count() < 120 - 12, "{line:?}");
+
+    let mut full = App::new(600);
+    for age in (0..600).rev() {
+        full.push(sample_at(30.0, age));
+    }
+    assert!(
+        !rows(&full, 120, 40)
+            .iter()
+            .any(|r| r.contains("no history before")),
+        "the label stayed once history filled the panel"
+    );
+}
+
+#[test]
 fn the_rules_do_not_mark_a_buffer_that_has_no_data_yet() {
     // Dashing a reference line across the part of the window that has never
     // been sampled is noise about a region with nothing to reference.
@@ -3593,8 +3626,26 @@ fn the_rules_do_not_mark_a_buffer_that_has_no_data_yet() {
     // The left third of the graph holds no samples at all. Starting past the
     // gutter, whose width is derived from the series names rather than fixed —
     // an axis figure sitting in column four is a label, not a sample.
+    //
+    // Except the label saying so (0109): text naming the empty region is not a
+    // glyph claiming a value in it. Its cells are exempt; nothing else is.
     for y in range.start + 1..range.start + 1 + graph_rows as u16 {
+        let row: String = (0..100u16).map(|x| buf[(x, y)].symbol()).collect();
+        // Exactly the label's own cells: `no history before HH:MM:SS`, and
+        // the tail when it fitted.
+        let label = row.find("no history before").map(|at| {
+            let rest = &row[at..];
+            let mut len = "no history before 00:00:00".chars().count();
+            if rest.contains(" — it fills from the right") {
+                len += " — it fills from the right".chars().count();
+            }
+            let start = row[..at].chars().count();
+            start..start + len
+        });
         for x in ui::GUTTER_W as u16..25u16 {
+            if label.as_ref().is_some_and(|l| l.contains(&(x as usize))) {
+                continue;
+            }
             let s = buf[(x, y)].symbol();
             assert!(
                 s == " " || s == "\u{2800}",
