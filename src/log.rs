@@ -1413,6 +1413,20 @@ mod tests {
     }
 
     #[test]
+    fn a_day_in_memory_is_no_smaller_than_its_file() {
+        // Why `read_day` reads a regular file whole rather than capping or
+        // streaming it: the samples it decodes into are at least as large as
+        // the bytes they came from, so bounding the read would not bound the
+        // memory — the day costs what it costs either way, and it is as large
+        // as the `log-bytes` its writer allowed.
+        let s = crate::store::tests_support::big_sample(5.0, 400);
+        let file = frame(&[&s]).unwrap().len();
+        let held = std::mem::size_of::<Sample>()
+            + s.procs.len() * std::mem::size_of::<crate::sample::ProcSample>();
+        assert!(held >= file, "{held} bytes held for a {file}-byte entry");
+    }
+
+    #[test]
     fn a_process_named_after_the_magic_cannot_erase_the_log() {
         // Entries are found by their magic, `poptophist`, when a length cannot
         // be trusted — and the store writes each string as a length and its
