@@ -2425,6 +2425,126 @@ fn spark_header(ceiling: f32) -> String {
 /// folded into the title. See [`crate::app::App::one_user`].
 const USER_W: u16 = 10;
 
+/// Which of the process table's columns are drawn, and so how wide it is.
+///
+/// One description used both to decide what fits and to lay the table out, so
+/// the two cannot disagree. They did: every column was a fixed `Length`, and
+/// below about sixty-six columns ratatui squeezed the fixed lengths rather
+/// than dropping any — and a right-aligned number squeezed loses its *leading*
+/// digits. `100.9` read `00.9`, `17.2` read `7.2`, `1.2M` read `.2M` (0105).
+/// A wrong number is the one thing this table must never show, so a column
+/// goes before a digit does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Columns {
+    pub bars: bool,
+    pub rss: bool,
+    pub state: bool,
+    pub thr: bool,
+    pub io: bool,
+    pub mem: bool,
+    pub spark: bool,
+    pub pid: bool,
+    pub user: bool,
+    pub cid: bool,
+}
+
+impl Columns {
+    /// The fixed columns' widths, in the order the cells are pushed. `COMMAND`
+    /// is not among them: it takes whatever is left.
+    fn widths(&self) -> Vec<u16> {
+        let mut w = vec![6];
+        if self.bars {
+            // The bar, plus room for the over-100 mark.
+            w.push(BAR_W as u16 + 1);
+        }
+        if self.rss {
+            w.push(8);
+            if self.bars {
+                w.push(BAR_W as u16);
+            }
+        }
+        if self.state {
+            w.push(2);
+        }
+        if self.thr {
+            w.push(4);
+        }
+        if self.io {
+            w.extend([9, 9]);
+        }
+        if self.mem {
+            w.extend([8, 8, 7, 8]);
+        }
+        if self.spark {
+            w.push(SPARK_W as u16);
+        }
+        if self.pid {
+            w.push(7);
+        }
+        if self.user {
+            w.push(USER_W);
+        }
+        if self.cid {
+            w.push(CID_W);
+        }
+        w
+    }
+
+    /// Everything left of the command, gaps included: one column of spacing
+    /// after each fixed column.
+    fn fixed(&self) -> u16 {
+        self.widths().iter().map(|w| w + 1).sum()
+    }
+
+    /// Drop columns, least useful first, until the fixed ones leave the
+    /// command its minimum.
+    ///
+    /// The order is what a narrow terminal should keep longest: the numbers
+    /// the table is sorted by, then the name. The history sparkline goes first
+    /// — it is ten columns and the one least readable at a glance — then the
+    /// bars, which repeat the figures beside them; then the user, the thread
+    /// count, a view's own columns, the state, the memory figure and the pid.
+    /// CPU% and the command stay, whatever the width.
+    fn fit(&mut self, width: u16) {
+        let ladder: [fn(&mut Columns) -> &mut bool; 10] = [
+            |c| &mut c.spark,
+            |c| &mut c.bars,
+            |c| &mut c.cid,
+            |c| &mut c.user,
+            |c| &mut c.thr,
+            |c| &mut c.mem,
+            |c| &mut c.io,
+            |c| &mut c.state,
+            |c| &mut c.rss,
+            |c| &mut c.pid,
+        ];
+        for drop in ladder {
+            if self.fixed() + MIN_COMMAND_W <= width {
+                return;
+            }
+            *drop(self) = false;
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn fitted_columns_for_test(width: u16, all: bool) -> (Columns, u16) {
+    let mut c = Columns {
+        bars: true,
+        rss: true,
+        state: true,
+        thr: true,
+        io: all,
+        mem: all,
+        spark: true,
+        pid: true,
+        user: true,
+        cid: all,
+    };
+    c.fit(width);
+    (c, c.fixed())
+}
+
 /// How much of the line is left for the command name.
 ///
 /// The identity column is the one that takes what nothing else claimed, so it
@@ -2815,7 +2935,38 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         && app.any_container()
         && command_width(area.width, show_io, show_user, true, dropped, taken) as u16
             > MIN_COMMAND_W;
-    let cmd_w = command_width(area.width, show_io, show_user, show_cid, dropped, taken);
+    let mut columns = Columns {
+        bars: show_bars,
+        rss: true,
+        state: true,
+        thr: show_thr,
+        io: show_io,
+        mem: show_mem_cols,
+        spark: true,
+        pid: true,
+        user: show_user,
+        cid: show_cid,
+    };
+    columns.fit(area.width);
+    let Columns {
+        bars: show_bars,
+        rss: show_rss,
+        state: show_state,
+        thr: show_thr,
+        io: show_io,
+        mem: show_mem_cols,
+        spark: show_spark,
+        pid: show_pid,
+        user: show_user,
+        cid: show_cid,
+    } = columns;
+    // What the fixed columns leave, measured by the same description that
+    // lays them out. Floored at the column's own `Min`, and above it exactly:
+    // an elision against a guess is either too cautious or chopped at the edge.
+    let cmd_w = area
+        .width
+        .saturating_sub(columns.fixed())
+        .max(MIN_COMMAND_W) as usize;
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -2926,11 +3077,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 if show_bars {
                     cells.push(Cell::from(cpu_bar(th.cpu)).style(app.theme.dim_style()));
                 }
-                cells.push(num("—").style(app.theme.dim_style()));
-                if show_bars {
-                    cells.push(Cell::from(""));
+                if show_rss {
+                    cells.push(num("—").style(app.theme.dim_style()));
+                    if show_bars {
+                        cells.push(Cell::from(""));
+                    }
                 }
-                cells.push(Cell::from(th.state.to_string()));
+                if show_state {
+                    cells.push(Cell::from(th.state.to_string()));
+                }
                 if show_thr {
                     cells.push(num("—").style(app.theme.dim_style()));
                 }
@@ -2949,8 +3104,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
                 // only series available here is the parent's — drawing it on
                 // every thread row would put the same shape beside forty
                 // different numbers and invite reading it as each one's.
-                cells.push(Cell::from(""));
-                cells.push(num(th.tid.to_string()));
+                if show_spark {
+                    cells.push(Cell::from(""));
+                }
+                if show_pid {
+                    cells.push(num(th.tid.to_string()));
+                }
                 if show_user {
                     // The process's, one row up. A thread does not have its
                     // own.
@@ -2979,14 +3138,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             if show_bars {
                 cells.push(Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style()));
             }
-            cells.push(num(fmt_bytes(p.rss)));
-            if show_bars {
-                cells.push(
-                    Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
-                        .style(app.theme.dim_style()),
-                );
+            if show_rss {
+                cells.push(num(fmt_bytes(p.rss)));
+                if show_bars {
+                    cells.push(
+                        Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
+                            .style(app.theme.dim_style()),
+                    );
+                }
             }
-            cells.push(Cell::from(p.state.to_string()));
+            if show_state {
+                cells.push(Cell::from(p.state.to_string()));
+            }
             if show_thr {
                 // An em dash, never a number we do not have. See
                 // `ProcSample::threads`: a fabricated `1` sits next to a CPU
@@ -3044,15 +3207,17 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             // column of shapes rather than hunting for it past ragged names —
             // and it makes the boundary between what a row *measures* and what
             // a row *is*.
-            cells.push(
-                Cell::from(sparkline(
-                    p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
-                    app.glyphs,
-                    spark_zoom,
-                    spark_ceiling,
-                ))
-                .style(app.theme.dim_style()),
-            );
+            if show_spark {
+                cells.push(
+                    Cell::from(sparkline(
+                        p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
+                        app.glyphs,
+                        spark_zoom,
+                        spark_ceiling,
+                    ))
+                    .style(app.theme.dim_style()),
+                );
+            }
             // Identity, all of it together — see the note above `rows`.
             // A group has no pid — it is not a process. The column carries how
             // many were folded in instead, which is the fact that replaces it.
@@ -3060,10 +3225,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
             // many were folded in instead, which is the fact that replaces it.
             // A group of one keeps the pid: there is a single process there and
             // `×1` says less than its number does.
-            cells.push(num(match r.members {
-                Some(n) if n > 1 => format!("×{n}"),
-                _ => p.pid.to_string(),
-            }));
+            if show_pid {
+                cells.push(num(match r.members {
+                    Some(n) if n > 1 => format!("×{n}"),
+                    _ => p.pid.to_string(),
+                }));
+            }
             // Dropped, not blanked: an empty cell still occupies its ten
             // columns, and giving them to `COMMAND` is the whole point.
             if show_user {
@@ -3111,11 +3278,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     if show_bars {
         header_cells.push(left(""));
     }
-    header_cells.push(right("RSS"));
-    if show_bars {
-        header_cells.push(left(""));
+    if show_rss {
+        header_cells.push(right("RSS"));
+        if show_bars {
+            header_cells.push(left(""));
+        }
     }
-    header_cells.push(left("S"));
+    if show_state {
+        header_cells.push(left("S"));
+    }
     if show_thr {
         header_cells.push(right("THR"));
     }
@@ -3129,8 +3300,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         header_cells.push(right("MAJF/s"));
         header_cells.push(right("GROW"));
     }
-    header_cells.push(left(&spark_header(spark_ceiling)));
-    header_cells.push(right("PID"));
+    if show_spark {
+        header_cells.push(left(&spark_header(spark_ceiling)));
+    }
+    if show_pid {
+        header_cells.push(right("PID"));
+    }
     if show_user {
         header_cells.push(left("USER"));
     }
@@ -3393,39 +3568,12 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     ];
     let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
 
-    let mut widths = vec![Constraint::Length(6)];
-    if show_bars {
-        // The bar, plus room for the over-100 mark.
-        widths.push(Constraint::Length(BAR_W as u16 + 1));
-    }
-    widths.push(Constraint::Length(8));
-    if show_bars {
-        widths.push(Constraint::Length(BAR_W as u16));
-    }
-    widths.push(Constraint::Length(2));
-    if show_thr {
-        widths.push(Constraint::Length(4));
-    }
-    if show_io {
-        widths.push(Constraint::Length(9));
-        widths.push(Constraint::Length(9));
-    }
-    if show_mem_cols {
-        widths.push(Constraint::Length(8));
-        widths.push(Constraint::Length(8));
-        widths.push(Constraint::Length(7));
-        widths.push(Constraint::Length(8));
-    }
-    widths.push(Constraint::Length(SPARK_W as u16));
-    widths.push(Constraint::Length(7));
-    if show_user {
-        widths.push(Constraint::Length(USER_W));
-    }
-    if show_cid {
-        // Twelve characters, which is what `docker ps` shows.
-        widths.push(Constraint::Length(CID_W));
-    }
-    widths.push(Constraint::Min(MIN_COMMAND_W));
+    let widths: Vec<Constraint> = columns
+        .widths()
+        .into_iter()
+        .map(Constraint::Length)
+        .chain([Constraint::Min(MIN_COMMAND_W)])
+        .collect();
 
     f.render_widget(
         Paragraph::new(divider_of(title, area.width, &app.theme)),
