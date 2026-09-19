@@ -87,9 +87,10 @@ pub fn parse_mountstats(text: &str) -> Vec<RawMount> {
             // mounts it was 257us a sample and is 61us now.
             let mut it = rest.split_whitespace().map_while(|w| w.parse::<u64>().ok());
             if let (Some(ops), Some(trans), Some(rtt)) = (it.next(), it.next(), it.nth(4)) {
-                m.ops += ops;
-                m.trans += trans;
-                m.rtt += rtt;
+                // Saturating: a sum of counters the file does not bound.
+                m.ops = m.ops.saturating_add(ops);
+                m.trans = m.trans.saturating_add(trans);
+                m.rtt = m.rtt.saturating_add(rtt);
             }
         }
     }
@@ -556,6 +557,21 @@ device tmpfs mounted on /run with fstype tmpfs
                 kept / n as usize,
                 text.lines().filter(|l| l.starts_with("device ")).count(),
             );
+        }
+    }
+
+    #[test]
+    fn no_nfs_parser_panics_on_a_mangled_file() {
+        // A mount point is chosen by whoever mounted it, and `mountstats` is
+        // one line a mount — so the file is partly written by users.
+        let rpc = "net 0 0 0 0\nrpc 5000 3 0\nproc4 2 1 2\n";
+        let nfsd = "rc 0 10 20\nth 8 0 0.0 0.0\nio 4096 8192\nrpc 64 0 0 0 0\n";
+        for seed in [MOUNTSTATS, rpc, nfsd] {
+            for text in crate::mangle::text_variants(seed, 400) {
+                let _ = parse_mountstats(&text);
+                let _ = parse_rpc_nfs(&text);
+                let _ = parse_rpc_nfsd(&text);
+            }
         }
     }
 }

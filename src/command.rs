@@ -108,8 +108,13 @@ impl Action {
                     app.sort = c.sort();
                     // Sorting by a column that is not on screen answers the
                     // question invisibly: the rows move and nothing says why.
+                    // The reader asked for this by pressing the key, so the
+                    // columns come with it — through the same door as the disk
+                    // tab, so collection starts with them. Setting the flag
+                    // alone showed them empty wherever the probe or the budget
+                    // had stopped collecting.
                     if c.sort() == app::Sort::Disk {
-                        app.show_io = true;
+                        app.reveal_io();
                     }
                 }
             }

@@ -3,9 +3,9 @@ id: 55
 key: v2.0
 title: Nothing escapes
 type: milestone
-status: backlog
+status: done
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-18
 priority: p2
 due: 2027-04-01
 ---

@@ -14,9 +14,9 @@
 //!
 //! One file a day, `poptop-YYYYMMDD`, in the same state directory as the
 //! restart store. Each append is a complete, independently-decodable store
-//! block behind a length: an upgrade halfway through a day leaves the morning
-//! readable, because every block carries its own schema. That is what the
-//! format in `persist` was for.
+//! block behind a length, with a checksum after it: an upgrade halfway through
+//! a day leaves the morning readable, because every block carries its own
+//! schema. That is what the format in `persist` was for.
 
 use crate::sample::Sample;
 use crate::store;
@@ -60,7 +60,25 @@ impl Date {
             month: m.parse().ok()?,
             day: d.parse().ok()?,
         };
-        ((1..=12).contains(&date.month) && (1..=31).contains(&date.day)).then_some(date)
+        ((1..=12).contains(&date.month) && (1..=date.days_in_month()).contains(&date.day))
+            .then_some(date)
+    }
+
+    /// How long this date's month is, by the proleptic Gregorian calendar.
+    ///
+    /// Checked here, at the parse, rather than by seeing where `mktime` lands:
+    /// `2026-02-30` is not a date, and `--read` looking for a file called
+    /// `poptop-20260230` and finding "nothing recorded" says the wrong thing
+    /// about why.
+    fn days_in_month(self) -> u32 {
+        let leap = self.year.rem_euclid(4) == 0
+            && (self.year.rem_euclid(100) != 0 || self.year.rem_euclid(400) == 0);
+        match self.month {
+            2 if leap => 29,
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        }
     }
 }
 
@@ -82,9 +100,16 @@ struct Tm {
     wday: i32,
     yday: i32,
     isdst: i32,
-    gmtoff: i64,
-    zone: *const i8,
+    gmtoff: std::ffi::c_long,
+    zone: *const std::ffi::c_char,
 }
+
+// Fifty-six bytes, with `tm_gmtoff` at 40 and `tm_zone` at 48: glibc on x86_64
+// and aarch64 and the macOS SDK on arm64 and x86_64, checked against each one's
+// headers. `localtime_r` writes the whole struct, so a short mirror is a write
+// past the end of a stack local. `time_t` is 64 bits on all four; a 32-bit
+// target, where it may not be, fails here rather than at run time.
+const _: () = assert!(size_of::<Tm>() == 56 && align_of::<Tm>() == 8);
 
 unsafe extern "C" {
     fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
@@ -126,7 +151,17 @@ pub fn date_of(at: SystemTime) -> Option<Date> {
 /// the machine is. `Err` carries what to say, because a jump box that rejects
 /// what you typed without saying which forms it takes is a box you type into
 /// twice.
-pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
+///
+/// Alongside the instant, a note when the clock time typed did not name one
+/// instant: a time the clocks skipped, or one they showed twice. Both happen
+/// once a year where the clocks change, on the night a log is most likely to
+/// be read. Neither is an error, because either way there is
+/// an obvious moment meant. But the reader should hear which one they got,
+/// and not be left to spot an hour's difference in the header.
+pub fn parse_when_noting(
+    text: &str,
+    now: SystemTime,
+) -> Result<(SystemTime, Option<String>), String> {
     const FORMS: &str = "try -2h, 03:00, or 2026-09-08 03:00";
     let text = text.trim();
     if text.is_empty() {
@@ -135,13 +170,14 @@ pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
     if let Some(sign) = text.chars().next().filter(|c| *c == '-' || *c == '+') {
         let span =
             parse_span(&text[1..]).ok_or_else(|| format!("`{text}` is not a span — {FORMS}"))?;
-        return if sign == '-' {
+        let at = if sign == '-' {
             now.checked_sub(span)
                 .ok_or_else(|| format!("{text} is before the epoch"))
         } else {
             now.checked_add(span)
                 .ok_or_else(|| format!("{text} is past the end of time"))
         };
+        return at.map(|at| (at, None));
     }
 
     // An optional date, then a time. Split on whitespace rather than guessing
@@ -158,20 +194,49 @@ pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
     };
     let (h, m, s) =
         parse_clock(clock).ok_or_else(|| format!("`{clock}` is not a time — {FORMS}"))?;
-    let at =
+    let local =
         at_local(date, h, m, s).ok_or_else(|| format!("`{text}` is before the epoch — {FORMS}"))?;
-    // `mktime` normalises rather than rejects: `2026-02-30` is 2 March and
-    // `24:30` is 00:30 the next morning. Answering with a different day is
-    // exactly what "landing in a gap says so" exists to prevent — the note
-    // reports the landing against the text that was *typed*, so a typo would
-    // read as a real answer about a day nobody asked for.
+    // `mktime` normalises rather than rejects: `2026-02-30` would be 2 March,
+    // and answering with a different day is exactly what "landing in a gap
+    // says so" exists to prevent. So nothing reaches it that it would move to
+    // another day by mistake — `Date::parse` knows how long each month is and
+    // `parse_clock` how long a day is. What it still moves, it moves on
+    // purpose: `24:00` to the next midnight, and `23:59:60`, a leap second
+    // the C library has no room for, to the midnight a second after it.
     //
-    // `24:00` is the exception, and a real way to write the end of a day: it
-    // normalises to the next midnight on purpose.
-    if h != 24 && date_of(at) != Some(date) {
-        return Err(format!("`{date}` is not a date on the calendar"));
-    }
-    Ok(at)
+    // This used to be caught afterwards, by checking that the instant landed
+    // on the date typed. That also caught the leap second, and blamed today's
+    // date for it: "`2027-01-15` is not a date on the calendar".
+    let hm = format!("{h:02}:{m:02}");
+    Ok(match local {
+        Local::One(at) => (at, None),
+        // Forward by the length of the gap, as the clock itself went: the
+        // instant that would have been called this, had the clocks not
+        // changed. Named by what the clock read then, which is what the
+        // header will show.
+        Local::Skipped(at) => (
+            at,
+            Some(format!(
+                "{hm} did not happen on {date} — the clocks skipped it; this is {}",
+                clock_string(at)
+            )),
+        ),
+        // The first, because it is the one a reader scrolling forward through
+        // the night reaches first.
+        Local::Twice(first, second) => (
+            first,
+            Some(format!(
+                "{hm} happened twice on {date} — this is the first; the second is {} later",
+                crate::ui::fmt_lag(second.duration_since(first).unwrap_or_default())
+            )),
+        ),
+    })
+}
+
+/// [`parse_when_noting`] without the note.
+#[cfg(test)]
+pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
+    parse_when_noting(text, now).map(|(at, _)| at)
 }
 
 /// `2h`, `30m`, `90s`, `1h30m` is not accepted — one unit, deliberately.
@@ -214,6 +279,17 @@ fn parse_clock(text: &str) -> Option<(i32, i32, i32)> {
     (hour && (0..60).contains(&m) && (0..=60).contains(&s)).then_some((h, m, s))
 }
 
+/// What a local wall-clock time is, as instants.
+#[derive(Debug, PartialEq)]
+enum Local {
+    One(SystemTime),
+    /// A time the clocks jumped over, and the instant it would have been had
+    /// they not: the gap's length after the moment before it.
+    Skipped(SystemTime),
+    /// A time the clocks showed twice, earlier first.
+    Twice(SystemTime, SystemTime),
+}
+
 /// A local wall-clock moment as an instant.
 ///
 /// Through `mktime`, which is the only thing on either platform that knows
@@ -221,7 +297,50 @@ fn parse_clock(text: &str) -> Option<(i32, i32, i32)> {
 /// would be an hour out for half the year, and would be an hour out in the
 /// other direction on the two nights a year somebody is most likely to be
 /// reading a log.
-fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<SystemTime> {
+///
+/// Asked three ways: summer time in force, not in force, and "work it out".
+/// Each answer is kept only if the clock at that instant really read what was
+/// asked for. Two survivors are a time that happened twice; none is one that
+/// never happened, and the latest answer is the one the clock would have
+/// reached had it not jumped. Asking once with "work it out" gave whichever
+/// the C library preferred, which differs between platforms, and said nothing.
+fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<Local> {
+    // `24:00` and a leap second are moved on purpose, to the second after
+    // `23:59:59` and `hh:mm:59`, so no clock ever reads them back. Resolved
+    // as that second, then moved.
+    if hour == 24 || sec == 60 {
+        let (h, s) = if hour == 24 { (23, 59) } else { (hour, 59) };
+        let m = if hour == 24 { 59 } else { min };
+        let one = std::time::Duration::from_secs(1);
+        return Some(match at_local(date, h, m, s)? {
+            Local::One(t) => Local::One(t + one),
+            Local::Skipped(t) => Local::Skipped(t + one),
+            Local::Twice(a, b) => Local::Twice(a + one, b + one),
+        });
+    }
+    let mut found: Vec<SystemTime> = Vec::new();
+    let mut latest = None;
+    for isdst in [-1, 0, 1] {
+        let Some(t) = mktime_as(date, hour, min, sec, isdst) else {
+            continue;
+        };
+        latest = latest.max(Some(t));
+        let reads = date_of(t) == Some(date)
+            && local_clock(t) == Some((hour as u32, min as u32, sec as u32));
+        if reads && !found.contains(&t) {
+            found.push(t);
+        }
+    }
+    found.sort();
+    Some(match found[..] {
+        [one] => Local::One(one),
+        [first, .., second] => Local::Twice(first, second),
+        [] => Local::Skipped(latest?),
+    })
+}
+
+/// One `mktime`, with summer time as given: 1 in force, 0 not, -1 unknown.
+fn mktime_as(date: Date, hour: i32, min: i32, sec: i32, isdst: i32) -> Option<SystemTime> {
     let mut tm = Tm {
         sec,
         min,
@@ -229,14 +348,13 @@ fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<SystemTime> {
         mday: date.day as i32,
         mon: date.month as i32 - 1,
         year: date.year - 1900,
-        // "Work it out": whether summer time was in force on that date, which
-        // is the whole reason this goes through the C library.
-        isdst: -1,
+        isdst,
         ..Tm::default()
     };
     // SAFETY: `mktime` reads and normalises the caller's `struct tm`, which is
-    // a stack local of the right layout. It is not reentrant only with respect
-    // to the timezone, which poptop never sets.
+    // a stack local of the right layout (asserted beside `Tm`). It reads the
+    // environment's `TZ`, which poptop never writes, so no other thread can
+    // be changing it underneath the call.
     let t = unsafe { mktime(&mut tm) };
     (t >= 0).then(|| UNIX_EPOCH + std::time::Duration::from_secs(t as u64))
 }
@@ -301,7 +419,8 @@ pub fn date_in_name(name: &str) -> Option<Date> {
 ///
 /// Four bytes, little-endian, before each block. A block is a complete store
 /// image — magic, version, schema, samples — so the length is what lets a
-/// reader skip one it cannot decode and keep the rest of the day.
+/// reader skip one it cannot decode and keep the rest of the day. It counts
+/// the checksum after the block too; see [`frame`].
 const LEN: usize = 4;
 
 /// Append samples to today's file, creating it if this is the first of the day.
@@ -335,8 +454,7 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     if total_bytes(dir) >= cap {
         return Ok(false);
     }
-    let block = store::encode(samples);
-    let len = u32::try_from(block.len()).map_err(|_| io::Error::other("block too large"))?;
+    let framed = frame(samples).ok_or_else(|| io::Error::other("block too large"))?;
     let mut f = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -344,12 +462,57 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     // One write, not two. A length that reached the file without its block —
     // the disk filled between the calls — is a file every later reader stops
     // at, and the block after it is lost with it.
-    let mut framed = Vec::with_capacity(LEN + block.len());
-    framed.extend_from_slice(&len.to_le_bytes());
-    framed.extend_from_slice(&block);
     f.write_all(&framed)?;
     f.flush()?;
     Ok(true)
+}
+
+/// One entry as it goes into a day's file: a length, a store block, and a
+/// checksum of the block.
+///
+/// The checksum is inside the length, after the block, and that placement is
+/// the whole of its compatibility story. A poptop from before it reads the
+/// length, decodes the block, and never looks at the four bytes after — its
+/// decoder does not ask to reach the end — so a newer log reads in an older
+/// poptop as it did. A reader that knows about it checks it when it is there
+/// and reads an entry without one the old way, so an older log reads in this
+/// one.
+///
+/// What it is for is 0100: an entry cut short by a crash, whose missing bytes
+/// the next torn write happened to supply. Without it such an entry decoded
+/// and passed for whole, with somebody else's bytes in its last fields.
+pub fn frame(samples: &[&Sample]) -> Option<Vec<u8>> {
+    let block = store::encode(samples);
+    let len = u32::try_from(block.len() + SUM).ok()?;
+    let mut framed = Vec::with_capacity(LEN + block.len() + SUM);
+    framed.extend_from_slice(&len.to_le_bytes());
+    framed.extend_from_slice(&block);
+    framed.extend_from_slice(&checksum(&block).to_le_bytes());
+    Some(framed)
+}
+
+/// How much of an entry is its checksum.
+const SUM: usize = 4;
+
+/// A 32-bit checksum of an entry's block, against accidents rather than
+/// adversaries: anyone who can write the file can write a matching sum.
+///
+/// A word at a time — a multiply and a rotate per eight bytes — because every
+/// entry is summed on every read, and a bytewise CRC is slower than decoding
+/// the entry it guards. Each step is a bijection of the running state for a
+/// given word, so any single changed word changes the state, and the fold to
+/// 32 bits leaves one chance in four billion of a torn entry passing.
+fn checksum(bytes: &[u8]) -> u32 {
+    const K: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut h = (bytes.len() as u64) ^ K;
+    let (words, rest) = bytes.as_chunks::<8>();
+    for w in words {
+        h = (h ^ u64::from_le_bytes(*w)).wrapping_mul(K).rotate_left(29);
+    }
+    let mut tail = [0u8; 8];
+    tail[..rest.len()].copy_from_slice(rest);
+    h = (h ^ u64::from_le_bytes(tail)).wrapping_mul(K);
+    (h ^ (h >> 32)) as u32
 }
 
 /// What poptop's logs occupy, in bytes.
@@ -374,59 +537,120 @@ pub fn total_bytes(dir: &Path) -> u64 {
 /// failure is still a day worth reading, and so is one written across an
 /// upgrade that changed a field this build does not have.
 pub fn read_day(dir: &Path, date: Date) -> (Vec<Sample>, Vec<String>) {
+    let name = file_name(date);
+    match store::read_regular(&dir.join(&name)) {
+        Ok(Some(bytes)) => read_blocks(&bytes, &name),
+        Ok(None) => (Vec::new(), Vec::new()),
+        Err(why) => (Vec::new(), vec![format!("{name}: {why}")]),
+    }
+}
+
+/// The samples in a day file's bytes, and what the reader had to say about
+/// them. `name` is only for the notes.
+///
+/// Split from [`read_day`] so the framing can be tested — and fuzzed — without
+/// a filesystem: this is the one reader in poptop whose input is a file
+/// somebody else's crash may have left half-written.
+///
+/// Every entry written whole is read, whatever was torn before or after it,
+/// and no torn one is; `fuzz/log_torn` holds that as a property. The one
+/// exception is an entry written before checksums: it can pass for whole when
+/// the torn write after it supplies exactly the bytes it was missing and they
+/// decode, and nothing in it tells the two apart.
+pub fn read_blocks(bytes: &[u8], name: &str) -> (Vec<Sample>, Vec<String>) {
     let mut notes = Vec::new();
-    let path = dir.join(file_name(date));
-    let Ok(bytes) = fs::read(&path) else {
-        return (Vec::new(), notes);
-    };
     let mut out = Vec::new();
     let mut at = 0usize;
     let mut skipped = 0usize;
-    while at + LEN <= bytes.len() {
-        let len = u32::from_le_bytes(bytes[at..at + LEN].try_into().unwrap()) as usize;
-        let from = at + LEN;
-        if len == 0 {
+    let mut torn = 0usize;
+    let mut zeroes = false;
+    // The entry read last, until something shows whether it was whole.
+    let mut last: Option<Last> = None;
+    loop {
+        let step = step(bytes, at);
+        let failed = match step {
+            Step::Read { to, samples, said } => {
+                last = Some(Last {
+                    start: at,
+                    end: to,
+                    before: out.len(),
+                    foreign: false,
+                });
+                out.extend(samples);
+                note_once(&mut notes, said);
+                at = to;
+                continue;
+            }
+            Step::Foreign { to, said } => {
+                last = Some(Last {
+                    start: at,
+                    end: to,
+                    before: out.len(),
+                    foreign: true,
+                });
+                skipped += 1;
+                note_once(&mut notes, said);
+                at = to;
+                continue;
+            }
+            failed => failed,
+        };
+        // Something here could not be read, or the day ended. Either way,
+        // first: was the entry before it whole? A write cut short with more
+        // appended after it still carries the length it meant to have, and the
+        // fragment can borrow enough of the next entry to decode exactly — into
+        // a sample whose last fields are somebody else's. If it did, a whole
+        // entry starts inside the span it claimed, and reading it lands here,
+        // in the middle of that entry. So its samples go back and reading
+        // resumes at the entry it swallowed.
+        //
+        // Checked here, when something has gone wrong, rather than for every
+        // entry: a day with no crash in it — nearly every day — then pays
+        // nothing for the check, where scanning each entry up front cost more
+        // than decoding it.
+        if let Some(prev) = last.take()
+            && let Some(inner) = next_block(bytes, prev.start).filter(|n| *n < prev.end)
+        {
+            out.truncate(prev.before);
+            if prev.foreign {
+                skipped -= 1;
+            }
+            torn += 1;
+            at = inner;
+            continue;
+        }
+        match failed {
+            Step::End => break,
             // A run of zeroes: a sparse region, or a file the filesystem
             // extended and never filled. Named as what it is rather than
             // counted with the entries a different version wrote — that
             // message sends somebody chasing an upgrade that never happened.
-            notes.push(format!(
-                "{}: a run of empty bytes; the file was read only as far as it",
-                file_name(date)
-            ));
-            break;
+            // It says nothing about what follows it.
+            Step::Zeroes => zeroes = true,
+            _ => torn += 1,
         }
-        let Some(to) = from.checked_add(len).filter(|to| *to <= bytes.len()) else {
-            // A block whose length runs past the end of the file: the write was
-            // cut short. Everything before it is still good.
-            notes.push(format!(
-                "{}: the last entry was cut short and was skipped",
-                file_name(date)
-            ));
-            break;
-        };
-        // `decode_reporting`, not `decode`: a block this build cannot read has
-        // a reason, and the reader that throws away what it noticed is the
-        // thing the store's own tests exist to stop.
-        let (block, said) = store::decode_reporting(&bytes[from..to]);
-        match block {
-            Some(mut s) => out.append(&mut s),
-            None => skipped += 1,
+        // The length here could not be trusted, so the next entry is found
+        // by what it starts with instead.
+        match next_block(bytes, at) {
+            Some(next) => at = next,
+            None => break,
         }
-        // Once each, however many blocks say the same thing: a day written
-        // across an upgrade would otherwise repeat one sentence a hundred and
-        // forty-four times.
-        for note in said {
-            if !notes.contains(&note) {
-                notes.push(note);
-            }
-        }
-        at = to;
+    }
+    if zeroes {
+        notes.push(format!(
+            "{name}: a run of empty bytes; the entries either side of it were read"
+        ));
+    }
+    if torn > 0 {
+        notes.push(if torn == 1 {
+            format!("{name}: an entry was cut short and was skipped")
+        } else {
+            format!("{name}: {torn} entries were cut short and were skipped")
+        });
     }
     if skipped > 0 {
         notes.push(format!(
-            "{}: {skipped} entries could not be read, most likely written by a different version",
-            file_name(date)
+            "{name}: {skipped} entries could not be read, most likely written by a different version"
         ));
     }
     // Written in order and read in order, so this is already sorted — but a
@@ -434,6 +658,173 @@ pub fn read_day(dir: &Path, date: Date) -> (Vec<Sample>, Vec<String>) {
     // has to move forwards in time whatever wrote the file.
     out.sort_by_key(|s| s.at);
     (out, notes)
+}
+
+/// The entry `read_blocks` read last, kept until the next step shows whether
+/// it was whole.
+struct Last {
+    start: usize,
+    end: usize,
+    /// How many samples had been read before it, so its own can be taken back.
+    before: usize,
+    /// Counted as another version's rather than read.
+    foreign: bool,
+}
+
+/// What is at one offset of a day file.
+enum Step {
+    /// An entry that decoded, using exactly the bytes its length names.
+    Read {
+        to: usize,
+        samples: Vec<Sample>,
+        said: Vec<String>,
+    },
+    /// An entry that would not decode but is framed like one — the next entry
+    /// starts where it ends — so a different version wrote it.
+    Foreign { to: usize, said: Vec<String> },
+    /// A length of zero.
+    Zeroes,
+    /// A length that runs past the end of the file, or one whose bytes neither
+    /// decode nor end where another entry starts: a fragment.
+    Torn,
+    /// Fewer bytes left than a length takes.
+    End,
+}
+
+/// The length an entry at `at` opens with, or `None` if fewer than `LEN` bytes
+/// are left for one.
+fn length_at(bytes: &[u8], at: usize) -> Option<usize> {
+    let header = bytes.get(at..)?.first_chunk::<LEN>()?;
+    Some(u32::from_le_bytes(*header) as usize)
+}
+
+fn step(bytes: &[u8], at: usize) -> Step {
+    let Some(len) = length_at(bytes, at) else {
+        return Step::End;
+    };
+    let from = at + LEN;
+    if len == 0 {
+        return Step::Zeroes;
+    }
+    let Some(to) = from.checked_add(len).filter(|to| *to <= bytes.len()) else {
+        return Step::Torn;
+    };
+    // `decode_exactly`, not `decode_reporting`: the block must end on the byte
+    // its length names. A fragment that borrowed bytes from the next entry can
+    // still pass that — see the caller — but most cannot.
+    //
+    // An entry whose last four bytes are its block's checksum is read as the
+    // block before them; one without is an entry from before checksums, read
+    // whole. A torn entry fails the sum, and then fails as an old one too:
+    // its block would have to decode to four bytes longer than it is.
+    let span = &bytes[from..to];
+    let body = match span.split_last_chunk::<SUM>() {
+        Some((block, sum)) if checksum(block) == u32::from_le_bytes(*sum) => block,
+        _ => span,
+    };
+    let (block, said) = store::decode_exactly(body);
+    match block {
+        Some(samples) => Step::Read { to, samples, said },
+        None if boundary(bytes, to) => Step::Foreign { to, said },
+        None => Step::Torn,
+    }
+}
+
+/// Each note once, however many entries say it: a day written across an
+/// upgrade would otherwise repeat one sentence a hundred and forty-four times.
+fn note_once(notes: &mut Vec<String>, said: Vec<String>) {
+    for note in said {
+        if !notes.contains(&note) {
+            notes.push(note);
+        }
+    }
+}
+
+/// Whether a whole entry starts at `at`: a length that fits in the file, and a
+/// store behind it — magic, version and a schema block this build can parse.
+///
+/// Strict, because every use of it moves the reader: resuming after a torn
+/// entry, and deciding that a length is lying because an entry starts inside
+/// it. The magic alone was not strict enough. The store writes each string as
+/// a length and its bytes, so a process named `poptophist` was "a length, then
+/// the magic" inside a whole entry, and the reader threw the real entry away as
+/// torn — which let anyone who can name a process erase a stretch of the log.
+fn starts_block(bytes: &[u8], at: usize) -> bool {
+    let Some(len) = length_at(bytes, at) else {
+        return false;
+    };
+    let from = at + LEN;
+    len > 0
+        && from.checked_add(len).is_some_and(|to| to <= bytes.len())
+        && store::starts_store(&bytes[from..from + len])
+}
+
+/// Whether something that looks like the start of an entry is at `at`, whole
+/// or cut short: a length, then the magic, or as much of it as the file has.
+///
+/// Loose, because it moves nothing: it only decides what to call an entry that
+/// would not decode — one from a different version, or a fragment.
+fn looks_like_block(bytes: &[u8], at: usize) -> bool {
+    let Some(header) = bytes.get(at..at + LEN) else {
+        return false;
+    };
+    let after = &bytes[at + LEN..];
+    let magic = store::MAGIC;
+    header != [0; LEN]
+        && (after.starts_with(magic) || (after.len() < magic.len() && magic.starts_with(after)))
+}
+
+/// Whether an entry could end at `at` — whether what follows is the end of
+/// the file, or the start of another entry, whole or not.
+///
+/// Not a run of zeroes, though one can follow an entry. Payloads are full of
+/// zero bytes, so a reader that had lost its place took four of them for a
+/// boundary, called what it was reading another version's entry, and carried
+/// on from wherever that entry's length pointed.
+fn boundary(bytes: &[u8], at: usize) -> bool {
+    let rest = &bytes[at..];
+    if rest.len() < LEN || looks_like_block(bytes, at) {
+        // The end of the file, a length cut short in the writing, or the next
+        // entry.
+        return true;
+    }
+    // An entry cut short inside its length or its magic, with a later append
+    // straight after it: another entry starts within those first few bytes,
+    // and whatever of the magic came before it is the magic.
+    let magic = store::MAGIC;
+    (1..LEN + magic.len()).any(|j| {
+        let partial = bytes.get(at + LEN..at + j).unwrap_or_default();
+        looks_like_block(bytes, at + j) && magic.starts_with(partial)
+    })
+}
+
+/// The first framed block that starts after the one at `bad`, or `None` if the
+/// rest of the file holds none.
+///
+/// Found by its magic rather than by any length, because the length is what
+/// could not be trusted. It can start inside `bad`'s own length, when that is
+/// all a crash left of it. A block's payload can contain the magic — any
+/// string can — and [`starts_block`] is what tells that apart from an entry.
+///
+/// Only whole entries: one cut short is not somewhere reading can resume, and
+/// it is found as a fragment when the entry before it is read.
+fn next_block(bytes: &[u8], bad: usize) -> Option<usize> {
+    let magic = store::MAGIC;
+    let mut look = bad + 1 + LEN;
+    while look + magic.len() <= bytes.len() {
+        // The first byte, then the rest: every entry's payload is scanned once
+        // by the check that no entry starts inside it, and comparing ten bytes
+        // at every offset made that a third of the cost of reading a day.
+        let found = bytes[look..=bytes.len() - magic.len()]
+            .iter()
+            .position(|b| *b == magic[0])?;
+        let at = look + found;
+        if bytes[at..].starts_with(magic) && starts_block(bytes, at - LEN) {
+            return Some(at - LEN);
+        }
+        look = at + 1;
+    }
+    None
 }
 
 /// The dates a log directory holds, newest first.
@@ -612,9 +1003,19 @@ pub fn open_day(dir: &Path, date: Date) -> Result<(Vec<Sample>, Vec<String>), St
 
 #[cfg(test)]
 mod tests {
+    /// The one instant a wall-clock time names, on a date the clocks do not
+    /// change.
+    fn one(l: Option<Local>) -> SystemTime {
+        match l {
+            Some(Local::One(t)) => t,
+            other => panic!("not one instant: {other:?}"),
+        }
+    }
+
     use super::*;
 
     use crate::sample::Sample;
+    use std::sync::Arc;
 
     fn at(secs: u64) -> SystemTime {
         UNIX_EPOCH + std::time::Duration::from_secs(secs)
@@ -744,6 +1145,554 @@ mod tests {
                 "a cut at {cut} was not reported as one: {notes:?}"
             );
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_write_cut_short_does_not_cost_the_entries_appended_after_it() {
+        // The sequence a crash actually produces: poptop dies partway through
+        // an append, is started again, and keeps appending to the same day.
+        // The torn entry's length still says how long it meant to be, so a
+        // reader that trusts it lands in the middle of whatever came next, and
+        // from there every length it reads is noise — the afternoon was lost
+        // to a crash in the morning. Every cut through the middle entry must
+        // cost that entry and nothing either side of it.
+        let dir = scratch("torn");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        // In both framings: logs from before checksums are still read.
+        for block in [legacy as fn(f32) -> Vec<u8>, framed] {
+            let (first, torn, last) = (block(11.0), block(22.0), block(33.0));
+            let path = dir.join(file_name(date));
+            fs::create_dir_all(&dir).unwrap();
+            for cut in 1..torn.len() {
+                let mut day = first.clone();
+                day.extend_from_slice(&torn[..cut]);
+                day.extend_from_slice(&last);
+                fs::write(&path, &day).unwrap();
+                let (back, notes) = read_day(&dir, date);
+                let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+                assert_eq!(
+                    cpus,
+                    [11.0, 33.0],
+                    "a cut at {cut} of the middle entry, of {}: {notes:?}",
+                    torn.len()
+                );
+                assert!(
+                    notes.iter().any(|n| n.contains("cut short")),
+                    "a cut at {cut} was not reported as one: {notes:?}"
+                );
+                assert!(
+                    !notes.iter().any(|n| n.contains("different version")),
+                    "a cut at {cut} was blamed on an upgrade: {notes:?}"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_date_is_checked_against_the_length_of_its_month() {
+        for ok in [
+            "2026-01-31",
+            "2024-02-29",
+            "2000-02-29",
+            "2026-04-30",
+            "2026-12-31",
+        ] {
+            assert!(Date::parse(ok).is_some(), "{ok} was refused");
+        }
+        for bad in [
+            "2026-02-29",
+            "2100-02-29",
+            "2026-02-30",
+            "2026-04-31",
+            "2026-06-31",
+        ] {
+            assert!(Date::parse(bad).is_none(), "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_leap_second_is_a_time_and_not_an_error_about_the_date() {
+        // `parse_clock` accepts `:60` on purpose. It used to be refused after
+        // the fact, with an error blaming the date it was typed on.
+        let now = at(1_800_000_000);
+        let leap = parse_when("23:59:60", now).expect("a leap second was refused");
+        let midnight = parse_when("24:00", now).unwrap();
+        assert_eq!(leap, midnight, "23:59:60 is the second before 00:00:01");
+    }
+
+    #[test]
+    fn a_day_that_is_not_a_regular_file_is_refused_rather_than_read() {
+        // A day's name pointing at `/dev/zero` read until memory ran out, and
+        // one pointing at a FIFO waited for a writer forever. Neither is a file
+        // poptop wrote; both are refused with a reason.
+        let dir = scratch("not-a-file");
+        fs::create_dir_all(&dir).unwrap();
+        let date = Date::parse("2026-09-18").unwrap();
+        let path = dir.join(file_name(date));
+        std::os::unix::fs::symlink("/dev/zero", &path).unwrap();
+        let (back, notes) = read_day(&dir, date);
+        assert!(back.is_empty());
+        assert!(
+            notes.iter().any(|n| n.contains("not a regular file")),
+            "{notes:?}"
+        );
+        fs::remove_file(&path).unwrap();
+
+        let made = std::process::Command::new("mkfifo").arg(&path).status();
+        if made.is_ok_and(|s| s.success()) {
+            let (back, notes) = read_day(&dir, date);
+            assert!(back.is_empty());
+            assert!(
+                notes.iter().any(|n| n.contains("not a regular file")),
+                "{notes:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_log_directory_that_is_a_symlink_is_followed_and_pruning_stays_inside_it() {
+        // Pointing the log at a bigger disk with a symlink is a reasonable
+        // thing to do, so the directory is followed. A day file that is itself
+        // a symlink is read through, but pruning removes the link, never what
+        // it points at: the one function that deletes has to stay inside the
+        // directory it was given.
+        let real = scratch("symlink-real");
+        let outside = scratch("symlink-outside");
+        let link = scratch("symlink-link");
+        fs::create_dir_all(&real).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let day = at(1_800_000_000);
+        append(&link, day, &[&sample(1_800_000_000, 11.0)], u64::MAX).unwrap();
+        let date = date_of(day).unwrap();
+        assert_eq!(
+            read_day(&link, date).0.len(),
+            1,
+            "the linked directory was not used"
+        );
+
+        // An old day that is a link to a file outside the directory.
+        let victim = outside.join("keep-me");
+        fs::write(&victim, b"not poptop's").unwrap();
+        let old = Date::parse("2020-01-01").unwrap();
+        std::os::unix::fs::symlink(&victim, link.join(file_name(old))).unwrap();
+        let _ = prune(&link, 1, u64::MAX, date);
+        assert!(
+            victim.exists(),
+            "pruning deleted a file outside the log directory"
+        );
+        assert!(
+            !link.join(file_name(old)).exists(),
+            "the expired link itself was not pruned"
+        );
+        for d in [&real, &outside, &link] {
+            let _ = fs::remove_dir_all(d);
+            let _ = fs::remove_file(d);
+        }
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_written_is_an_error_and_not_a_crash() {
+        // EACCES: a state directory somebody made read-only. `append` says so
+        // and returns, and the caller turns it into one note — `run` keeps a
+        // note it has already made out of the exit lines, so a full disk at
+        // 10:00 is said once and not every interval until the tool is closed.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("read-only");
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let day = at(1_800_000_000);
+        let got = append(&dir, day, &[&sample(1_800_000_000, 1.0)], u64::MAX);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        // Root ignores the mode bits, so under root there is nothing to test.
+        let root = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| o.stdout.trim_ascii() == b"0");
+        if !root {
+            assert!(got.is_err(), "a read-only directory took a write: {got:?}");
+        }
+
+        // ENOSPC: `/dev/full` fails every write with it, which is a full disk
+        // without having to fill one. Linux only; macOS has no such device.
+        if std::path::Path::new("/dev/full").exists() {
+            let date = date_of(day).unwrap();
+            // Root's write above went through, and left a file in the way.
+            let _ = fs::remove_file(dir.join(file_name(date)));
+            std::os::unix::fs::symlink("/dev/full", dir.join(file_name(date))).unwrap();
+            let got = append(&dir, day, &[&sample(1_800_000_000, 1.0)], u64::MAX);
+            let err = got.expect_err("a full disk took a write");
+            assert_eq!(err.raw_os_error(), Some(28), "{err}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_poptops_logging_to_one_directory_lose_nothing() {
+        // Two terminals, both with the log on. Each append is one write to a
+        // file opened for appending, so the kernel puts each whole at the end;
+        // the test is that nothing interleaves inside an entry and nothing is
+        // lost, however the two race.
+        let dir = scratch("two-writers");
+        let day = at(1_800_000_000);
+        let writers: Vec<_> = (0..2)
+            .map(|w| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        let cpu = (w * 100 + i) as f32;
+                        append(
+                            &dir,
+                            day,
+                            &[&sample(1_800_000_000 + i as u64, cpu)],
+                            u64::MAX,
+                        )
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        let (back, notes) = read_day(&dir, date_of(day).unwrap());
+        assert_eq!(back.len(), 100, "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// What people type into the jump box, and the edges of each form.
+    const WHEN: &[&str] = &[
+        "-2h",
+        "+5m",
+        "-90s",
+        "-1d",
+        "03:00",
+        "03:00:15",
+        "24:00",
+        "23:59:60",
+        "2026-09-08 03:00",
+        "2026-09-08",
+        "0000-01-01 00:00",
+        "9999-12-31 23:59:59",
+        "1969-12-31 23:59",
+        "2026-02-29",
+        "-366d",
+        "-367d",
+        "-1e308h",
+        "+nan s",
+    ];
+
+    #[test]
+    fn nothing_typed_into_the_jump_box_can_panic() {
+        // The C library is on the other side of `mktime`, and a year it cannot
+        // place, or a span `Duration` cannot hold, has to come back as an
+        // error rather than an abort.
+        let nows = [
+            at(0),
+            at(1_800_000_000),
+            UNIX_EPOCH + std::time::Duration::from_secs(253_402_300_799),
+        ];
+        for text in WHEN {
+            for v in crate::mangle::text_variants(text, 200) {
+                for now in nows {
+                    let _ = parse_when(&v, now);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_jump_error_quotes_what_was_typed() {
+        // Except the one about the machine's own clock, every refusal names
+        // the part of the input it could not read.
+        let now = at(1_800_000_000);
+        for text in WHEN {
+            for v in crate::mangle::text_variants(text, 200) {
+                let Err(e) = parse_when(&v, now) else {
+                    continue;
+                };
+                let Some((q, _)) = e.split_once('`').and_then(|(_, r)| r.split_once('`')) else {
+                    // Unquoted, so it must say what it is about in words.
+                    assert!(
+                        e.contains(v.trim()) || e.contains("clock"),
+                        "{v:?} was refused without saying why: {e}"
+                    );
+                    continue;
+                };
+                assert!(
+                    v.contains(q),
+                    "{v:?} was refused quoting `{q}`, not in it: {e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_torn_entry_after_a_whole_one_does_not_cost_the_whole_one() {
+        // Found by `fuzz/log_torn`. A whole entry, then one torn after the
+        // first byte of its length, then one torn right after its magic. The
+        // entry after the whole one is not whole, so "the next entry starts
+        // here" had to accept a torn start as well — it used to require a
+        // whole one, and dropped the only entry that was.
+        let block = |cpu: f32| {
+            let b = store::encode(&[&sample(1_800_000_000, cpu)]);
+            let mut framed = (b.len() as u32).to_le_bytes().to_vec();
+            framed.extend(b);
+            framed
+        };
+        let mut day = block(0.0);
+        day.extend_from_slice(&block(1.0)[..1]);
+        day.extend_from_slice(&block(2.0)[..LEN + store::MAGIC.len()]);
+        let (back, notes) = read_blocks(&day, "poptop-test");
+        let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [0.0], "{notes:?}");
+    }
+
+    #[test]
+    fn a_whole_entry_followed_by_many_crashes_is_still_read() {
+        // Found by `fuzz/log_torn`: a whole entry, then five appends each cut
+        // after one byte, then whole entries again. What follows an entry is no
+        // evidence about it — any number of crashes can leave fragments there —
+        // and requiring a clean start right after it dropped the entry.
+        let block = |cpu: f32| {
+            let b = store::encode(&[&sample(1_800_000_000, cpu)]);
+            let mut framed = (b.len() as u32).to_le_bytes().to_vec();
+            framed.extend(b);
+            framed
+        };
+        let mut day = block(0.0);
+        for i in 1..=5 {
+            day.extend_from_slice(&block(i as f32)[..1]);
+        }
+        day.extend_from_slice(&block(6.0));
+        day.extend_from_slice(&block(7.0));
+        let (back, notes) = read_blocks(&day, "poptop-test");
+        let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [0.0, 6.0, 7.0], "{notes:?}");
+    }
+
+    /// What finding its place costs the reader on a day with nothing wrong
+    /// in it, against decoding the same entries with their lengths trusted.
+    /// `cargo test --release -- --ignored --nocapture measure_reading_a_day`.
+    ///
+    /// Measured when the resync went in: checking every entry up front for
+    /// another entry starting inside it cost 28.5ms against 7.8ms of decoding
+    /// for twelve megabytes. Checking only when a step fails, or the day ends,
+    /// brought it to 9.3ms against 8.7ms. The checksum is summed on every
+    /// entry, so it is in the reader's figure and not in the other: 11.3ms
+    /// against 7.9ms when it went in, about four gigabytes a second.
+    #[test]
+    #[ignore = "measurement"]
+    fn measure_reading_a_day() {
+        let s = crate::store::tests_support::big_sample(5.0, 400);
+        let mut day = Vec::new();
+        for _ in 0..300 {
+            day.extend(frame(&[&s]).unwrap());
+        }
+        let bare = |day: &[u8]| {
+            let mut m = 0;
+            let mut at = 0;
+            while at + LEN <= day.len() {
+                let len = u32::from_le_bytes(day[at..at + LEN].try_into().unwrap()) as usize;
+                m += store::decode_reporting(&day[at + LEN..at + LEN + len - SUM])
+                    .0
+                    .unwrap()
+                    .len();
+                at += LEN + len;
+            }
+            m
+        };
+        // Alternated and the best of seven, because whichever runs second
+        // gets the warm cache.
+        let (mut reader, mut decode) = (std::time::Duration::MAX, std::time::Duration::MAX);
+        for _ in 0..7 {
+            let t = std::time::Instant::now();
+            assert_eq!(read_blocks(&day, "x").0.len(), 300);
+            reader = reader.min(t.elapsed());
+            let t = std::time::Instant::now();
+            assert_eq!(bare(&day), 300);
+            decode = decode.min(t.elapsed());
+        }
+        eprintln!(
+            "{} MB: reader {reader:?}, decoding alone {decode:?}",
+            day.len() >> 20
+        );
+    }
+
+    #[test]
+    fn a_day_in_memory_is_no_smaller_than_its_file() {
+        // Why `read_day` reads a regular file whole rather than capping or
+        // streaming it: the samples it decodes into are at least as large as
+        // the bytes they came from, so bounding the read would not bound the
+        // memory — the day costs what it costs either way, and it is as large
+        // as the `log-bytes` its writer allowed.
+        let s = crate::store::tests_support::big_sample(5.0, 400);
+        let file = frame(&[&s]).unwrap().len();
+        let held = std::mem::size_of::<Sample>()
+            + s.procs.len() * std::mem::size_of::<crate::sample::ProcSample>();
+        assert!(held >= file, "{held} bytes held for a {file}-byte entry");
+    }
+
+    #[test]
+    fn a_process_named_after_the_magic_cannot_erase_the_log() {
+        // Entries are found by their magic, `poptophist`, when a length cannot
+        // be trusted — and the store writes each string as a length and its
+        // bytes. So a process named `poptophist` put "a length, then the
+        // magic" inside a whole entry, the reader took it for an entry starting
+        // there, and threw the real one away as torn. Anyone can name a
+        // process; that was a way to erase a stretch of somebody's log.
+        //
+        // What follows the magic is the format version, whose top bytes are
+        // zero. No string poptop stores can contain a zero byte — names,
+        // command lines, mounts and users all come from C strings — so a
+        // string cannot pass for an entry.
+        let block = |cpu: f32| {
+            let mut s = sample(1_800_000_000, cpu);
+            s.procs = vec![crate::sample::ProcSample {
+                name: Arc::from("poptophist"),
+                cmd: Some(Arc::from("poptophist poptophist")),
+                ..crate::store::tests_support::big_sample(1.0, 1).procs[0].clone()
+            }];
+            let b = store::encode(&[&s]);
+            let mut framed = (b.len() as u32).to_le_bytes().to_vec();
+            framed.extend(b);
+            framed
+        };
+        let mut day = block(1.0);
+        day.extend(block(2.0));
+        let (back, notes) = read_blocks(&day, "poptop-test");
+        let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [1.0, 2.0], "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    /// An entry framed as poptop framed them before checksums: a length and
+    /// a store block, nothing after. Logs written then are still read.
+    fn legacy(cpu: f32) -> Vec<u8> {
+        let b = store::encode(&[&sample(1_800_000_000, cpu)]);
+        let mut framed = (b.len() as u32).to_le_bytes().to_vec();
+        framed.extend(b);
+        framed
+    }
+
+    /// An entry framed as `append` frames it now.
+    fn framed(cpu: f32) -> Vec<u8> {
+        frame(&[&sample(1_800_000_000, cpu)]).unwrap()
+    }
+
+    #[test]
+    fn a_torn_entry_filled_out_by_the_next_torn_write_is_caught_by_its_checksum() {
+        // 0100, found by `fuzz/log_torn`: an entry cut one byte short, then a
+        // later append cut one byte in. That byte completes the first entry's
+        // length exactly, the bytes decode, and the whole entry after starts
+        // where the first said it would end. Without a checksum nothing in the
+        // file says the first was torn, and it was read with a stranger's byte
+        // in its last field.
+        for cut in [1, 2, 4, 5, 13, 14, 100] {
+            let first = framed(0.0);
+            let mut day = first[..first.len() - cut].to_vec();
+            day.extend_from_slice(&framed(1.0)[..cut]);
+            day.extend_from_slice(&framed(2.0));
+            let (back, notes) = read_blocks(&day, "poptop-test");
+            let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+            assert_eq!(cpus, [2.0], "{cut} bytes short: {notes:?}");
+        }
+    }
+
+    #[test]
+    fn a_torn_entry_from_before_checksums_is_still_a_known_limit() {
+        // The same case in an entry written before checksums, which has none
+        // to fail. Pinned so the limit stays a known one: what must hold is
+        // the whole entry after it.
+        let first = legacy(0.0);
+        let mut day = first[..first.len() - 1].to_vec();
+        day.extend_from_slice(&legacy(1.0)[..1]);
+        day.extend_from_slice(&legacy(2.0));
+        let (back, _) = read_blocks(&day, "poptop-test");
+        let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+        assert!(cpus.ends_with(&[2.0]), "the whole entry was lost: {cpus:?}");
+        assert!(
+            !cpus.contains(&1.0),
+            "a one-byte fragment was read: {cpus:?}"
+        );
+    }
+
+    #[test]
+    fn a_log_with_checksums_reads_in_a_poptop_from_before_them() {
+        // The reader poptop shipped before checksums, verbatim in what matters:
+        // trust the length, decode what it spans, ignore anything the decoder
+        // did not reach. A downgrade must not lose the days the newer version
+        // wrote.
+        let old_reader = |day: &[u8]| {
+            let mut out = Vec::new();
+            let mut at = 0;
+            while at + LEN <= day.len() {
+                let len = u32::from_le_bytes(day[at..at + LEN].try_into().unwrap()) as usize;
+                let (block, _) = store::decode_reporting(&day[at + LEN..at + LEN + len]);
+                out.extend(block.expect("an older poptop could not read the entry"));
+                at += LEN + len;
+            }
+            out
+        };
+        let mut day = framed(1.0);
+        day.extend(framed(2.0));
+        let cpus: Vec<f32> = old_reader(&day).iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_day_written_across_the_upgrade_to_checksums_reads_whole() {
+        // The morning in the old framing, the afternoon in the new.
+        let mut day = legacy(1.0);
+        day.extend(legacy(2.0));
+        day.extend(framed(3.0));
+        day.extend(framed(4.0));
+        let (back, notes) = read_blocks(&day, "poptop-test");
+        let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [1.0, 2.0, 3.0, 4.0], "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn every_byte_of_an_entry_is_in_its_checksum() {
+        let block = store::encode(&[&sample(1_800_000_000, 1.0)]);
+        let sum = checksum(&block);
+        for i in 0..block.len() {
+            for bit in [0x01, 0x80] {
+                let mut bent = block.clone();
+                bent[i] ^= bit;
+                assert_ne!(checksum(&bent), sum, "byte {i} is not in the checksum");
+            }
+        }
+        // And its length: a block that is a prefix of another sums apart.
+        assert_ne!(checksum(&block[..block.len() - 1]), sum);
+        assert_ne!(checksum(&[0; 7]), checksum(&[0; 8]));
+    }
+
+    #[test]
+    fn entries_after_a_run_of_empty_bytes_are_still_read() {
+        // A hole the filesystem left, with a later append after it. The zeroes
+        // say nothing about what follows them.
+        let dir = scratch("zeros-then-more");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        append(&dir, day, &[&sample(1_800_000_000, 11.0)], u64::MAX).unwrap();
+        let path = dir.join(file_name(date));
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(&[0u8; 64]);
+        fs::write(&path, &bytes).unwrap();
+        append(&dir, day, &[&sample(1_800_000_001, 22.0)], u64::MAX).unwrap();
+
+        let (back, notes) = read_day(&dir, date);
+        let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [11.0, 22.0], "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("empty bytes")), "{notes:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -936,11 +1885,11 @@ mod tests {
         let today = date_of(now).unwrap();
         assert_eq!(
             parse_when("03:00", now).unwrap(),
-            at_local(today, 3, 0, 0).unwrap()
+            one(at_local(today, 3, 0, 0))
         );
         assert_eq!(
             parse_when("03:00:15", now).unwrap(),
-            at_local(today, 3, 0, 15).unwrap()
+            one(at_local(today, 3, 0, 15))
         );
         // With a date, that date.
         let other = Date {
@@ -950,19 +1899,19 @@ mod tests {
         };
         assert_eq!(
             parse_when("2026-03-04 03:00", now).unwrap(),
-            at_local(other, 3, 0, 0).unwrap()
+            one(at_local(other, 3, 0, 0))
         );
         // A date alone is its midnight, which is a moment somebody may well
         // mean — "the start of that day".
         assert_eq!(
             parse_when("2026-03-04", now).unwrap(),
-            at_local(other, 0, 0, 0).unwrap()
+            one(at_local(other, 0, 0, 0))
         );
 
         // Local, not UTC, and through the C library: the offset on a date is
         // not a constant, and the two nights a year it changes are exactly the
         // ones somebody is most likely to be reading a log.
-        let summer = at_local(
+        let summer = one(at_local(
             Date {
                 year: 2026,
                 month: 7,
@@ -971,9 +1920,8 @@ mod tests {
             12,
             0,
             0,
-        )
-        .unwrap();
-        let winter = at_local(
+        ));
+        let winter = one(at_local(
             Date {
                 year: 2026,
                 month: 1,
@@ -982,8 +1930,7 @@ mod tests {
             12,
             0,
             0,
-        )
-        .unwrap();
+        ));
         let noon_to_noon = winter.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
             - summer.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
         // Both are local noon, so the gap is a whole number of days give or
@@ -1012,7 +1959,7 @@ mod tests {
                 month,
                 day: 15,
             };
-            let at = at_local(d, 3, 0, 0).expect("a real moment");
+            let at = one(at_local(d, 3, 0, 0));
             assert_eq!(
                 super::local_clock(at),
                 Some((3, 0, 0)),
@@ -1154,5 +2101,136 @@ mod tests {
         assert_eq!(file_name(d), "poptop-20260908");
         assert_eq!(date_in_name("poptop-20260908"), Some(d));
         assert_eq!(d.to_string(), "2026-09-08");
+    }
+
+    /// Run `clocks_change_in_this_zone` in a copy of this test binary with
+    /// `TZ` set. The zone is process-wide state that `mktime` reads, so it
+    /// cannot be changed under the other tests running beside this one.
+    fn in_zone(tz: &str) {
+        // A named zone needs the system's zone files. A POSIX rule does not,
+        // so each rule below is also given in that form, which runs anywhere.
+        if !tz.contains(',')
+            && !std::path::Path::new("/usr/share/zoneinfo")
+                .join(tz)
+                .exists()
+        {
+            eprintln!("no zone file for {tz}; its POSIX form still runs");
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "log::tests::clocks_change_in_this_zone",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("TZ", tz)
+            .env("POPTOP_ZONE_CHILD", tz)
+            .output()
+            .expect("cannot run the test binary");
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "TZ={tz}:\n{said}");
+        assert!(
+            said.contains("1 passed"),
+            "TZ={tz}: the child ran nothing\n{said}"
+        );
+    }
+
+    #[test]
+    fn the_nights_the_clocks_change_in_london() {
+        in_zone("Europe/London");
+        in_zone("GMT0BST,M3.5.0/1,M10.5.0");
+    }
+
+    #[test]
+    fn the_nights_the_clocks_change_in_new_york() {
+        in_zone("America/New_York");
+        in_zone("EST5EDT,M3.2.0,M11.1.0");
+    }
+
+    #[test]
+    #[ignore = "run by the_nights_the_clocks_change_*, with TZ set"]
+    fn clocks_change_in_this_zone() {
+        let Ok(tz) = std::env::var("POPTOP_ZONE_CHILD") else {
+            return;
+        };
+        // (the spring date, a time it skips, what that time becomes, the
+        //  autumn date, a time it shows twice)
+        let (spring, skipped, becomes, autumn, twice) = match tz.as_str() {
+            "Europe/London" | "GMT0BST,M3.5.0/1,M10.5.0" => {
+                ("2026-03-29", "01:30", (2, 30, 0), "2026-10-25", "01:30")
+            }
+            "America/New_York" | "EST5EDT,M3.2.0,M11.1.0" => {
+                ("2026-03-08", "02:30", (3, 30, 0), "2026-11-01", "01:30")
+            }
+            other => panic!("no expectations for {other}"),
+        };
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+        let hour = std::time::Duration::from_secs(3600);
+        let when = |t: &str| parse_when_noting(t, now).unwrap();
+
+        // A time the clocks skipped moves forward by the gap, and says so,
+        // naming what the clock read instead.
+        let (at, note) = when(&format!("{spring} {skipped}"));
+        let note = note.expect("a skipped time said nothing");
+        assert!(note.contains("did not happen"), "{note}");
+        let (h, m, s) = becomes;
+        assert!(note.contains(&format!("{h:02}:{m:02}:{s:02}")), "{note}");
+        assert_eq!(local_clock(at), Some((h as u32, m as u32, s as u32)));
+        // Forward by the gap: an hour after the time an hour before it.
+        let (before, _) = when(&format!("{spring} {:02}:30", h - 2));
+        assert_eq!(at.duration_since(before).unwrap(), hour);
+
+        // A time shown twice is the first, and says so. The second is an hour
+        // on and reads the same; an hour before the first does not.
+        let (at, note) = when(&format!("{autumn} {twice}"));
+        let note = note.expect("a time shown twice said nothing");
+        assert!(note.contains("happened twice"), "{note}");
+        assert_eq!(local_clock(at + hour), local_clock(at));
+        assert_ne!(local_clock(at - hour), local_clock(at));
+
+        // The day before each is an ordinary day, and says nothing.
+        for d in ["2026-03-01", "2026-10-01"] {
+            assert_eq!(when(&format!("{d} {skipped}")).1, None, "{d}");
+        }
+
+        // A day file is a local date, and on these two nights a date is 23
+        // and 25 hours long. Its first and last seconds, and the one after.
+        for (day, hours) in [(spring, 23), (autumn, 25)] {
+            let date = Date::parse(day).unwrap();
+            let (start, _) = when(day);
+            let (next, _) = when(&format!("{} 00:00", date_after(date)));
+            assert_eq!(next.duration_since(start).unwrap(), hour * hours, "{day}");
+            assert_eq!(date_of(start), Some(date));
+            assert_eq!(
+                date_of(next - std::time::Duration::from_secs(1)),
+                Some(date)
+            );
+            assert_ne!(date_of(next), Some(date));
+        }
+    }
+
+    fn date_after(d: Date) -> Date {
+        let last = match d.month {
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        };
+        if d.day < last {
+            Date {
+                day: d.day + 1,
+                ..d
+            }
+        } else {
+            Date {
+                day: 1,
+                month: d.month % 12 + 1,
+                year: d.year + (d.month / 12) as i32,
+            }
+        }
     }
 }

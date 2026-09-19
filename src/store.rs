@@ -17,7 +17,7 @@
 
 use crate::sample::Sample;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `~/.local/state/ptop/`, which nothing looks in any more, so there is no file
 // for a version bump to protect anyone from. The magic changed with the name
 // because it spells the name.
-const VERSION: u32 = 15;
+pub const VERSION: u32 = 15;
 
 /// When the machine this sample came from was booted.
 ///
@@ -182,12 +182,57 @@ fn read_file(bytes: &[u8], notes: &mut Vec<String>) -> Option<Vec<Sample>> {
     read_file_as(bytes, &schemas(), notes)
 }
 
+/// Whether `bytes` begin the way a store does: the magic, a version, and a
+/// schema block this build can parse.
+///
+/// For a reader looking for where a store starts without a length to trust —
+/// the day log, after a crash. The magic alone is not enough: the string table
+/// writes each string as a length and its bytes, so a process named
+/// `poptophist` looks like the start of a store from the outside. A schema
+/// block is a kilobyte and a half of counts and hashes with zero bytes in
+/// places no string can put one, so a string cannot pass for one.
+pub fn starts_store(bytes: &[u8]) -> bool {
+    let Some(rest) = bytes.strip_prefix(MAGIC) else {
+        return false;
+    };
+    let mut r = In::new(rest, 0, Vec::new());
+    u32::read_raw(&mut r).is_some() && r.schema_block(&schemas()).is_some()
+}
+
+/// Like [`decode_reporting`], but a store is only accepted if it is exactly
+/// `bytes` long — every byte read, none left over.
+///
+/// For a reader that took the length from somewhere it cannot fully trust.
+/// The day log frames each block with a length, and a block cut short by a
+/// crash, with a later append after it, still carries the length it meant to
+/// have: the fragment plus the start of the next block can decode, into a
+/// sample whose last fields are the next block's header. It will not also end
+/// on the exact byte the length names, except by a coincidence the decoder
+/// already survives.
+pub fn decode_exactly(bytes: &[u8]) -> (Option<Vec<Sample>>, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut unread = 0;
+    let samples = read_file_counting(bytes, &schemas(), &mut notes, &mut unread);
+    (samples.filter(|_| unread == 0), notes)
+}
+
 /// The reader's own schema as a parameter, so a test can read a real store
 /// while claiming to be a build that disagrees with it.
 fn read_file_as(
     bytes: &[u8],
     mine: &[(&'static str, Vec<crate::persist::Field>)],
     notes: &mut Vec<String>,
+) -> Option<Vec<Sample>> {
+    read_file_counting(bytes, mine, notes, &mut 0)
+}
+
+/// [`read_file_as`], also saying how many bytes were left over after the last
+/// sample.
+fn read_file_counting(
+    bytes: &[u8],
+    mine: &[(&'static str, Vec<crate::persist::Field>)],
+    notes: &mut Vec<String>,
+    unread: &mut usize,
 ) -> Option<Vec<Sample>> {
     let mut r = In::new(bytes, 0, Vec::new());
     if r.take(MAGIC.len())? != MAGIC {
@@ -235,6 +280,7 @@ fn read_file_as(
             Sample::read(&sample_ty, &reg, &mut r)?
         });
     }
+    *unread = r.remaining();
     Some(samples)
 }
 
@@ -305,9 +351,53 @@ pub fn decode(bytes: &[u8]) -> Option<Vec<Sample>> {
 
 /// Read the store, if there is one and it is readable.
 pub fn load(notes: &mut Vec<String>) -> Option<Vec<Sample>> {
-    let (samples, said) = decode_reporting(&std::fs::read(path()?).ok()?);
+    let bytes = match read_regular(&path()?) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(why) => {
+            notes.push(format!("the stored history: {why}"));
+            return None;
+        }
+    };
+    let (samples, said) = decode_reporting(&bytes);
     notes.extend(said);
     samples
+}
+
+/// A file's bytes, if it is a regular file — `Ok(None)` if there is nothing
+/// there, and `Err` saying why for anything else.
+///
+/// For the store and the day logs, both of which live in a directory poptop
+/// did not necessarily make and read files it did not necessarily write. The
+/// name is followed, since a file moved to another disk and linked back is a
+/// reasonable thing to have done. What it names is not trusted: a day linked
+/// to `/dev/zero` was read until the process was killed for its memory, and
+/// one that was a FIFO blocked `--read` forever waiting for a writer. A
+/// regular file is read only as far as its length when opened, so one still
+/// being appended to — by a poptop in another terminal — cannot keep the
+/// reader reading.
+///
+/// A regular file is read whole, however large. Capping or streaming the read
+/// would not bound anything: what the bytes decode into is at least as large
+/// as the bytes, so the memory a day costs is the day's, and the day is as
+/// large as the `log-bytes` its writer allowed.
+pub fn read_regular(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read as _;
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    if !meta.is_file() {
+        return Err("not a regular file, so not one poptop wrote; it was not read".into());
+    }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let len = meta.len();
+    let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0).min(64 << 20));
+    file.take(len)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    Ok(Some(bytes))
 }
 
 /// Write the store, creating its directory.
@@ -889,6 +979,82 @@ mod tests {
         file
     }
 
+    /// Writes the seed inputs `fuzz/` starts from: `cargo test -- --ignored
+    /// write_fuzz_seeds`, then commit what changed under `fuzz/seeds/`.
+    ///
+    /// From fixtures, never from a live sample, so no machine's process list
+    /// ends up in the repository. One seed reaches the merge path, because a
+    /// fuzzer that only ever sees this build's own schema never exercises the
+    /// code an upgrade runs.
+    #[test]
+    #[ignore = "writes fuzz/seeds; run by hand when the format changes"]
+    fn write_fuzz_seeds() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds");
+        let small = sample_of(1.0, 2);
+        let busy = super::tests_support::big_sample(50.0, 12);
+        let stores = [
+            ("one", encode(&[&small])),
+            ("two", encode(&[&small, &busy])),
+            ("later", file_from_a_later_poptop(&[&small, &small])),
+        ];
+        let header = MAGIC.len() + 4;
+        // Framed the way `log::append` frames them — and one day in the
+        // framing from before checksums, which the reader still takes.
+        let legacy = |blocks: &[&[u8]]| {
+            let mut day = Vec::new();
+            for b in blocks {
+                day.extend((b.len() as u32).to_le_bytes());
+                day.extend_from_slice(b);
+            }
+            day
+        };
+        let checked = |samples: &[&Sample]| {
+            let mut day = Vec::new();
+            for s in samples {
+                day.extend(crate::log::frame(&[*s]).unwrap());
+            }
+            day
+        };
+        let days = [
+            ("one", checked(&[&small])),
+            ("mixed", checked(&[&small, &busy, &small])),
+            (
+                "before-checksums",
+                legacy(&[&stores[0].1, &stores[2].1, &stores[1].1]),
+            ),
+        ];
+        for (dir, files) in [
+            (
+                "store",
+                stores
+                    .iter()
+                    .map(|(n, b)| (*n, b.clone()))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "store_body",
+                stores
+                    .iter()
+                    .map(|(n, b)| (*n, b[header..].to_vec()))
+                    .collect(),
+            ),
+            (
+                "log_day",
+                days.iter().map(|(n, b)| (*n, b.clone())).collect(),
+            ),
+        ] {
+            let dir = root.join(dir);
+            fs_seed(&dir, &files);
+        }
+    }
+
+    fn fs_seed(dir: &std::path::Path, files: &[(&str, Vec<u8>)]) {
+        std::fs::create_dir_all(dir).unwrap();
+        for (name, bytes) in files {
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+    }
+
     #[test]
     fn a_file_from_a_later_poptop_keeps_every_field_this_one_understands() {
         // The whole point of the schema block. A user who upgrades, downgrades,
@@ -1327,7 +1493,7 @@ mod cost {
 }
 
 #[cfg(test)]
-mod tests_support {
+pub(crate) mod tests_support {
     use super::*;
     use crate::sample::{MemStat, ProcSample};
 

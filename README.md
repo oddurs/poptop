@@ -195,7 +195,7 @@ cargo build --release
 
 | Key | Action |
 | --- | --- |
-| `q` | quit |
+| `q`, `Esc` | quit (`Esc` first leaves the filter or jump box, or cancels a signal) |
 | `←` / `→` | scrub through history (hold `Shift` for ten at a time) |
 | `b` | jump to a moment: `-2h`, `03:00`, `2026-09-08 03:00` (atop's `-b`) |
 | `x` / `X` | send `TERM` / `KILL` to the selected process (needs `signals = on`) |
@@ -1166,10 +1166,18 @@ hazard none of them have — and the identity poptop already uses everywhere,
 - **The pair is rechecked against the newest sample**, not against the row you
   selected. A process that has exited is named as gone; a pid the kernel has
   since handed to something else is refused *by name* — `pid 4823 is sshd now,
-  not postgres — nothing was sent`. "Newest" is the honest word: that sample is
-  at most one `--interval` old, so a process that exits inside that window and
-  has its pid handed on is a gap this cannot close. At the default it is one
-  second.
+  not postgres — nothing was sent`.
+- **And then against the kernel, at the moment of sending.** The newest sample
+  can be a whole `--interval` old, and a pid can be handed on inside one. So
+  the start time is read again from the kernel, not from a sample, just
+  before the signal goes. On Linux 5.3 and later that read is made through a
+  pidfd, and the signal is sent through the same descriptor. It names the
+  process, not the number, so if the process exits in between, nothing is
+  signalled. On macOS, or where `pidfd_open` is missing or filtered, the
+  signal is an ordinary `kill` straight after the read. The process would
+  have to exit, and its pid be given to a new one, between two consecutive
+  system calls. That window is narrow, but it is not zero, and poptop does not
+  claim it is.
 
 A process whose start time the platform would not report is never signalled at
 all, because without it a recycled pid cannot be told from the one you picked.
@@ -2357,6 +2365,35 @@ anything it could not run rather than passing quietly.
 UI tests render through ratatui's `TestBackend` and assert on the resulting
 buffer, including a 1×1 terminal — a monitor that panics on a small window is
 worse than no monitor, and it never shows up in normal use.
+
+### Fuzzing
+
+Every reader of bytes poptop did not write this second has a fuzz target in
+`fuzz/`: the restart store, the day logs, every `/proc` parser, the NFS and
+taskstats readers, and everything a person types — the filter, the jump box, a
+colour, a config or theme file. One of them, `log_torn`, checks an answer
+rather than only the absence of a panic: build a day out of whole and
+crash-torn entries, and every whole one must come back.
+
+```sh
+./check --fuzz                 # every target for a minute, from fuzz/seeds
+./check --fuzz=600 --linux     # ten minutes each, and the /proc targets on Linux
+cd fuzz && cargo +nightly fuzz run store -- -max_total_time=3600
+```
+
+It needs a nightly toolchain and `cargo install cargo-fuzz`. CI runs every
+target for a minute on Linux. What a fuzzer finds becomes an ordinary unit test
+— the fuzzer is how a bug is found, not how it stays fixed.
+
+`cargo fuzz` can only link a library, and poptop is a binary. `src/lib.rs`
+compiles the same modules a second time behind the `fuzzing` feature; without
+it the library is empty and the program is exactly what it was.
+
+The ordinary tests carry a cheaper version of the same idea. `src/mangle.rs`
+takes a real input and bends it — each line removed or doubled, each number at
+the edge of its type, bytes that are not UTF-8, the file cut at every line — and
+the parsers' tests assert that none of it panics. That runs on every
+`cargo test`, on stable, on both platforms.
 
 ## License
 

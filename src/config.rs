@@ -1069,6 +1069,22 @@ mod tests {
     }
 
     #[test]
+    fn no_config_or_theme_file_can_panic_the_reader() {
+        // Read at startup, before the terminal is set up — a panic here is a
+        // tool that will not start, over a file the user can see no fault in.
+        let conf = "glyphs = block\ncolor = mono # comment\ntheme = classic\n\
+                    interval = 500ms\nwindow = 10m\nwarn = 70\ncritical = 90\n\
+                    log = on\nlog-days = 7\nlog-bytes = 512mb\nsignals = off\n";
+        let theme = "ok = #5ccfe6 # nord\nwarn = 214\ncritical = red\nlive = default\n";
+        for text in crate::mangle::text_variants(conf, 600) {
+            let _ = apply(&text);
+        }
+        for text in crate::mangle::text_variants(theme, 600) {
+            let _ = parse_theme(&text, "theme", &mut Vec::new());
+        }
+    }
+
+    #[test]
     fn every_flag_is_settable_from_the_file() {
         // The point of the shared table: a setting the command line can reach
         // and the file cannot is the drift this design exists to prevent.

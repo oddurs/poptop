@@ -66,16 +66,22 @@ impl CpuTimes {
     /// Fields are: user nice system idle iowait irq softirq steal guest
     /// guest_nice. iowait counts as idle — the CPU genuinely had nothing to run.
     fn parse(fields: &str) -> Option<Self> {
+        // Up to the first field that is not a number, not around it. Skipping
+        // one would move every field after it into the wrong slot — steal
+        // read as irq — which is worse than reading fewer of them.
         let v: Vec<u64> = fields
             .split_whitespace()
-            .filter_map(|f| f.parse().ok())
+            .map_while(|f| f.parse().ok())
             .collect();
         if v.len() < 4 {
             return None;
         }
         // guest and guest_nice are already counted inside user and nice, so
         // summing every field as-is would double-count them.
-        let total: u64 = v.iter().take(8).sum();
+        // Saturating throughout: the kernel will not write counters that
+        // overflow, and a parser that panics on what the kernel will not write
+        // is still a parser that panics.
+        let total: u64 = v.iter().take(8).fold(0u64, |a, b| a.saturating_add(*b));
         let iowait = v.get(4).copied().unwrap_or(0);
         // The extended classes need the fields to actually be there. A line
         // that stops short is a platform that does not publish them, and a zero
@@ -84,7 +90,7 @@ impl CpuTimes {
         let extended = v.len() >= 8;
         let at = |i: usize| v.get(i).copied().unwrap_or(0);
         Some(Self {
-            idle: v[3] + iowait,
+            idle: v[3].saturating_add(iowait),
             total,
             iowait,
             extended,
@@ -94,7 +100,7 @@ impl CpuTimes {
             // Already inside `user`, so it is *not* added to `total` — the same
             // double count the line above avoids. Reported as its own share of
             // the same denominator.
-            guest: at(8) + at(9),
+            guest: at(8).saturating_add(at(9)),
         })
     }
 
@@ -591,7 +597,7 @@ impl ProcFs {
     /// evidence: a mount, or a running `nfsd`, is what makes this machine one
     /// with something to say about NFS.
     fn read_nfs(&mut self, elapsed: Duration) -> Option<NfsStat> {
-        let stats = fs::read_to_string("/proc/self/mountstats").ok()?;
+        let stats = read_lossy("/proc/self/mountstats")?;
         let mounts = nfs::parse_mountstats(&stats);
         let server = fs::read_to_string("/proc/net/rpc/nfsd")
             .ok()
@@ -621,7 +627,7 @@ impl ProcFs {
     /// twenty-odd, almost all of them idle `utun*` tunnels, and a measurement
     /// keeps the real one visible without a rule about names.
     fn read_net(&mut self, elapsed: Duration) -> Option<NetStat> {
-        let dev = fs::read_to_string("/proc/net/dev").ok()?;
+        let dev = read_lossy("/proc/net/dev")?;
         // Absent files stay absent rather than becoming zeroes: a kernel that
         // does not publish retransmits and one reporting none are opposite
         // answers, and only `/proc/net/dev` is required for the rest to mean
@@ -712,7 +718,7 @@ impl ProcFs {
     /// offsets mean what this file believes, since every machine has one and it
     /// is never empty.
     fn read_filesystems(&self) -> Option<Vec<FsStat>> {
-        let text = fs::read_to_string("/proc/mounts").ok()?;
+        let text = read_lossy("/proc/mounts")?;
         let mut out: Vec<(String, bool, FsStat)> = Vec::new();
         for (dev, mount, writable, _kind) in mount_points(&text) {
             let Some((total, avail)) = statfs_at(&mount) else {
@@ -946,9 +952,11 @@ impl ProcFs {
             // stat above this made every dead pid pay for a statx too.
             path.clear();
             let _ = write!(path, "/proc/{pid}/stat");
-            let Ok(stat) = read_into(path, buf) else {
+            let Ok(raw) = read_bytes(path, buf) else {
                 continue;
             };
+            let stat = stat_text(raw);
+            let stat = stat.as_ref();
 
             // The /proc/<pid> directory is owned by the process's uid, so one
             // stat answers what parsing /proc/<pid>/status also would.
@@ -1101,9 +1109,11 @@ fn read_tasks(
 
         path.clear();
         let _ = write!(path, "/proc/{pid}/task/{tid}/stat");
-        let Ok(stat) = read_into(path, buf) else {
+        let Ok(raw) = read_bytes(path, buf) else {
             continue;
         };
+        let stat = stat_text(raw);
+        let stat = stat.as_ref();
         let Some(t) = parse_task_stat(pid, tid, stat, elapsed_secs, seen, prev, ticks_per_sec)
         else {
             continue;
@@ -1366,7 +1376,7 @@ fn read_pss(pid: i32, path: &mut String, buf: &mut Vec<u8>, denied: &mut usize) 
         .find_map(|l| l.strip_prefix("Pss:"))
         .and_then(|v| v.split_whitespace().next())
         .and_then(|v| v.parse::<u64>().ok())
-        .map(|kb| kb * 1024)
+        .map(|kb| kb.saturating_mul(1024))
 }
 
 /// Which container a process is in, from `/proc/<pid>/cgroup`.
@@ -1388,9 +1398,7 @@ fn container_of(
     }
     path.clear();
     let _ = write!(path, "/proc/{pid}/cgroup");
-    let found = fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| cgroups::container_of(&t));
+    let found = read_lossy(path).and_then(|t| cgroups::container_of(&t));
     cache.insert(pid, (started, found.clone()));
     found
 }
@@ -1452,6 +1460,41 @@ fn parse_cmdline(raw: &[u8]) -> Option<String> {
     crate::sample::command_from_argv(argv.iter().map(|a| a.as_ref()))
 }
 
+/// A `stat` line as text, whatever its `comm` holds.
+///
+/// `comm` is the executable's file name, or whatever the process set with
+/// `prctl(PR_SET_NAME)`: sixteen bytes of anything, chosen by an unprivileged
+/// user. Every other field is digits and letters the kernel wrote. Checked as
+/// UTF-8 whole, one byte of `comm` made the line unreadable and the process
+/// was skipped — so a process could leave the table by naming itself `\xff`,
+/// in a tool whose job is showing what is running. Lossy instead: the name
+/// shows with a replacement character, and every number beside it is intact.
+fn stat_text(raw: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(raw)
+}
+
+/// When `pid` started, as `ProcSample::started` carries it here: clock ticks
+/// since boot, field 22 of `/proc/<pid>/stat`.
+///
+/// Read from the kernel at the moment of asking rather than from a sample,
+/// because this is what `signal` checks immediately before sending: a sample
+/// is up to an interval old, and a pid can be handed on inside one.
+pub fn start_of(pid: i32) -> Option<u64> {
+    let raw = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+    start_in(&stat_text(&raw))
+}
+
+/// Field 22 of a `stat` line, counted from the last `)` as `parse_proc_stat`
+/// counts it, since the name before it may hold spaces and parentheses.
+fn start_in(stat: &str) -> Option<u64> {
+    let close = stat.rfind(')')?;
+    stat.get(close + 1..)?
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
 /// Turn one `/proc/<pid>/stat` line into a sample.
 #[allow(clippy::too_many_arguments)]
 fn parse_proc_stat(
@@ -1506,7 +1549,10 @@ fn parse_proc_stat(
         }
     };
 
-    let jiffies = utime + stime;
+    // Saturating, like the thread path. The kernel will not write two counters
+    // that overflow a u64 between them, but a parser that panics on input the
+    // kernel will not write is still a parser that panics.
+    let jiffies = utime.saturating_add(stime);
     seen.insert(pid, jiffies);
     seen_faults.insert(pid, (minflt, majflt));
 
@@ -1530,7 +1576,7 @@ fn parse_proc_stat(
         name,
         user,
         cpu,
-        rss: rss_pages * ctx.page_size,
+        rss: rss_pages.saturating_mul(ctx.page_size),
         threads: Some(threads),
         state,
         started: Some(starttime),
@@ -1676,14 +1722,27 @@ fn parse_meminfo(text: &str) -> MemStat {
                     .next()?
                     .parse::<u64>()
                     .ok()?
-                    * 1024,
+                    .saturating_mul(1024),
             )
         })
     };
     let get = |key: &str| -> u64 { find(key).unwrap_or(0) };
     let total = get("MemTotal:");
-    let available = get("MemAvailable:");
     let free = get("MemFree:");
+    // `MemAvailable` arrived in 3.14. Without it, zero available made every
+    // byte "used" — a kernel old enough to lack the line reported itself out
+    // of memory on every sample, and a container shows its host's kernel. The
+    // estimate `free` and `top` fell back to before the kernel made its own:
+    // free, plus the caches it would drop, less the shared memory that sits
+    // in `Cached` but cannot be dropped. Clamped to the total, which a
+    // malformed file could otherwise exceed.
+    let available = find("MemAvailable:").unwrap_or_else(|| {
+        free.saturating_add(get("Buffers:"))
+            .saturating_add(get("Cached:"))
+            .saturating_add(get("SReclaimable:"))
+            .saturating_sub(get("Shmem:"))
+            .min(total)
+    });
     let swap_total = get("SwapTotal:");
     let swap_free = get("SwapFree:");
     // Counted in pages of `Hugepagesize`, not in kilobytes — the one family in
@@ -1712,7 +1771,7 @@ fn parse_meminfo(text: &str) -> MemStat {
                     .parse::<u64>()
                     .ok()
             })
-            .map(|n| n * kb * 1024)
+            .map(|n| n.saturating_mul(kb).saturating_mul(1024))
     };
     let huge_total = huge_pages("HugePages_Total:");
     let huge_free = huge_pages("HugePages_Free:");
@@ -1885,6 +1944,10 @@ const FS_BAVAIL: usize = 32;
 fn statfs_at(mount: &str) -> Option<(u64, u64)> {
     let path = std::ffi::CString::new(mount).ok()?;
     let mut buf = [0u8; STATFS_BUF];
+    // SAFETY: `path` is NUL-terminated and outlives the call. `buf` is 256
+    // writable bytes, and the kernel writes `sizeof(struct statfs)`, which is
+    // 120 on x86_64 and aarch64 (checked against glibc's headers on both), into
+    // it. A kernel with a larger struct would have to be a different ABI.
     let rc = unsafe { statfs(path.as_ptr(), buf.as_mut_ptr().cast()) };
     if rc != 0 {
         return None;
@@ -2130,6 +2193,21 @@ fn parse_page_size(auxv: &[u8]) -> Option<u64> {
 fn read_into<'b>(path: &str, buf: &'b mut Vec<u8>) -> io::Result<&'b str> {
     let raw = read_bytes(path, buf)?;
     std::str::from_utf8(raw).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "not utf-8"))
+}
+
+/// A whole file as text, with any byte that is not UTF-8 replaced.
+///
+/// For the files whose contents an unprivileged user partly chooses: mount
+/// points in `/proc/mounts` and `mountstats`, which the kernel escapes only for
+/// whitespace and backslash; cgroup paths under a delegated subtree; interface
+/// names. Read strictly, one such name made the whole file unreadable — one
+/// USB stick with a Latin-1 label took the capacity of every filesystem with
+/// it. Lossy, the odd name is wrong (and the mount behind it fails its
+/// `statfs` and is left out) and everything else in the file is read.
+fn read_lossy(path: &str) -> Option<String> {
+    fs::read(path)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 /// The same read without the UTF-8 check, for a file that is not text.
@@ -3692,6 +3770,36 @@ mod tests {
     }
 
     #[test]
+    fn the_start_time_read_for_a_signal_is_the_one_the_table_carries() {
+        // A name built to shift a whitespace split: the start time is field 22
+        // counted from the last `)`, as the sample counts it.
+        let line = "4021 (a) (b c) S 1 4021 4021 0 -1 4194304 1 2 3 4 5 6 7 8 20 0 1 0 \
+                    987654 1000 25 18446744073709551615";
+        assert_eq!(start_in(line), Some(987654));
+        let me = std::process::id() as i32;
+        let raw = std::fs::read(format!("/proc/{me}/stat")).unwrap();
+        let mut seen = HashMap::new();
+        let row = parse_proc_stat(
+            me,
+            &stat_text(&raw),
+            1.0,
+            Arc::from("me"),
+            &mut seen,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &StatCtx {
+                prev_jiffies: &HashMap::new(),
+                prev_faults: &HashMap::new(),
+                ticks_per_sec: 100.0,
+                page_size: 4096,
+            },
+        )
+        .expect("our own stat did not parse");
+        assert_eq!(start_of(me), row.started);
+        assert_eq!(start_of(i32::MAX), None);
+    }
+
+    #[test]
     fn a_statfs_that_is_not_one_is_refused() {
         // The check that licenses reading three numbers at fixed offsets from a
         // structure this file never declares.
@@ -4413,6 +4521,9 @@ fn read_nodes_in(
 }
 
 /// A kernel CPU list — `0-3,8,12-13` — as the ids it names.
+/// More CPUs than any kernel is built for: `NR_CPUS` tops out at 8192.
+const MAX_CPUS: u32 = 1 << 16;
+
 fn cpu_list(list: &str) -> Vec<u32> {
     let mut out = Vec::new();
     for part in list.trim().split(',') {
@@ -4423,7 +4534,13 @@ fn cpu_list(list: &str) -> Vec<u32> {
         match part.split_once('-') {
             Some((a, b)) => {
                 if let (Ok(a), Ok(b)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
-                    out.extend(a..=b);
+                    // Bounded, because the range is expanded into a list: a
+                    // `0-4294967295` from a corrupt or hostile file was sixteen
+                    // gigabytes of CPU ids from one line. The kernel's own
+                    // ceiling is `NR_CPUS`, a few thousand; this is well past it.
+                    if b >= a && b - a < MAX_CPUS {
+                        out.extend(a..=b);
+                    }
                 }
             }
             None => out.extend(part.parse::<u32>().ok()),
@@ -4476,7 +4593,13 @@ fn parse_node_meminfo(id: u32, text: &str, cpu: Option<f32>) -> Option<NodeStat>
             // `Node 0 MemFree:` — the node number is in the line, so the key
             // has to be matched after it rather than at the start.
             let (_, rest) = l.split_once(key)?;
-            Some(rest.split_whitespace().next()?.parse::<u64>().ok()? * 1024)
+            Some(
+                rest.split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()?
+                    .saturating_mul(1024),
+            )
         })
     };
     Some(NodeStat {
@@ -4488,4 +4611,290 @@ fn parse_node_meminfo(id: u32, text: &str, cpu: Option<f32>) -> Option<NodeStat>
         shmem: find("Shmem:"),
         cpu,
     })
+}
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[cfg_attr(not(test), allow(dead_code))]
+/// Every text parser in the file, on one input. Results are thrown away: what
+/// is being checked is that none of them panics.
+///
+/// Shared by the mangled-input tests and `fuzz/`, so the two cannot drift into
+/// testing different sets — and a parser added to the file is one line here.
+pub(super) fn every_text_parser(pf: &mut ProcFs, text: &str) {
+    let mut seen = HashMap::new();
+    let mut faults = HashMap::new();
+    let mut names = HashMap::new();
+    let _ = parse_proc_stat(
+        4021,
+        text,
+        1.0,
+        Arc::from("u"),
+        &mut seen,
+        &mut faults,
+        &mut names,
+        &StatCtx {
+            prev_jiffies: &HashMap::from([(4021, u64::MAX)]),
+            prev_faults: &HashMap::from([(4021, (u64::MAX, 0))]),
+            ticks_per_sec: pf.ticks_per_sec,
+            page_size: pf.page_size,
+        },
+    );
+    let _ = parse_task_stat(
+        4021,
+        4098,
+        text,
+        1.0,
+        &mut seen,
+        &HashMap::from([(4098, u64::MAX)]),
+        100.0,
+    );
+    let _ = parse_meminfo(text);
+    let _ = parse_vmstat(text);
+    let _ = parse_pressure(text);
+    let _ = pressure_from(Some(text), Some(text), Some(text));
+    let _ = pf.diskstats_from(text, Duration::from_secs(1));
+    let _ = pf.diskstats_from(text, Duration::ZERO);
+    let _ = mount_points(text);
+    let _ = unescape(text);
+    for line in text.lines() {
+        let _ = parse_link(line);
+        let _ = CpuTimes::parse(line);
+        let _ = DiskTimes::parse(line);
+    }
+    let _ = snmp_counter(text, "Tcp:", "RetransSegs");
+    let _ = parse_proc_io(text);
+    let _ = cpu_list(text);
+    let _ = parse_node_meminfo(1, text, Some(50.0));
+}
+
+/// `fuzz/`'s way in: every parser here, text and binary, on one input.
+#[cfg(feature = "fuzzing")]
+#[allow(dead_code)] // as `collect::fuzz_proc`, which is its only caller
+pub(super) fn fuzz(bytes: &[u8]) {
+    thread_local! {
+        static PF: std::cell::RefCell<Option<ProcFs>> = const { std::cell::RefCell::new(None) };
+    }
+    let text = stat_text(bytes);
+    PF.with(|pf| {
+        let mut pf = pf.borrow_mut();
+        let pf = pf.get_or_insert_with(|| ProcFs::new().expect("no /proc to fuzz against"));
+        every_text_parser(pf, &text);
+    });
+    let _ = parse_page_size(bytes);
+    let _ = parse_statfs_buf(bytes);
+    let _ = parse_cmdline(bytes);
+}
+
+/// Every parser in this file, fed the real thing bent every way `mangle` knows.
+///
+/// The fixture tests above show each parser reads the file its author thought
+/// to write. These ask the other question — can anything a kernel, a crash or
+/// an unprivileged user leaves in `/proc` make one panic — for all of them at
+/// once, so a parser added later without a fixture of its own is one line here
+/// rather than a gap nobody notices.
+#[cfg(test)]
+mod mangled {
+    use super::*;
+    use crate::mangle::{text_variants, variants};
+
+    const STAT: &str = "4021 (postgres) S 1 4021 4021 0 -1 4194304 \
+        4210 0 17 0 137 42 0 0 20 -5 8 0 1234 2846720000 41221 \
+        18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0\n";
+
+    const MEMINFO: &str = "MemTotal:       16384000 kB\n\
+        MemFree:         1024000 kB\n\
+        MemAvailable:    8192000 kB\n\
+        Buffers:          204800 kB\n\
+        Cached:          4096000 kB\n\
+        SwapTotal:       2097152 kB\n\
+        SwapFree:        2000000 kB\n\
+        Shmem:            102400 kB\n\
+        SReclaimable:     409600 kB\n\
+        HugePages_Total:      64\n\
+        HugePages_Free:       60\n\
+        Hugepagesize:       2048 kB\n";
+
+    const VMSTAT: &str = "pgpgin 1234\npgpgout 5678\npswpin 1\npswpout 2\n\
+        pgmajfault 99\noom_kill 3\n";
+
+    const PRESSURE: &str = "some avg10=1.50 avg60=0.80 avg300=0.20 total=123456\n\
+        full avg10=0.25 avg60=0.10 avg300=0.00 total=6543\n";
+
+    const DISKSTATS: &str = "   8       0 sda 4600 120 312000 2100 9800 700 604000 8800 0 6400 10900 0 0 0 0 150 30\n\
+         259       0 nvme0n1 100 0 800 10 50 0 400 5 3 20 15\n\
+           7       0 loop0 0 0 0 0 0 0 0 0 0 0 0\n";
+
+    const MOUNTS: &str = "/dev/vda1 / ext4 rw,relatime 0 0\n\
+        proc /proc proc rw,nosuid 0 0\n\
+        /dev/sdb1 /media/my\\040stick vfat ro,relatime 0 0\n\
+        server:/export /mnt/nfs nfs4 rw 0 0\n";
+
+    const NET_DEV: &str = "Inter-|   Receive                                                |  Transmit\n \
+        face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    \
+        lo: 1000 10 0 0 0 0 0 0 1000 10 0 0 0 0 0 0\n  \
+        eth0: 99999 800 1 2 0 0 0 0 55555 400 3 4 0 0 0 0\n";
+
+    const SNMP: &str = "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens RetransSegs InErrs\n\
+        Tcp: 1 200 120000 -1 100 42 0\n";
+
+    const IO: &str = "rchar: 1000\nwchar: 2000\nsyscr: 3\nsyscw: 4\n\
+        read_bytes: 4096\nwrite_bytes: 8192\ncancelled_write_bytes: 0\n";
+
+    const NODE_MEMINFO: &str = "Node 1 MemTotal:       16384000 kB\n\
+        Node 1 MemFree:         1024000 kB\n\
+        Node 1 MemUsed:        15360000 kB\n";
+
+    #[test]
+    fn no_proc_parser_panics_on_a_mangled_file() {
+        let mut pf = ProcFs::new().unwrap();
+        for seed in [
+            STAT,
+            MEMINFO,
+            VMSTAT,
+            PRESSURE,
+            DISKSTATS,
+            MOUNTS,
+            NET_DEV,
+            SNMP,
+            IO,
+            NODE_MEMINFO,
+            "0-3,8-11,64\n",
+        ] {
+            for text in text_variants(seed, 400) {
+                every_text_parser(&mut pf, &text);
+            }
+        }
+    }
+
+    #[test]
+    fn a_kernel_without_mem_available_is_not_reported_out_of_memory() {
+        // Before 3.14. The line is simply absent, and treating absent as zero
+        // made `used` equal to `total` on every sample.
+        let old: String = MEMINFO
+            .lines()
+            .filter(|l| !l.starts_with("MemAvailable:"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let m = parse_meminfo(&old);
+        // free 1024000 + buffers 204800 + cached 4096000 + reclaimable 409600
+        // - shmem 102400, in kB.
+        let estimate = (1_024_000 + 204_800 + 4_096_000 + 409_600 - 102_400) * 1024;
+        assert_eq!(m.available, estimate);
+        assert_eq!(m.used, m.total - estimate);
+        assert!(m.used < m.total, "every byte was reported used");
+        // And the kernel's own figure wins wherever it exists.
+        assert_eq!(parse_meminfo(MEMINFO).available, 8_192_000 * 1024);
+    }
+
+    #[test]
+    fn no_binary_proc_parser_panics_on_mangled_bytes() {
+        let auxv: Vec<u8> = [6usize, 4096, 0, 0]
+            .iter()
+            .flat_map(|v| v.to_ne_bytes())
+            .collect();
+        let statfs = vec![0x42u8; 120];
+        for seed in [
+            auxv.as_slice(),
+            &statfs,
+            b"python3\0-m\0http.server\0".as_slice(),
+        ] {
+            for bytes in variants(seed, 400) {
+                let _ = parse_page_size(&bytes);
+                let _ = page_size_from(Some(&bytes));
+                let _ = parse_statfs_buf(&bytes);
+                let _ = parse_cmdline(&bytes);
+                let _ = stat_text(&bytes);
+            }
+        }
+    }
+
+    /// A stat line for a process whose `comm` is the given bytes.
+    fn stat_with_comm(comm: &[u8]) -> Vec<u8> {
+        let mut line = b"4021 (".to_vec();
+        line.extend_from_slice(comm);
+        line.extend_from_slice(
+            b") S 1 4021 4021 0 -1 4194304 4210 0 17 0 137 42 0 0 20 -5 8 0 \
+              1234 2846720000 41221 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0\n",
+        );
+        line
+    }
+
+    fn parse_comm(comm: &[u8]) -> Option<ProcSample> {
+        let pf = ProcFs::new().unwrap();
+        let line = stat_with_comm(comm);
+        let text = stat_text(&line);
+        parse_proc_stat(
+            4021,
+            &text,
+            1.0,
+            Arc::from("u"),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &StatCtx {
+                prev_jiffies: &pf.prev_proc_jiffies,
+                prev_faults: &pf.prev_proc_faults,
+                ticks_per_sec: pf.ticks_per_sec,
+                page_size: pf.page_size,
+            },
+        )
+    }
+
+    #[test]
+    fn a_name_built_to_confuse_the_split_is_read_whole() {
+        // Brackets and spaces in `comm` are the classic trap; a name made of
+        // nothing but the separators is the adversarial version of it.
+        for comm in [&b"a) (b"[..], b") S 1 2 3 (", b"))))", b"((((", b" ", b""] {
+            let p = parse_comm(comm).unwrap_or_else(|| panic!("{comm:?} did not parse"));
+            assert_eq!(p.name.as_bytes(), comm, "the name was misread");
+            assert_eq!(p.ppid, 1, "{comm:?} moved the fields after it");
+            assert_eq!(p.nice, Some(-5), "{comm:?} moved the fields after it");
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_does_not_hide_the_process() {
+        // Sixteen bytes of anything, set by an unprivileged `prctl`. Read as
+        // strict UTF-8, the whole line was refused and the process skipped.
+        for comm in [
+            &b"\xff\xfe"[..],
+            b"ok\xc3",
+            b"\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80\x80",
+        ] {
+            let p = parse_comm(comm).unwrap_or_else(|| panic!("{comm:?} hid the process"));
+            assert!(p.name.contains('\u{fffd}'), "{:?}", p.name);
+            assert_eq!(p.ppid, 1);
+            assert_eq!(p.nice, Some(-5));
+        }
+    }
+
+    #[test]
+    fn a_running_process_named_in_bytes_that_are_not_utf8_is_in_the_table() {
+        // The end-to-end version: a real process, collected by the real
+        // collector. `comm` is the executable's file name, so a copy of `sleep`
+        // with a name that is not UTF-8 is all it takes.
+        use std::os::unix::ffi::OsStrExt;
+        let dir = std::env::temp_dir().join(format!("poptop-comm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join(std::ffi::OsStr::from_bytes(b"\xffhidden"));
+        let sleep = ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .expect("no sleep binary to copy");
+        std::fs::copy(sleep, &exe).unwrap();
+        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        // Long enough for the exec to have replaced the name.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let mut pf = ProcFs::new().unwrap();
+        let sample = pf.collect(Needs::default()).unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let row = sample.procs.iter().find(|p| p.pid == pid);
+        let row = row.unwrap_or_else(|| panic!("pid {pid} is missing from the table"));
+        assert!(row.name.ends_with("hidden"), "{:?}", row.name);
+    }
 }

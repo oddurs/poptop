@@ -509,6 +509,14 @@ pub mod nfs;
 pub mod taskstats;
 #[cfg(target_os = "linux")]
 use linux as backend;
+/// Every `/proc` parser on one input, for `fuzz/`. Linux only, because that is
+/// the only place they are compiled.
+#[cfg(all(feature = "fuzzing", target_os = "linux"))]
+// Called only by the library `fuzz/` links; the program compiles it, unused.
+#[allow(dead_code)]
+pub fn fuzz_proc(bytes: &[u8]) {
+    linux::fuzz(bytes);
+}
 #[cfg(target_os = "linux")]
 pub use linux::ProcFs as Platform;
 
@@ -520,6 +528,14 @@ mod procinfo;
 use darwin as backend;
 #[cfg(not(target_os = "linux"))]
 pub use darwin::SysinfoCollector as Platform;
+
+/// When a process started, read from the kernel now, in the unit the
+/// platform's samples carry in `ProcSample::started`. `None` if there is no
+/// such process.
+#[cfg(target_os = "linux")]
+pub use linux::start_of;
+#[cfg(not(target_os = "linux"))]
+pub use procinfo::start_of;
 
 #[cfg(test)]
 mod tests {

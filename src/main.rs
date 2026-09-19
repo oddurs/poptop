@@ -17,6 +17,8 @@ mod export;
 mod glyphs;
 mod history;
 mod log;
+#[cfg(test)]
+mod mangle;
 mod menu;
 mod persist;
 mod query;
@@ -189,7 +191,8 @@ HEADER:
                     hardware capping that reports through counters instead.
 
 KEYS:
-    q               quit
+    q, Esc          quit. Esc in the filter or jump box, or at a signal
+                    prompt, leaves that instead.
     Left/Right      scrub through history (Shift for 10 at a time)
     b               jump to a moment, as atop's -b does. Takes a distance or
                     a time: `-2h`,
@@ -248,8 +251,10 @@ KEYS:
 
                       · nothing is sent while scrubbing. That table is history.
                       · the (pid, start time) pair is rechecked against the
-                        newest sample as the signal is sent. A pid the kernel
-                        has since handed to something else is refused by name.
+                        newest sample, and then against the kernel as the
+                        signal is sent — through a pidfd on Linux 5.3 and
+                        later. A pid the kernel has since handed to something
+                        else is refused by name.
 
     /               filter. A bare word is a substring match on the name, the
                     command line, the user or the pid, as before. It is also a
@@ -339,16 +344,159 @@ fn flush(warnings: &[config::Warning]) {
     }
 }
 
+/// What the command line asked for, once the settings flags are taken out.
+///
+/// Settings (`--theme=…`, `--interval=…`) are `config::resolve`'s. This is
+/// what is left: at most one command word and its arguments.
+#[derive(Debug, PartialEq)]
+enum Command {
+    /// The monitor: live, or a recorded day with `--read`.
+    Tui {
+        day: Option<log::Date>,
+    },
+    Once,
+    /// A day's summary; today when none is named.
+    Report(Option<log::Date>),
+    Schema,
+    /// `json` or `line`, of a recorded day or of the machine now.
+    Export {
+        json: bool,
+        day: Option<log::Date>,
+    },
+    Days,
+    Bench,
+    Help,
+    Version,
+    CheckTheme(String),
+}
+
+/// A command line that cannot be run, and what to say about it. Always exit 2.
+#[derive(Debug, PartialEq)]
+struct Usage(String);
+
+const NO_STATE_DIR: &str = "no state directory — set HOME or XDG_STATE_HOME";
+
+/// Decide what the command line asks for, without doing any of it.
+///
+/// Pure, so every way of getting it wrong is a row in a table rather than a
+/// process to spawn. Each command word is accepted as `--word VALUE` and
+/// `--word=VALUE` alike, and anything it does not take is refused: an argument
+/// dropped silently is an instruction ignored, and `poptop --read DATE --once`
+/// opening the day and ignoring `--once` was exactly that.
+fn command(args: &[String]) -> Result<Command, Usage> {
+    let Some(first) = args.first() else {
+        return Ok(Command::Tui { day: None });
+    };
+    let (word, inline) = match first.split_once('=') {
+        Some((w, v)) if w.starts_with("--") => (w, Some(v)),
+        _ => (first.as_str(), None),
+    };
+    // The command word's arguments, the inline one first. An empty inline value
+    // (`--report=`) is no value, as it always was.
+    let mut rest = inline
+        .filter(|v| !v.is_empty())
+        .into_iter()
+        .chain(args[1..].iter().map(String::as_str));
+    let date = |t: &str| {
+        log::Date::parse(t)
+            .ok_or_else(|| Usage(format!("`{t}` is not a date. Write it as YYYY-MM-DD")))
+    };
+    let command = match word {
+        "--report" => Command::Report(rest.next().map(date).transpose()?),
+        "--export" => {
+            let json = match rest.next() {
+                Some("json") => true,
+                Some("line") => false,
+                _ => return Err(Usage("--export takes `json` or `line`".into())),
+            };
+            Command::Export {
+                json,
+                day: rest.next().map(date).transpose()?,
+            }
+        }
+        "--read" => {
+            let Some(text) = rest.next() else {
+                return Err(Usage(
+                    "--read needs a date, as YYYY-MM-DD. `poptop --days` lists them".into(),
+                ));
+            };
+            Command::Tui {
+                day: Some(date(text)?),
+            }
+        }
+        "--check-theme" => match rest.next() {
+            Some(name) => Command::CheckTheme(name.to_string()),
+            None => return Err(Usage("--check-theme needs a theme name".into())),
+        },
+        "--schema" => Command::Schema,
+        "--days" => Command::Days,
+        "--once" => Command::Once,
+        "--bench" => Command::Bench,
+        "--help" | "-h" => Command::Help,
+        "--version" | "-V" => Command::Version,
+        _ => return Err(Usage(format!("unrecognised option '{first}'\n\n{USAGE}"))),
+    };
+    match rest.next() {
+        None => Ok(command),
+        Some(extra) => Err(Usage(format!(
+            "{word} does not take `{extra}` — one command at a time"
+        ))),
+    }
+}
+
+/// Whether the terminal is in raw mode on the alternate screen, for [`exit`].
+static TERMINAL_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Leave the process, giving the terminal back first if poptop has it.
+///
+/// The one way out other than returning from `main`. `process::exit` runs no
+/// destructors, so a path that called it with the screen taken would leave the
+/// shell in raw mode on the alternate screen. None does today; this is so none
+/// can.
+fn exit(code: i32) -> ! {
+    if TERMINAL_TAKEN.load(std::sync::atomic::Ordering::Relaxed) {
+        ratatui::restore();
+    }
+    std::process::exit(code)
+}
+
+/// Say why, after everything already found, and leave.
+fn fail(warnings: &[config::Warning], why: impl std::fmt::Display, code: i32) -> ! {
+    flush(warnings);
+    eprintln!("poptop: {why}");
+    exit(code)
+}
+
+/// A recorded day, or the reason there is none as the way out.
+///
+/// What the reader had to say about the file joins the warnings: a day read
+/// with a gap is still a day, and the gap is worth a line.
+fn read_day(warnings: &mut Vec<config::Warning>, date: log::Date) -> Vec<sample::Sample> {
+    let dir = log::dir().unwrap_or_else(|| fail(warnings, NO_STATE_DIR, 2));
+    match log::open_day(&dir, date) {
+        Ok((samples, said)) => {
+            warnings.extend(said.into_iter().map(config::Warning));
+            samples
+        }
+        Err(why) => fail(warnings, why, 1),
+    }
+}
+
+/// The platform's collector, and whatever it had to assume about this machine.
+///
+/// Said once, with the config warnings, rather than folded into every figure
+/// that rests on it — an assumption nobody is told about is the same shape as a
+/// wrong number. Opened only by the commands that sample.
+fn open_collector(warnings: &mut Vec<config::Warning>) -> io::Result<Platform> {
+    let mut collector = Platform::new()?;
+    warnings.extend(collector.take_notes().into_iter().map(config::Warning));
+    Ok(collector)
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut collector = Platform::new()?;
 
     let mut warnings = Vec::new();
-    // Whatever the backend had to assume about this machine. Said once, with
-    // the config warnings, rather than folded into every figure that rests on
-    // it — an assumption nobody is told about is the same shape as a wrong
-    // number.
-    warnings.extend(collector.take_notes().into_iter().map(config::Warning));
     let file = config::read(&mut warnings);
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let (settings, positional, file_warnings) = config::resolve(
@@ -360,18 +508,17 @@ fn main() -> io::Result<()> {
         },
         &args,
     )
-    .unwrap_or_else(|bad| {
-        // Before exiting, not after: a config file that could not be *read* is
-        // reported here too, and dropping that warning because a flag was also
-        // wrong would send the user off to fix the flag and rerun into the
-        // same silently-ignored config.
-        flush(&warnings);
-        eprintln!("poptop: {}", bad.as_flag());
-        std::process::exit(2);
-    });
+    // Before exiting, not after: a config file that could not be *read* is
+    // reported here too, and dropping that warning because a flag was also
+    // wrong would send the user off to fix the flag and rerun into the same
+    // silently-ignored config.
+    .unwrap_or_else(|bad| fail(&warnings, bad.as_flag(), 2));
     warnings.extend(file_warnings);
 
-    let args = positional;
+    // Everything but the settings, decided before anything is opened: `--help`
+    // must not need a readable `/proc`, and a mistyped command must not cost a
+    // collection pass before it is refused.
+    let command = command(&positional).unwrap_or_else(|Usage(why)| fail(&warnings, why, 2));
 
     // Built here rather than beside the App, so that a problem with the user's
     // theme is reported on every path — a colour scheme nobody can read is a
@@ -381,47 +528,19 @@ fn main() -> io::Result<()> {
         .with_thresholds(settings.warn, settings.critical)
         .with_overrides(&settings.overrides);
 
-    match args.first().map(String::as_str) {
+    let day = match command {
         // A report is not interactive, so it is a subcommand rather than a
         // mode: `poptop --report` from cron is how atop is used
         // non-interactively, and a report that needed a terminal could not be.
-        Some(a) if a == "--report" || a.starts_with("--report=") => {
-            let inline = a.strip_prefix("--report=").filter(|s| !s.is_empty());
-            let text = inline.or_else(|| args.get(1).map(String::as_str));
-            flush(&warnings);
-            let Some(dir) = log::dir() else {
-                eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
-                std::process::exit(2);
-            };
+        Command::Report(date) => {
             // Today unless a day is named. The cron case is a nightly summary
             // of the day that has just happened, and making it spell the date
             // out would make it a date-arithmetic problem in a crontab.
-            let date = match text {
-                Some(t) => match log::Date::parse(t) {
-                    Some(d) => d,
-                    None => {
-                        eprintln!("poptop: `{t}` is not a date. Write it as YYYY-MM-DD");
-                        std::process::exit(2);
-                    }
-                },
-                None => match log::date_of(std::time::SystemTime::now()) {
-                    Some(d) => d,
-                    None => {
-                        eprintln!("poptop: this machine's clock is before the epoch");
-                        std::process::exit(2);
-                    }
-                },
-            };
-            let (samples, said) = match log::open_day(&dir, date) {
-                Ok(pair) => pair,
-                Err(why) => {
-                    eprintln!("poptop: {why}");
-                    std::process::exit(1);
-                }
-            };
-            for note in said {
-                eprintln!("poptop: {note}");
-            }
+            let date = date
+                .or_else(|| log::date_of(std::time::SystemTime::now()))
+                .unwrap_or_else(|| fail(&warnings, "this machine's clock is before the epoch", 2));
+            let samples = read_day(&mut warnings, date);
+            flush(&warnings);
             outln!("poptop report for {date}");
             out!(
                 "{}",
@@ -434,52 +553,20 @@ fn main() -> io::Result<()> {
             );
             return Ok(());
         }
-        Some("--schema") => {
+        Command::Schema => {
             flush(&warnings);
             out!("{}", export::schema_json());
             return Ok(());
         }
-        // Both spellings. `--export=json` is what the help shows and what
-        // every other flag here looks like; `--export json` is what a hand
-        // reaches for. Neither is worth an error message.
-        Some(a) if a == "--export" || a.starts_with("--export=") => {
-            let inline = a.strip_prefix("--export=").filter(|s| !s.is_empty());
-            let how = inline.or_else(|| args.get(1).map(String::as_str));
-            let Some(how @ ("json" | "line")) = how else {
-                flush(&warnings);
-                eprintln!("poptop: --export takes `json` or `line`");
-                std::process::exit(2);
-            };
+        Command::Export { json, day } => {
             // A day, if one was named; otherwise the machine now. Reading
             // history is not a separate feature — it is the same output over a
             // different buffer, which is the whole reason the store carries a
             // schema.
-            let day = args.get(if inline.is_some() { 1 } else { 2 });
-            flush(&warnings);
             let samples = match day {
-                Some(text) => {
-                    let Some(date) = log::Date::parse(text) else {
-                        eprintln!("poptop: `{text}` is not a date. Write it as YYYY-MM-DD");
-                        std::process::exit(2);
-                    };
-                    let Some(dir) = log::dir() else {
-                        eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
-                        std::process::exit(2);
-                    };
-                    match log::open_day(&dir, date) {
-                        Ok((s, said)) => {
-                            for note in said {
-                                eprintln!("poptop: {note}");
-                            }
-                            s
-                        }
-                        Err(why) => {
-                            eprintln!("poptop: {why}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
+                Some(date) => read_day(&mut warnings, date),
                 None => {
+                    let mut collector = open_collector(&mut warnings)?;
                     // Two samples, as `--once` takes: every rate here is a
                     // difference, and one reading has nothing to difference
                     // against.
@@ -496,26 +583,23 @@ fn main() -> io::Result<()> {
                     vec![collector.sample(needs)?]
                 }
             };
+            flush(&warnings);
             // One object per sample for JSON, newline-delimited, so a day is
             // streamable and `head` on it is not a parse error. For the line
             // format one stream, so the header block is written once for the
             // whole day rather than once a sample.
-            match how {
-                "json" => {
-                    for s in &samples {
-                        out!("{}", export::sample_json(s));
-                    }
+            if json {
+                for s in &samples {
+                    out!("{}", export::sample_json(s));
                 }
-                _ => out!("{}", export::lines_of(&samples)),
+            } else {
+                out!("{}", export::lines_of(&samples));
             }
             return Ok(());
         }
-        Some("--days") => {
+        Command::Days => {
             flush(&warnings);
-            let Some(dir) = log::dir() else {
-                eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
-                std::process::exit(2);
-            };
+            let dir = log::dir().unwrap_or_else(|| fail(&[], NO_STATE_DIR, 2));
             let days = log::days(&dir);
             if days.is_empty() {
                 outln!("no logs in {}", dir.display());
@@ -528,7 +612,8 @@ fn main() -> io::Result<()> {
             }
             return Ok(());
         }
-        Some("--once") => {
+        Command::Once => {
+            let mut collector = open_collector(&mut warnings)?;
             // `--once` logs too, where the user asked for a log. A monitor
             // that can only record while somebody is watching it is not much
             // of a recorder, and `poptop --once --log=on` from cron is a
@@ -556,90 +641,27 @@ fn main() -> io::Result<()> {
             flush(&warnings);
             return r;
         }
-        Some("--bench") => {
+        Command::Bench => {
+            let mut collector = open_collector(&mut warnings)?;
             flush(&warnings);
-            // Measure with extended collection both off and on, so the cost
-            // of gating a column is a number rather than a claim.
-            let n = 20;
-            for needs in [
-                Needs::NONE,
-                Needs::NONE.with(Source::Io),
-                Needs::NONE.with(Source::Io).with(Source::Threads),
-                Needs::NONE
-                    .with(Source::Io)
-                    .with(Source::Threads)
-                    .with(Source::Exited),
-                Needs::NONE
-                    .with(Source::Io)
-                    .with(Source::Threads)
-                    .with(Source::Exited)
-                    .with(Source::Cgroups),
-                Needs::NONE.with(Source::Pss),
-            ] {
-                collector.sample(needs)?;
-                let t0 = std::time::Instant::now();
-                let mut count = 0;
-                let mut tasks = 0;
-                let mut exited = 0;
-                let mut groups = 0;
-                for _ in 0..n {
-                    let s = collector.sample(needs)?;
-                    count = s.procs.len();
-                    tasks = s.tasks.as_ref().map_or(0, Vec::len);
-                    exited += s.exited.as_ref().map_or(0, Vec::len);
-                    groups = s.cgroups.as_ref().map_or(0, Vec::len);
-                }
-                let label = match (
-                    needs.asked(Source::Io),
-                    needs.asked(Source::Threads),
-                    needs.asked(Source::Exited),
-                    needs.asked(Source::Cgroups),
-                ) {
-                    (false, ..) if needs.asked(Source::Pss) => {
-                        "pss only (one extra read a process)      "
-                    }
-                    (false, ..) => "io off, threads off, exits off, cgroups off",
-                    (true, false, ..) => "io on,  threads off, exits off, cgroups off",
-                    (true, true, false, _) => "io on,  threads on,  exits off, cgroups off",
-                    (true, true, true, false) => "io on,  threads on,  exits on,  cgroups off",
-                    (true, true, true, true) => "io on,  threads on,  exits on,  cgroups on ",
-                };
-                outln!(
-                    "{label}: {count} procs, {tasks} threads, {exited} exits, \
-                     {groups} cgroups, {:?}/sample",
-                    t0.elapsed() / n
-                );
-            }
-            return Ok(());
+            return bench(&mut collector);
         }
-        Some("--help" | "-h") => {
+        Command::Help => {
             flush(&warnings);
             outln!("{USAGE}");
             return Ok(());
         }
-        Some("--check-theme") => {
+        Command::CheckTheme(name) => {
             flush(&warnings);
-            let Some(name) = args.get(1) else {
-                eprintln!("poptop: --check-theme needs a theme name");
-                std::process::exit(2);
-            };
-            return check_theme(name);
+            return check_theme(&name);
         }
-        // Handled later, once the buffer can be sized for the day it opens —
-        // named here so it is not rejected as unrecognised on the way past.
-        Some("--read") => {}
-        Some("--version" | "-V") => {
+        Command::Version => {
             flush(&warnings);
             outln!("poptop {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        Some(other) => {
-            flush(&warnings);
-            eprintln!("poptop: unrecognised option '{other}'\n\n{USAGE}");
-            std::process::exit(2);
-        }
-        None => {}
-    }
+        Command::Tui { day } => day,
+    };
 
     // Reported here rather than beside the other config warnings, because
     // these are about what you will *see*. Emitting them before the argument
@@ -673,36 +695,8 @@ fn main() -> io::Result<()> {
     // because a day holds as many samples as it holds and a buffer sized for
     // the live window would throw away the morning to make room for the
     // evening.
-    let opened = match args.first().map(String::as_str) {
-        Some("--read") => {
-            let Some(text) = args.get(1) else {
-                flush(&warnings);
-                eprintln!("poptop: --read needs a date, as YYYY-MM-DD. `poptop --days` lists them");
-                std::process::exit(2);
-            };
-            let Some(date) = log::Date::parse(text) else {
-                flush(&warnings);
-                eprintln!("poptop: `{text}` is not a date. Write it as YYYY-MM-DD");
-                std::process::exit(2);
-            };
-            let Some(dir) = log::dir() else {
-                flush(&warnings);
-                eprintln!("poptop: no state directory — set HOME or XDG_STATE_HOME");
-                std::process::exit(2);
-            };
-            let (samples, said) = match log::open_day(&dir, date) {
-                Ok(pair) => pair,
-                Err(why) => {
-                    flush(&warnings);
-                    eprintln!("poptop: {why}");
-                    std::process::exit(1);
-                }
-            };
-            warnings.extend(said.into_iter().map(config::Warning));
-            Some(samples)
-        }
-        _ => None,
-    };
+    let opened = day.map(|date| read_day(&mut warnings, date));
+    let mut collector = open_collector(&mut warnings)?;
 
     let capacity = opened
         .as_ref()
@@ -812,6 +806,8 @@ fn main() -> io::Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    TERMINAL_TAKEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    show_cursor_on_panic();
     // Reported by every terminal poptop is likely to run in, and ignored until
     // now. A menu bar you can see and cannot click reads as a bar that is
     // broken, so the menu made this the next thing rather than a nicety.
@@ -839,6 +835,7 @@ fn main() -> io::Result<()> {
         let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture);
     }
     ratatui::restore();
+    TERMINAL_TAKEN.store(false, std::sync::atomic::Ordering::Relaxed);
     warnings.extend(said.into_iter().map(config::Warning));
     // A source that is only opened when a view is — an exit listener, a cgroup
     // walk — finds out it is unavailable the first time somebody asks, which is
@@ -863,6 +860,76 @@ fn main() -> io::Result<()> {
     result
 }
 
+/// Make a panic leave the cursor visible, as well as the screen restored.
+///
+/// `ratatui::init` installs a hook that leaves raw mode and the alternate
+/// screen and then prints the panic. The cursor it hid comes back only when the
+/// `Terminal` is dropped, which unwinding does and an abort would not. So the
+/// cursor is shown here first, in the hook, whatever happens after it; then
+/// ratatui's hook restores the rest and prints the message where it can be read.
+fn show_cursor_on_panic() {
+    let restore = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+        restore(info);
+    }));
+}
+
+/// Time collection passes, for development.
+fn bench(collector: &mut impl Collector) -> io::Result<()> {
+    // Measure with extended collection both off and on, so the cost
+    // of gating a column is a number rather than a claim.
+    let n = 20;
+    for needs in [
+        Needs::NONE,
+        Needs::NONE.with(Source::Io),
+        Needs::NONE.with(Source::Io).with(Source::Threads),
+        Needs::NONE
+            .with(Source::Io)
+            .with(Source::Threads)
+            .with(Source::Exited),
+        Needs::NONE
+            .with(Source::Io)
+            .with(Source::Threads)
+            .with(Source::Exited)
+            .with(Source::Cgroups),
+        Needs::NONE.with(Source::Pss),
+    ] {
+        collector.sample(needs)?;
+        let t0 = std::time::Instant::now();
+        let mut count = 0;
+        let mut tasks = 0;
+        let mut exited = 0;
+        let mut groups = 0;
+        for _ in 0..n {
+            let s = collector.sample(needs)?;
+            count = s.procs.len();
+            tasks = s.tasks.as_ref().map_or(0, Vec::len);
+            exited += s.exited.as_ref().map_or(0, Vec::len);
+            groups = s.cgroups.as_ref().map_or(0, Vec::len);
+        }
+        let label = match (
+            needs.asked(Source::Io),
+            needs.asked(Source::Threads),
+            needs.asked(Source::Exited),
+            needs.asked(Source::Cgroups),
+        ) {
+            (false, ..) if needs.asked(Source::Pss) => "pss only (one extra read a process)      ",
+            (false, ..) => "io off, threads off, exits off, cgroups off",
+            (true, false, ..) => "io on,  threads off, exits off, cgroups off",
+            (true, true, false, _) => "io on,  threads on,  exits off, cgroups off",
+            (true, true, true, false) => "io on,  threads on,  exits on,  cgroups off",
+            (true, true, true, true) => "io on,  threads on,  exits on,  cgroups on ",
+        };
+        outln!(
+            "{label}: {count} procs, {tasks} threads, {exited} exits, \
+             {groups} cgroups, {:?}/sample",
+            t0.elapsed() / n
+        );
+    }
+    Ok(())
+}
+
 /// Measure a theme and say whether it is legible, for scripts and reviewers.
 ///
 /// The side effect worth having: a contributed theme arrives with a
@@ -881,10 +948,7 @@ fn check_theme(name: &str) -> io::Result<()> {
     let (palette, overrides) =
         match config::resolve_named_theme(name, &config::read_theme, &mut warnings) {
             Ok(pair) => pair,
-            Err(why) => {
-                eprintln!("poptop: {why}");
-                std::process::exit(2);
-            }
+            Err(why) => fail(&warnings, why, 2),
         };
     flush(&warnings);
     let (built, _) = theme::Theme::new(palette, theme::Tier::TrueColor).with_overrides(&overrides);
@@ -895,7 +959,7 @@ fn check_theme(name: &str) -> io::Result<()> {
     outln!("{report}");
     let code = report.verdict().exit_code();
     if code != 0 {
-        std::process::exit(code);
+        exit(code);
     }
     Ok(())
 }
@@ -1411,6 +1475,10 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         app.menu.item = 0;
         return;
     }
+    // A chord typed into a text box is not text. Ctrl-U or Alt-B arrive as
+    // the letter with a modifier, and were appended as `u` and `b`.
+    let typed =
+        |c: char| (!mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)).then_some(c);
     if app.editing_filter {
         match code {
             // Enter keeps what was typed; Escape puts back what was there
@@ -1425,9 +1493,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             KeyCode::Backspace => {
                 app.filter.pop();
             }
-            KeyCode::Char(c) => {
-                app.filter.push(c);
-            }
+            KeyCode::Char(c) => app.filter.extend(typed(c)),
             _ => {}
         }
         return;
@@ -1460,9 +1526,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
             KeyCode::Backspace => {
                 app.jump.pop();
             }
-            KeyCode::Char(c) => {
-                app.jump.push(c);
-            }
+            KeyCode::Char(c) => app.jump.extend(typed(c)),
             _ => {}
         }
         return;
@@ -1750,4 +1814,268 @@ pub fn action_for(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
         KeyCode::Char('b') => Action::BeginJump,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(line: &str) -> Result<Command, Usage> {
+        let args: Vec<String> = line.split_whitespace().map(String::from).collect();
+        command(&args)
+    }
+
+    fn date(s: &str) -> Option<log::Date> {
+        Some(log::Date::parse(s).unwrap())
+    }
+
+    #[test]
+    fn every_command_line_that_runs() {
+        let rows: &[(&str, Command)] = &[
+            ("", Command::Tui { day: None }),
+            (
+                "--read 2026-09-08",
+                Command::Tui {
+                    day: date("2026-09-08"),
+                },
+            ),
+            (
+                "--read=2026-09-08",
+                Command::Tui {
+                    day: date("2026-09-08"),
+                },
+            ),
+            ("--once", Command::Once),
+            ("--report", Command::Report(None)),
+            ("--report=", Command::Report(None)),
+            ("--report 2026-09-08", Command::Report(date("2026-09-08"))),
+            ("--report=2026-09-08", Command::Report(date("2026-09-08"))),
+            ("--schema", Command::Schema),
+            (
+                "--export json",
+                Command::Export {
+                    json: true,
+                    day: None,
+                },
+            ),
+            (
+                "--export=line",
+                Command::Export {
+                    json: false,
+                    day: None,
+                },
+            ),
+            (
+                "--export json 2026-09-08",
+                Command::Export {
+                    json: true,
+                    day: date("2026-09-08"),
+                },
+            ),
+            (
+                "--export=line 2026-09-08",
+                Command::Export {
+                    json: false,
+                    day: date("2026-09-08"),
+                },
+            ),
+            ("--days", Command::Days),
+            ("--bench", Command::Bench),
+            ("--help", Command::Help),
+            ("-h", Command::Help),
+            ("--version", Command::Version),
+            ("-V", Command::Version),
+            ("--check-theme safe", Command::CheckTheme("safe".into())),
+            ("--check-theme=mine", Command::CheckTheme("mine".into())),
+        ];
+        for (line, want) in rows {
+            assert_eq!(run(line).as_ref(), Ok(want), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn every_command_line_that_is_refused_says_why() {
+        // Each is an exit 2 with this text after `poptop: `. The runtime
+        // failures — no state directory, a day that cannot be read — need a
+        // filesystem and are not here.
+        let rows: &[(&str, &str)] = &[
+            ("--read", "--read needs a date"),
+            ("--read=", "--read needs a date"),
+            ("--read yesterday", "`yesterday` is not a date"),
+            ("--read 2026-02-30", "`2026-02-30` is not a date"),
+            ("--report 08/09/2026", "`08/09/2026` is not a date"),
+            ("--export", "--export takes `json` or `line`"),
+            ("--export csv", "--export takes `json` or `line`"),
+            ("--export json today", "`today` is not a date"),
+            ("--check-theme", "--check-theme needs a theme name"),
+            ("--frobnicate", "unrecognised option '--frobnicate'"),
+            ("--store on", "unrecognised option '--store'"),
+            ("top", "unrecognised option 'top'"),
+            // One command, and nothing left over. These were run with the
+            // rest silently dropped.
+            ("--read 2026-09-08 --once", "--read does not take `--once`"),
+            ("--once --report", "--once does not take `--report`"),
+            ("--days junk", "--days does not take `junk`"),
+            ("--schema=x", "--schema does not take `x`"),
+            (
+                "--export json 2026-09-08 extra",
+                "--export does not take `extra`",
+            ),
+            ("--report 2026-09-08 2026-09-09", "--report does not take"),
+            ("--check-theme a b", "--check-theme does not take `b`"),
+        ];
+        for (line, want) in rows {
+            match run(line) {
+                Err(Usage(why)) => assert!(why.starts_with(want), "`{line}`: {why}"),
+                Ok(c) => panic!("`{line}` ran as {c:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_option_is_followed_by_the_usage() {
+        let Err(Usage(why)) = run("--frobnicate") else {
+            panic!("accepted");
+        };
+        assert!(why.ends_with(USAGE));
+    }
+
+    fn app() -> App {
+        let mut app = App::new(60);
+        app.push(sample::Sample::unknown());
+        app
+    }
+
+    fn keys(app: &mut App, codes: &[KeyCode]) {
+        for &c in codes {
+            handle_key(app, c, KeyModifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn a_text_box_takes_text_and_not_chords() {
+        let mut a = app();
+        keys(
+            &mut a,
+            &[KeyCode::Char('/'), KeyCode::Char('s'), KeyCode::Char('h')],
+        );
+        handle_key(&mut a, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        handle_key(&mut a, KeyCode::Char('b'), KeyModifiers::ALT);
+        // Shift is how capitals arrive, and they are text.
+        handle_key(&mut a, KeyCode::Char('D'), KeyModifiers::SHIFT);
+        assert_eq!(a.filter, "shD");
+        assert!(a.editing_filter);
+
+        let mut a = app();
+        keys(
+            &mut a,
+            &[KeyCode::Char('b'), KeyCode::Char('-'), KeyCode::Char('2')],
+        );
+        handle_key(&mut a, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(a.jump, "-2");
+    }
+
+    #[test]
+    fn every_mode_has_a_way_out_that_is_not_quitting() {
+        // The filter: both keys leave the box, which is what this test is
+        // about — but they are not the same key. Enter keeps what was typed
+        // and Escape puts back what was there before, because a key every
+        // other program uses to undo is the wrong one to spend on "finish".
+        let mut a = app();
+        keys(
+            &mut a,
+            &[KeyCode::Char('/'), KeyCode::Char('x'), KeyCode::Enter],
+        );
+        assert!(!a.editing_filter && !a.should_quit);
+        assert_eq!(a.filter, "x");
+
+        // And `/` on an existing filter keeps it, so narrowing a narrowed list
+        // does not mean retyping the first query. Clearing is its own command.
+        keys(
+            &mut a,
+            &[KeyCode::Char('/'), KeyCode::Char('y'), KeyCode::Esc],
+        );
+        assert!(!a.editing_filter && !a.should_quit);
+        assert_eq!(a.filter, "x", "Escape kept the edit instead of undoing it");
+        Action::ClearFilter.apply(&mut a);
+        assert_eq!(a.filter, "");
+        // The jump box: Esc cancels without moving.
+        let mut a = app();
+        keys(
+            &mut a,
+            &[KeyCode::Char('b'), KeyCode::Char('1'), KeyCode::Esc],
+        );
+        assert!(!a.editing_jump && !a.should_quit);
+        // Views that toggle come back with the same key.
+        for k in ['t', 'd', 'K', 'i', 'y', 'C'] {
+            let mut a = app();
+            let before = (a.tree, a.detail, a.show_kernel, a.show_io);
+            keys(&mut a, &[KeyCode::Char(k), KeyCode::Char(k)]);
+            assert_eq!(
+                (a.tree, a.detail, a.show_kernel, a.show_io),
+                before,
+                "`{k}` twice"
+            );
+        }
+        // Grouping cycles back to off, and never coexists with the tree.
+        let mut a = app();
+        keys(&mut a, &[KeyCode::Char('t'), KeyCode::Char('g')]);
+        assert!(!a.tree && a.group != app::Grouping::Off);
+        for _ in 0..8 {
+            keys(&mut a, &[KeyCode::Char('g')]);
+            if a.group == app::Grouping::Off {
+                break;
+            }
+        }
+        assert_eq!(a.group, app::Grouping::Off);
+        keys(&mut a, &[KeyCode::Char('g'), KeyCode::Char('t')]);
+        assert!(a.tree && a.group == app::Grouping::Off);
+        // Only then does Esc quit.
+        keys(&mut a, &[KeyCode::Esc]);
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn a_signal_prompt_is_answered_by_one_key_and_only_y_sends() {
+        let mut a = app();
+        a.signals = true;
+        let mut s = sample::Sample::unknown();
+        s.procs = vec![sample::ProcSample {
+            pid: i32::MAX,
+            name: "nobody".into(),
+            started: Some(1),
+            ..Default::default()
+        }];
+        a.push(s);
+        for answer in [KeyCode::Esc, KeyCode::Char('n'), KeyCode::Char('q')] {
+            keys(&mut a, &[KeyCode::Down, KeyCode::Char('x')]);
+            assert!(a.pending.is_some(), "no prompt");
+            keys(&mut a, &[answer]);
+            assert!(a.pending.is_none() && !a.should_quit, "{answer:?}");
+            assert!(
+                a.signal_note
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("nothing sent")
+            );
+        }
+    }
+
+    #[test]
+    fn showing_the_io_columns_starts_collecting_them_whichever_key_did_it() {
+        use collect::Source;
+        // A probe that found IO unreadable stops collection and hides the
+        // columns. `S` used to bring the columns back without the collection.
+        let mut a = app();
+        let mut s = sample::Sample::unknown();
+        s.io_supported = false;
+        a.probe_io(&s);
+        assert!(!a.show_io && !a.needs().asked(Source::Io));
+        a.reveal_io();
+        assert!(a.show_io && a.needs().asked(Source::Io));
+        a.toggle_io();
+        assert!(!a.show_io);
+        a.toggle_io();
+        assert!(a.show_io && a.needs().asked(Source::Io));
+    }
 }

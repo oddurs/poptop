@@ -649,9 +649,24 @@ impl App {
         // means two hours before the end of the day being read rather than two
         // hours before lunchtime today.
         let origin = self.history.newest().map_or(now, |s| s.at);
-        self.jump_note = match crate::log::parse_when(&text, origin) {
+        self.jump_note = match crate::log::parse_when_noting(&text, origin) {
             Err(why) => Some(why),
-            Ok(at) => match self.history.seek(at, self.interval) {
+            // The clocks changing is said first, and survives whatever the
+            // landing has to add: it is about which moment this is at all.
+            Ok((at, Some(shift))) => Some(match self.history.seek(at, self.interval) {
+                crate::history::Landing::Empty => format!("{shift} — nothing is retained yet"),
+                crate::history::Landing::Live if self.replaying => {
+                    self.history.goto_newest();
+                    format!("{shift} — the end of this day")
+                }
+                crate::history::Landing::Live => format!("{shift} — live"),
+                crate::history::Landing::On => shift,
+                crate::history::Landing::Nearest(off) => format!(
+                    "{shift} — nothing recorded then, nearest sample is {} away",
+                    crate::ui::fmt_lag(off)
+                ),
+            }),
+            Ok((at, None)) => match self.history.seek(at, self.interval) {
                 crate::history::Landing::Empty => Some("nothing is retained yet".into()),
                 // In a recorded day there is no live tail to resume: the
                 // buffer never receives a sample, and `LIVE` over a week-old
@@ -774,10 +789,7 @@ impl App {
         self.signal_note = Some(match checked {
             Err(why) => why.why(Some(&p)),
             Ok(()) => match crate::signal::send(&p) {
-                // The operating system's own words. `Operation not permitted`
-                // for somebody else's process is the answer, and dressing it up
-                // would hide which of several reasons it was.
-                Err(e) => format!("could not signal {} (pid {}): {e}", p.name, p.pid),
+                Err(why) => why.why(&p),
                 Ok(()) => format!("sent {} to {} (pid {})", p.signal.name(), p.name, p.pid),
             },
         });
@@ -786,11 +798,18 @@ impl App {
     /// Show or hide the IO columns. Showing them starts collection; hiding them
     /// does not stop it. See [`App::io_ratchet`].
     pub fn toggle_io(&mut self) {
-        self.show_io = !self.show_io;
-        self.io_ratchet |= self.show_io;
         if self.show_io {
-            self.insist(Source::Io);
+            self.show_io = false;
+        } else {
+            self.reveal_io();
         }
+    }
+
+    /// Show the IO columns, and collect what they show.
+    pub fn reveal_io(&mut self) {
+        self.show_io = true;
+        self.io_ratchet = true;
+        self.insist(Source::Io);
     }
 
     /// How much a process's memory grew since the previous sample.
@@ -843,11 +862,7 @@ impl App {
     pub fn insist_for_view(&mut self) {
         match self.view {
             View::Memory => self.insist(Source::Pss),
-            View::Disk => {
-                self.show_io = true;
-                self.io_ratchet = true;
-                self.insist(Source::Io);
-            }
+            View::Disk => self.reveal_io(),
             View::Cpu => {}
         }
     }
