@@ -151,7 +151,17 @@ pub fn date_of(at: SystemTime) -> Option<Date> {
 /// the machine is. `Err` carries what to say, because a jump box that rejects
 /// what you typed without saying which forms it takes is a box you type into
 /// twice.
-pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
+///
+/// Alongside the instant, a note when the clock time typed did not name one
+/// instant: a time the clocks skipped, or one they showed twice. Both happen
+/// once a year where the clocks change, on the night a log is most likely to
+/// be read. Neither is an error, because either way there is
+/// an obvious moment meant. But the reader should hear which one they got,
+/// and not be left to spot an hour's difference in the header.
+pub fn parse_when_noting(
+    text: &str,
+    now: SystemTime,
+) -> Result<(SystemTime, Option<String>), String> {
     const FORMS: &str = "try -2h, 03:00, or 2026-09-08 03:00";
     let text = text.trim();
     if text.is_empty() {
@@ -160,13 +170,14 @@ pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
     if let Some(sign) = text.chars().next().filter(|c| *c == '-' || *c == '+') {
         let span =
             parse_span(&text[1..]).ok_or_else(|| format!("`{text}` is not a span — {FORMS}"))?;
-        return if sign == '-' {
+        let at = if sign == '-' {
             now.checked_sub(span)
                 .ok_or_else(|| format!("{text} is before the epoch"))
         } else {
             now.checked_add(span)
                 .ok_or_else(|| format!("{text} is past the end of time"))
         };
+        return at.map(|at| (at, None));
     }
 
     // An optional date, then a time. Split on whitespace rather than guessing
@@ -183,7 +194,7 @@ pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
     };
     let (h, m, s) =
         parse_clock(clock).ok_or_else(|| format!("`{clock}` is not a time — {FORMS}"))?;
-    let at =
+    let local =
         at_local(date, h, m, s).ok_or_else(|| format!("`{text}` is before the epoch — {FORMS}"))?;
     // `mktime` normalises rather than rejects: `2026-02-30` would be 2 March,
     // and answering with a different day is exactly what "landing in a gap
@@ -196,7 +207,36 @@ pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
     // This used to be caught afterwards, by checking that the instant landed
     // on the date typed. That also caught the leap second, and blamed today's
     // date for it: "`2027-01-15` is not a date on the calendar".
-    Ok(at)
+    let hm = format!("{h:02}:{m:02}");
+    Ok(match local {
+        Local::One(at) => (at, None),
+        // Forward by the length of the gap, as the clock itself went: the
+        // instant that would have been called this, had the clocks not
+        // changed. Named by what the clock read then, which is what the
+        // header will show.
+        Local::Skipped(at) => (
+            at,
+            Some(format!(
+                "{hm} did not happen on {date} — the clocks skipped it; this is {}",
+                clock_string(at)
+            )),
+        ),
+        // The first, because it is the one a reader scrolling forward through
+        // the night reaches first.
+        Local::Twice(first, second) => (
+            first,
+            Some(format!(
+                "{hm} happened twice on {date} — this is the first; the second is {} later",
+                crate::ui::fmt_lag(second.duration_since(first).unwrap_or_default())
+            )),
+        ),
+    })
+}
+
+/// [`parse_when_noting`] without the note.
+#[cfg(test)]
+pub fn parse_when(text: &str, now: SystemTime) -> Result<SystemTime, String> {
+    parse_when_noting(text, now).map(|(at, _)| at)
 }
 
 /// `2h`, `30m`, `90s`, `1h30m` is not accepted — one unit, deliberately.
@@ -239,6 +279,17 @@ fn parse_clock(text: &str) -> Option<(i32, i32, i32)> {
     (hour && (0..60).contains(&m) && (0..=60).contains(&s)).then_some((h, m, s))
 }
 
+/// What a local wall-clock time is, as instants.
+#[derive(Debug, PartialEq)]
+enum Local {
+    One(SystemTime),
+    /// A time the clocks jumped over, and the instant it would have been had
+    /// they not: the gap's length after the moment before it.
+    Skipped(SystemTime),
+    /// A time the clocks showed twice, earlier first.
+    Twice(SystemTime, SystemTime),
+}
+
 /// A local wall-clock moment as an instant.
 ///
 /// Through `mktime`, which is the only thing on either platform that knows
@@ -246,7 +297,50 @@ fn parse_clock(text: &str) -> Option<(i32, i32, i32)> {
 /// would be an hour out for half the year, and would be an hour out in the
 /// other direction on the two nights a year somebody is most likely to be
 /// reading a log.
-fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<SystemTime> {
+///
+/// Asked three ways: summer time in force, not in force, and "work it out".
+/// Each answer is kept only if the clock at that instant really read what was
+/// asked for. Two survivors are a time that happened twice; none is one that
+/// never happened, and the latest answer is the one the clock would have
+/// reached had it not jumped. Asking once with "work it out" gave whichever
+/// the C library preferred, which differs between platforms, and said nothing.
+fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<Local> {
+    // `24:00` and a leap second are moved on purpose, to the second after
+    // `23:59:59` and `hh:mm:59`, so no clock ever reads them back. Resolved
+    // as that second, then moved.
+    if hour == 24 || sec == 60 {
+        let (h, s) = if hour == 24 { (23, 59) } else { (hour, 59) };
+        let m = if hour == 24 { 59 } else { min };
+        let one = std::time::Duration::from_secs(1);
+        return Some(match at_local(date, h, m, s)? {
+            Local::One(t) => Local::One(t + one),
+            Local::Skipped(t) => Local::Skipped(t + one),
+            Local::Twice(a, b) => Local::Twice(a + one, b + one),
+        });
+    }
+    let mut found: Vec<SystemTime> = Vec::new();
+    let mut latest = None;
+    for isdst in [-1, 0, 1] {
+        let Some(t) = mktime_as(date, hour, min, sec, isdst) else {
+            continue;
+        };
+        latest = latest.max(Some(t));
+        let reads = date_of(t) == Some(date)
+            && local_clock(t) == Some((hour as u32, min as u32, sec as u32));
+        if reads && !found.contains(&t) {
+            found.push(t);
+        }
+    }
+    found.sort();
+    Some(match found[..] {
+        [one] => Local::One(one),
+        [first, .., second] => Local::Twice(first, second),
+        [] => Local::Skipped(latest?),
+    })
+}
+
+/// One `mktime`, with summer time as given: 1 in force, 0 not, -1 unknown.
+fn mktime_as(date: Date, hour: i32, min: i32, sec: i32, isdst: i32) -> Option<SystemTime> {
     let mut tm = Tm {
         sec,
         min,
@@ -254,9 +348,7 @@ fn at_local(date: Date, hour: i32, min: i32, sec: i32) -> Option<SystemTime> {
         mday: date.day as i32,
         mon: date.month as i32 - 1,
         year: date.year - 1900,
-        // "Work it out": whether summer time was in force on that date, which
-        // is the whole reason this goes through the C library.
-        isdst: -1,
+        isdst,
         ..Tm::default()
     };
     // SAFETY: `mktime` reads and normalises the caller's `struct tm`, which is
@@ -911,6 +1003,15 @@ pub fn open_day(dir: &Path, date: Date) -> Result<(Vec<Sample>, Vec<String>), St
 
 #[cfg(test)]
 mod tests {
+    /// The one instant a wall-clock time names, on a date the clocks do not
+    /// change.
+    fn one(l: Option<Local>) -> SystemTime {
+        match l {
+            Some(Local::One(t)) => t,
+            other => panic!("not one instant: {other:?}"),
+        }
+    }
+
     use super::*;
 
     use crate::sample::Sample;
@@ -1784,11 +1885,11 @@ mod tests {
         let today = date_of(now).unwrap();
         assert_eq!(
             parse_when("03:00", now).unwrap(),
-            at_local(today, 3, 0, 0).unwrap()
+            one(at_local(today, 3, 0, 0))
         );
         assert_eq!(
             parse_when("03:00:15", now).unwrap(),
-            at_local(today, 3, 0, 15).unwrap()
+            one(at_local(today, 3, 0, 15))
         );
         // With a date, that date.
         let other = Date {
@@ -1798,19 +1899,19 @@ mod tests {
         };
         assert_eq!(
             parse_when("2026-03-04 03:00", now).unwrap(),
-            at_local(other, 3, 0, 0).unwrap()
+            one(at_local(other, 3, 0, 0))
         );
         // A date alone is its midnight, which is a moment somebody may well
         // mean — "the start of that day".
         assert_eq!(
             parse_when("2026-03-04", now).unwrap(),
-            at_local(other, 0, 0, 0).unwrap()
+            one(at_local(other, 0, 0, 0))
         );
 
         // Local, not UTC, and through the C library: the offset on a date is
         // not a constant, and the two nights a year it changes are exactly the
         // ones somebody is most likely to be reading a log.
-        let summer = at_local(
+        let summer = one(at_local(
             Date {
                 year: 2026,
                 month: 7,
@@ -1819,9 +1920,8 @@ mod tests {
             12,
             0,
             0,
-        )
-        .unwrap();
-        let winter = at_local(
+        ));
+        let winter = one(at_local(
             Date {
                 year: 2026,
                 month: 1,
@@ -1830,8 +1930,7 @@ mod tests {
             12,
             0,
             0,
-        )
-        .unwrap();
+        ));
         let noon_to_noon = winter.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
             - summer.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
         // Both are local noon, so the gap is a whole number of days give or
@@ -1860,7 +1959,7 @@ mod tests {
                 month,
                 day: 15,
             };
-            let at = at_local(d, 3, 0, 0).expect("a real moment");
+            let at = one(at_local(d, 3, 0, 0));
             assert_eq!(
                 super::local_clock(at),
                 Some((3, 0, 0)),
@@ -2002,5 +2101,136 @@ mod tests {
         assert_eq!(file_name(d), "poptop-20260908");
         assert_eq!(date_in_name("poptop-20260908"), Some(d));
         assert_eq!(d.to_string(), "2026-09-08");
+    }
+
+    /// Run `clocks_change_in_this_zone` in a copy of this test binary with
+    /// `TZ` set. The zone is process-wide state that `mktime` reads, so it
+    /// cannot be changed under the other tests running beside this one.
+    fn in_zone(tz: &str) {
+        // A named zone needs the system's zone files. A POSIX rule does not,
+        // so each rule below is also given in that form, which runs anywhere.
+        if !tz.contains(',')
+            && !std::path::Path::new("/usr/share/zoneinfo")
+                .join(tz)
+                .exists()
+        {
+            eprintln!("no zone file for {tz}; its POSIX form still runs");
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "log::tests::clocks_change_in_this_zone",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("TZ", tz)
+            .env("POPTOP_ZONE_CHILD", tz)
+            .output()
+            .expect("cannot run the test binary");
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "TZ={tz}:\n{said}");
+        assert!(
+            said.contains("1 passed"),
+            "TZ={tz}: the child ran nothing\n{said}"
+        );
+    }
+
+    #[test]
+    fn the_nights_the_clocks_change_in_london() {
+        in_zone("Europe/London");
+        in_zone("GMT0BST,M3.5.0/1,M10.5.0");
+    }
+
+    #[test]
+    fn the_nights_the_clocks_change_in_new_york() {
+        in_zone("America/New_York");
+        in_zone("EST5EDT,M3.2.0,M11.1.0");
+    }
+
+    #[test]
+    #[ignore = "run by the_nights_the_clocks_change_*, with TZ set"]
+    fn clocks_change_in_this_zone() {
+        let Ok(tz) = std::env::var("POPTOP_ZONE_CHILD") else {
+            return;
+        };
+        // (the spring date, a time it skips, what that time becomes, the
+        //  autumn date, a time it shows twice)
+        let (spring, skipped, becomes, autumn, twice) = match tz.as_str() {
+            "Europe/London" | "GMT0BST,M3.5.0/1,M10.5.0" => {
+                ("2026-03-29", "01:30", (2, 30, 0), "2026-10-25", "01:30")
+            }
+            "America/New_York" | "EST5EDT,M3.2.0,M11.1.0" => {
+                ("2026-03-08", "02:30", (3, 30, 0), "2026-11-01", "01:30")
+            }
+            other => panic!("no expectations for {other}"),
+        };
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+        let hour = std::time::Duration::from_secs(3600);
+        let when = |t: &str| parse_when_noting(t, now).unwrap();
+
+        // A time the clocks skipped moves forward by the gap, and says so,
+        // naming what the clock read instead.
+        let (at, note) = when(&format!("{spring} {skipped}"));
+        let note = note.expect("a skipped time said nothing");
+        assert!(note.contains("did not happen"), "{note}");
+        let (h, m, s) = becomes;
+        assert!(note.contains(&format!("{h:02}:{m:02}:{s:02}")), "{note}");
+        assert_eq!(local_clock(at), Some((h as u32, m as u32, s as u32)));
+        // Forward by the gap: an hour after the time an hour before it.
+        let (before, _) = when(&format!("{spring} {:02}:30", h - 2));
+        assert_eq!(at.duration_since(before).unwrap(), hour);
+
+        // A time shown twice is the first, and says so. The second is an hour
+        // on and reads the same; an hour before the first does not.
+        let (at, note) = when(&format!("{autumn} {twice}"));
+        let note = note.expect("a time shown twice said nothing");
+        assert!(note.contains("happened twice"), "{note}");
+        assert_eq!(local_clock(at + hour), local_clock(at));
+        assert_ne!(local_clock(at - hour), local_clock(at));
+
+        // The day before each is an ordinary day, and says nothing.
+        for d in ["2026-03-01", "2026-10-01"] {
+            assert_eq!(when(&format!("{d} {skipped}")).1, None, "{d}");
+        }
+
+        // A day file is a local date, and on these two nights a date is 23
+        // and 25 hours long. Its first and last seconds, and the one after.
+        for (day, hours) in [(spring, 23), (autumn, 25)] {
+            let date = Date::parse(day).unwrap();
+            let (start, _) = when(day);
+            let (next, _) = when(&format!("{} 00:00", date_after(date)));
+            assert_eq!(next.duration_since(start).unwrap(), hour * hours, "{day}");
+            assert_eq!(date_of(start), Some(date));
+            assert_eq!(
+                date_of(next - std::time::Duration::from_secs(1)),
+                Some(date)
+            );
+            assert_ne!(date_of(next), Some(date));
+        }
+    }
+
+    fn date_after(d: Date) -> Date {
+        let last = match d.month {
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        };
+        if d.day < last {
+            Date {
+                day: d.day + 1,
+                ..d
+            }
+        } else {
+            Date {
+                day: 1,
+                month: d.month % 12 + 1,
+                year: d.year + (d.month / 12) as i32,
+            }
+        }
     }
 }

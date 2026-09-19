@@ -3,7 +3,7 @@ id: 79
 key: r2
 title: Every unsafe line accounted for
 type: milestone
-status: backlog
+status: done
 labels:
 - review
 created: 2026-09-18
