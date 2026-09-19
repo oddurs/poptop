@@ -177,6 +177,79 @@ const BUDGET_STRIKES: u32 = 3;
 ///
 /// `d` is neither: it changes the *timeline* panel, not the table, and calling
 /// it a table mode was the thing that made this look like four axes.
+/// The ceiling each kind of graph is being drawn on, and when the data last
+/// justified it.
+///
+/// A byte rate has no natural maximum, so its axis has to follow the data —
+/// and an axis that follows the data exactly redraws every sample on screen
+/// the moment a burst arrives or leaves. Nothing about the past has changed;
+/// only the scale has, and a graph whose history redraws itself is one nobody
+/// can read a trend off.
+///
+/// So the ceiling rises the instant the data needs it, because a clipped graph
+/// is not a smaller graph but a wrong one, and falls only once the peak has
+/// stayed under it for [`SETTLE`]. A burst no longer leaves a cliff behind it.
+///
+/// Three slots, one per [`crate::ui::Unit`], doubled: the machine's panels and
+/// one process's panels are different subjects and must not inherit each
+/// other's scale. Held in a `Cell` because drawing takes `&App` everywhere and
+/// this is the one fact about a frame that has to outlive it — a ceiling
+/// recomputed from scratch every frame is exactly the flicker being fixed.
+#[derive(Clone, Debug, Default)]
+pub struct HeldCeilings(std::cell::Cell<[(f32, Option<std::time::SystemTime>); 6]>);
+
+/// How long a graph's ceiling stays up after the data stops needing it.
+///
+/// Long enough that a burst and the quiet after it are one picture, short
+/// enough that a panel does not spend a minute mostly empty once traffic
+/// genuinely drops.
+pub const SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
+
+impl HeldCeilings {
+    /// The ceiling to draw `unit` on, given what this frame's data wants.
+    ///
+    /// `now` is the newest sample's own timestamp rather than the wall clock,
+    /// so the settling is a fact about the recording and a test can state it
+    /// without sleeping.
+    pub fn settle(
+        &self,
+        unit: crate::ui::Unit,
+        subject: bool,
+        want: f32,
+        now: std::time::SystemTime,
+    ) -> f32 {
+        let at = unit.slot() * 2 + usize::from(subject);
+        let mut held = self.0.get();
+        let (ceiling, since) = held[at];
+        let keep = match since {
+            // Nothing held yet, or the data has caught up with what is held:
+            // take it, and the clock starts again from here.
+            _ if want >= ceiling => (want, Some(now)),
+            None => (want, Some(now)),
+            // Smaller than what is drawn. Hold it until it has been smaller
+            // for long enough to be the new shape of things rather than a lull.
+            Some(t) => match now.duration_since(t) {
+                Ok(d) if d >= SETTLE => (want, Some(now)),
+                // A clock that went backwards says nothing about how long
+                // anything has been true. Hold rather than guess.
+                _ => (ceiling, Some(t)),
+            },
+        };
+        held[at] = keep;
+        self.0.set(held);
+        keep.0
+    }
+
+    /// Forget every held ceiling.
+    ///
+    /// Scrubbing to another part of the buffer is a deliberate move to a
+    /// different span, and carrying the live view's scale into it would draw
+    /// that span on an axis chosen by a moment the reader has left.
+    pub fn forget(&self) {
+        self.0.set(Default::default());
+    }
+}
+
 /// Which of the memory tab's platform figures this machine actually publishes.
 ///
 /// See [`App::mem_columns_available`]. Growth is not here: poptop computes it
@@ -532,6 +605,8 @@ pub struct App {
     pub interval: std::time::Duration,
     /// Samples the table's figures are averaged over. 1 is off. See `Smoothing`.
     pub smooth: usize,
+    /// The scale each graph is being drawn on. See [`HeldCeilings`].
+    pub ceilings: HeldCeilings,
 }
 
 impl App {
@@ -584,6 +659,7 @@ impl App {
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,
             smooth: DEFAULT_SMOOTH,
+            ceilings: HeldCeilings::default(),
         }
     }
 

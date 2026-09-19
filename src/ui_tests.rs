@@ -2104,19 +2104,117 @@ fn rule_rows(app: &App, w: u16, h: u16) -> Vec<usize> {
 }
 
 #[test]
+fn the_percent_panels_share_one_axis() {
+    // They were two pictures rather than one. Memory sat at 100 while CPU
+    // crossed 25 and jumped to 100 in a single frame, redrawing every sample
+    // already on screen a quarter as tall — nothing about the past had
+    // changed, only the scale. And side by side the shapes said the opposite
+    // of the figures: CPU at 20% on a ceiling of 25 was drawn taller than
+    // memory at 72% on a ceiling of 100.
+    let mut app = App::new(600);
+    for i in (0..200).rev() {
+        let mut s = sample_at(12.0, i);
+        s.mem.used = (s.mem.total as f64 * 0.78) as u64;
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let tops: Vec<String> = gutter_text(&app, 100, 20)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect();
+    // Every ceiling printed in the gutter is the same number, and it is the
+    // one the higher of the two series asked for.
+    let ceilings: Vec<&String> = tops.iter().filter(|l| l.as_str() == "100").collect();
+    assert_eq!(
+        ceilings.len(),
+        2,
+        "the percent panels are not on one axis:\n{tops:?}"
+    );
+    assert!(
+        !tops.iter().any(|l| l == "25"),
+        "a panel kept a ceiling of its own:\n{tops:?}"
+    );
+
+    // Shared, not fixed: an idle machine still gets an axis it can use rather
+    // than a panel of blank rows, which is the whole reason for the ladder.
+    let mut idle = App::new(600);
+    for i in (0..200).rev() {
+        let mut s = sample_at(3.0, i);
+        s.mem.used = (s.mem.total as f64 * 0.2) as u64;
+        idle.push(s);
+    }
+    idle.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let idle_tops = gutter_text(&idle, 100, 20);
+    assert!(
+        idle_tops.contains("25") && !idle_tops.contains("100"),
+        "an idle machine was given a ceiling it cannot use:\n{idle_tops}"
+    );
+}
+
+#[test]
+fn a_ceiling_rises_at_once_and_falls_only_when_it_settles() {
+    // A byte rate has no natural maximum to pin it to, so its axis follows the
+    // data — and an axis that follows the data exactly redraws every sample on
+    // screen the moment a burst arrives or leaves. The network panel was going
+    // 512K, 4.0M, 512K, 8.0M with the same history drawn at four different
+    // heights.
+    use crate::app::{HeldCeilings, SETTLE};
+    use std::time::Duration;
+    let held = HeldCeilings::default();
+    let t0 = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let at = |s: u64| t0 + Duration::from_secs(s);
+
+    // Rises the instant the data needs it: a clipped graph is not a smaller
+    // graph, it is a wrong one.
+    assert_eq!(held.settle(ui::Unit::Rate, false, 512.0, at(0)), 512.0);
+    assert_eq!(held.settle(ui::Unit::Rate, false, 4096.0, at(1)), 4096.0);
+
+    // And holds while the peak is merely lower, so the lull after a burst is
+    // the same picture as the burst.
+    assert_eq!(held.settle(ui::Unit::Rate, false, 512.0, at(2)), 4096.0);
+    let just_under = SETTLE.as_secs() - 1;
+    assert_eq!(
+        held.settle(ui::Unit::Rate, false, 512.0, at(just_under)),
+        4096.0
+    );
+
+    // Once it has been lower for long enough, that is the new shape of things.
+    assert_eq!(
+        held.settle(ui::Unit::Rate, false, 512.0, at(SETTLE.as_secs() + 1)),
+        512.0
+    );
+
+    // Each unit keeps its own, and a process's panels never inherit the
+    // machine's — they are different subjects, not one scale seen twice.
+    let held = HeldCeilings::default();
+    assert_eq!(held.settle(ui::Unit::Rate, false, 4096.0, at(0)), 4096.0);
+    assert_eq!(held.settle(ui::Unit::Percent, false, 25.0, at(0)), 25.0);
+    assert_eq!(held.settle(ui::Unit::Rate, true, 512.0, at(0)), 512.0);
+
+    // And forgetting starts from what is there now, which is what returning
+    // from a scrub has to do.
+    held.forget();
+    assert_eq!(held.settle(ui::Unit::Rate, false, 512.0, at(1)), 512.0);
+}
+
+#[test]
 fn the_rules_land_on_exactly_the_threshold_rows() {
     // An earlier version asserted only that *some* cell was chrome-coloured —
     // which the panel border satisfies, so it passed with the rule removed
     // entirely. This pins the exact rows, so it cannot.
     //
-    // Both graphs scale to their own peak, so the expectation has to use the
-    // same ceiling the renderer picks: a threshold above the ceiling draws no
-    // rule at all, which is the point of the scaling.
+    // The two percent graphs share a ceiling, so the expectation has to use
+    // the one the renderer picks: a threshold above the ceiling draws no rule
+    // at all, which is the point of the scaling.
     let (w, h) = (100u16, 12u16);
-    // Memory stays low so its ceiling puts both thresholds off its scale and
-    // only the CPU graph contributes rules. At 50% its 50 threshold would sit
-    // exactly on the ceiling *and* under the data, which data correctly
-    // occludes — a real behaviour, but not the one this test is about.
+    // Memory stays low, so the shared ceiling is the one CPU's spike asks for
+    // and both thresholds are on it. Before the ceiling was shared this
+    // fixture put memory on a scale of its own where 50 and 80 were off the
+    // top, and the memory panel contributed no rules at all — which is exactly
+    // the incomparability the sharing fixes: the same threshold drawn on one
+    // panel and not on the one beneath it.
     let (cpu_pct, mem_frac) = (95.0_f32, 0.05_f32);
     let mut app = App::new(600);
     for i in (0..200).rev() {
@@ -2128,12 +2226,18 @@ fn the_rules_land_on_exactly_the_threshold_rows() {
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // Same arithmetic the renderer uses, so the expectation tracks the layout.
-    let graph_rows = (h as usize - 1).saturating_sub(2).max(1);
-    let cpu_rows = (graph_rows * 3 / 5).max(1);
-    let mem_rows = graph_rows - cpu_rows;
-    let cpu_ceiling = crate::glyphs::ceiling_for(cpu_pct);
-    let mem_ceiling = crate::glyphs::ceiling_for(mem_frac * 100.0);
+    // The renderer's own split, asked of it rather than copied. Both numbers
+    // here were hand-written and both had gone stale: the panel is drawn into
+    // the whole area by `rule_rows`, so it is a title, the graph and a caption
+    // rather than the two chrome rows this assumed, and the rows are shared
+    // evenly rather than three-fifths to the first.
+    let graph_rows = h as usize - 2;
+    let split = ui::sections(graph_rows, 2, ui::GUTTER_W);
+    let (cpu_rows, mem_rows) = (split[0], split[1]);
+    // One ceiling for both, because both are percentages of the machine and
+    // two panels that cannot be compared are two pictures rather than one.
+    let shared = crate::glyphs::ceiling_for(cpu_pct.max(mem_frac * 100.0));
+    let (cpu_ceiling, mem_ceiling) = (shared, shared);
 
     let mut expected: Vec<usize> = Vec::new();
     for pct in [app.theme.warn_pct, app.theme.critical_pct] {
@@ -3125,7 +3229,12 @@ fn the_timeline_rules_move_with_the_thresholds() {
     // whatever the thresholds are.
     let mut app = App::new(600);
     for i in (0..120).rev() {
-        app.push(sample_at(2.0, i as u64));
+        let mut s = sample_at(2.0, i as u64);
+        // Memory low too. CPU and memory share an axis, so the fixture's
+        // default half-full memory would set a ceiling of 50 and this test
+        // would be about a scale it never meant to choose.
+        s.mem.used = s.mem.total / 50;
+        app.push(s);
     }
     // The panel title is drawn with `─` and sits inside the row range, and the
     // Block set rules with `─` too — so the title alone reads as sixty-four
@@ -3790,8 +3899,17 @@ fn the_axis_states_the_ceiling_it_scaled_to() {
             .trim()
             .to_string()
     };
-    assert_eq!(gutter_top(9.0), "10");
-    assert_eq!(gutter_top(22.0), "25");
+    // The ladder itself, away from the panel: one series, one peak.
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(9.0), 10.0);
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(22.0), 25.0);
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(44.0), 50.0);
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(95.0), 100.0);
+
+    // And the panel states whichever rung it landed on. The fixture's memory
+    // sits at half, and the percent panels share one axis, so below fifty it
+    // is memory that sets the rung and the gutter has to say so rather than
+    // print a number the bars were not drawn against.
+    assert_eq!(gutter_top(9.0), "50");
     assert_eq!(gutter_top(44.0), "50");
     assert_eq!(gutter_top(95.0), "100");
 }

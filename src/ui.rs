@@ -2203,6 +2203,62 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let row_split = sections(graph_rows, candidates.len(), gutter);
     candidates.truncate(row_split.len());
 
+    // Slotted once, here, because two things read these values and they have to
+    // be the same values: the ceiling below is picked from them, and the rows
+    // are drawn from them.
+    let slotted: Vec<Vec<Option<f32>>> = candidates
+        .iter()
+        .map(|(_, raw, _)| history::peak_slots(raw, zoom, slots))
+        .collect();
+
+    // One ceiling per unit, not one per panel.
+    //
+    // Each panel used to walk the ladder on its own peak, which made the stack
+    // of graphs move as three pictures rather than one: memory sat at 100 while
+    // CPU crossed 25 and jumped to 100 in a single frame, redrawing every
+    // sample already on screen a quarter as tall. Nothing about the past had
+    // changed — only the axis — and a graph whose history redraws itself is one
+    // nobody can read a trend off.
+    //
+    // It also made the two panels incomparable, which is the older complaint:
+    // CPU at 20% on a ceiling of 25 is drawn taller than memory at 72% on a
+    // ceiling of 100, and the shapes say the opposite of the figures.
+    //
+    // Shared, not fixed. A machine idle at 3% CPU and 20% memory still gets a
+    // ceiling of 25 rather than a panel of blank rows — which is what a fixed
+    // 0..100 axis would cost, and the reason the ladder exists at all. Percent
+    // shares with percent and a byte rate with a byte rate; the two never share
+    // with each other, because they are not the same question.
+    // And held across frames, so it rises the instant the data needs it and
+    // falls only once the peak has stayed under it. A byte rate has no natural
+    // maximum to pin it to, so without this the network panel redraws its whole
+    // history every time a burst arrives or leaves — 512K to 1.0M and back,
+    // with the same samples drawn half as tall each way. See `HeldCeilings`.
+    //
+    // Only while live. Scrubbing is a deliberate move to another span, and a
+    // scale chosen by a moment the reader has left is not a scale for the one
+    // they are looking at.
+    let live = app.history.is_live();
+    let unit_ceiling = |unit: Unit| -> f32 {
+        let peak = candidates
+            .iter()
+            .zip(&slotted)
+            .filter(|((_, _, u), _)| *u == unit)
+            .flat_map(|(_, v)| v.iter().flatten().copied())
+            .fold(0.0_f32, f32::max);
+        let want = unit.ceiling(peak);
+        match samples.last().map(|s| s.at).filter(|_| live) {
+            Some(now) => app.ceilings.settle(unit, subject.is_some(), want, now),
+            None => {
+                // Dropped rather than merely ignored, so coming back to the
+                // live edge starts from what is there now instead of from a
+                // scale chosen before the reader went looking.
+                app.ceilings.forget();
+                want
+            }
+        }
+    };
+
     // Gaps are found over the whole buffer, not the window, so a discontinuity
     // falling on the first drawn sample is still seen — within the window it
     // has no predecessor to be discontinuous with.
@@ -2242,10 +2298,9 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let labelled = gutter > 0 && row_split.iter().all(|&r| r >= MIN_ROWS_FOR_LABEL);
 
     let mut lines: Vec<Line> = Vec::with_capacity(inner_h);
-    for (i, (name, raw, unit)) in candidates.iter().enumerate() {
+    for (i, (name, _, unit)) in candidates.iter().enumerate() {
         let rows = row_split[i];
-        let slots_for = history::peak_slots(raw, zoom, slots);
-        let values = &slots_for;
+        let values = &slotted[i];
         // Alternating rather than one hue each, because there is no sixth hue
         // to give the third series: the palette avoids green for colour vision
         // reasons and the remaining space is warning-orange or beside `ok`.
@@ -2267,7 +2322,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             .flatten()
             .copied()
             .fold(f32::INFINITY, f32::min);
-        let scale = glyphs::Scale::pick(trough, peak, unit.ceiling(peak), app.axis);
+        let scale = glyphs::Scale::pick(trough, peak, unit_ceiling(*unit), app.axis);
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
@@ -2786,6 +2841,17 @@ pub enum Unit {
     Rate,
     /// A plain count, like threads. An axis, and no rules for the same reason.
     Count,
+}
+
+impl Unit {
+    /// Which slot of [`crate::app::HeldCeilings`] this unit's ceiling lives in.
+    pub fn slot(self) -> usize {
+        match self {
+            Unit::Percent => 0,
+            Unit::Rate => 1,
+            Unit::Count => 2,
+        }
+    }
 }
 
 #[cfg(test)]
