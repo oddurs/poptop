@@ -503,27 +503,40 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
+        // Several samples, not one. A state is an instant, and on a loaded
+        // machine — a CI runner with three cores running the suite in parallel
+        // — a spinning process can be caught between time slices; one sample
+        // failed there that way. So the claims are the two that hold at any
+        // load: a sleeping process is never seen running, and a spinning one
+        // is seen running at least once.
         std::thread::sleep(std::time::Duration::from_millis(300));
         let mut c = SysinfoCollector::new().unwrap();
-        let s = c.collect(Needs::default()).unwrap();
+        let mut spinner_ran = false;
+        for _ in 0..20 {
+            let s = c.collect(Needs::default()).unwrap();
+            let state = |pid: u32| {
+                s.procs
+                    .iter()
+                    .find(|p| p.pid == pid as i32)
+                    .map(|p| p.state)
+                    .unwrap_or_else(|| panic!("pid {pid} was not collected"))
+            };
+            assert_eq!(
+                state(sleeper.id()),
+                'S',
+                "a sleeping process read as running"
+            );
+            if state(spinner.id()) == 'R' {
+                spinner_ran = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         let _ = (sleeper.kill(), spinner.kill());
         let _ = (sleeper.wait(), spinner.wait());
-        let state = |pid: u32| {
-            s.procs
-                .iter()
-                .find(|p| p.pid == pid as i32)
-                .map(|p| p.state)
-                .unwrap_or_else(|| panic!("pid {pid} was not collected"))
-        };
-        assert_eq!(
-            state(sleeper.id()),
-            'S',
-            "a sleeping process read as running"
-        );
-        assert_eq!(
-            state(spinner.id()),
-            'R',
-            "a spinning process did not read as running"
+        assert!(
+            spinner_ran,
+            "a spinning process never read as running in twenty samples"
         );
     }
 
