@@ -132,6 +132,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_procs(f, chunks[2], app);
     }
     draw_help(f, chunks[3], app);
+    if app.show_help {
+        draw_key_list(f, app);
+    }
 }
 
 /// A section rule with its name on it, replacing a panel border.
@@ -3935,9 +3938,117 @@ pub const KEY_HINTS: &[&str] = &[
 /// A clipped footer reads as a key called `filt`. Dropping whole hints from the
 /// end is the same degradation ladder the header figures and the timeline rows
 /// use, and it means what is on screen is always true.
+/// Every key, for the `?` overlay: how it is shown, how `--help` spells it, and
+/// what it does. The one list: the footer's hints must all be in it and every
+/// key in it must be in `--help`, which a test holds — the three had drifted,
+/// and `--help` had never mentioned `v`, `y` or `C` (0113).
+pub const HELP: &[(&str, &str, &str)] = &[
+    ("q", "q, Esc", "quit"),
+    (
+        "Esc",
+        "q, Esc",
+        "back out one level: a box, a signal, the selection — then quit",
+    ),
+    (
+        "←/→",
+        "Left/Right",
+        "scrub through history, ten at a time with Shift",
+    ),
+    ("b", "b", "jump to a moment: -2h, 03:00, 2026-09-08 03:00"),
+    ("+/-", "+ / -", "zoom the timeline in and out"),
+    ("Space", "Space", "pause on this sample, or go back to live"),
+    ("Home, End", "Home/End", "the oldest sample, or live"),
+    ("↑/↓", "Up/Down", "select a process"),
+    ("s", "s", "cycle the sort column"),
+    ("S", "S", "sort by what the panel names as the constraint"),
+    (
+        "/",
+        "/",
+        "filter: a word, or a query like `cpu > 5 and user = root`",
+    ),
+    (
+        "x, X",
+        "x, X",
+        "send TERM or KILL to the selected process (--signals=on)",
+    ),
+    ("t", "t", "the process tree"),
+    (
+        "g",
+        "g",
+        "fold processes by name, then by user, then by container",
+    ),
+    (
+        "d",
+        "d",
+        "the selected process's own history in place of the machine's",
+    ),
+    ("y", "y", "the selected process's threads"),
+    ("v", "v", "the next view: memory, then disk"),
+    ("C", "C", "cgroups in place of processes"),
+    ("K", "K", "kernel threads"),
+    ("i", "i", "the disk IO columns"),
+    ("?", "?", "this list"),
+];
+
+/// The `?` overlay: every key and what it does, over the middle of the screen.
+///
+/// Modal, and put away by any key — the key that closes it is not also acted
+/// on, so `q` closes the list rather than quitting behind it.
+fn draw_key_list(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let key_w = HELP.iter().map(|(k, _, _)| cols(k)).max().unwrap_or(0);
+    let text_w = HELP
+        .iter()
+        .map(|(_, _, what)| key_w + 2 + cols(what))
+        .max()
+        .unwrap_or(0);
+    let w = (text_w + 4).min(area.width as usize) as u16;
+    let h = (HELP.len() + 2).min(area.height as usize) as u16;
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    let lines: Vec<Line> = HELP
+        .iter()
+        .map(|(key, _, what)| {
+            Line::from(vec![
+                Span::styled(format!(" {key:<key_w$}  "), app.theme.title_style()),
+                Span::raw(what.to_string()),
+            ])
+        })
+        .collect();
+    f.render_widget(ratatui::widgets::Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            ratatui::widgets::Block::bordered()
+                .title(" keys — any key closes ")
+                .border_style(app.theme.chrome_style()),
+        ),
+        rect,
+    );
+}
+
+/// Where the footer points when it could not show every key.
+const MORE: &str = "? more";
+
 fn fit_hints(hints: &[&str], width: u16) -> String {
     const SEP: &str = " · ";
     let width = width as usize;
+    // Everything, if everything fits. Otherwise as much as fits with room kept
+    // for `? more` at the end — at 120 columns six keys never appeared, and
+    // nothing said there were more (0113).
+    let all = hints.join(SEP);
+    if cols(&all) <= width {
+        return all;
+    }
+    // Narrower than the pointer itself: nothing, rather than a pointer cut in
+    // half.
+    if cols(MORE) > width {
+        return String::new();
+    }
+    let width = width.saturating_sub(cols(SEP) + cols(MORE));
     let mut out = String::new();
     for h in hints {
         let need = if out.is_empty() {
@@ -3953,5 +4064,9 @@ fn fit_hints(hints: &[&str], width: u16) -> String {
         }
         out.push_str(h);
     }
-    out
+    if out.is_empty() {
+        MORE.to_string()
+    } else {
+        format!("{out}{SEP}{MORE}")
+    }
 }

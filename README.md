@@ -27,7 +27,7 @@ WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤
     4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node
     0.1          12.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀       1 systemd
 
-q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select · s sort
+q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select · ? more
 ```
 
 The gutter names each graph and anchors its scale; the dashed lines are the
@@ -210,6 +210,7 @@ cargo build --release
 | `y` | expand the selected process into its threads |
 | `C` | show cgroups instead of processes |
 | `/` | filter — a substring, or a small query language |
+| `?` | list every key; any key puts the list away |
 
 `d` is the one worth trying first. The buffer already holds every retained
 sample's whole process table, so "what has *this* process been doing" is a
