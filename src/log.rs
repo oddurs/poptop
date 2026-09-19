@@ -14,9 +14,9 @@
 //!
 //! One file a day, `poptop-YYYYMMDD`, in the same state directory as the
 //! restart store. Each append is a complete, independently-decodable store
-//! block behind a length: an upgrade halfway through a day leaves the morning
-//! readable, because every block carries its own schema. That is what the
-//! format in `persist` was for.
+//! block behind a length, with a checksum after it: an upgrade halfway through
+//! a day leaves the morning readable, because every block carries its own
+//! schema. That is what the format in `persist` was for.
 
 use crate::sample::Sample;
 use crate::store;
@@ -319,7 +319,8 @@ pub fn date_in_name(name: &str) -> Option<Date> {
 ///
 /// Four bytes, little-endian, before each block. A block is a complete store
 /// image — magic, version, schema, samples — so the length is what lets a
-/// reader skip one it cannot decode and keep the rest of the day.
+/// reader skip one it cannot decode and keep the rest of the day. It counts
+/// the checksum after the block too; see [`frame`].
 const LEN: usize = 4;
 
 /// Append samples to today's file, creating it if this is the first of the day.
@@ -353,8 +354,7 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     if total_bytes(dir) >= cap {
         return Ok(false);
     }
-    let block = store::encode(samples);
-    let len = u32::try_from(block.len()).map_err(|_| io::Error::other("block too large"))?;
+    let framed = frame(samples).ok_or_else(|| io::Error::other("block too large"))?;
     let mut f = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -362,12 +362,57 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     // One write, not two. A length that reached the file without its block —
     // the disk filled between the calls — is a file every later reader stops
     // at, and the block after it is lost with it.
-    let mut framed = Vec::with_capacity(LEN + block.len());
-    framed.extend_from_slice(&len.to_le_bytes());
-    framed.extend_from_slice(&block);
     f.write_all(&framed)?;
     f.flush()?;
     Ok(true)
+}
+
+/// One entry as it goes into a day's file: a length, a store block, and a
+/// checksum of the block.
+///
+/// The checksum is inside the length, after the block, and that placement is
+/// the whole of its compatibility story. A poptop from before it reads the
+/// length, decodes the block, and never looks at the four bytes after — its
+/// decoder does not ask to reach the end — so a newer log reads in an older
+/// poptop as it did. A reader that knows about it checks it when it is there
+/// and reads an entry without one the old way, so an older log reads in this
+/// one.
+///
+/// What it is for is 0100: an entry cut short by a crash, whose missing bytes
+/// the next torn write happened to supply. Without it such an entry decoded
+/// and passed for whole, with somebody else's bytes in its last fields.
+pub fn frame(samples: &[&Sample]) -> Option<Vec<u8>> {
+    let block = store::encode(samples);
+    let len = u32::try_from(block.len() + SUM).ok()?;
+    let mut framed = Vec::with_capacity(LEN + block.len() + SUM);
+    framed.extend_from_slice(&len.to_le_bytes());
+    framed.extend_from_slice(&block);
+    framed.extend_from_slice(&checksum(&block).to_le_bytes());
+    Some(framed)
+}
+
+/// How much of an entry is its checksum.
+const SUM: usize = 4;
+
+/// A 32-bit checksum of an entry's block, against accidents rather than
+/// adversaries: anyone who can write the file can write a matching sum.
+///
+/// A word at a time — a multiply and a rotate per eight bytes — because every
+/// entry is summed on every read, and a bytewise CRC is slower than decoding
+/// the entry it guards. Each step is a bijection of the running state for a
+/// given word, so any single changed word changes the state, and the fold to
+/// 32 bits leaves one chance in four billion of a torn entry passing.
+fn checksum(bytes: &[u8]) -> u32 {
+    const K: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut h = (bytes.len() as u64) ^ K;
+    let (words, rest) = bytes.as_chunks::<8>();
+    for w in words {
+        h = (h ^ u64::from_le_bytes(*w)).wrapping_mul(K).rotate_left(29);
+    }
+    let mut tail = [0u8; 8];
+    tail[..rest.len()].copy_from_slice(rest);
+    h = (h ^ u64::from_le_bytes(tail)).wrapping_mul(K);
+    (h ^ (h >> 32)) as u32
 }
 
 /// What poptop's logs occupy, in bytes.
@@ -407,11 +452,11 @@ pub fn read_day(dir: &Path, date: Date) -> (Vec<Sample>, Vec<String>) {
 /// a filesystem: this is the one reader in poptop whose input is a file
 /// somebody else's crash may have left half-written.
 ///
-/// Every entry written whole is read, whatever was torn before or after it;
-/// `fuzz/log_torn` holds that as a property. One torn entry can still pass for
-/// whole: when the torn write after it supplies exactly the bytes it was
-/// missing, and they decode. The file says nothing that tells the two apart —
-/// only a checksum per entry would, which is 0100.
+/// Every entry written whole is read, whatever was torn before or after it,
+/// and no torn one is; `fuzz/log_torn` holds that as a property. The one
+/// exception is an entry written before checksums: it can pass for whole when
+/// the torn write after it supplies exactly the bytes it was missing and they
+/// decode, and nothing in it tells the two apart.
 pub fn read_blocks(bytes: &[u8], name: &str) -> (Vec<Sample>, Vec<String>) {
     let mut notes = Vec::new();
     let mut out = Vec::new();
@@ -562,7 +607,17 @@ fn step(bytes: &[u8], at: usize) -> Step {
     // `decode_exactly`, not `decode_reporting`: the block must end on the byte
     // its length names. A fragment that borrowed bytes from the next entry can
     // still pass that — see the caller — but most cannot.
-    let (block, said) = store::decode_exactly(&bytes[from..to]);
+    //
+    // An entry whose last four bytes are its block's checksum is read as the
+    // block before them; one without is an entry from before checksums, read
+    // whole. A torn entry fails the sum, and then fails as an old one too:
+    // its block would have to decode to four bytes longer than it is.
+    let span = &bytes[from..to];
+    let body = match span.split_last_chunk::<SUM>() {
+        Some((block, sum)) if checksum(block) == u32::from_le_bytes(*sum) => block,
+        _ => span,
+    };
+    let (block, said) = store::decode_exactly(body);
     match block {
         Some(samples) => Step::Read { to, samples, said },
         None if boundary(bytes, to) => Step::Foreign { to, said },
@@ -992,36 +1047,33 @@ mod tests {
         let dir = scratch("torn");
         let day = at(1_800_000_000);
         let date = date_of(day).unwrap();
-        let block = |cpu: f32| {
-            let b = store::encode(&[&sample(1_800_000_000, cpu)]);
-            let mut framed = (b.len() as u32).to_le_bytes().to_vec();
-            framed.extend(b);
-            framed
-        };
-        let (first, torn, last) = (block(11.0), block(22.0), block(33.0));
-        let path = dir.join(file_name(date));
-        fs::create_dir_all(&dir).unwrap();
-        for cut in 1..torn.len() {
-            let mut day = first.clone();
-            day.extend_from_slice(&torn[..cut]);
-            day.extend_from_slice(&last);
-            fs::write(&path, &day).unwrap();
-            let (back, notes) = read_day(&dir, date);
-            let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
-            assert_eq!(
-                cpus,
-                [11.0, 33.0],
-                "a cut at {cut} of the middle entry, of {}: {notes:?}",
-                torn.len()
-            );
-            assert!(
-                notes.iter().any(|n| n.contains("cut short")),
-                "a cut at {cut} was not reported as one: {notes:?}"
-            );
-            assert!(
-                !notes.iter().any(|n| n.contains("different version")),
-                "a cut at {cut} was blamed on an upgrade: {notes:?}"
-            );
+        // In both framings: logs from before checksums are still read.
+        for block in [legacy as fn(f32) -> Vec<u8>, framed] {
+            let (first, torn, last) = (block(11.0), block(22.0), block(33.0));
+            let path = dir.join(file_name(date));
+            fs::create_dir_all(&dir).unwrap();
+            for cut in 1..torn.len() {
+                let mut day = first.clone();
+                day.extend_from_slice(&torn[..cut]);
+                day.extend_from_slice(&last);
+                fs::write(&path, &day).unwrap();
+                let (back, notes) = read_day(&dir, date);
+                let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+                assert_eq!(
+                    cpus,
+                    [11.0, 33.0],
+                    "a cut at {cut} of the middle entry, of {}: {notes:?}",
+                    torn.len()
+                );
+                assert!(
+                    notes.iter().any(|n| n.contains("cut short")),
+                    "a cut at {cut} was not reported as one: {notes:?}"
+                );
+                assert!(
+                    !notes.iter().any(|n| n.contains("different version")),
+                    "a cut at {cut} was blamed on an upgrade: {notes:?}"
+                );
+            }
         }
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1319,23 +1371,23 @@ mod tests {
     /// Measured when the resync went in: checking every entry up front for
     /// another entry starting inside it cost 28.5ms against 7.8ms of decoding
     /// for twelve megabytes. Checking only when a step fails, or the day ends,
-    /// brought it to 9.3ms against 8.7ms.
+    /// brought it to 9.3ms against 8.7ms. The checksum is summed on every
+    /// entry, so it is in the reader's figure and not in the other: 11.3ms
+    /// against 7.9ms when it went in, about four gigabytes a second.
     #[test]
     #[ignore = "measurement"]
     fn measure_reading_a_day() {
         let s = crate::store::tests_support::big_sample(5.0, 400);
-        let b = store::encode(&[&s]);
         let mut day = Vec::new();
         for _ in 0..300 {
-            day.extend((b.len() as u32).to_le_bytes());
-            day.extend(&b);
+            day.extend(frame(&[&s]).unwrap());
         }
         let bare = |day: &[u8]| {
             let mut m = 0;
             let mut at = 0;
             while at + LEN <= day.len() {
                 let len = u32::from_le_bytes(day[at..at + LEN].try_into().unwrap()) as usize;
-                m += store::decode_reporting(&day[at + LEN..at + LEN + len])
+                m += store::decode_reporting(&day[at + LEN..at + LEN + len - SUM])
                     .0
                     .unwrap()
                     .len();
@@ -1393,26 +1445,48 @@ mod tests {
         assert!(notes.is_empty(), "{notes:?}");
     }
 
+    /// An entry framed as poptop framed them before checksums: a length and
+    /// a store block, nothing after. Logs written then are still read.
+    fn legacy(cpu: f32) -> Vec<u8> {
+        let b = store::encode(&[&sample(1_800_000_000, cpu)]);
+        let mut framed = (b.len() as u32).to_le_bytes().to_vec();
+        framed.extend(b);
+        framed
+    }
+
+    /// An entry framed as `append` frames it now.
+    fn framed(cpu: f32) -> Vec<u8> {
+        frame(&[&sample(1_800_000_000, cpu)]).unwrap()
+    }
+
     #[test]
-    fn a_torn_entry_filled_out_by_the_next_torn_write_is_a_known_limit() {
-        // Also found by `fuzz/log_torn`, and not fixable without a checksum:
-        // an entry cut one byte short, then a later append cut one byte in.
-        // That one byte completes the first entry's length exactly, the bytes
-        // decode, and the whole entry after starts where the first said it
-        // would end. Nothing in the file says the first was torn.
-        //
-        // Pinned so that the day this changes — a checksum per entry — it
-        // changes on purpose. What must hold either way is the whole entry.
-        let block = |cpu: f32| {
-            let b = store::encode(&[&sample(1_800_000_000, cpu)]);
-            let mut framed = (b.len() as u32).to_le_bytes().to_vec();
-            framed.extend(b);
-            framed
-        };
-        let first = block(0.0);
+    fn a_torn_entry_filled_out_by_the_next_torn_write_is_caught_by_its_checksum() {
+        // 0100, found by `fuzz/log_torn`: an entry cut one byte short, then a
+        // later append cut one byte in. That byte completes the first entry's
+        // length exactly, the bytes decode, and the whole entry after starts
+        // where the first said it would end. Without a checksum nothing in the
+        // file says the first was torn, and it was read with a stranger's byte
+        // in its last field.
+        for cut in [1, 2, 4, 5, 13, 14, 100] {
+            let first = framed(0.0);
+            let mut day = first[..first.len() - cut].to_vec();
+            day.extend_from_slice(&framed(1.0)[..cut]);
+            day.extend_from_slice(&framed(2.0));
+            let (back, notes) = read_blocks(&day, "poptop-test");
+            let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+            assert_eq!(cpus, [2.0], "{cut} bytes short: {notes:?}");
+        }
+    }
+
+    #[test]
+    fn a_torn_entry_from_before_checksums_is_still_a_known_limit() {
+        // The same case in an entry written before checksums, which has none
+        // to fail. Pinned so the limit stays a known one: what must hold is
+        // the whole entry after it.
+        let first = legacy(0.0);
         let mut day = first[..first.len() - 1].to_vec();
-        day.extend_from_slice(&block(1.0)[..1]);
-        day.extend_from_slice(&block(2.0));
+        day.extend_from_slice(&legacy(1.0)[..1]);
+        day.extend_from_slice(&legacy(2.0));
         let (back, _) = read_blocks(&day, "poptop-test");
         let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
         assert!(cpus.ends_with(&[2.0]), "the whole entry was lost: {cpus:?}");
@@ -1420,6 +1494,58 @@ mod tests {
             !cpus.contains(&1.0),
             "a one-byte fragment was read: {cpus:?}"
         );
+    }
+
+    #[test]
+    fn a_log_with_checksums_reads_in_a_poptop_from_before_them() {
+        // The reader poptop shipped before checksums, verbatim in what matters:
+        // trust the length, decode what it spans, ignore anything the decoder
+        // did not reach. A downgrade must not lose the days the newer version
+        // wrote.
+        let old_reader = |day: &[u8]| {
+            let mut out = Vec::new();
+            let mut at = 0;
+            while at + LEN <= day.len() {
+                let len = u32::from_le_bytes(day[at..at + LEN].try_into().unwrap()) as usize;
+                let (block, _) = store::decode_reporting(&day[at + LEN..at + LEN + len]);
+                out.extend(block.expect("an older poptop could not read the entry"));
+                at += LEN + len;
+            }
+            out
+        };
+        let mut day = framed(1.0);
+        day.extend(framed(2.0));
+        let cpus: Vec<f32> = old_reader(&day).iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_day_written_across_the_upgrade_to_checksums_reads_whole() {
+        // The morning in the old framing, the afternoon in the new.
+        let mut day = legacy(1.0);
+        day.extend(legacy(2.0));
+        day.extend(framed(3.0));
+        day.extend(framed(4.0));
+        let (back, notes) = read_blocks(&day, "poptop-test");
+        let cpus: Vec<f32> = back.iter().map(|s| s.cpu_total).collect();
+        assert_eq!(cpus, [1.0, 2.0, 3.0, 4.0], "{notes:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    #[test]
+    fn every_byte_of_an_entry_is_in_its_checksum() {
+        let block = store::encode(&[&sample(1_800_000_000, 1.0)]);
+        let sum = checksum(&block);
+        for i in 0..block.len() {
+            for bit in [0x01, 0x80] {
+                let mut bent = block.clone();
+                bent[i] ^= bit;
+                assert_ne!(checksum(&bent), sum, "byte {i} is not in the checksum");
+            }
+        }
+        // And its length: a block that is a prefix of another sums apart.
+        assert_ne!(checksum(&block[..block.len() - 1]), sum);
+        assert_ne!(checksum(&[0; 7]), checksum(&[0; 8]));
     }
 
     #[test]

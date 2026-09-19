@@ -71,20 +71,23 @@ What makes atop something a fleet depends on rather than something you run:
 
 ## r1 — Read nothing on trust
 
-`··········` 0% · 0 of 5 done
+`######····` 60% · 3 of 5 done
 
 Validation sprint. Every byte poptop reads that it did not write this second — the store, the daily logs, /proc, netlink replies, config, themes, the query and jump prompts — is fed by a fuzzer or a property test, not only by the inputs a test author thought of. 0059 found three ways to hang or crash the reader by reasoning; this sprint is so the next three are found by a machine.
-
-### backlog
-
-- [ ] `0083` The /proc parsers are tested only against the files their author thought to write <sup>chore · p1 · validation</sup>
-- [ ] `0084` The query language, jump times and theme colours have no property tests <sup>chore · p2 · validation</sup>
-- [ ] `0085` A log directory poptop did not make is trusted as if it had <sup>bug · p1 · validation</sup>
-- [ ] `0100` A torn log entry can pass for whole when the next torn write fills it out <sup>bug · p3 · validation</sup>
 
 ### in progress
 
 - [ ] `0082` The store and log readers have been fuzzed by hand, not by a fuzzer <sup>chore · p1 · validation</sup>
+
+### blocked
+
+- [ ] `0085` A log directory poptop did not make is trusted as if it had <sup>bug · p1 · validation</sup>
+
+### done
+
+- [x] `0083` The /proc parsers are tested only against the files their author thought to write <sup>chore · p1 · validation</sup>
+- [x] `0084` The query language, jump times and theme colours have no property tests <sup>chore · p2 · validation</sup>
+- [x] `0100` A torn log entry can pass for whole when the next torn write fills it out <sup>bug · p3 · validation</sup>
 
 ## r2 — Every unsafe line accounted for
 
