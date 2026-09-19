@@ -767,6 +767,7 @@ fn main() -> io::Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    show_cursor_on_panic();
     let mut said = Vec::new();
     let result = run(
         &mut terminal,
@@ -799,6 +800,21 @@ fn main() -> io::Result<()> {
     }
     flush(&warnings);
     result
+}
+
+/// Make a panic leave the cursor visible, as well as the screen restored.
+///
+/// `ratatui::init` installs a hook that leaves raw mode and the alternate
+/// screen and then prints the panic. The cursor it hid comes back only when the
+/// `Terminal` is dropped, which unwinding does and an abort would not. So the
+/// cursor is shown here first, in the hook, whatever happens after it; then
+/// ratatui's hook restores the rest and prints the message where it can be read.
+fn show_cursor_on_panic() {
+    let restore = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+        restore(info);
+    }));
 }
 
 /// Measure a theme and say whether it is legible, for scripts and reviewers.

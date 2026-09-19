@@ -24,6 +24,10 @@ fuzzing = []
 # where a reason nobody wrote down goes stale unnoticed.
 [lints.clippy]
 undocumented_unsafe_blocks = "deny"
+# A panic in a TUI is worse than an error. Outside tests (see clippy.toml), a
+# value that cannot be absent says why in an `expect`, and one that can be is
+# handled.
+unwrap_used = "deny"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = "0.38.4"

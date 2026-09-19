@@ -2,7 +2,7 @@
 id: 88
 title: Three hundred unwraps, and nobody has counted how many a user can reach
 type: chore
-status: backlog
+status: done
 milestone: r2
 labels:
 - review
@@ -23,6 +23,22 @@ Classify every non-test site into three groups: proven infallible (leave it and 
 
 ## Acceptance criteria
 
-- [ ] Every non-test `unwrap` is replaced, or turned into an `expect` whose message says why it cannot fail
+- [x] Every non-test `unwrap` is replaced, or turned into an `expect` whose message says why it cannot fail
 - [ ] A test (or the pty harness from the r3 sprint) proves a panic restores the terminal
-- [ ] `clippy::unwrap_used` is denied outside tests, with justified exceptions
+- [x] `clippy::unwrap_used` is denied outside tests, with justified exceptions
+
+## How it was resolved
+
+**Counted by clippy, not by grep.** With `unwrap_used` and `expect_used` switched on and tests exempted, both targets give the same answer: of the ~317, **eight** are outside tests. The rest are in test modules and `ui_tests.rs`.
+
+- Four bare `unwrap`s, all unreachable, and all rewritten so they are no longer unwraps. Two were in `log.rs` (`step` and `starts_block`), turning a four-byte slice into an array. `starts_block` had already bounds-checked the slice, and `step` relied on its caller to check. Both now go through `length_at`, which reads the length with `first_chunk` and returns `None` where fewer than four bytes are left, so the caller's check could be dropped. The other two were in `procinfo::parse_statfs`, at constant offsets inside a fixed-size record, and are now `first_chunk` reads that fall back to zero.
+- Four `expect`s that already say why they cannot fail and were left alone: `history.rs` twice (the buffer was checked non-empty three lines up), `check.rs` (`wrap` starts its vector with one line), `app.rs` (the key was inserted on the line above).
+
+`unwrap_used` is denied in `Cargo.toml`, and `clippy.toml` allows it in tests. `expect` is not denied: the rule is that a value which cannot be absent says why, and `expect` is where it says it. `panic!`, `unreachable!`, `todo!` and `unimplemented!` appear only in tests.
+
+Out of scope, and noted: indexing and slicing, about 350 sites outside tests by `clippy::indexing_slicing`. r1 fuzzed the parsers where the index comes from outside bytes. The rest index by the program's own lengths, and auditing them one by one would be an item of its own.
+
+**The terminal after a panic.** `ratatui::init` installs a hook that leaves raw mode and the alternate screen, then prints the panic. poptop has no threads outside tests, so a panic always unwinds through the one `Terminal`. No `process::exit` runs while the terminal is raw: all of them run before `ratatui::init` or after `ratatui::restore`. One gap: the hook does not show the cursor. It came back only when `Terminal` dropped during unwinding, which would not happen under an abort. poptop's hook now shows it first and then calls ratatui's. Checked by hand by injecting a panic after the first frame and running the binary in a pty (`script`). The output reads: enter the alternate screen, hide the cursor, show the cursor, leave the alternate screen, then the message.
+
+The criterion for a test that proves this is left unticked here. It needs the pty harness, and is the third criterion of 0094 in r3.
+

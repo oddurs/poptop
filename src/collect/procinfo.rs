@@ -442,8 +442,18 @@ fn parse_statfs(buf: &[u8], count: usize) -> Vec<FsStat> {
         let Some(r) = buf.get(i * STATFS_SIZE..(i + 1) * STATFS_SIZE) else {
             break;
         };
-        let u32_at = |o: usize| u32::from_ne_bytes(r[o..o + 4].try_into().unwrap()) as u64;
-        let u64_at = |o: usize| u64::from_ne_bytes(r[o..o + 8].try_into().unwrap());
+        // Every offset is a constant inside `STATFS_SIZE`, so neither read can
+        // miss; zero if one somehow did, which the size checks below drop.
+        let u32_at = |o: usize| {
+            r.get(o..)
+                .and_then(|b| b.first_chunk::<4>())
+                .map_or(0, |b| u32::from_ne_bytes(*b) as u64)
+        };
+        let u64_at = |o: usize| {
+            r.get(o..)
+                .and_then(|b| b.first_chunk::<8>())
+                .map_or(0, |b| u64::from_ne_bytes(*b))
+        };
         let bsize = u32_at(OFF.bsize);
         let total = u64_at(OFF.blocks).saturating_mul(bsize);
         let avail = u64_at(OFF.bavail).saturating_mul(bsize);
