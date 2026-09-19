@@ -71,16 +71,13 @@ What makes atop something a fleet depends on rather than something you run:
 
 ## r1 — Read nothing on trust
 
-`########··` 80% · 4 of 5 done
+`##########` 100% · 5 of 5 done
 
 Validation sprint. Every byte poptop reads that it did not write this second — the store, the daily logs, /proc, netlink replies, config, themes, the query and jump prompts — is fed by a fuzzer or a property test, not only by the inputs a test author thought of. 0059 found three ways to hang or crash the reader by reasoning; this sprint is so the next three are found by a machine.
 
-### in progress
-
-- [ ] `0082` The store and log readers have been fuzzed by hand, not by a fuzzer <sup>chore · p1 · validation</sup>
-
 ### done
 
+- [x] `0082` The store and log readers have been fuzzed by hand, not by a fuzzer <sup>chore · p1 · validation</sup>
 - [x] `0083` The /proc parsers are tested only against the files their author thought to write <sup>chore · p1 · validation</sup>
 - [x] `0084` The query language, jump times and theme colours have no property tests <sup>chore · p2 · validation</sup>
 - [x] `0085` A log directory poptop did not make is trusted as if it had <sup>bug · p1 · validation</sup>
