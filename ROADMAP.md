@@ -121,14 +121,17 @@ poptop can show you any instant and it makes you do the joining. The buffer
 
 ## v5.1 — It knows why
 
-`··········` 0% · 0 of 2 done · due 2028-04-01
+`#####·····` 50% · 1 of 2 done · due 2028-04-01
 
 The layer under the one above. poptop can name the process; it cannot say what
 
 ### backlog
 
 - [ ] `0144` A blocked process is a dead end <sup>feature · p1</sup>
-- [ ] `0145` Why a process is hot needs a different tool <sup>feature · p2</sup>
+
+### done
+
+- [x] `0145` Why a process is hot needs a different tool <sup>feature · p2</sup>
 
 ## v5.2 — It is navigable
 

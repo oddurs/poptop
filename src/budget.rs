@@ -262,6 +262,28 @@ fn memory_after_an_hour() {
     );
 }
 
+#[test]
+#[ignore = "a budget: ./check --perf"]
+fn appending_one_entry_to_the_log() {
+    // An entry, written and synced. The sync is the whole cost — 4.2ms on
+    // APFS and 2.8ms on ext4 against 0.09ms for the write — and it is what
+    // makes the log survive the machine rather than only the process. Paid
+    // once a `log-interval`, which is ten minutes by default.
+    let dir = std::env::temp_dir().join(format!("poptop-budget-log-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let all = full(400);
+    let one: Vec<&Sample> = all.first().into_iter().collect();
+    let at = one[0].at;
+    let each = best(3, 5, || crate::log::append(&dir, at, &one, u64::MAX));
+    let _ = std::fs::remove_dir_all(&dir);
+    within(
+        "log: append one entry, synced",
+        each,
+        Duration::from_millis(40),
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "a budget: ./check --perf"]
