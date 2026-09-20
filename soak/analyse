@@ -1,0 +1,111 @@
+#!/bin/sh
+# Check what soak/run recorded.
+#
+#   soak/analyse POPTOP_BINARY OUT_DIR
+#
+# Writes OUT_DIR/analysis and exits with the number of checks that failed:
+#
+#   memory      resident growth after warm-up within the stated bound
+#   descriptors open descriptors flat after warm-up
+#   log         every logged sample read back, in order, none twice, each in
+#               the file for its own local date, and the only gaps the ones
+#               soak/run made (the stop) — so nothing lost at midnight
+#   clock       where the wall clock was stepped back, the log says so once
+#               and then carries on
+set -eu
+
+bin=${1:?usage: soak/analyse POPTOP_BINARY OUT_DIR}
+out=$(cd "${2:?usage: soak/analyse POPTOP_BINARY OUT_DIR}" && pwd)
+home=$out/home
+export HOME="$home" XDG_STATE_HOME="$home/state" XDG_CONFIG_HOME="$home/config"
+fail=0
+say() { echo "$*" | tee -a "$out/analysis"; }
+: >"$out/analysis"
+check() { # NAME OK DETAIL
+    if [ "$2" = yes ]; then say "ok      $1: $3"; else say "FAILED  $1: $3"; fail=$((fail + 1)); fi
+}
+
+cat "$out/summary" >>"$out/analysis"
+say ""
+
+# ── memory and descriptors, after warm-up ─────────────────────────────────
+# Warm-up is the first sixth of the run, at least ten minutes: the buffer
+# (ten minutes of samples) must fill before memory can be flat.
+m=$out/metrics.tsv
+total=$(tail -1 "$m" | cut -f1)
+warm=$(awk -v t="$total" 'BEGIN { w = t / 6; print (w < 600) ? 600 : int(w) }')
+read -r rss_w fds_w <<EOF
+$(awk -F '\t' -v w="$warm" 'NR > 1 && $1 >= w { print $2, $3; exit }' "$m")
+EOF
+awk -F '\t' -v w="$warm" 'NR > 1 && $1 >= w' "$m" >"$out/after-warmup.tsv"
+rss_max=$(cut -f2 "$out/after-warmup.tsv" | sort -n | tail -1)
+fds_min=$(cut -f3 "$out/after-warmup.tsv" | sort -n | head -1)
+fds_max=$(cut -f3 "$out/after-warmup.tsv" | sort -n | tail -1)
+# The bound: 16 MiB, or a tenth of what it held when warm. Interning and the
+# allocator's own slack move a little; a leak of anything per sample would
+# pass it within the hour at five samples a second.
+bound=$(awk -v r="$rss_w" 'BEGIN { b = r / 10; print (b > 16384) ? int(b) : 16384 }')
+grew=$((rss_max - rss_w))
+check memory "$([ "$grew" -le "$bound" ] && echo yes || echo no)" \
+    "$((rss_w / 1024)) MiB when warm, at most $((rss_max / 1024)) MiB after: grew $((grew / 1024)) MiB of a $((bound / 1024)) MiB bound"
+check descriptors "$([ $((fds_max - fds_min)) -le 2 ] && echo yes || echo no)" \
+    "between $fds_min and $fds_max after warm-up (bound: a spread of 2)"
+cpu=$(awk -F '\t' 'NR == 2 { e0 = $1; c0 = $4 } END { printf "%.2f", ($4 - c0) / ($1 - e0) * 100 }' "$m")
+say "        cpu: $cpu% of one core, averaged over the run"
+
+# ── the log ───────────────────────────────────────────────────────────────
+: >"$out/log.tsv"
+for f in "$home/state/poptop/log/"poptop-*; do
+    d=$(basename "$f" | sed 's/poptop-\(....\)\(..\)\(..\)/\1-\2-\3/')
+    "$bin" --export json "$d" 2>>"$out/analysis" |
+        sed -n 's/^{"at":\([0-9.]*\),.*/\1/p' | awk -v d="$d" '{ print d "\t" $1 }' >>"$out/log.tsv"
+done
+n=$(wc -l <"$out/log.tsv" | tr -d ' ')
+every=$(awk -v s="${SOAK_LOG_INTERVAL:-10s}" 'BEGIN { v = s + 0; if (s ~ /m$/) v *= 60; print v }')
+# Each sample against the one before it: forwards by about the interval, or
+# a gap, or a step back. Anything else (a repeat, a step back nobody made)
+# is a failure.
+awk -F '\t' -v every="$every" '
+    NR > 1 {
+        d = $2 - prev
+        if (d == 0) dup++
+        else if (d < 0) { back++; backs = backs sprintf(" %.0fs", d) }
+        else if (d > every * 2.5) { gaps++; gapl = gapl sprintf(" %.0fs", d) }
+    }
+    { prev = $2 }
+    END { printf "%d %d %d %d%s|%s\n", NR, dup, back, gaps, backs, gapl }' "$out/log.tsv" >"$out/log-shape"
+IFS='|' read -r shape gaplist <"$out/log-shape"
+set -- $shape
+say "        log: $1 samples in $(ls "$home/state/poptop/log" | wc -l | tr -d ' ') day files"
+check "log, no sample twice" "$([ "$2" = 0 ] && echo yes || echo no)" "$2 repeated"
+stepped=$(grep -c "clock stepped back" "$out/summary" || true)
+check "log, back in time only where the clock was stepped" \
+    "$([ "$3" = "$stepped" ] && echo yes || echo no)" "$3 steps back (made: $stepped):$(echo "$shape" | cut -d' ' -f5-)"
+stops=$(grep -c "^stopped at" "$out/summary" || true)
+check "log, gaps only where it was stopped" \
+    "$([ "$4" -le "$((stops + stepped))" ] && echo yes || echo no)" \
+    "$4 gaps longer than 2.5 intervals:$gaplist (made: $stops stop, $stepped step)"
+
+# Each sample in the file for its own local date: the first and last of
+# every file, which is where a midnight rollover would put one wrong.
+bad_day=0
+for d in $(cut -f1 "$out/log.tsv" | uniq); do
+    for at in $(awk -F '\t' -v d="$d" '$1 == d { if (!f) print $2; f = 1; l = $2 } END { print l }' "$out/log.tsv"); do
+        s=${at%.*}
+        local=$(date -d "@$s" +%F 2>/dev/null || date -r "$s" +%F)
+        [ "$local" = "$d" ] || { bad_day=$((bad_day + 1)); say "        $at is $local, in the file for $d"; }
+    done
+done
+days=$(cut -f1 "$out/log.tsv" | uniq | wc -l | tr -d ' ')
+check "log, each sample in its own day's file" "$([ "$bad_day" = 0 ] && echo yes || echo no)" \
+    "$days day files, first and last of each checked"
+if [ "$days" -ge 2 ]; then
+    # Across midnight: the last of one day and the first of the next are one
+    # interval apart, so none was lost or written to both.
+    across=$(awk -F '\t' 'NR > 1 && $1 != pd { printf " %.1fs", $2 - pv } { pd = $1; pv = $2 }' "$out/log.tsv")
+    say "        midnight:$across between the last sample of a day and the first of the next"
+fi
+
+say ""
+[ "$fail" = 0 ] && say "every check passed" || say "$fail checks failed"
+exit "$fail"
