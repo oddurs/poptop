@@ -133,6 +133,22 @@ fn a_command_line_that_cannot_run_is_exit_2_on_stderr() {
         (&["--report", "2026-02-30"], "`2026-02-30` is not a date"),
         (&["--export"], "--export takes `json` or `line`"),
         (&["--export=csv"], "--export takes `json` or `line`"),
+        // `--for` without `--follow` is a feed that was never asked for, and
+        // a day that is followed is a file that does not grow. Both refused
+        // rather than ignored.
+        (&["--export=json", "--for", "1s"], "--for is --follow's"),
+        (
+            &["--export=json", "--follow", "--for"],
+            "--for needs a span",
+        ),
+        (
+            &["--export=json", "--follow", "--for=soon"],
+            "--for `soon`: expected a span",
+        ),
+        (
+            &["--export=json", "--follow", "2026-09-08"],
+            "--follow reads the machine now",
+        ),
         (&["--check-theme"], "--check-theme needs a theme name"),
         (&["--once", "--days"], "--once does not take `--days`"),
         (&["--schema", "x"], "--schema does not take `x`"),
@@ -247,6 +263,27 @@ fn the_machine_now_is_exported_in_both_formats() {
     assert!(json.out.starts_with("{\"at\":"), "{}", json.out);
     let line = home.run(&["--export", "line", "--interval=200ms"]).ok();
     assert!(line.out.lines().count() > 2);
+}
+
+/// A feed, run end to end the way a script runs one. What it writes while it
+/// runs, and how it is stopped, are in `tests/export.rs`.
+#[test]
+fn a_feed_runs_for_the_span_it_was_given() {
+    let home = Home::new();
+    let r = home
+        .run(&[
+            "--export=json",
+            "--follow",
+            "--interval=200ms",
+            "--for",
+            "1s",
+        ])
+        .ok();
+    let records = r.out.lines().count();
+    assert!((2..=8).contains(&records), "{records} records:\n{}", r.out);
+    for line in r.out.lines() {
+        assert!(line.starts_with("{\"at\":"), "not a record: {line}");
+    }
 }
 
 #[test]

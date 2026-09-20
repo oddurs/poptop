@@ -49,6 +49,27 @@ zero, for the same reason the table draws `—`.
 With a date, `--export=json 2026-09-08` writes the whole of that recorded
 day instead of the machine now.
 
+### `--follow`: a feed rather than a snapshot
+
+```console
+$ poptop --export=json --follow --for 10m >feed.jsonl
+```
+
+One record per `--interval`, each written and flushed as it is taken. The
+first arrives one interval in, since a rate needs two readings. The feed
+ends on `SIGTERM`, on `SIGHUP`, when `--for SPAN` has passed, or when the
+reader goes away — a closed pipe exits 0, as `--once` does.
+
+The line format writes its header block **once, at the top of the stream**,
+which is the same rule a recorded day follows; a label appearing for the
+first time later brings its own header then. A reader that attaches to a
+feed that is already running therefore has no header to map the columns by:
+read from the start, or use `--export=json`.
+
+`--follow` reads the machine as it is now, so it takes no date — a recorded
+day does not grow. `--for` without `--follow` is refused rather than
+ignored.
+
 ## `--schema`: what the export contains
 
 ```console

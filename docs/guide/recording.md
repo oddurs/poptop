@@ -151,6 +151,38 @@ sample.mem	17179869184	13348798464	10410377216	-	7516192768	5997723648	-	...
 A `-` is a figure the platform does not publish, never a zero. The full
 format, and `--schema`, are in [output](../reference/output.md).
 
+### A live feed
+
+`--follow` keeps the export going instead of printing once:
+
+```console
+$ poptop --export=json --follow --interval=2s | jq -c '{at, cpu: .cpu_total}'
+{"at":1758320461.2,"cpu":18.4}
+{"at":1758320463.2,"cpu":22.1}
+```
+
+One record per `--interval`, written and flushed as it is taken, so a
+consumer reading line by line gets each sample when it happens rather than
+8 KB at a time. The first record arrives one interval in: every rate is a
+difference between two readings, and there is nothing to difference the
+first against.
+
+It stops when you stop it — `SIGTERM`, `SIGHUP`, `--for 10m`, or the reader
+going away. `poptop --export=json --follow | head -3` exits 0 like any other
+piped output, and so does a feed whose consumer crashed.
+
+**The header rule.** Under `--follow` the line format writes its header block
+**once, at the top of the stream** — the same rule as a recorded day, so the
+two are the same format and not two dialects. A label that first appears an
+hour in brings its own header line then. What this costs: a reader that
+attaches to a feed already running, by `tail -f` on a redirect, sees rows
+with no header to map them by. Read from the start, keep the header from
+the first run, or use `--export=json`, whose records name every field.
+
+Two things it is not. It does not write the log — `--log=on` does that, and
+a feed is a reader. And it follows the machine, not a file: to follow a day
+as it is being written, see `--read`.
+
 ## What the log does about bad days
 
 The log is append-only and self-describing, and it is read defensively

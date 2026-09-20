@@ -358,6 +358,16 @@ impl Lines {
         }
     }
 
+    /// What has been written since the last call, and nothing twice.
+    ///
+    /// For `--export --follow`, which writes each sample as it is taken rather
+    /// than the whole stream at the end. Only the output is taken: the labels
+    /// already headed stay, so a feed running for a week writes the header
+    /// block once, at the top, exactly as a day does.
+    pub fn take(&mut self) -> String {
+        std::mem::take(&mut self.out)
+    }
+
     pub fn finish(mut self) -> String {
         while let Some(f) = self.stack.pop() {
             self.emit_frame(f);
