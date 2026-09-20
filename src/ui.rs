@@ -283,9 +283,15 @@ pub const TABS_H: u16 = 1;
 /// likely to be opened in.
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
     let area = content(app, area);
+    // The cgroup table is a different list with an ordering of its own, and it
+    // is drawn in the panel this strip sits on. So no tab is marked while it
+    // is up — marking one would claim these columns are what is below — and
+    // the settings, which are the process table's, say nothing. What the list
+    // *is* is still said, at the end of the row where that always goes.
+    let cgroups = app.show_cgroups;
     let mut spans = Vec::new();
     for v in crate::app::View::ALL {
-        let on = app.view == v;
+        let on = app.view == v && !cgroups;
         let style = if on {
             app.theme
                 .title_style()
@@ -310,6 +316,11 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(text, app.theme.cursor_style()),
             Span::styled("█", app.theme.cursor_style()),
         ]
+    } else if cgroups {
+        // Named rather than counted: the count and the depth are in the
+        // panel's own rule under this, and what this row has to say is which
+        // list that is.
+        vec![Span::styled("cgroups (C)", app.theme.dim_style())]
     } else {
         let scope = scope_text(app, (area.width as usize).saturating_sub(used + 2));
         vec![Span::styled(scope, app.theme.dim_style())]
@@ -318,7 +329,11 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
     // The settings take what is left between the two, and only what is left:
     // the tabs are the navigation and the scope is the one line that may never
     // vanish, so this is the part of the row that gives way.
-    let settings = settings_text(app, (area.width as usize).saturating_sub(used + tail_w + 4));
+    let settings = if cgroups {
+        String::new()
+    } else {
+        settings_text(app, (area.width as usize).saturating_sub(used + tail_w + 4))
+    };
     let settings_w = settings.chars().count();
     if settings_w > 0 {
         spans.push(Span::styled(settings.clone(), app.theme.dim_style()));

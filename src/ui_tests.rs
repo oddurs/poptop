@@ -16181,3 +16181,52 @@ fn print_guide_frame() {
         println!("{}", l.trim_end());
     }
 }
+
+#[test]
+fn the_strip_does_not_describe_a_table_that_is_not_there() {
+    // `C` puts the cgroup table in the panel this strip sits on. It is a
+    // different list with an ordering of its own, so a marked tab would claim
+    // these columns are what is below, and `sort CPU` would name an ordering
+    // nothing on screen is in.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.cgroups = Some(vec![crate::sample::CgroupStat {
+        path: "/system.slice".into(),
+        cpu: Some(10.0),
+        mem: Some(1 << 30),
+        ..Default::default()
+    }]);
+    app.push(s);
+    let strip = |app: &App| rows(app, 120, 30)[strip_y(app, 120, 30) as usize].clone();
+
+    let before = strip(&app);
+    assert!(before.contains("sort CPU"), "{before:?}");
+
+    app.show_cgroups = true;
+    let after = strip(&app);
+    assert!(
+        !after.contains("sort"),
+        "the strip named the process table's ordering over the cgroup table: {after:?}"
+    );
+    assert!(
+        after.contains("cgroups"),
+        "the strip does not say which list is below it: {after:?}"
+    );
+    // And no tab is marked, at the tier where the mark is the only signal.
+    app.theme = Theme::new(Palette::Safe, Tier::Mono);
+    let y = strip_y(&app, 120, 30);
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = term.backend().buffer();
+    let marked = (0..120u16)
+        .filter(|&x| {
+            buf[(x, y)]
+                .modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        })
+        .count();
+    assert_eq!(
+        marked, 0,
+        "a tab is marked over a table it does not describe"
+    );
+}
