@@ -463,6 +463,11 @@ mod tests {
         Sample {
             at: UNIX_EPOCH + Duration::new(1_700_000_000, 123_456_789),
             cpu_total: cpu,
+            // Two of them, so a codec that wrote one and read the other shows.
+            notes: Some(vec![
+                "no exit listener: taskstats would not register".into(),
+                "page size assumed to be 4096".into(),
+            ]),
             // Two mounts, one of them retransmitting, and a running server:
             // with one mount a misaligned read has nothing to run into, and
             // with every optional field the same on both sides a codec that
@@ -1200,6 +1205,45 @@ mod tests {
     }
 
     #[test]
+    fn a_day_recorded_with_notes_reads_in_a_build_that_does_not_know_them() {
+        // 0148 added a field to `Sample`. The schema block is what makes that
+        // safe: an older poptop reads such a day whole, says which field it
+        // skipped, and does not misread anything after it. Two samples,
+        // because with one a skip that consumed the rest of the file would
+        // pass.
+        let all: Vec<Sample> = vec![sample_of(11.0, 2), sample_of(22.0, 2)];
+        let refs: Vec<&Sample> = all.iter().collect();
+        let file = encode(&refs);
+        assert!(
+            all[0].notes.as_ref().is_some_and(|n| !n.is_empty()),
+            "the fixture carries no notes, so this proves nothing"
+        );
+
+        // The same build with the field taken out of what it declares, which
+        // is exactly what an older one is.
+        let mut older = schemas();
+        for (rec, fields) in older.iter_mut() {
+            if *rec == "Sample" {
+                fields.retain(|f| &*f.name != "notes");
+            }
+        }
+        let mut notes = Vec::new();
+        let back = read_file_as(&file, &older, &mut notes).expect("an older build refused the day");
+        assert_eq!(back.len(), 2, "a day with notes was not read whole");
+        assert_eq!(
+            back.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            [11.0, 22.0],
+            "the sample after the skipped field was misread"
+        );
+        assert_eq!(back[1].procs.len(), all[1].procs.len());
+        assert_eq!(
+            notes,
+            vec!["the stored history has a field this poptop does not read: notes".to_string()],
+            "the skip was silent, or said something else"
+        );
+    }
+
+    #[test]
     fn a_file_from_before_the_schema_block_says_which_version_wrote_it() {
         let mut file = encode(&[&sample_of(1.0, 1)]);
         file[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&13u32.to_le_bytes());
@@ -1475,6 +1519,7 @@ pub(crate) mod tests_support {
             at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             cpu_total: cpu,
             cpu_per_core: vec![1.0; 16],
+            notes: Some(Vec::new()),
             disks: None,
             clock_ceiling: None,
             pgin: None,

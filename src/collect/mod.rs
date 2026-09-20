@@ -5,6 +5,7 @@
 //! `/proc`, so we lean on `sysinfo` to keep the tool runnable on a dev laptop.
 
 use crate::sample::Sample;
+use std::sync::Arc;
 
 /// Which optional, expensive data this sample should gather.
 ///
@@ -466,6 +467,11 @@ pub trait Collector {
     /// forgotten it.
     fn sample(&mut self, needs: Needs) -> std::io::Result<Sample> {
         let mut s = self.collect(needs)?;
+        // Whatever the backend had to assume, carried by the sample it was
+        // said at. This is the one drain: a note read anywhere else is a note
+        // that never reaches the day file, and a day that cannot say what was
+        // assumed is a day of numbers with the reasons missing (0148).
+        s.notes = Some(self.take_notes().into_iter().map(Arc::from).collect());
         if let Some(ceiling) = s.cpu_ceiling() {
             // Exited rows too. They are process rows in the same table and the
             // same graph scaling, and a row that skips the clamp is exactly the

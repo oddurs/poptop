@@ -283,6 +283,28 @@ pub fn render(samples: &[Sample], warn: f32, window: Duration, nominal: Duration
     for f in findings(samples, &span, warn, window) {
         let _ = writeln!(out, "{}", one(&f, &span));
     }
+    // What poptop had to assume while it was recording, each said once with
+    // the time it was first said. Last, under the figures it qualifies:
+    // "a source poptop chose not to read" and "a figure the kernel does not
+    // publish" are the distinction the whole format exists to keep, and a
+    // report of a day that could not say which was making claims it had no
+    // standing for.
+    for (at, note) in assumptions(samples) {
+        let _ = writeln!(out, "assumed {} {note}", crate::log::clock_string(at));
+    }
+    out
+}
+
+/// Each distinct note a recording carries, at the moment it was first said.
+fn assumptions(samples: &[Sample]) -> Vec<(SystemTime, String)> {
+    let mut out: Vec<(SystemTime, String)> = Vec::new();
+    for s in samples {
+        for note in s.notes.iter().flatten() {
+            if !out.iter().any(|(_, n)| n == &**note) {
+                out.push((s.at, note.to_string()));
+            }
+        }
+    }
     out
 }
 
@@ -720,6 +742,39 @@ mod tests {
         }
         assert!(
             render(&with, 50.0, Duration::from_secs(2), Duration::from_secs(1)).contains("iowait")
+        );
+    }
+
+    #[test]
+    fn a_report_says_what_poptop_had_to_assume_and_when_it_first_said_it() {
+        // The report is read by somebody who was not there, which is exactly
+        // who needs to know that the exit listener never registered: a figure
+        // poptop chose not to read and a figure the kernel does not publish
+        // look identical in a summary that cannot say which.
+        let mut day: Vec<Sample> = (0..6).map(|i| s(i, 10.0, "x")).collect();
+        for (i, sample) in day.iter_mut().enumerate() {
+            sample.notes = Some(if (2..5).contains(&i) {
+                vec!["no exit listener: taskstats would not register".into()]
+            } else {
+                Vec::new()
+            });
+        }
+        let out = render(&day, 50.0, Duration::from_secs(2), Duration::from_secs(1));
+        assert_eq!(
+            out.matches("no exit listener").count(),
+            1,
+            "a note said at three samples was printed more than once:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("assumed {}", crate::log::clock_string(at_secs(2)))),
+            "the note is not at the moment it was first said:\n{out}"
+        );
+        // A day that assumed nothing says nothing.
+        let quiet: Vec<Sample> = (0..6).map(|i| s(i, 10.0, "x")).collect();
+        assert!(
+            !render(&quiet, 50.0, Duration::from_secs(2), Duration::from_secs(1))
+                .contains("assumed"),
+            "a day with nothing to say said something"
         );
     }
 

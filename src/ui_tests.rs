@@ -70,6 +70,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
     Sample {
         at: std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
         cpu_total: cpu,
+        notes: None,
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
         clock_ceiling: None,

@@ -796,10 +796,30 @@ fn read_day(warnings: &mut Vec<config::Warning>, date: log::Date) -> Vec<sample:
 /// Said once, with the config warnings, rather than folded into every figure
 /// that rests on it — an assumption nobody is told about is the same shape as a
 /// wrong number. Opened only by the commands that sample.
-fn open_collector(warnings: &mut Vec<config::Warning>) -> io::Result<Platform> {
-    let mut collector = Platform::new()?;
-    warnings.extend(collector.take_notes().into_iter().map(config::Warning));
-    Ok(collector)
+fn open_collector(_warnings: &mut Vec<config::Warning>) -> io::Result<Platform> {
+    // Not drained here. Whatever opening the collector had to assume is
+    // carried by the first sample it takes, which is what puts it in the day
+    // file beside the figures that rest on it (0148); the paths that print
+    // warnings read it back from there.
+    Platform::new()
+}
+
+/// Everything a run of samples had to assume, each said once, in the order it
+/// was first said.
+///
+/// A note repeats: a source that cannot be opened says so at every sample
+/// that asks for it. On the panel that is right — it is true now — and in a
+/// list of lines printed at exit it is a hundred copies of one sentence.
+fn assumed(samples: impl IntoIterator<Item = Vec<Arc<str>>>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for said in samples {
+        for note in said {
+            if !out.iter().any(|n| *n == *note) {
+                out.push(note.to_string());
+            }
+        }
+    }
+    out
 }
 
 fn main() -> io::Result<()> {
@@ -980,9 +1000,21 @@ fn main() -> io::Result<()> {
                     // because the kernel does not publish it — which is the one
                     // distinction this whole format exists to keep.
                     let needs = Source::ALL.into_iter().fold(Needs::NONE, |n, s| n.with(s));
-                    collector.sample(needs)?;
+                    let priming = collector.sample(needs)?;
                     std::thread::sleep(settings.interval);
-                    vec![collector.sample(needs)?]
+                    let s = collector.sample(needs)?;
+                    // On stderr as well as in the record. A consumer reading
+                    // the JSON has them in `notes`; a person running this by
+                    // hand should not have to grep for them.
+                    warnings.extend(
+                        assumed([
+                            priming.notes.unwrap_or_default(),
+                            s.notes.clone().unwrap_or_default(),
+                        ])
+                        .into_iter()
+                        .map(config::Warning),
+                    );
+                    vec![s]
                 }
             };
             flush(&warnings);
@@ -1389,7 +1421,6 @@ fn main() -> io::Result<()> {
     // walk — finds out it is unavailable the first time somebody asks, which is
     // long after the startup warnings were printed. Drained here so the reason
     // reaches the reader instead of a channel nobody is listening to.
-    warnings.extend(collector.take_notes().into_iter().map(config::Warning));
     // After the screen is restored, so a write error is a line the user can
     // actually read. Written on a clean exit only: a periodic flush is what
     // turns a live tool into a recorder, which is the thing this deliberately
@@ -1541,9 +1572,19 @@ fn once(
         .with(Source::Io)
         .with(Source::Exited)
         .with(Source::Cgroups);
-    collector.sample(needs)?;
+    let priming = collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
+    // What the collector had to assume, from both readings: opening it is
+    // where most of these are said, and that happens before the first.
+    warnings.extend(
+        assumed([
+            priming.notes.unwrap_or_default(),
+            s.notes.clone().unwrap_or_default(),
+        ])
+        .into_iter()
+        .map(config::Warning),
+    );
     // Nothing poptop prints depends on the log. A full disk or a read-only
     // state directory used to propagate out of here with `?`, so
     // `poptop --once --log=on` exited non-zero having printed nothing — the
@@ -2002,6 +2043,15 @@ fn run(
                     if let Some(d) = today {
                         notes.extend(log::prune(&cfg.dir, cfg.days, cfg.bytes, d));
                     }
+                }
+            }
+            // What the collector had to assume, kept for the lines printed
+            // at exit. The panel shows the cursor's own, which is a different
+            // question: this is "what did this session assume", and that is
+            // "what was assumed at the moment you are looking at".
+            for note in s.notes.iter().flatten() {
+                if !notes.iter().any(|n| n == &**note) {
+                    notes.push(note.to_string());
                 }
             }
             if !replaying {

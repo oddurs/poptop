@@ -102,6 +102,9 @@ pub fn unit_of(record: &str, field: &str) -> Option<Unit> {
             "name" | "user" | "cmd" | "state" | "container" | "mount" | "server" | "path"
             | "device" | "fstype" => None,
             "io_supported" | "io_collected" => None,
+            // Sentences. What poptop had to assume at this moment, which is
+            // text by nature: a unit on it would invite arithmetic on prose.
+            "notes" => None,
             _ => return Option::None,
         })
     };

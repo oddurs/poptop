@@ -2374,6 +2374,9 @@ impl Collector for ProcFs {
         Ok(Sample {
             at: now,
             nfs,
+            // Filled by `Collector::sample`, which is the one place the
+            // backend's notes are drained.
+            notes: None,
             cpu_total: stat.busy,
             cpu_per_core: stat.per_core,
             iowait: Some(stat.iowait),
