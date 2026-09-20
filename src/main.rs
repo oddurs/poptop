@@ -828,6 +828,36 @@ fn main() -> io::Result<()> {
     app.glyphs = settings.glyphs;
     app.keys = settings.keys.clone();
     app.signals = settings.signals;
+    // What the keys would otherwise have to be pressed for on every launch.
+    app.view = settings.view;
+    app.sort = settings.sort;
+    app.set_zoom(settings.zoom);
+    app.tree = settings.tree;
+    app.group = settings.group;
+    app.show_kernel = settings.kernel_threads;
+    app.hidden_columns = settings.hide_columns.clone();
+    if !settings.io_columns {
+        app.toggle_io();
+    }
+    // The tree and grouping are exclusive, as they are under `t` and `g`: a
+    // grouped tree is a tree of things that are not processes.
+    if app.tree && app.group != app::Grouping::Off {
+        warnings.push(config::Warning(
+            "`tree` and `group` cannot both be on; the tree is off".into(),
+        ));
+        app.tree = false;
+    }
+    // A sort the starting view cannot show would be an ordering with nothing
+    // on screen to explain it.
+    if !app.view.sorts().contains(&app.sort) {
+        warnings.push(config::Warning(format!(
+            "the {} view does not sort by {}; sorting by {} instead",
+            app.view.label(),
+            app.sort.label().to_lowercase(),
+            app.view.default_sort_for(true).label().to_lowercase()
+        )));
+        app.sort = app.view.default_sort_for(app.io_collected());
+    }
 
     // Collect once before drawing so the first frame has real numbers. CPU
     // still reads zero — there is no previous counter to diff against yet.

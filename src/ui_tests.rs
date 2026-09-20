@@ -11713,3 +11713,46 @@ fn the_header_names_one_real_interface_and_says_which_way_the_bytes_go() {
     assert_eq!(app.headline_link(), None);
     assert!(!rows(&app, 160, 40)[0].contains("lo "));
 }
+
+#[test]
+fn a_hidden_column_is_not_drawn_and_its_width_goes_to_the_command() {
+    // `hide-columns` in the config file, through `App::hidden_columns`.
+    let mut app = App::new(60);
+    let mut s = sample_at(50.0, 0);
+    s.procs = vec![proc_named(
+        1,
+        "a-very-long-command-name-that-needs-room",
+        10.0,
+        1 << 20,
+    )];
+    app.push(s);
+
+    let head = |app: &App| {
+        rows(app, 150, 16)
+            .into_iter()
+            .find(|l| l.contains("PID"))
+            .expect("no header")
+    };
+    let before = head(&app);
+    assert!(before.contains("THR"), "{before}");
+    assert!(before.contains("HIST"), "{before}");
+
+    // Not USER: it folds into the panel title when every process shares one,
+    // which is this fixture, so hiding it would prove nothing.
+    app.hidden_columns = vec![crate::app::Column::Thr, crate::app::Column::Hist];
+    let after = head(&app);
+    assert!(
+        !after.contains("THR"),
+        "the hidden column was drawn: {after}"
+    );
+    assert!(
+        !after.contains("HIST"),
+        "the hidden column was drawn: {after}"
+    );
+    // The command starts further left, which is the width being given back.
+    let command_at = |l: &str| l.find("COMMAND").expect("no COMMAND column");
+    assert!(
+        command_at(&after) < command_at(&before),
+        "the width did not go to the command:\n  {before}\n  {after}"
+    );
+}

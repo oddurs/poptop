@@ -75,6 +75,14 @@ for every terminal that later reads the file.
 | `log-days` | number | `7` | Days of log kept. |
 | `log-bytes` | size | `512M` | Bytes of log kept across every day. |
 | `signals` | `on`, `off` | `off` | Whether `x` and `X` may signal. See [signals](../guide/signals.md). |
+| `view` | `generic`, `memory`, `disk` | `generic` | The view to start in, which `v` cycles. |
+| `sort` | `cpu`, `mem`, `disk`, `pid`, `name` | `cpu` | The column to sort by, which `s` cycles. A sort the starting view cannot show warns and falls back to that view's own. |
+| `zoom` | `1`, `2`, `4`, `8` | `1` | Samples per timeline slot to start at, which `+`/`-` change. |
+| `tree` | `on`, `off` | `off` | Start with the process tree (`t`). Not with `group`. |
+| `group` | `off`, `name`, `user`, `container` | `off` | Start with rows folded (`g`). Not with `tree`. |
+| `kernel-threads` | `on`, `off` | `off` | Show kernel threads (`K`). Linux only; macOS has none. |
+| `io-columns` | `on`, `off` | `on` | Show the per-process disk columns (`i`), where they can be read. |
+| `hide-columns` | column names | none | Columns never to draw: `bars`, `rss`, `state`, `thr`, `io`, `mem`, `hist`, `pid`, `user`, `cid`. The width they would have taken goes to the command. |
 
 Booleans also take `true`/`false` and `yes`/`no`. Spans take `ms`, `s`, `m`,
 `h`; sizes take `k`, `m`, `g`, `t` and are binary.

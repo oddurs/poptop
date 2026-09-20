@@ -46,6 +46,18 @@ pub struct Settings {
     /// Which key asks for what. Set by `key.<action>` lines; the default is
     /// the keys poptop has always had. See [`crate::keys`].
     pub keys: crate::keys::Keymap,
+    /// What the monitor starts as, which the keys then change. Each is the
+    /// state its key cycles through, so `view = memory` is `v` pressed once
+    /// before you got there.
+    pub view: crate::app::View,
+    pub sort: crate::app::Sort,
+    pub zoom: usize,
+    pub tree: bool,
+    pub group: crate::app::Grouping,
+    pub kernel_threads: bool,
+    pub io_columns: bool,
+    /// Columns the table is not to draw at all.
+    pub hide_columns: Vec<crate::app::Column>,
     /// Filled in by [`resolve`]: the built-in to start from, and the user's
     /// colours to write over it.
     pub palette: Palette,
@@ -127,6 +139,14 @@ impl Settings {
             theme_origin: None,
             origins: Vec::new(),
             keys: crate::keys::Keymap::default(),
+            view: crate::app::View::Generic,
+            sort: crate::app::Sort::Cpu,
+            zoom: crate::app::ZOOM_LEVELS[0],
+            tree: false,
+            group: crate::app::Grouping::Off,
+            kernel_threads: false,
+            io_columns: true,
+            hide_columns: Vec::new(),
             palette: Palette::default(),
             overrides: Vec::new(),
             warn: Theme::DEFAULT_WARN_PCT,
@@ -191,6 +211,14 @@ impl Settings {
             log_days: DEFAULT_LOG_DAYS,
             log_bytes: DEFAULT_LOG_BYTES,
             signals: false,
+            view: crate::app::View::Generic,
+            sort: crate::app::Sort::Cpu,
+            zoom: crate::app::ZOOM_LEVELS[0],
+            tree: false,
+            group: crate::app::Grouping::Off,
+            kernel_threads: false,
+            io_columns: true,
+            hide_columns: Vec::new(),
         }
     }
 }
@@ -258,6 +286,14 @@ impl PartialEq for Settings {
             && self.log_bytes == other.log_bytes
             && self.signals == other.signals
             && self.keys == other.keys
+            && self.view == other.view
+            && self.sort == other.sort
+            && self.zoom == other.zoom
+            && self.tree == other.tree
+            && self.group == other.group
+            && self.kernel_threads == other.kernel_threads
+            && self.io_columns == other.io_columns
+            && self.hide_columns == other.hide_columns
     }
 }
 
@@ -310,7 +346,14 @@ impl Settings {
                 ("color", "the default") => "auto".to_string(),
                 _ => (k.show)(self),
             };
-            out.push_str(&format!("\n# {}\n{} = {}\n", k.note, k.name, value));
+            // A setting with nothing to say — no columns hidden — is written
+            // as a comment: a line with an empty value is one poptop refuses
+            // to read back, and a file it will not read is not a round trip.
+            if value.is_empty() {
+                out.push_str(&format!("\n# {}\n# {} =\n", k.note, k.name));
+            } else {
+                out.push_str(&format!("\n# {}\n{} = {}\n", k.note, k.name, value));
+            }
         }
         out
     }
@@ -512,7 +555,104 @@ pub const KEYS: &[Setting] = &[
         show: |s| s.theme.clone(),
         note: "A built-in (safe, classic) or a file in themes/.",
     },
+    Setting {
+        name: "view",
+        apply: |s, v| {
+            s.view = crate::app::View::parse(v).ok_or("generic, memory or disk")?;
+            Ok(())
+        },
+        show: |s| s.view.label().to_string(),
+        note: "The view to start in: generic, memory or disk.",
+    },
+    Setting {
+        name: "sort",
+        apply: |s, v| {
+            s.sort = crate::app::Sort::parse(v).ok_or("cpu, mem, disk, pid or name")?;
+            Ok(())
+        },
+        show: |s| s.sort.label().to_lowercase(),
+        note: "The column to sort by: cpu, mem, disk, pid or name.",
+    },
+    Setting {
+        name: "zoom",
+        apply: |s, v| {
+            let n: usize = v.parse().map_err(|_| "1, 2, 4 or 8 samples a slot")?;
+            if !crate::app::ZOOM_LEVELS.contains(&n) {
+                return Err("1, 2, 4 or 8 samples a slot");
+            }
+            s.zoom = n;
+            Ok(())
+        },
+        show: |s| s.zoom.to_string(),
+        note: "Samples per timeline slot to start at: 1, 2, 4 or 8.",
+    },
+    Setting {
+        name: "tree",
+        apply: |s, v| {
+            s.tree = on_or_off(v)?;
+            Ok(())
+        },
+        show: |s| on_off(s.tree).to_string(),
+        note: "Start with the process tree.",
+    },
+    Setting {
+        name: "group",
+        apply: |s, v| {
+            s.group = crate::app::Grouping::parse(v).ok_or("off, name, user or container")?;
+            Ok(())
+        },
+        show: |s| s.group.name().to_string(),
+        note: "Start with rows folded by: off, name, user or container.",
+    },
+    Setting {
+        name: "kernel-threads",
+        apply: |s, v| {
+            s.kernel_threads = on_or_off(v)?;
+            Ok(())
+        },
+        show: |s| on_off(s.kernel_threads).to_string(),
+        note: "Show kernel threads in the table (Linux).",
+    },
+    Setting {
+        name: "io-columns",
+        apply: |s, v| {
+            s.io_columns = on_or_off(v)?;
+            Ok(())
+        },
+        show: |s| on_off(s.io_columns).to_string(),
+        note: "Show the per-process disk columns, where they can be read.",
+    },
+    Setting {
+        name: "hide-columns",
+        apply: |s, v| {
+            let mut hidden = Vec::new();
+            for name in v.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                hidden.push(crate::app::Column::parse(name).ok_or(
+                    "bars, rss, state, thr, io, mem, hist, pid, user or cid, comma-separated",
+                )?);
+            }
+            s.hide_columns = hidden;
+            Ok(())
+        },
+        show: |s| {
+            s.hide_columns
+                .iter()
+                .map(|c| c.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+        note: "Columns never to draw, comma-separated. The width goes to the command.",
+    },
 ];
+
+/// `on` or `off`, as every switch in the file writes them.
+fn on_or_off(v: &str) -> Result<bool, &'static str> {
+    match v {
+        "on" | "true" | "yes" => Ok(true),
+        "off" | "false" | "no" => Ok(false),
+        _ => Err("on or off"),
+    }
+}
 
 /// A percentage, which is what every threshold in poptop is.
 ///
@@ -1546,6 +1686,69 @@ mod precedence {
         assert!(s.as_config_file().contains("color = auto"));
         let (s, _) = run(None, false, &["--color=256"]);
         assert!(s.as_config_file().contains("color = 256"));
+    }
+
+    #[test]
+    fn the_starting_state_is_what_the_keys_would_have_made() {
+        let (s, _) = run(
+            Some(
+                "view = memory\nsort = pid\nzoom = 4\ngroup = user\n\
+                 kernel-threads = on\nio-columns = off\nhide-columns = thr, cid\n",
+            ),
+            false,
+            &[],
+        );
+        assert_eq!(s.view, crate::app::View::Memory);
+        assert_eq!(s.sort, crate::app::Sort::Pid);
+        assert_eq!(s.zoom, 4);
+        assert_eq!(s.group, crate::app::Grouping::User);
+        assert!(s.kernel_threads);
+        assert!(!s.io_columns);
+        assert_eq!(
+            s.hide_columns,
+            vec![crate::app::Column::Thr, crate::app::Column::Cid]
+        );
+    }
+
+    #[test]
+    fn the_starting_state_defaults_to_what_poptop_has_always_started_as() {
+        let (s, _) = run(None, false, &[]);
+        let fresh = crate::app::App::new(60);
+        assert_eq!(s.view, fresh.view);
+        assert_eq!(s.sort, fresh.sort);
+        assert_eq!(s.zoom, fresh.zoom());
+        assert_eq!(s.tree, fresh.tree);
+        assert_eq!(s.group, fresh.group);
+        assert_eq!(s.kernel_threads, fresh.show_kernel);
+        assert_eq!(s.io_columns, fresh.show_io);
+        assert!(s.hide_columns.is_empty() && fresh.hidden_columns.is_empty());
+    }
+
+    #[test]
+    fn a_starting_state_that_is_not_one_says_what_it_takes() {
+        for (line, expected) in [
+            ("view = sideways\n", "generic, memory or disk"),
+            ("sort = colour\n", "cpu, mem, disk, pid or name"),
+            ("zoom = 3\n", "1, 2, 4 or 8"),
+            ("group = sideways\n", "off, name, user or container"),
+            ("hide-columns = thr, nonsense\n", "bars, rss, state"),
+        ] {
+            let (s, _, w) = resolve(
+                base(),
+                Sources {
+                    file: Some(("conf", line)),
+                    no_color: false,
+                    themes: &no_themes,
+                },
+                &[],
+            )
+            .expect("a bad value in the file is not fatal");
+            let w: Vec<String> = w.into_iter().map(|x| x.0).collect();
+            assert!(w.iter().any(|w| w.contains(expected)), "{line}: {w:?}");
+            // And the setting kept its default rather than half of the line.
+            assert_eq!(s.view, crate::app::View::Generic);
+            assert!(s.hide_columns.is_empty(), "{line}");
+        }
     }
 
     #[test]

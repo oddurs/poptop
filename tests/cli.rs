@@ -296,7 +296,14 @@ fn write_config_writes_a_file_poptop_reads_back() {
     // is now the origin of a value that is the same as the default it wrote.
     let after = home.run(&["--config"]).ok();
     for line in after.out.lines() {
-        assert!(line.contains("poptop.conf:"), "not from the file: {line}");
+        // A setting with nothing to show — no columns hidden — is written as
+        // a comment, because a line with an empty value is one poptop will
+        // not read back. It reads as the default, which is what it is.
+        let empty_valued = line.starts_with("hide-columns ");
+        assert!(
+            line.contains("poptop.conf:") || empty_valued,
+            "not from the file: {line}"
+        );
     }
     let plain = Home::new().run(&["--config"]).ok();
     let values = |out: &str| -> Vec<String> {
@@ -370,6 +377,56 @@ fn keys_lists_every_action_and_a_file_can_move_one() {
         row(&r.out, "tree").contains(" t "),
         "{}",
         row(&r.out, "tree")
+    );
+}
+
+#[test]
+fn the_starting_state_comes_from_the_file() {
+    let home = Home::new();
+    home.write_config(
+        "view = memory\nsort = pid\nzoom = 4\ngroup = user\n\
+         kernel-threads = on\nio-columns = off\nhide-columns = thr, cid\n",
+    );
+    let r = home.run(&["--config"]).ok();
+    let at = |key: &str| {
+        r.out
+            .lines()
+            .find(|l| l.starts_with(&format!("{key} ")))
+            .unwrap_or_else(|| panic!("no `{key}` in:\n{}", r.out))
+            .to_string()
+    };
+    assert!(at("view").contains(" memory "), "{}", at("view"));
+    assert!(at("sort").contains(" pid "), "{}", at("sort"));
+    assert!(at("zoom").contains(" 4 "), "{}", at("zoom"));
+    assert!(at("group").contains(" user "), "{}", at("group"));
+    assert!(
+        at("kernel-threads").contains(" on "),
+        "{}",
+        at("kernel-threads")
+    );
+    assert!(at("io-columns").contains(" off "), "{}", at("io-columns"));
+    assert!(
+        at("hide-columns").contains("thr, cid"),
+        "{}",
+        at("hide-columns")
+    );
+
+    // A pair that cannot both hold warns, and poptop still starts.
+    home.write_config("tree = on\ngroup = name\n");
+    let r = home.run(&["--once", "--interval=200ms"]);
+    assert_eq!(r.code, Some(0), "{}", r.err);
+
+    // A value that is not one of the choices warns and keeps the default.
+    home.write_config("view = sideways\n");
+    let r = home.run(&["--config"]);
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    assert!(r.err.contains("generic, memory or disk"), "{}", r.err);
+    assert!(
+        r.out
+            .lines()
+            .any(|l| l.starts_with("view ") && l.contains(" generic ")),
+        "{}",
+        r.out
     );
 }
 
