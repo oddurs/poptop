@@ -16,9 +16,12 @@ nothing that had to be running before you noticed the problem.
 
 A real frame, rendered from a terminal capture by
 [`tools/screenshot.py`](tools/screenshot.py) — not a drawing, and not
-retouched. `30 rustc (g folds them)` is poptop noticing that one program is
-crowding the table; `47 tasks came and went` is the processes that lived and
-died entirely between two samples. `████+` is a process past one core.
+retouched: a ten-core Linux box building this crate in a loop, scrubbed back
+forty seconds to a busy moment. `PAUSED −40s` and the `▐` on the timeline are
+the cursor; sampling carried on behind it. `10 rustc (g folds them)` is
+poptop noticing that one program is crowding the table, and `218 tasks came
+and went` is the processes that lived and died entirely between two samples.
+`████+` is a process past one core.
 
 <details>
 <summary>A paused frame, as text — the timeline scrubbed back eighteen seconds</summary>

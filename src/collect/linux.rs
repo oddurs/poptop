@@ -4890,7 +4890,27 @@ mod mangled {
             .find(|p| std::path::Path::new(p).exists())
             .expect("no sleep binary to copy");
         std::fs::copy(sleep, &exe).unwrap();
-        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
+        // Retried, because this races every other test that spawns a process.
+        // `fs::copy` opens the destination for writing, and the fd is
+        // close-on-exec rather than close-on-fork: a `Command::spawn` on
+        // another test thread forks in the window before the copy's fd is
+        // closed, and the child holds a writable descriptor to this file
+        // until it execs. Until then the kernel refuses to exec it —
+        // ETXTBSY, "Text file busy" — and the window is microseconds, so a
+        // short retry is the whole fix. See rust-lang/rust#72007.
+        let started = std::time::Instant::now();
+        let mut child = loop {
+            match std::process::Command::new(&exe).arg("30").spawn() {
+                Ok(child) => break child,
+                Err(e)
+                    if e.kind() == io::ErrorKind::ExecutableFileBusy
+                        && started.elapsed() < Duration::from_secs(5) =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("could not run the renamed sleep: {e}"),
+            }
+        };
         let pid = child.id() as i32;
         // Long enough for the exec to have replaced the name.
         std::thread::sleep(Duration::from_millis(200));

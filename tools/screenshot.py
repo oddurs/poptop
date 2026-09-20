@@ -25,6 +25,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import struct
 import sys
@@ -67,7 +68,13 @@ FONT = (
 )
 
 
-def capture(binary, cols, rows, steps, args=()):
+# A step that means "walk back until the machine was busy", rather than a
+# fixed number of samples: which sample is a busy one depends on when the
+# capture started, and a hero shot of an idle machine sells nothing.
+BUSY = object()
+
+
+def capture(binary, cols, rows, steps, busy_at=70.0, args=()):
     """Run `binary` under a pty, send `steps`, return the final screen."""
     pid, fd = pty.fork()
     if pid == 0:
@@ -106,9 +113,59 @@ def capture(binary, cols, rows, steps, args=()):
                 except OSError:
                     return
 
+    def scrub_to_busiest(threshold, limit=80):
+        """Walk back through the buffer and return to its fullest moment.
+
+        This chooses which recorded moment to show. It does not change the
+        moment: every figure in the frame is one poptop recorded then. A
+        build machine between builds is a true picture of nothing, and the
+        whole argument of the program is that the busy moment is still
+        there to be found — so finding it is the honest thing for a
+        screenshot to do, and doing it with the arrow keys is exactly what
+        a reader would do.
+
+        Scored as (the machine was busy, how many processes the table has,
+        how busy). Rows alone picks the instant a build's workers were
+        spawned and had not run yet — thirty processes, every one of them
+        at 0.0. The threshold first, then the fullest table that clears it.
+        """
+        count = re.compile(r"processes \((\d+)\)")
+        busy = re.compile(r"CPU\s+([\d.]+)%")
+
+        def score():
+            rows = next(
+                (
+                    int(m.group(1))
+                    for line in screen.display
+                    if (m := count.search(line))
+                ),
+                0,
+            )
+            found = busy.search(screen.display[0])
+            cpu = float(found.group(1)) if found else 0.0
+            return (cpu >= threshold, rows, cpu)
+
+        best, at = score(), 0
+        for step in range(1, limit + 1):
+            os.write(fd, b"\x1b[D")
+            pump(0.1)
+            here = score()
+            # `step > 2` so the answer is never the live sample: the header
+            # only says PAUSED once the cursor has left it, and a frame that
+            # says LIVE does not show what this program is for.
+            if step > 2 and here > best:
+                best, at = here, step
+        for _ in range(limit - at):
+            os.write(fd, b"\x1b[C")
+            pump(0.05)
+        return best
+
     for delay, keys in steps:
         pump(delay)
-        if keys:
+        if keys == BUSY:
+            scrub_to_busiest(busy_at)
+            pump(0.3)
+        elif keys:
             os.write(fd, keys.encode())
             pump(0.5)
     # Stop feeding the emulator here. poptop prints its held warnings after
@@ -164,6 +221,47 @@ def runs(line, cols):
     return out
 
 
+# The timeline and the HIST column are braille (U+2800-U+28FF), and a browser
+# is not a terminal: the font stack an SVG names is whatever the reader
+# happens to have, and most of them have no braille. It renders as a dotted
+# placeholder box, which is worse than wrong — it looks like a bug in poptop.
+#
+# So braille is not drawn as text. Each cell is a 2x4 grid of dots and each
+# dot is a rectangle, which needs no font at all. Everything else stays text:
+# the block elements the bars are drawn with are in every monospace font, and
+# text that is text can be selected and searched.
+BRAILLE = 0x2800
+# Bit n of the code point, as (column, row) in the 2x4 grid. Dots 1-6 fill
+# the first three rows down each column, then dots 7 and 8 are the fourth.
+DOTS = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (0, 3), (1, 3)]
+
+
+def braille_dots(text, left, top, fill):
+    """Rectangles for a run of braille cells, or nothing for blanks."""
+    out = []
+    w, h = CELL_W / 2, CELL_H / 4
+    # Not the whole sub-cell: a terminal draws braille as separated dots, and
+    # a graph of solid blocks would read as a different glyph set entirely.
+    dw, dh = w * 0.78, h * 0.78
+    for i, ch in enumerate(text):
+        bits = ord(ch) - BRAILLE
+        if bits <= 0:
+            continue
+        x0 = left + i * CELL_W
+        for bit, (col, row) in enumerate(DOTS):
+            if bits & (1 << bit):
+                out.append(
+                    f'<rect x="{x0 + col * w + (w - dw) / 2:.2f}" '
+                    f'y="{top + row * h + (h - dh) / 2:.2f}" '
+                    f'width="{dw:.2f}" height="{dh:.2f}" fill="{fill}"/>'
+                )
+    return out
+
+
+def is_braille(text):
+    return all(BRAILLE <= ord(c) <= BRAILLE + 0xFF for c in text)
+
+
 def svg(screen, cols, rows, title):
     w, h = cols * CELL_W, rows * CELL_H
     pad = 12
@@ -180,7 +278,9 @@ def svg(screen, cols, rows, title):
         top = pad + y * CELL_H
         baseline = top + CELL_H - 5
         for x, text, fg, bg, bold in runs(line, cols):
-            if not text.strip() and bg == BG:
+            # U+2800 is a blank braille cell and is not whitespace to Python.
+            blank = not text.strip().strip("\u2800")
+            if blank and bg == BG:
                 continue
             left = pad + x * CELL_W
             length = len(text) * CELL_W
@@ -189,7 +289,10 @@ def svg(screen, cols, rows, title):
                     f'<rect x="{left:.1f}" y="{top:.1f}" '
                     f'width="{length:.1f}" height="{CELL_H:.1f}" fill="{bg}"/>'
                 )
-            if not text.strip():
+            if blank:
+                continue
+            if is_braille(text):
+                parts.extend(braille_dots(text, left, top, fg))
                 continue
             weight = ' font-weight="bold"' if bold else ""
             parts.append(
@@ -206,6 +309,11 @@ def main():
     out = "docs/media/poptop.svg"
     binary = "./target/release/poptop"
     cols, rows = 100, 28
+    # Long enough to fill the timeline. At one sample a second and two
+    # samples to a braille cell, a hundred columns is a little over three
+    # minutes, and a picture of an empty buffer sells the wrong thing.
+    settle = 200.0
+    busy_at = 70.0
     rest = []
     while args:
         a = args.pop(0)
@@ -213,16 +321,26 @@ def main():
             binary = args.pop(0)
         elif a == "--size":
             cols, rows = (int(v) for v in args.pop(0).split("x"))
+        elif a == "--settle":
+            settle = float(args.pop(0))
+        elif a == "--busy":
+            busy_at = float(args.pop(0))
         else:
             rest.append(a)
     if rest:
         out = rest[0]
-    # Long enough for the timeline to have something in it, then a process
-    # selected so the accent margin is in the picture.
-    steps = [(9.0, None), (0.2, "\x1b[B\x1b[B"), (0.2, None)]
+    # Then: twenty samples back, which is the whole point of the program —
+    # the header says PAUSED and the timeline grows a cursor — and a process
+    # selected, so the accent margin is in the picture too.
+    steps = [
+        (settle, None),
+        (0.3, BUSY),
+        (0.3, "\x1b[B\x1b[B"),
+        (0.4, None),
+    ]
     if not os.path.exists(binary):
         sys.exit(f"{binary} is not built: cargo build --release")
-    screen = capture(binary, cols, rows, steps)
+    screen = capture(binary, cols, rows, steps, busy_at=busy_at)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w") as f:
         f.write(svg(screen, cols, rows, "poptop"))
