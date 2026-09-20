@@ -146,6 +146,11 @@ fn a_command_line_that_cannot_run_is_exit_2_on_stderr() {
             "--for `soon`: expected a span",
         ),
         (&["--check-theme"], "--check-theme needs a theme name"),
+        (&["--verify", "today"], "`today` is not a date"),
+        (
+            &["--verify", "2026-09-08", "x"],
+            "--verify does not take `x`",
+        ),
         (&["--once", "--days"], "--once does not take `--days`"),
         (&["--schema", "x"], "--schema does not take `x`"),
         (&["--bench", "--once"], "--bench does not take `--once`"),
@@ -613,4 +618,50 @@ fn at_the_byte_budget_the_log_keeps_the_newest_and_says_what_it_holds() {
         "--days does not say what the day holds: {}",
         listed.out
     );
+}
+
+/// `--verify` is the answer to "is this file intact, and what is in it" from
+/// a script — which until now needed a terminal.
+#[test]
+fn verify_reports_a_day_and_exits_by_whether_it_is_intact() {
+    let home = Home::new();
+    log_a_sample(&home);
+    log_a_sample(&home);
+    let day = logged_day(&home);
+    let r = home.run(&["--verify"]).ok();
+    assert!(r.out.contains("entries 2 whole"), "{}", r.out);
+    assert!(r.out.contains("period  "), "{}", r.out);
+    assert!(r.out.trim_end().ends_with("intact"), "{}", r.out);
+    // A date, and the same answer.
+    assert_eq!(home.run(&["--verify", &day]).ok().out, r.out);
+
+    // Now break it: a length with nothing behind it, appended to the day.
+    let path = home
+        .state()
+        .join("poptop")
+        .join("log")
+        .join(format!("poptop-{}", day.replace('-', "")));
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend_from_slice(&[64, 0, 0, 0, 9, 9, 9]);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let broken = home.run(&["--verify"]);
+    assert_eq!(
+        broken.code,
+        Some(1),
+        "damage did not change the exit status"
+    );
+    assert!(
+        broken.out.contains("damage  at ") && broken.out.contains("cut short"),
+        "{}",
+        broken.out
+    );
+    // Still on stdout: it is the answer, not a warning about one.
+    assert!(broken.err.is_empty(), "{}", broken.err);
+
+    // A day nobody recorded says so, as every other command does.
+    let empty = Home::new();
+    empty
+        .run(&["--verify", "2026-09-08"])
+        .refused(1, "nothing recorded on 2026-09-08");
 }

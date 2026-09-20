@@ -180,7 +180,7 @@ fn starting_with_a_full_store() {
 
 /// This process's resident memory.
 #[cfg(target_os = "linux")]
-fn rss() -> u64 {
+pub fn rss() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap();
     let kb = status
         .lines()
@@ -192,7 +192,7 @@ fn rss() -> u64 {
 
 /// This process's resident memory, from `ps`.
 #[cfg(not(target_os = "linux"))]
-fn rss() -> u64 {
+pub fn rss() -> u64 {
     let out = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
         .output()
