@@ -43,7 +43,7 @@ fn help_and_version_answer_on_stdout() {
 #[test]
 fn once_prints_a_sample_and_every_setting_is_accepted_on_the_command_line() {
     let home = Home::new();
-    let r = home.run(&["--once", "--interval=200ms"]).ok();
+    let r = home.run(&["--once", "--interval=200ms"]).ok_sampling();
     assert!(r.out.starts_with("cpu "), "{}", r.out);
     assert!(r.out.contains("\nmem "), "{}", r.out);
 
@@ -70,7 +70,7 @@ fn once_prints_a_sample_and_every_setting_is_accepted_on_the_command_line() {
         "--critical=70",
         "--theme=classic",
     ])
-    .ok();
+    .ok_sampling();
 }
 
 #[test]

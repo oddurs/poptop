@@ -4941,6 +4941,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         ),
     };
 
+    // What poptop had to assume at the moment being looked at — from the
+    // sample itself, so a day opened a week later carries its own reasons
+    // rather than this session's. Ranked with the other omissions: an
+    // assumption nobody is told about is the same shape as a wrong number.
+    let assumed = match app.history.current().and_then(|s| s.notes.as_deref()) {
+        Some([]) | None => String::new(),
+        Some(notes) => format!(" · {}", notes.join(" · ")),
+    };
+
     // Why the log stopped. Ranked with the withheld sources above and for the
     // same reason: history nobody is recording is an omission, and one the
     // reader has to hear about while it is happening rather than when they
@@ -5097,6 +5106,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         // rather than a column, and the reader can act on it — the interval,
         // the byte budget, or the disk.
         (23, logging, app.theme.warning_style()),
+        // Under the log note and above the thread note: what was assumed is
+        // an omission of certainty rather than of data, and it is true of the
+        // instant on screen.
+        (24, assumed, app.theme.warning_style()),
         (28, threads, plain),
         // Only when the strip above the table is not there to say them. See
         // the note on this function. One clause each, at three ranks, so a

@@ -1010,6 +1010,21 @@ pub struct Sample {
     /// NFS, client and server, or `None` on a machine that neither mounts nor
     /// serves it — and on a platform that will not say.
     pub nfs: Option<NfsStat>,
+    /// What poptop had to assume about this machine, said at this moment.
+    ///
+    /// The collector's notes — an exit listener that would not register, the
+    /// IO columns withdrawn after the probe, a page size that had to be
+    /// guessed, a source the budget gave up — carried with the sample they
+    /// were said at, so a day opened a week later still has the reasons its
+    /// numbers are the shape they are. "A source poptop chose not to read" and
+    /// "a figure the kernel does not publish" is the distinction this whole
+    /// format exists to keep, and until 0148 the log kept neither.
+    ///
+    /// `None` is a recording that does not carry them — every day written
+    /// before this field existed — and `Some([])` is a moment at which nothing
+    /// had to be assumed. Absent is not empty here any more than anywhere
+    /// else.
+    pub notes: Option<Vec<Arc<str>>>,
     /// Mounted filesystems worth watching, or `None` where the platform will
     /// not say.
     ///
@@ -1138,11 +1153,12 @@ impl Sample {
             cgroups: None,
             nodes: None,
             nfs: None,
+            notes: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat>, notes: Option<Vec<Arc<str>>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
