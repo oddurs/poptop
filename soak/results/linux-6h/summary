@@ -1,0 +1,3 @@
+poptop 200, 6 hours, log every 10s, Linux 7.0.14-orbstack-00380-ga7e0a2dc9535 aarch64
+clock stepped back 300s at 1801s (Sun Sep 20 23:33:09 XXX 2026)
+stopped at 2701s (Sun Sep 20 23:48:09 XXX 2026) for 180s

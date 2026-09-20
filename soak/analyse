@@ -63,8 +63,12 @@ done
 n=$(wc -l <"$out/log.tsv" | tr -d ' ')
 every=$(awk -v s="${SOAK_LOG_INTERVAL:-10s}" 'BEGIN { v = s + 0; if (s ~ /m$/) v *= 60; print v }')
 # Each sample against the one before it: forwards by about the interval, or
-# a gap, or a step back. Anything else (a repeat, a step back nobody made)
-# is a failure.
+# a gap. A repeat is a failure.
+#
+# Not a step back, ever: the reader sorts a day by timestamp, because a file
+# two poptops wrote at once is not in order and a cursor has to move forwards
+# whatever wrote it. So a clock stepped back is invisible here by design, and
+# what it does leave is checked below — the stepped period recorded twice.
 awk -F '\t' -v every="$every" '
     NR > 1 {
         d = $2 - prev
@@ -78,9 +82,27 @@ IFS='|' read -r shape gaplist <"$out/log-shape"
 set -- $shape
 say "        log: $1 samples in $(ls "$home/state/poptop/log" | wc -l | tr -d ' ') day files"
 check "log, no sample twice" "$([ "$2" = 0 ] && echo yes || echo no)" "$2 repeated"
+check "log, no sample out of order after the reader sorted it" \
+    "$([ "$3" = 0 ] && echo yes || echo no)" "$3 backwards:$(echo "$shape" | cut -d' ' -f5-)"
 stepped=$(grep -c "clock stepped back" "$out/summary" || true)
-check "log, back in time only where the clock was stepped" \
-    "$([ "$3" = "$stepped" ] && echo yes || echo no)" "$3 steps back (made: $stepped):$(echo "$shape" | cut -d' ' -f5-)"
+# What a clock stepped back leaves in a recorded day: the period it stepped
+# over is lived through twice, so the samples for it are there twice — at
+# about double the density, and none of them lost. A log that dropped the
+# second pass, or that carried on numbering forwards as if the step had not
+# happened, would fail this.
+if [ "$stepped" -gt 0 ]; then
+    read -r step_secs step_at <<EOF
+$(sed -n 's/^clock stepped back \([0-9]*\)s at \([0-9]*\)s .*/\1 \2/p' "$out/summary" | head -1)
+EOF
+    dense=$(awk -F '\t' -v back="$step_secs" -v at="$step_at" '
+        NR == 1 { t0 = $2 }
+        { if ($2 > t0 + at - back && $2 <= t0 + at) n++ }
+        END { print n + 0 }' "$out/log.tsv")
+    want=$(awk -v back="$step_secs" -v every="$every" 'BEGIN { print int(back / every * 1.5) }')
+    check "log, the stepped-over period is recorded twice" \
+        "$([ "$dense" -ge "$want" ] && echo yes || echo no)" \
+        "$dense samples in the ${step_secs}s the clock was stepped back over, of $want expected for two passes"
+fi
 stops=$(grep -c "^stopped at" "$out/summary" || true)
 check "log, gaps only where it was stopped" \
     "$([ "$4" -le "$((stops + stepped))" ] && echo yes || echo no)" \
