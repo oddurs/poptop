@@ -12,7 +12,6 @@ mod app;
 mod budget;
 mod check;
 mod collect;
-mod command;
 mod config;
 mod cvd;
 mod export;
@@ -21,14 +20,12 @@ mod history;
 mod log;
 #[cfg(test)]
 mod mangle;
-mod menu;
 mod persist;
 mod query;
 mod report;
 mod sample;
 mod signal;
 mod store;
-mod term;
 mod theme;
 mod tree;
 mod ui;
@@ -40,7 +37,6 @@ mod ui_tests;
 
 use app::App;
 use collect::{Collector, Needs, Platform, Source};
-use command::Action;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io;
 use std::sync::Arc;
@@ -63,45 +59,18 @@ USAGE:
     poptop --report [DATE]
                     summarise a recorded day: peak and sustained, and what was
                     responsible for each. Today unless a date is given.
+    poptop --config   every setting, its value, and where that value came from
+    poptop --write-config
+                    write a commented config file of the current settings,
+                    at the path above, refusing to overwrite one
     poptop --bench    time 20 collection passes (development)
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
 
-    --graph=SET     how the timeline is drawn. `braille` (default) draws bars
-                    at four levels a cell, and two samples a cell in the table's
-                    sparkline; `block` resolves more — eight levels — with the
-                    eighths ramp; `line` draws the outline instead of filling
-                    under it; `ascii` needs no Unicode. `--glyphs` is the old
-                    name and still works. Falls back to ascii on a Linux
-                    console.
-    --scale=WHERE   where the y-axis starts: zero (default) or fit. `fit`
-                    reclaims the rows a high flat series wastes — memory at
-                    72-85% spends most of a 0-100 panel on ink that never
-                    changes — at the cost of drawing that panel as a line
-                    rather than bars, since a bar on a truncated axis
-                    misstates its own magnitude.
-    --density=HOW   compact, comfortable (default) or spacious. How much air
-                    the layout is given — the table's indent, the gap between
-                    header figures, and a blank row between the graph and the
-                    table. Every one of them is given up on a terminal too
-                    small to afford it. Also in the View menu.
-    --surface=WHERE auto (default) or off. poptop asks the terminal for its
-                    background colour and steps its panels a few per cent away
-                    from it, so the layers match whatever scheme you already
-                    have. `off` paints nothing and skips the question.
-    --mouse=on|off  take the mouse (default on). Click the menu, click a row
-                    to select it, click or drag the timeline to scrub, wheel to
-                    move whichever of the two is under the pointer. While
-                    poptop has the mouse, dragging no longer selects text for
-                    copying; most terminals restore that if you hold Shift.
+    --glyphs=SET    timeline drawing: braille (default), block, or ascii.
+                    Falls back to ascii automatically on a Linux console.
     --color=TIER    auto (default), mono, 16, 256, or true. Honours NO_COLOR.
     --interval=SPAN time between samples: 500ms, 2s, 10m (default 1s)
-    --smooth=SPAN   how long the table's figures are averaged over (default 5s,
-                    or `off`). A process table at one sample a second is mostly
-                    noise, and the rows swap places while you are reading them.
-                    The timeline is not averaged: it is where a spike has to be
-                    found, and the table is what you read once you have found
-                    one.
     --window=SPAN   history retained, as time not samples (default 10m)
     --store=on|off  keep history across restarts (default off). Written on a
                     clean exit to $XDG_STATE_HOME/poptop/history and read at
@@ -137,7 +106,7 @@ CONFIG:
     is a `key = value` line without the leading dashes:
 
         theme    = classic
-        graph    = block    # comments run to the end of the line
+        glyphs   = block    # comments run to the end of the line
         color    = 256
         warn     = 65       # a build box is busy at 50% and fine
         critical = 90
@@ -251,25 +220,20 @@ KEYS:
                     several times over on a many-core box, and none of them is
                     what anyone opened a monitor to find. The number hidden is
                     in the panel title. Does nothing on macOS, which has none.
-    v               the next tab: memory (what each process's memory
+    v               the next view: memory (what each process's memory
                     costs, what it has reserved, whether it is being paged
                     in), then disk (the throughput columns, whatever the
-                    width), then back. The strip above the table names them,
-                    so this is the keyboard's way of doing what a click does.
+                    width), then back.
     y               expand the selected process into its threads — the
                     selected one only, so the table does not grow ninefold.
     C               show cgroups in place of processes: what each is using and
                     how stalled it is. Linux, cgroup v2.
     ?               list every key.
-    F10             open the menu bar: File, Edit, View, Go, Process, Help.
-                    Alt and a title's underlined letter opens that one
-                    directly; arrows move, Enter chooses, Esc closes. Every
-                    item names the key that also runs it, so the menu teaches
-                    itself out of use.
-    Tab             the next tab, and Shift-Tab the previous one. 1-9 open one
-                    by number. A tab is a set of columns and the sort that goes
-                    with them: CPU, memory, disk.
-    Enter           open the inspector on the selected process.
+    i               show or hide the per-process disk IO columns. Shown by
+                    default where they can be read: `/proc/<pid>/io` needs
+                    CAP_SYS_PTRACE for other users' processes, so on a box
+                    running its services as root they would be a wall of
+                    dashes, and poptop withdraws them after one sample.
     x, X            send TERM (x) or KILL (X) to the selected process, after a
                     confirmation that names it — the pid is the part that gets
                     misread, and poptop knows the command line. Off unless
@@ -393,6 +357,10 @@ enum Command {
     /// A day's summary; today when none is named.
     Report(Option<log::Date>),
     Schema,
+    /// Every setting, its value, and where it came from.
+    Config,
+    /// A config file of the current settings, at the config path.
+    WriteConfig,
     /// `json` or `line`, of a recorded day or of the machine now.
     Export {
         json: bool,
@@ -410,6 +378,7 @@ enum Command {
 struct Usage(String);
 
 const NO_STATE_DIR: &str = "no state directory — set HOME or XDG_STATE_HOME";
+const NO_CONFIG_DIR: &str = "no config directory — set HOME or XDG_CONFIG_HOME";
 
 /// Decide what the command line asks for, without doing any of it.
 ///
@@ -464,6 +433,8 @@ fn command(args: &[String]) -> Result<Command, Usage> {
             None => return Err(Usage("--check-theme needs a theme name".into())),
         },
         "--schema" => Command::Schema,
+        "--config" => Command::Config,
+        "--write-config" => Command::WriteConfig,
         "--days" => Command::Days,
         "--once" => Command::Once,
         "--bench" => Command::Bench,
@@ -614,6 +585,54 @@ fn main() -> io::Result<()> {
         Command::Schema => {
             flush(&warnings);
             out!("{}", export::schema_json());
+            return Ok(());
+        }
+        // What a setting actually did. A config file is read once at startup,
+        // above a full-screen monitor that erases whatever it said, so
+        // "did my line take effect?" had no answer short of watching the
+        // graphs. Each value is printed beside where it came from: the
+        // default, the file and its line, `NO_COLOR`, or the flag.
+        Command::Config => {
+            flush(&warnings);
+            let width = config::KEYS.iter().map(|k| k.name.len()).max().unwrap_or(0);
+            let shown = settings.resolved();
+            let value = shown.iter().map(|(_, v, _)| v.len()).max().unwrap_or(0);
+            for (name, v, from) in &shown {
+                outln!("{name:<width$}  {v:<value$}  {from}");
+            }
+            return Ok(());
+        }
+        Command::WriteConfig => {
+            let Some(path) = config::path() else {
+                fail(&warnings, NO_CONFIG_DIR, 2);
+            };
+            // Never over an existing one: a config file is written by hand,
+            // and this is a scaffold for somebody who has none.
+            if path.exists() {
+                fail(
+                    &warnings,
+                    format!("{} already exists; nothing was written", path.display()),
+                    2,
+                );
+            }
+            if let Some(dir) = path.parent()
+                && let Err(e) = std::fs::create_dir_all(dir)
+            {
+                fail(
+                    &warnings,
+                    format!("could not make {}: {e}", dir.display()),
+                    1,
+                );
+            }
+            if let Err(e) = std::fs::write(&path, settings.as_config_file()) {
+                fail(
+                    &warnings,
+                    format!("could not write {}: {e}", path.display()),
+                    1,
+                );
+            }
+            flush(&warnings);
+            outln!("wrote {}", path.display());
             return Ok(());
         }
         Command::Export { json, day } => {
@@ -775,11 +794,8 @@ fn main() -> io::Result<()> {
         .map_or(settings.history_len(), |s| s.len().max(1));
     let mut app = App::new(capacity);
     app.interval = settings.interval;
-    app.set_smooth(settings.smooth);
     app.theme = theme;
     app.glyphs = settings.glyphs;
-    app.axis = settings.axis;
-    app.density = settings.density;
     app.signals = settings.signals;
 
     // Collect once before drawing so the first frame has real numbers. CPU
@@ -866,17 +882,6 @@ fn main() -> io::Result<()> {
         ));
     }
 
-    // Before the alternate screen: the reply arrives on stdin, and the event
-    // loop would eat it. Bounded hard — see `term::background` — because a
-    // terminal that ignores the query is the common case, not the exception.
-    //
-    // Skipped entirely when the surfaces are switched off, so `surface = off`
-    // costs nothing at all, not even the wait.
-    if settings.surfaces {
-        let base = term::background(std::time::Duration::from_millis(150));
-        app.theme = app.theme.with_surfaces(base);
-    }
-
     let mut terminal = ratatui::try_init().unwrap_or_else(|e| {
         // Half an initialisation is still a changed terminal.
         ratatui::restore();
@@ -884,18 +889,6 @@ fn main() -> io::Result<()> {
     });
     TERMINAL_TAKEN.store(true, std::sync::atomic::Ordering::Relaxed);
     show_cursor_on_panic();
-    // Reported by every terminal poptop is likely to run in, and ignored until
-    // now. A menu bar you can see and cannot click reads as a bar that is
-    // broken, so the menu made this the next thing rather than a nicety.
-    //
-    // The cost is real and is stated in `--help`: while poptop has the mouse,
-    // dragging no longer selects text for copying. Every terminal worth the
-    // name restores that under Shift, and a reader who would rather have the
-    // selection can say `mouse = off`.
-    let mouse = settings.mouse;
-    if mouse {
-        let _ = crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture);
-    }
     let mut said = Vec::new();
     let result = run(
         &mut terminal,
@@ -905,15 +898,6 @@ fn main() -> io::Result<()> {
         replaying,
         &mut said,
     );
-    if mouse {
-        // Before the screen is restored, so a terminal left in mouse-reporting
-        // mode is not what somebody has to work out after poptop exits.
-        //
-        // Attempted whatever became of the terminal: if it has gone this fails
-        // and is ignored, which is the same answer the restore below reaches
-        // the long way round.
-        let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture);
-    }
     // Given back if it is still there. If it has gone, restoring it fails and
     // ratatui says so with `eprintln!`, which panics on a dead stderr — and so
     // would the `Terminal`'s drop, which shows the cursor it hid. Neither is
@@ -1484,14 +1468,6 @@ fn run(
                 };
                 break match event {
                     Event::Key(k) if k.kind == KeyEventKind::Press => Some(k),
-                    // Answered here rather than carried out of the loop like a
-                    // key. A click is a question about the layout the last
-                    // frame drew, and the frame is still on screen — the
-                    // redraw at the top of the loop is what shows the answer.
-                    Event::Mouse(m) => {
-                        handle_mouse(app, m, terminal.get_frame().area());
-                        None
-                    }
                     _ => None,
                 };
             }
@@ -1681,37 +1657,9 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         return;
     }
     // The key list is modal and any key puts it away — without also being
-    // acted on, so `q` closes it rather than quitting behind it. Ahead of the
-    // menu because it is the shallower surface: it holds no selection and
-    // nothing is lost by dismissing it, so a reader who opened it and then
-    // reached for `F10` gets the bar on the next press rather than nothing.
+    // acted on, so `q` closes it rather than quitting behind it.
     if app.show_help {
         app.show_help = false;
-        return;
-    }
-    // The bar, before every mode below it. F10 is the convention older than
-    // any of them; Alt-letter jumps straight to a title, as it does everywhere
-    // else a menu bar exists.
-    if app.menu.is_open() {
-        menu_key(app, code, mods);
-        return;
-    }
-    // Not while a box is up. The filter and the jump take every printable key,
-    // and the signal confirmation takes every key at all — a menu opening over
-    // one of them would be two modes claiming the keyboard, and the one the
-    // reader is looking at would lose.
-    let modal = app.editing_filter || app.editing_jump || app.pending.is_some();
-    if code == KeyCode::F(10) && !modal {
-        app.menu.toggle();
-        return;
-    }
-    if let KeyCode::Char(c) = code
-        && mods.contains(KeyModifiers::ALT)
-        && !modal
-        && let Some(at) = menu::MenuState::title_for(c, &menu::bar())
-    {
-        app.menu.open = Some(at);
-        app.menu.item = 0;
         return;
     }
     // A chord typed into a text box is not text. Ctrl-U or Alt-B arrive as
@@ -1720,15 +1668,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         |c: char| (!mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)).then_some(c);
     if app.editing_filter {
         match code {
-            // Enter keeps what was typed; Escape puts back what was there
-            // before. Both used to commit, so Escape was a second Enter — and
-            // a key that every other program uses to undo is the wrong one to
-            // spend on "finish".
-            KeyCode::Enter => app.editing_filter = false,
-            KeyCode::Esc => {
-                app.filter = std::mem::take(&mut app.filter_before);
-                app.editing_filter = false;
-            }
+            KeyCode::Enter | KeyCode::Esc => app.editing_filter = false,
             KeyCode::Backspace => {
                 app.filter.pop();
             }
@@ -1780,287 +1720,143 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     if !matches!(code, KeyCode::Char('x' | 'X')) {
         app.signal_note = None;
     }
-    if let Some(action) = action_for(code, mods) {
-        action.apply(app);
-    }
-}
-
-/// What a click, drag or wheel turn means.
-///
-/// Pure: it takes where the pointer is and returns an action, so the mapping
-/// can be tested without a terminal. `handle_mouse` is the two lines that apply
-/// the result and the menu bookkeeping that is not an action.
-pub fn handle_mouse(app: &mut App, ev: event::MouseEvent, area: ratatui::layout::Rect) {
-    use crossterm::event::{MouseButton, MouseEventKind};
-
-    let p = ui::panels(app, area);
-    let (x, y) = (ev.column, ev.row);
-    let inside =
-        |r: ratatui::layout::Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
-
-    match ev.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            // An open dropdown takes the click before anything under it, which
-            // is what "over" means. Without this a menu item and the table row
-            // it is drawn on top of both answer, and the table wins because it
-            // is checked first.
-            if app.menu.is_open() {
-                if let Some(rect) = ui::dropdown_rect(app, area)
-                    && inside(rect)
-                {
-                    // The frame is not an item: the top and bottom rows are the
-                    // border, and clicking a border should do nothing rather
-                    // than run whatever is nearest.
-                    // Plus whatever the list is scrolled by, from the same
-                    // function the drawing asks — an offset worked out twice
-                    // would put the click on a different item from the one
-                    // under the pointer.
-                    let row =
-                        y.saturating_sub(rect.y + 1) as usize + ui::dropdown_offset(app, area);
-                    let titles = menu::bar();
-                    if y > rect.y
-                        && y + 1 < rect.y + rect.height
-                        && let Some(t) = app.menu.open.and_then(|i| titles.get(i))
-                        && let Some(action) = t.items.get(row).and_then(|i| i.action())
-                    {
-                        app.menu.close();
-                        action.apply(app);
-                    }
-                    return;
-                }
-                // On the bar: switch titles. Anywhere else: dismiss. A menu
-                // that stayed open when you clicked past it is one you have to
-                // close twice.
-                match title_at(x) {
-                    Some(at) if app.menu.open == Some(at) => app.menu.close(),
-                    Some(at) => {
-                        app.menu.open = Some(at);
-                        app.menu.item = 0;
-                    }
-                    None => app.menu.close(),
-                }
-                return;
-            }
-            if let Some(at) = title_at(x).filter(|_| inside(p.menu)) {
-                app.menu.open = Some(at);
-                app.menu.item = 0;
-                return;
-            }
-            if inside(p.tabs)
-                && let Some(v) = tab_at(x)
-            {
-                Action::SetView(v).apply(app);
-                return;
-            }
-            if inside(p.timeline) {
-                if let Some(a) = scrub_to(app, p.timeline, x) {
-                    a.apply(app);
-                }
-                return;
-            }
-            if inside(p.table) {
-                // The column headers sort; the rows below select. Same row the
-                // caret is drawn on, which is the point of putting it there.
-                if y == ui::table_header_y(p.table) {
-                    if let Some(s) = ui::sort_at(app, p.table, x) {
-                        app.sort = s;
-                    }
-                } else if let Some(a) = row_at(p.table, y) {
-                    a.apply(app);
-                }
-            }
-        }
-        // Dragging the timeline scrubs continuously, which is the one gesture
-        // here that a keyboard cannot express at all.
-        MouseEventKind::Drag(MouseButton::Left) if inside(p.timeline) => {
-            if let Some(a) = scrub_to(app, p.timeline, x) {
-                a.apply(app);
-            }
-        }
-        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-            let down = ev.kind == MouseEventKind::ScrollDown;
-            // Over the graph the wheel moves time; over the table it moves the
-            // selection. Both are the thing under the pointer.
-            let action = if inside(p.timeline) {
-                Action::Scrub(if down { 1 } else { -1 })
-            } else {
-                Action::Select(if down { 1 } else { -1 })
-            };
-            action.apply(app);
-        }
-        _ => {}
-    }
-}
-
-/// Which tab the column `x` falls in, if any.
-fn tab_at(x: u16) -> Option<crate::app::View> {
-    crate::app::View::ALL
-        .into_iter()
-        .enumerate()
-        .find_map(|(i, v)| {
-            let at = ui::tab_column(i) as u16;
-            (x >= at && x < at + ui::tab_width(v) as u16).then_some(v)
-        })
-}
-
-/// Which menu title the column `x` falls in, if any.
-fn title_at(x: u16) -> Option<usize> {
-    let titles = menu::bar();
-    let mut at = 1u16;
-    for (i, t) in titles.iter().enumerate() {
-        let w = t.name.chars().count() as u16 + 2;
-        if x >= at && x < at + w {
-            return Some(i);
-        }
-        at += w;
-    }
-    None
-}
-
-/// The table row under `y`, as an action.
-fn row_at(table: ratatui::layout::Rect, y: u16) -> Option<Action> {
-    // One past the column headers, wherever they turned out to be — which
-    // depends on whether the summary strip took a row.
-    let first = ui::table_header_y(table) + 1;
-    (y >= first).then(|| Action::SelectRow((y - first) as usize))
-}
-
-/// The sample under column `x` of the timeline.
-fn scrub_to(app: &App, timeline: ratatui::layout::Rect, x: u16) -> Option<Action> {
-    let (start, shown, zoom) = ui::shown_window(app, timeline);
-    if shown == 0 {
-        return None;
-    }
-    let gutter = ui::GUTTER_W as u16;
-    let cell = x.checked_sub(timeline.x + gutter)? as usize;
-    let spc = app.glyphs.samples_per_cell();
-    // The same two packings the drawing uses, run backwards: a cell is `spc`
-    // slots and a slot is `zoom` samples.
-    let at = start + (cell * spc * zoom).min(shown - 1);
-    Some(Action::ScrubTo(at))
-}
-
-/// Keys while a dropdown is open.
-///
-/// The menu owns every key here. A bar that let unrelated keys through would be
-/// one you dismiss by reflex while meaning to scroll — the same reasoning as
-/// the signal confirmation.
-fn menu_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
-    let titles = menu::bar();
     match code {
-        KeyCode::Esc | KeyCode::F(10) => app.menu.close(),
-        KeyCode::Left => app.menu.move_title(-1, titles.len()),
-        KeyCode::Right => app.menu.move_title(1, titles.len()),
-        KeyCode::Up | KeyCode::Down => {
-            let delta = if code == KeyCode::Up { -1 } else { 1 };
-            if let Some(t) = app.menu.open.and_then(|i| titles.get(i)) {
-                app.menu.move_item(delta, &t.items);
-            }
-        }
-        KeyCode::Home => app.menu.item = 0,
-        KeyCode::Enter => {
-            // Closed before the action runs, not after. Several of these open a
-            // box of their own — the filter, the jump, the signal confirmation
-            // — and a dropdown still on screen over one of them is two modes
-            // claiming the keyboard.
-            let chosen = menu::chosen(app.menu, &titles);
-            app.menu.close();
-            if let Some(action) = chosen {
-                action.apply(app);
-            }
-        }
-        KeyCode::Char(c) if mods.contains(KeyModifiers::ALT) => {
-            if let Some(at) = menu::MenuState::title_for(c, &titles) {
-                app.menu.open = Some(at);
-                app.menu.item = 0;
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The action a key asks for, or `None` if it asks for nothing.
-///
-/// Separated from `handle_key` so the mapping is a table rather than a pile of
-/// statements: every one of these is also a menu item, and the two have to be
-/// the same command or they will drift. See `command.rs`.
-pub fn action_for(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
-    // Shift crosses a long buffer without holding the key down.
-    let step = if mods.contains(KeyModifiers::SHIFT) {
-        10
-    } else {
-        1
-    };
-    Some(match code {
-        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('?') => app.show_help = true,
         // Back out one level, as Esc does from the filter and the jump box: a
-        // selection first, then the program. It was a second `q`, and a key
-        // every other program uses to undo is the wrong one to spend on
-        // "quit" while there is something to let go of.
-        KeyCode::Esc => Action::Back,
-        KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => Action::Quit,
-        // The whole list, for the keys the footer has no room to hint at and
-        // the menu bar puts one dropdown away.
-        KeyCode::Char('?') => Action::ShowKeys,
+        // selection first, then the program.
+        KeyCode::Esc => {
+            if !app.deselect() {
+                app.should_quit = true;
+            }
+        }
+        KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
 
-        KeyCode::Left | KeyCode::Char('h') => Action::Scrub(-step),
-        KeyCode::Right | KeyCode::Char('l') => Action::Scrub(step),
-        KeyCode::Char(' ') => Action::ToggleLive,
-        KeyCode::Home => Action::GotoOldest,
-        KeyCode::End => Action::GotoLive,
+        // Scrubbing. Shift jumps ten samples at a time for crossing a long
+        // buffer without holding the key down.
+        KeyCode::Left | KeyCode::Char('h') => {
+            let step = if mods.contains(KeyModifiers::SHIFT) {
+                10
+            } else {
+                1
+            };
+            app.history.scrub(-step);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            let step = if mods.contains(KeyModifiers::SHIFT) {
+                10
+            } else {
+                1
+            };
+            app.history.scrub(step);
+        }
+        KeyCode::Char(' ') => {
+            // Space toggles: pause pins the cursor where it is, resume returns
+            // to the live edge.
+            if app.history.is_live() {
+                app.history.scrub(-1);
+            } else {
+                app.history.goto_live();
+            }
+        }
+        KeyCode::Home => {
+            app.history.goto_oldest();
+        }
+        KeyCode::End => {
+            app.history.goto_live();
+        }
 
-        KeyCode::Up | KeyCode::Char('k') => Action::Select(-1),
-        KeyCode::Down | KeyCode::Char('j') => Action::Select(1),
-        KeyCode::PageUp => Action::Select(-10),
-        KeyCode::PageDown => Action::Select(10),
+        KeyCode::Up | KeyCode::Char('k') => app.select_delta(-1),
+        KeyCode::Down | KeyCode::Char('j') => app.select_delta(1),
+        KeyCode::PageUp => app.select_delta(-10),
+        KeyCode::PageDown => app.select_delta(10),
 
-        // '=' so zooming in does not require Shift on most layouts.
-        KeyCode::Char('+' | '=') => Action::ZoomIn,
-        KeyCode::Char('-' | '_') => Action::ZoomOut,
+        // '=' so zooming out does not require Shift on most layouts.
+        KeyCode::Char('+' | '=') => app.zoom_in(),
+        KeyCode::Char('-' | '_') => app.zoom_out(),
 
         // The selection is of a process, so re-sorting moves the row under it
-        // and keeps it selected.
-        KeyCode::Char('s') => Action::NextSort,
-        // Accept the suggestion. Never applied on its own: a table that
-        // reorders itself under the reader is worse than one that does not.
-        KeyCode::Char('S') => Action::AcceptSuggestedSort,
+        // and keeps it selected. Resetting to the top here was the same bug as
+        // the one scrubbing had.
+        KeyCode::Char('s') => app.sort = app.sort.next(app.io_collected(), app.view),
         // Column sets, over the same rows and the same renderer. `v` because
         // atop spends seven keys on this and poptop has three views and few
         // free letters.
-        KeyCode::Char('v') => Action::NextView,
-        // The tab strip. Not `←`/`→`, which scrub time and must keep doing so:
-        // the timeline is the thing poptop has that Activity Monitor does not,
-        // and its keys come first.
-        KeyCode::Tab => Action::NextView,
-        KeyCode::BackTab => Action::PrevView,
-        KeyCode::Char(c @ '1'..='9') => {
-            let at = c as usize - '1' as usize;
-            Action::SetView(*crate::app::View::ALL.get(at)?)
+        KeyCode::Char('v') => {
+            app.view = app.view.next();
+            // Asking for the view again is asking for its columns again, if the
+            // budget had taken them away.
+            app.insist_for_view();
+            // A sort the new view cannot show would be an ordering with no
+            // visible reason for it, so switching views brings the sort with
+            // it when it has to.
+            if !app.view.sorts().contains(&app.sort) {
+                app.sort = app.view.default_sort_for(app.io_collected());
+            }
         }
+        // Accept the suggestion. Never applied on its own: a table that
+        // reorders itself under the reader is worse than one that does not, so
+        // the constraint is named and this is the one key that acts on it.
+        KeyCode::Char('S') => {
+            if let Some(c) = app.constraint() {
+                app.sort = c.sort();
+                // Sorting by a column that is not on screen answers the
+                // question invisibly: the rows move and nothing says why. The
+                // reader asked for this by pressing the key, so the columns
+                // come with it — through the same door as `i`, so collection
+                // starts with them. Setting the flag alone showed them empty
+                // wherever the probe or the budget had stopped collecting.
+                if c.sort() == app::Sort::Disk {
+                    app.reveal_io();
+                }
+            }
+        }
+        KeyCode::Char('i') => app.toggle_io(),
         // atop's key for the same thing.
-        KeyCode::Char('y') => Action::ToggleThreads,
+        KeyCode::Char('y') => app.toggle_threads(),
         // atop shows cgroups on G. C here, because g is already grouping and
         // G is not free either.
-        KeyCode::Char('C') => Action::ToggleCgroups,
-        KeyCode::Char('K') => Action::ToggleKernel,
-        KeyCode::Char('t') => Action::ToggleTree,
-        KeyCode::Char('d') => Action::ToggleDetail,
-        // `⏎` on a row, which is what a pointer would do to it.
-        KeyCode::Enter => Action::ToggleInspect,
-        // A cycle: off, by name, by user, by container — atop's `p`, `u` and
-        // `j` on one key.
-        KeyCode::Char('g') => Action::NextGrouping,
-        KeyCode::Char('/') => Action::BeginFilter,
+        KeyCode::Char('C') => app.toggle_cgroups(),
+        KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
+        KeyCode::Char('t') => {
+            app.tree = !app.tree;
+            // Grouping destroys parentage by construction, so a grouped tree
+            // would be a tree of things that are not processes. bottom makes
+            // the same two exclusive.
+            if app.tree {
+                app.group = crate::app::Grouping::Off;
+            }
+        }
+        KeyCode::Char('d') => app.detail = !app.detail,
+        KeyCode::Char('g') => {
+            // A cycle: off, by name, by user, by container — atop's `p`, `u`
+            // and `j` on one key. Each is the same machinery with a different
+            // key, so they are a choice rather than three exclusive layouts.
+            app.group = app.group.next();
+            if app.group != crate::app::Grouping::Off {
+                app.tree = false;
+            }
+        }
+        KeyCode::Char('/') => {
+            app.editing_filter = true;
+            app.filter.clear();
+        }
         // `x`, not `k`: `k` is already "select the previous process", the vim
         // binding beside `j`, and a key that quietly stopped moving the
-        // selection would be an unforgivable trade here.
-        KeyCode::Char('x') => Action::Signal(crate::signal::Signal::Term),
-        KeyCode::Char('X') => Action::Signal(crate::signal::Signal::Kill),
+        // selection would be a bad trade anywhere and an unforgivable one here.
+        KeyCode::Char('x') => app.ask_to_signal(crate::signal::Signal::Term),
+        KeyCode::Char('X') => app.ask_to_signal(crate::signal::Signal::Kill),
         // `b` for the beginning of a moment, which is atop's `-b`. Not `j`:
-        // that is already "select the next process".
-        KeyCode::Char('b') => Action::BeginJump,
-        _ => return None,
-    })
+        // that is already "select the next process", the vim binding beside
+        // `k`, and a key that quietly stopped moving the selection would be a
+        // worse trade than an unfamiliar letter.
+        KeyCode::Char('b') => {
+            app.editing_jump = true;
+            app.jump.clear();
+            app.jump_note = None;
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -2224,28 +2020,16 @@ mod tests {
 
     #[test]
     fn every_mode_has_a_way_out_that_is_not_quitting() {
-        // The filter: both keys leave the box, which is what this test is
-        // about — but they are not the same key. Enter keeps what was typed
-        // and Escape puts back what was there before, because a key every
-        // other program uses to undo is the wrong one to spend on "finish".
-        let mut a = app();
-        keys(
-            &mut a,
-            &[KeyCode::Char('/'), KeyCode::Char('x'), KeyCode::Enter],
-        );
-        assert!(!a.editing_filter && !a.should_quit);
-        assert_eq!(a.filter, "x");
-
-        // And `/` on an existing filter keeps it, so narrowing a narrowed list
-        // does not mean retyping the first query. Clearing is its own command.
-        keys(
-            &mut a,
-            &[KeyCode::Char('/'), KeyCode::Char('y'), KeyCode::Esc],
-        );
-        assert!(!a.editing_filter && !a.should_quit);
-        assert_eq!(a.filter, "x", "Escape kept the edit instead of undoing it");
-        Action::ClearFilter.apply(&mut a);
-        assert_eq!(a.filter, "");
+        // The filter: Esc and Enter both leave it, keeping what was typed;
+        // `/` again starts a fresh one, which is how a filter is cleared.
+        for leave in [KeyCode::Esc, KeyCode::Enter] {
+            let mut a = app();
+            keys(&mut a, &[KeyCode::Char('/'), KeyCode::Char('x'), leave]);
+            assert!(!a.editing_filter && !a.should_quit);
+            assert_eq!(a.filter, "x");
+            keys(&mut a, &[KeyCode::Char('/'), KeyCode::Enter]);
+            assert_eq!(a.filter, "");
+        }
         // The jump box: Esc cancels without moving.
         let mut a = app();
         keys(

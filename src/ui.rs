@@ -9,7 +9,7 @@ use crate::history;
 use crate::sample::{IoRates, NetStat, Sample};
 use crate::theme::Theme;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use std::time::Duration;
 
 /// Eighth-block glyphs, used to draw the timeline one cell per sample.
@@ -82,8 +82,6 @@ pub const PROCS_FLOOR_H: u16 = PROCS_FLOOR_ROWS + PROCS_CHROME_H;
 /// Never below the height it used to have, and never so tall the process table
 /// cannot be read.
 pub fn timeline_height(total: u16, header: u16) -> u16 {
-    // `total` is the whole frame; the bar and the tab strip have taken theirs.
-    let total = total.saturating_sub(chrome_height(total));
     let spare = total.saturating_sub(header + PROCS_RESERVE_H + 1);
     let want = (spare * 2 / 5).clamp(TIMELINE_MIN_H, TIMELINE_MAX_H);
     // On a terminal too small for the floor, take what is left over — but never
@@ -99,100 +97,24 @@ pub fn timeline_height(total: u16, header: u16) -> u16 {
 /// outrank the timeline and this would report a panel that is not there.
 #[cfg(test)]
 pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
-    // The menu bar sits above the header, so every panel is one row lower than
-    // the constants alone would say.
-    // Anchored to the bottom, where the graphs are: the help line below them,
-    // and whatever the gap and the table took above.
-    let h = timeline_height(total_height, HEADER_H);
-    let top = total_height.saturating_sub(1 + h);
-    top..top + h
+    let top = HEADER_H;
+    top..top + timeline_height(total_height, HEADER_H)
 }
 
-/// Where each panel sits in the frame.
-///
-/// Derived once and used by both the drawing and the mouse, which is the only
-/// way the two can agree about what a click landed on. A second copy of this
-/// arithmetic would put a hit box a row away from the thing drawn in it, and
-/// nothing would say so — the click would just do the wrong thing sometimes.
-pub struct Panels {
-    pub menu: Rect,
-    pub tabs: Rect,
-    pub header: Rect,
-    pub timeline: Rect,
-    pub table: Rect,
-    pub help: Rect,
-}
-
-/// The screen, top to bottom: the bar, the machine, the table's own strip, the
-/// table, the graphs, the keys.
-///
-/// The order is an argument about what each band is about, and who it belongs
-/// to.
-///
-/// The strip is above the table because it is the table's: the tabs choose
-/// which resource the *columns* describe, the settings say how the *rows* are
-/// ordered and folded, and the scope says which rows are there at all. Above
-/// the header it was navigation for the screen; here it is a toolbar for the
-/// panel underneath it, and a reader looking at a row can find every control
-/// that shaped it on the line directly above.
-///
-/// The graphs are at the bottom because they are the past and the table is the
-/// present. Reading down the screen now goes: this machine, this table, how it
-/// got here — and the timeline's caption, which says how much time is on
-/// screen and which sample the cursor is on, lands beside the key hints that
-/// scrub it rather than eight rows above them.
-///
-/// It cost no rows. The strip and the panel rule were already two lines above
-/// the table; they have swapped contents rather than multiplied — the rule
-/// gave up the settings it was naming and kept what only it says, which is
-/// what the table cannot show.
-pub fn panels(app: &App, area: Rect) -> Panels {
+pub fn draw(f: &mut Frame, app: &App) {
     // Measured rather than assumed, so the node row is a row the layout knows
     // about instead of one drawn over the timeline.
     let header = header_height(app);
-    let gap = app.density.panel_gap(area.height);
-    let c = Layout::vertical([
-        Constraint::Length(MENU_H),
+    let chunks = Layout::vertical([
         Constraint::Length(header),
-        Constraint::Length(tabs_height(area.height)),
+        Constraint::Length(timeline_height(f.area().height, header)),
         // Whatever remains. `timeline_height` has already reserved the table's
         // share, and a `Min` here would outrank the timeline's `Length` and
         // silently shrink it below the height that function reports.
         Constraint::Min(1),
-        // A blank row between the table and the graph, where the terminal is
-        // tall enough to give one up. Vertical space is the scarcest thing
-        // here, which is why this is the last comfort granted and the first
-        // withdrawn.
-        Constraint::Length(gap),
-        Constraint::Length(timeline_height(area.height.saturating_sub(gap), header)),
         Constraint::Length(1), // help
     ])
-    .split(area);
-    Panels {
-        menu: c[0],
-        header: c[1],
-        tabs: c[2],
-        table: c[3],
-        timeline: c[5],
-        help: c[6],
-    }
-}
-
-pub fn draw(f: &mut Frame, app: &App) {
-    let p = panels(app, f.area());
-
-    // The ground first, under everything. Two things follow from painting it
-    // rather than leaving it to the terminal: the interface reads as one
-    // surface instead of as text that happens to be arranged, and every
-    // contrast figure `--check-theme` reports becomes a measurement rather
-    // than an assumption about somebody else's configuration.
-    f.render_widget(Block::default().style(app.theme.surface_style()), f.area());
-    // Panels one step up, so the bands of the screen are visible without a
-    // border spending a row and a column on saying where they are.
-    for panel in [p.timeline, p.table] {
-        f.render_widget(Block::default().style(app.theme.panel_style()), panel);
-    }
-    f.render_widget(Block::default().style(app.theme.raised_style()), p.menu);
+    .split(f.area());
 
     let Some(sample) = app.history.current() else {
         f.render_widget(
@@ -202,598 +124,16 @@ pub fn draw(f: &mut Frame, app: &App) {
         return;
     };
 
-    draw_menu_bar(f, p.menu, app);
-    draw_tabs(f, p.tabs, app);
-    draw_header(f, p.header, app, sample);
-    draw_timeline(f, p.timeline, app);
+    draw_header(f, chunks[0], app, sample);
+    draw_timeline(f, chunks[1], app);
     if app.show_cgroups {
-        draw_cgroups(f, p.table, app);
+        draw_cgroups(f, chunks[2], app);
     } else {
-        draw_procs(f, p.table, app, p.timeline, p.tabs.height > 0);
+        draw_procs(f, chunks[2], app);
     }
-    draw_help(f, p.help, app);
-    // Centred on the frame, not on the table: it is a modal about one row, and
-    // sizing it to the table clipped the measurements off the bottom — which
-    // are the point, since they are the part Activity Monitor cannot do.
-    draw_inspector(f, f.area(), app);
-    // The whole list of keys, which `?` and the Help menu both ask for. Over
-    // the inspector, because it is the more recent request and covering it is
-    // the only honest way to answer one modal asked for from another.
+    draw_help(f, chunks[3], app);
     if app.show_help {
         draw_key_list(f, app);
-    }
-    // Last, over everything: a dropdown that the table drew on top of would be
-    // a menu you can open and cannot read.
-    draw_dropdown(f, f.area(), app);
-}
-
-/// The rows above the header: the menu bar, and the tab strip if it fits.
-///
-/// A function rather than a constant, because the strip is the first row given
-/// up on a short terminal — and named once, because the last time a row was
-/// added at the top, twenty tests that had written `MENU_H` to mean "the offset
-/// to the header" all had to be found and changed.
-///
-/// The two rows are no longer adjacent: the bar is above the header and the
-/// strip below it, on the table it belongs to. This is still the number the
-/// timeline has to subtract, which is what it is for — where they sit is a
-/// question for [`panels`].
-pub fn chrome_height(total: u16) -> u16 {
-    MENU_H + tabs_height(total)
-}
-
-/// The row the tab strip is drawn on, for a frame this app would fill.
-///
-/// Derived from [`panels`] so a test cannot count it out by hand and be one
-/// row wrong — which is how this file lost an afternoon the last time a band
-/// moved.
-#[cfg(test)]
-pub fn tabs_y(app: &App, area: Rect) -> u16 {
-    panels(app, area).tabs.y
-}
-
-/// Height of the tab strip, which is one row or none.
-///
-/// Drawn wherever there is room, because navigation nobody can see is
-/// navigation nobody uses. Given up before the timeline loses a row, because a
-/// graph too short to read is a worse loss than a strip whose contents the
-/// panel title still names.
-pub fn tabs_height(total: u16) -> u16 {
-    let without = MENU_H + HEADER_H + 1 + PROCS_FLOOR_H + TIMELINE_MIN_H;
-    u16::from(total > without)
-}
-
-/// Height of the tab strip when there is room for it.
-#[cfg(test)]
-pub const TABS_H: u16 = 1;
-
-/// The table's own strip: which resource, how the rows are arranged, and which
-/// rows they are.
-///
-/// One row, three jobs, left to right in the order a reader asks them. The
-/// tabs say what the columns are about. The settings say what was done to the
-/// rows — the ordering, the folding, the averaging — which used to be clauses
-/// in the panel rule underneath and are a line closer to the table here, on
-/// the row that also offers the tabs that change them. The scope says which
-/// rows are in the list at all, and never disappears.
-///
-/// The tabs are marked with an underline rather than colour alone. Five
-/// meaning-bearing hues are already spent, and a navigation strip that is
-/// invisible at the mono tier fails on exactly the terminals a monitor is most
-/// likely to be opened in.
-fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
-    let area = content(app, area);
-    // The cgroup table is a different list with an ordering of its own, and it
-    // is drawn in the panel this strip sits on. So no tab is marked while it
-    // is up — marking one would claim these columns are what is below — and
-    // the settings, which are the process table's, say nothing. What the list
-    // *is* is still said, at the end of the row where that always goes.
-    let cgroups = app.show_cgroups;
-    let mut spans = Vec::new();
-    for v in crate::app::View::ALL {
-        let on = app.view == v && !cgroups;
-        let style = if on {
-            app.theme
-                .title_style()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::UNDERLINED)
-        } else {
-            app.theme.dim_style()
-        };
-        spans.push(Span::styled(format!(" {}  ", v.label()), style));
-    }
-    // The scope, right-aligned on the same row. "Which resource" and "which
-    // processes" are the same question — what am I looking at — and putting the
-    // second one here costs no row of its own.
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    // While the filter is being typed it *is* the scope, so the field is here
-    // rather than in a box of its own at the other end of the screen. Two
-    // places saying the same thing is the objection the key hints already
-    // answer to; a filter is no different.
-    let tail: Vec<Span> = if app.editing_filter {
-        let text = format!("filter: {}", app.filter);
-        vec![
-            Span::styled(text, app.theme.cursor_style()),
-            Span::styled("█", app.theme.cursor_style()),
-        ]
-    } else if cgroups {
-        // Named rather than counted: the count and the depth are in the
-        // panel's own rule under this, and what this row has to say is which
-        // list that is.
-        vec![Span::styled("cgroups (C)", app.theme.dim_style())]
-    } else {
-        let scope = scope_text(app, (area.width as usize).saturating_sub(used + 2));
-        vec![Span::styled(scope, app.theme.dim_style())]
-    };
-    let tail_w: usize = tail.iter().map(|s| s.content.chars().count()).sum();
-    // The settings take what is left between the two, and only what is left:
-    // the tabs are the navigation and the scope is the one line that may never
-    // vanish, so this is the part of the row that gives way.
-    let settings = if cgroups {
-        String::new()
-    } else {
-        settings_text(app, (area.width as usize).saturating_sub(used + tail_w + 4))
-    };
-    let settings_w = settings.chars().count();
-    if settings_w > 0 {
-        spans.push(Span::styled(settings.clone(), app.theme.dim_style()));
-    }
-    let pad = (area.width as usize).saturating_sub(used + settings_w + tail_w + 1);
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.extend(tail);
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// What has been done to the rows: the ordering, the folding, the averaging.
-///
-/// These were clauses in the panel rule under this one, ranked among the
-/// omissions and the events. They are a different kind of statement: an
-/// omission is something the reader needs to be told, and a setting is
-/// something they did — so it belongs beside the keys that undo it, and the
-/// rule below is left to say only what the table cannot show.
-///
-/// Returned in pieces so the two places that say them can each give way in
-/// their own units: the strip drops from the end of the list, and the rule —
-/// which says them only when there is no strip — hands them to `fit_title`
-/// with ranks of their own.
-///
-/// Empty where there is nothing to say. The sort is always something, so the
-/// first is never empty; the fold and the average are off by default.
-pub fn settings_parts(app: &App) -> [String; 3] {
-    // What the rows stand for, when a row is not one process. Named, not just
-    // "grouped": the rows say what they fold only if you already know which
-    // key is in force, and `g` has four states rather than two.
-    let fold = match (app.tree, app.group) {
-        (true, _) => "tree".to_string(),
-        (_, g) if g != crate::app::Grouping::Off => g.label().replace("grouped by ", "by "),
-        _ => String::new(),
-    };
-    // Said, because otherwise the table and the timeline disagree in silence.
-    // A row reading 12.3% under a graph showing a spike to 40 is two panels
-    // contradicting each other, and nothing else says one of them is an
-    // average.
-    let avg = if app.smoothing().is_on() {
-        format!("avg {}", fmt_smooth(app.smooth, app.interval))
-    } else {
-        String::new()
-    };
-    [format!("sort {}", app.sort.label()), fold, avg]
-}
-
-/// The settings as one clause for the strip, in whatever room is left.
-///
-/// A ladder, given up from the least important end, and it may reach nothing:
-/// the sorted column wears a caret in its own header (0206), so the ordering
-/// is named on screen whether or not this is. That is what makes it safe for
-/// this to be the part of the strip that gives way.
-///
-/// The kernel toggle is not here. That one hides rows, and how many were
-/// hidden is a fact the panel rule states as an omission — which is where a
-/// reader who has forgotten the setting will find it.
-pub fn settings_text(app: &App, width: usize) -> String {
-    let [sort, fold, avg] = settings_parts(app);
-    let join = |parts: &[&str]| -> String {
-        let kept: Vec<&str> = parts.iter().copied().filter(|p| !p.is_empty()).collect();
-        if kept.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", kept.join(" · "))
-        }
-    };
-    [
-        join(&[&sort, &fold, &avg]),
-        join(&[&sort, &fold]),
-        join(&[&sort]),
-        String::new(),
-    ]
-    .into_iter()
-    .find(|r| r.chars().count() <= width)
-    .unwrap_or_default()
-}
-
-/// What is being listed, and what has narrowed it.
-///
-/// Present when nothing is filtered, which is what makes it trustworthy when
-/// something is: the line never disappears, so its absence can never be
-/// mistaken for "no filter". poptop used to state this in a clause of the
-/// process panel's title — and that title is a ladder whose clauses are dropped
-/// from the least important end, so on the terminals where the table is hardest
-/// to read, the sentence saying *which* processes these are went first.
-///
-/// A table that does not say it is filtered is a table that lies about the
-/// machine, and it does it silently. So this has its own ladder, and the bottom
-/// rung is still a pair of numbers rather than nothing.
-pub fn scope_text(app: &App, width: usize) -> String {
-    let rows = app.visible_rows();
-    let shown: usize = rows
-        .iter()
-        .filter(|r| !r.is_thread())
-        .map(|r| r.count())
-        .sum();
-    // Every process in the sample, including the ones a filter or the kernel
-    // toggle is hiding — the denominator has to be the machine, or "4 of 4"
-    // would be true of a filtered list and say nothing.
-    let total = app.history.current().map_or(0, |s| s.procs.len());
-    let user = app.one_user();
-    let filter = app.filter.trim();
-
-    let mut rungs = Vec::new();
-    if filter.is_empty() {
-        if let Some(u) = user.as_deref() {
-            rungs.push(format!("All processes · {total} · {u}"));
-        }
-        rungs.push(format!("All processes · {total}"));
-        rungs.push(format!("{total} processes"));
-        rungs.push(format!("{total}"));
-    } else {
-        if let Some(u) = user.as_deref() {
-            rungs.push(format!("{filter} · {shown} of {total} · {u}"));
-        }
-        rungs.push(format!("{filter} · {shown} of {total}"));
-        rungs.push(format!("{shown} of {total}"));
-        rungs.push(format!("{shown}/{total}"));
-    }
-    rungs
-        .into_iter()
-        .find(|r| r.chars().count() <= width)
-        // Never nothing. A scope line that can vanish is one whose absence
-        // means "unfiltered", and that is the claim this exists to stop.
-        .unwrap_or_else(|| format!("{shown}/{total}"))
-}
-
-/// Where a tab's name starts, in columns. Shared with the mouse.
-pub fn tab_column(index: usize) -> usize {
-    crate::app::View::ALL
-        .iter()
-        .take(index)
-        .fold(1, |at, v| at + v.label().chars().count() + 4)
-}
-
-/// Width of a tab's clickable region.
-pub fn tab_width(v: crate::app::View) -> usize {
-    v.label().chars().count() + 4
-}
-
-/// Height of the menu bar. One row, always drawn — a bar that appeared only
-/// when opened would be a bar nobody discovers, which is the whole reason it
-/// exists.
-pub const MENU_H: u16 = 1;
-
-/// The bar: `File  Edit  View  Go  Process`, with the open one highlighted.
-fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
-    let area = content(app, area);
-    let titles = crate::menu::bar();
-    let mut spans = Vec::new();
-    for (i, t) in titles.iter().enumerate() {
-        let open = app.menu.open == Some(i);
-        let style = if open {
-            app.theme.selection_style()
-        } else {
-            app.theme.title_style()
-        };
-        spans.push(Span::styled(format!(" {} ", t.name), style));
-    }
-    // The key that opens it, stated on the bar itself. A menu bar with no way
-    // in is decoration.
-    //
-    // At the far end, not two spaces after `Process`, where it read as a sixth
-    // menu — and where the eye going down the left-hand column hits it before
-    // it hits anything on the row below. The scope sits at that end of the tab
-    // strip for the same reason: this column of the screen is for what the bar
-    // *is*, not for what is on it. Dropped rather than crowded when the titles
-    // leave no room, like every other hint here.
-    let hint = if app.menu.is_open() {
-        "↑↓ move · ⏎ choose · esc close"
-    } else {
-        "F10 menu"
-    };
-    let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
-    let room = (area.width as usize).saturating_sub(used + 1);
-    if cols(hint) <= room {
-        spans.push(Span::raw(" ".repeat(room - cols(hint))));
-        spans.push(Span::styled(hint.to_string(), app.theme.dim_style()));
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// The open dropdown, drawn over whatever is beneath it.
-/// One process, everything poptop holds about it, over the table.
-///
-/// `d` replaces the timeline with the selected process's history, which is a
-/// different and better thing than this and is not a substitute for it: the
-/// full command is truncated in the table and available nowhere, the parent is
-/// collected and shown only in the tree, and `--export` has every field and is
-/// not a thing you read while looking at a row.
-///
-/// The peaks are the part Activity Monitor cannot do. They come from the
-/// buffer, and they are the answer to "is this normal for it".
-fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
-    if !app.inspecting {
-        return;
-    }
-    let Some(sample) = app.history.current() else {
-        return;
-    };
-    let Some(watched) = app.selected.as_ref() else {
-        return;
-    };
-    let Some(p) = sample.procs.iter().find(|p| watched.matches(p)) else {
-        return;
-    };
-
-    // Over the whole buffer, not the visible window: "is this normal for it"
-    // is a question about everything that was recorded, and the window is a
-    // scroll position.
-    let (mut peak_cpu, mut peak_rss, mut seen) = (0.0f32, 0u64, 0usize);
-    for s in app.history.iter() {
-        if let Some(q) = s.procs.iter().find(|q| watched.matches(q)) {
-            peak_cpu = peak_cpu.max(q.cpu);
-            peak_rss = peak_rss.max(q.rss);
-            seen += 1;
-        }
-    }
-
-    let dim = app.theme.dim_style();
-    let val = app.theme.title_style();
-    let pair = |k: &str, v: String| {
-        Line::from(vec![
-            Span::styled(format!(" {k:<9}"), dim),
-            Span::styled(v, val),
-        ])
-    };
-    let mut lines = vec![
-        Line::from(Span::styled(format!(" {}", p.command()), val)),
-        Line::from(""),
-        pair("user", p.user.to_string()),
-        pair("pid", format!("{}  parent {}", p.pid, p.ppid)),
-        pair(
-            "state",
-            match p.state {
-                'R' => "R · running".into(),
-                'S' => "S · sleeping".into(),
-                'D' => "D · uninterruptible".into(),
-                'Z' => "Z · zombie".into(),
-                'T' => "T · stopped".into(),
-                c => c.to_string(),
-            },
-        ),
-        pair(
-            "threads",
-            p.threads.map_or_else(|| "—".into(), |n| n.to_string()),
-        ),
-    ];
-    if let Some(n) = p.nice {
-        lines.push(pair("nice", n.to_string()));
-    }
-    if let Some(c) = p.container.as_deref() {
-        lines.push(pair("container", c.to_string()));
-    }
-    lines.push(Line::from(""));
-    // Both time bases are named, because they are different: the figure is the
-    // moment under the cursor and the peak is everything recorded. A panel
-    // showing two clocks without saying so is one whose numbers cannot be
-    // compared with each other.
-    lines.push(pair(
-        "cpu",
-        format!("{:.1}%   peak {peak_cpu:.1}% over {seen} samples", p.cpu),
-    ));
-    lines.push(pair(
-        "memory",
-        format!("{}   peak {}", fmt_bytes(p.rss), fmt_bytes(peak_rss)),
-    ));
-    if let Some(io) = p.io.as_ref() {
-        lines.push(pair(
-            "disk",
-            format!(
-                "{}/s read · {}/s written",
-                fmt_bytes(io.read),
-                fmt_bytes(io.write)
-            ),
-        ));
-    }
-
-    let w = lines
-        .iter()
-        .map(|l| l.spans.iter().map(|s| cols(&s.content)).sum::<usize>())
-        .max()
-        .unwrap_or(20)
-        .clamp(24, area.width.saturating_sub(4) as usize);
-    let h = (lines.len() + 2).min(area.height.saturating_sub(2) as usize);
-    // Centred in the panel it is over, which means the panel's own origin: a
-    // box positioned in frame coordinates lands on whatever is at the top of
-    // the screen instead.
-    let x = area.x + (area.width.saturating_sub(w as u16 + 2)) / 2;
-    let y = area.y + (area.height.saturating_sub(h as u16)) / 2;
-    let box_area = Rect::new(x, y, w as u16 + 2, h as u16);
-
-    f.render_widget(Clear, box_area);
-    f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
-
-    // Both ends of the box are drawn by this function, so both have to be
-    // measured by it. A line wider than `w` used to be laid down whole and
-    // clipped by the terminal, which ate the right border and left the command
-    // running into whatever was behind the box — on a full command line, which
-    // is most of them, the panel simply had no right-hand side.
-    let title = elide_middle(&format!(" {} · {} ", p.name, p.pid), w);
-    let bar = "─".repeat(w.saturating_sub(cols(&title)));
-    let mut framed = vec![Line::from(Span::styled(
-        format!("╭{title}{bar}╮"),
-        app.theme.chrome_style(),
-    ))];
-    for l in lines.into_iter().take(h.saturating_sub(2)) {
-        let mut spans = vec![Span::styled("│", app.theme.chrome_style())];
-        let mut used = 0usize;
-        for span in l.spans {
-            let room = w - used;
-            if room == 0 {
-                break;
-            }
-            let text = elide_middle(&span.content, room);
-            used += cols(&text);
-            spans.push(Span::styled(text, span.style));
-        }
-        spans.push(Span::raw(" ".repeat(w - used)));
-        spans.push(Span::styled("│", app.theme.chrome_style()));
-        framed.push(Line::from(spans));
-    }
-    framed.push(Line::from(Span::styled(
-        format!("╰{}╯", "─".repeat(w)),
-        app.theme.chrome_style(),
-    )));
-    f.render_widget(Paragraph::new(framed), box_area);
-}
-
-/// Where the open dropdown sits, if one is open.
-///
-/// Shared with the mouse for the reason `panels` is: a hit box computed
-/// separately from the box it is drawn in agrees until it does not.
-pub fn dropdown_rect(app: &App, area: Rect) -> Option<Rect> {
-    let titles = crate::menu::bar();
-    let open = app.menu.open?;
-    let title = titles.get(open)?;
-    let w = crate::menu::width(title).min(area.width.saturating_sub(2) as usize);
-    let y = MENU_H;
-    if area.height <= y + 1 || w == 0 {
-        return None;
-    }
-    let x = crate::menu::title_column(open, &titles)
-        .min(area.width.saturating_sub(w as u16 + 1) as usize) as u16;
-    let h = ((title.items.len() + 2) as u16).min(area.height - y);
-    Some(Rect::new(x, y, w as u16, h))
-}
-
-/// The first item drawn, when the dropdown is taller than the screen.
-///
-/// Shared with the mouse for the reason [`dropdown_rect`] is: an offset worked
-/// out twice puts the highlight on one item and the click on another.
-///
-/// The list used to be cut off at the bottom instead, which is worse than it
-/// sounds — `move_item` still walked onto the items nobody could see, so the
-/// highlight left the screen and the menu read as having stopped responding.
-pub fn dropdown_offset(app: &App, area: Rect) -> usize {
-    let Some(rect) = dropdown_rect(app, area) else {
-        return 0;
-    };
-    let titles = crate::menu::bar();
-    let Some(title) = app.menu.open.and_then(|i| titles.get(i)) else {
-        return 0;
-    };
-    let shown = rect.height.saturating_sub(2) as usize;
-    if shown == 0 || title.items.len() <= shown {
-        return 0;
-    }
-    // Scrolled no further than the highlight demands, so the list sits at its
-    // top until something below the fold is reached and returns there when it
-    // wraps round.
-    app.menu
-        .item
-        .saturating_sub(shown - 1)
-        .min(title.items.len() - shown)
-}
-
-fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
-    let titles = crate::menu::bar();
-    let Some(open) = app.menu.open else { return };
-    let Some(title) = titles.get(open) else {
-        return;
-    };
-    let Some(box_area) = dropdown_rect(app, area) else {
-        return;
-    };
-    let (w, h) = (box_area.width as usize, box_area.height);
-
-    // Cleared first: a dropdown is opaque, and ratatui draws over rather than
-    // through. Then the raised ground, which is what makes it read as being
-    // *over* the table rather than cut into it.
-    f.render_widget(Clear, box_area);
-    f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
-
-    let inner = w.saturating_sub(2);
-    // A rule, with a mark on it when there is more list in that direction. In
-    // the border rather than on a row of its own: the reason the list is being
-    // scrolled is that rows are scarce.
-    let rule = |left: char, right: char, more: bool| {
-        let mut mid = "─".repeat(inner);
-        if more && inner >= 3 {
-            mid = format!(
-                "{}{}─",
-                "─".repeat(inner - 2),
-                if left == '╭' { '↑' } else { '↓' }
-            );
-        }
-        Line::from(Span::styled(
-            format!("{left}{mid}{right}"),
-            app.theme.chrome_style(),
-        ))
-    };
-    let shown = (h as usize).saturating_sub(2);
-    let offset = dropdown_offset(app, area);
-    let mut lines = vec![rule('╭', '╮', offset > 0)];
-    for (i, item) in title.items.iter().enumerate().skip(offset).take(shown) {
-        lines.push(match item {
-            crate::menu::Item::Rule => Line::from(Span::styled(
-                format!("├{}┤", "─".repeat(inner)),
-                app.theme.chrome_style(),
-            )),
-            crate::menu::Item::Do(label, key, _) => {
-                let tick = match crate::menu::checked(item, app) {
-                    Some(true) => "• ",
-                    Some(false) => "  ",
-                    None => "  ",
-                };
-                let key_w = key.chars().count();
-                let gap =
-                    inner.saturating_sub(2 + tick.chars().count() + label.chars().count() + key_w);
-                let text = format!(
-                    " {tick}{label}{}{key} ",
-                    " ".repeat(gap.max(1).saturating_sub(1))
-                );
-                let style = if i == app.menu.item {
-                    app.theme.selection_style()
-                } else {
-                    app.theme.dim_style()
-                };
-                Line::from(vec![
-                    Span::styled("│", app.theme.chrome_style()),
-                    Span::styled(cut(&text, inner), style),
-                    Span::styled("│", app.theme.chrome_style()),
-                ])
-            }
-        });
-    }
-    if lines.len() < h as usize {
-        lines.push(rule('╰', '╯', offset + shown < title.items.len()));
-    }
-    f.render_widget(Paragraph::new(lines), box_area);
-}
-
-/// Pad or truncate to exactly `n` columns.
-fn cut(s: &str, n: usize) -> String {
-    let have = s.chars().count();
-    if have >= n {
-        s.chars().take(n).collect()
-    } else {
-        format!("{s}{}", " ".repeat(n - have))
     }
 }
 
@@ -876,51 +216,6 @@ fn divider_of(parts: Vec<Span<'static>>, width: u16, theme: &Theme) -> Line<'sta
     Line::from(out)
 }
 
-/// A byte rate in a fixed number of columns.
-///
-/// The width of a figure must not depend on its value. `4.1M/s` is six columns
-/// and `635.7K/s` is eight, so a network figure that switched between them
-/// moved every figure to its right — measured at forty-six columns shifting a
-/// second, which is most of what made this row look unstable.
-///
-/// Three significant figures, which is more than anybody reads off a header,
-/// and right-aligned so the unit lands in the same place every time.
-pub fn fmt_rate(b: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
-    let mut v = b as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    let n = if i == 0 || v >= 100.0 {
-        format!("{v:.0}")
-    } else if v >= 10.0 {
-        format!("{v:.1}")
-    } else {
-        format!("{v:.2}")
-    };
-    let text = format!("{n}{}/s", UNITS[i]);
-    // A counter that wrapped, or a clock that jumped. No interface carries
-    // sixteen exabytes a second, and the honest rendering of "this is not a
-    // rate" is not to print it — but the fixed width is the whole point of this
-    // function, so it says there was one rather than going blank.
-    let text = if text.chars().count() > RATE_W {
-        "≫1T/s".to_string()
-    } else {
-        text
-    };
-    format!("{text:>RATE_W$}")
-}
-
-/// Columns an interface name occupies. Most are three or four — `en0`, `lo0`,
-/// `eth0`, `wlan0` — and a longer one is elided rather than allowed to shift
-/// the row it sits in.
-pub const IFACE_W: usize = 5;
-
-/// Columns a rate occupies, whatever it is. `1023K/s` is the widest.
-pub const RATE_W: usize = 7;
-
 pub fn fmt_bytes(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut v = b as f64;
@@ -962,12 +257,10 @@ pub fn fmt_lag(d: Duration) -> String {
 fn fmt_uptime(d: Duration) -> String {
     let s = d.as_secs();
     let (days, hours, mins) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
-    // Padded, so the ninth day does not move every figure beside it when it
-    // becomes the tenth — and neither does the hour, or the minute.
     if days > 0 {
-        format!("{days:>3}d {hours:02}h {mins:02}m")
+        format!("{days}d {hours}h {mins}m")
     } else {
-        format!("     {hours:02}h {mins:02}m")
+        format!("{hours}h {mins}m")
     }
 }
 
@@ -985,96 +278,8 @@ fn fmt_uptime(d: Duration) -> String {
 ///
 /// What "wide enough for everything" means, and so what the heat legend has to
 /// fit alongside.
-/// How much air the layout is given.
-///
-/// Every value here is a *maximum*. A narrow terminal gives them up before it
-/// gives up a column of the command line, and a short one before it gives up a
-/// row of the table — comfort is the first thing surrendered, because a process
-/// you cannot identify is a worse loss than a row that touches the edge.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Density {
-    /// Everything packed. What poptop looked like before this was a choice.
-    Compact,
-    #[default]
-    Comfortable,
-    /// For a wide terminal with room to spare.
-    Spacious,
-}
-
-impl Density {
-    pub const NAMES: &'static str = "compact, comfortable or spacious";
-    pub const ALL: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "compact" | "tight" => Some(Self::Compact),
-            "comfortable" | "normal" => Some(Self::Comfortable),
-            "spacious" | "loose" => Some(Self::Spacious),
-            _ => None,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Compact => "Compact",
-            Self::Comfortable => "Comfortable",
-            Self::Spacious => "Spacious",
-        }
-    }
-
-    /// The frame's content margin, in columns, either side.
-    ///
-    /// *One* margin, for every row that is not a full-width divider. Measured
-    /// before this existed, content began at column 0, 1, 2 or 3 depending on
-    /// which row it was — the menu bar flush left, the tab strip three in, the
-    /// header one, the table two, the footer none. Five margins rather than
-    /// one, which is what made the layout feel ragged rather than merely tight.
-    ///
-    /// The panel dividers are the exception and keep spanning: they are what
-    /// tells you where a panel starts, and one stopping short of the edge reads
-    /// as a box missing its corners.
-    pub fn margin(self, width: u16) -> u16 {
-        let want = match self {
-            Self::Compact => 0,
-            Self::Comfortable => 1,
-            Self::Spacious => 2,
-        };
-        // A hundred and four columns is enough to draw a deep tree of Chrome
-        // helpers and not enough to spare two.
-        want.min(width.saturating_sub(104) / 16)
-    }
-
-    /// Columns between two of the table's columns.
-    ///
-    /// Always one, and this is deliberate. A second column of air between
-    /// thirteen columns is thirteen off the command line, and it has to be
-    /// known by `command_width` as well as by the hit-testing — a third place
-    /// for the same fact, which is the bug this interface keeps having. The
-    /// columns are already told apart by their alignment; the air goes into the
-    /// inset and the header instead, where it costs one column and none.
-    pub fn column_gap(self) -> u16 {
-        let _ = self;
-        1
-    }
-
-    /// The gap between two figures about the same resource, in the header.
-    pub fn header_gap(self) -> &'static str {
-        match self {
-            Self::Compact => "  ",
-            Self::Comfortable => "   ",
-            Self::Spacious => "    ",
-        }
-    }
-
-    /// A blank row above the process table, separating it from the timeline.
-    ///
-    /// Vertical space is the scarcest thing in a terminal, so this is the last
-    /// comfort granted and the first withdrawn.
-    pub fn panel_gap(self, height: u16) -> u16 {
-        u16::from(self == Self::Spacious && height >= 30)
-    }
-}
-
+/// Between two figures about the same resource.
+const NEAR: &str = "  ";
 /// Between two groups. Wider, and marked, because a group boundary that looks
 /// like the gap inside a group is not a boundary — and the mark carries on a
 /// terminal with no colour to spend.
@@ -1083,8 +288,7 @@ const FAR: &str = "  │  ";
 /// Exposed for tests: the units the fitting arithmetic is done in.
 #[cfg(test)]
 pub fn separator_widths_for_test() -> (usize, usize, usize, usize) {
-    let near = Density::default().header_gap();
-    (sep_w(near), near.len(), sep_w(FAR), FAR.len())
+    (sep_w(NEAR), NEAR.len(), sep_w(FAR), FAR.len())
 }
 
 /// The columns a separator occupies.
@@ -1129,7 +333,7 @@ fn sep_w(sep: &str) -> usize {
     cols(sep)
 }
 
-fn full_width(figures: &[Figure<'_>], near: &str) -> usize {
+fn full_width(figures: &[Figure<'_>]) -> usize {
     let mut order: Vec<&Figure<'_>> = figures.iter().collect();
     order.sort_by_key(|f| f.group);
     let mut w = 0;
@@ -1137,7 +341,7 @@ fn full_width(figures: &[Figure<'_>], near: &str) -> usize {
     for f in order {
         w += match last {
             None => 0,
-            Some(g) if g == f.group => sep_w(near),
+            Some(g) if g == f.group => sep_w(NEAR),
             Some(_) => sep_w(FAR),
         } + f.spans.iter().map(|s| cols(&s.content)).sum::<usize>();
         last = Some(f.group);
@@ -1145,7 +349,7 @@ fn full_width(figures: &[Figure<'_>], near: &str) -> usize {
     w
 }
 
-fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme, near: &str) -> Vec<Span<'a>> {
+fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme) -> Vec<Span<'a>> {
     let widths: Vec<usize> = figures
         .iter()
         .map(|f| f.spans.iter().map(|s| cols(&s.content)).sum())
@@ -1167,7 +371,7 @@ fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme, near: &str) ->
         for &i in &shown {
             w += match last {
                 None => 0,
-                Some(g) if g == groups[i] => sep_w(near),
+                Some(g) if g == groups[i] => sep_w(NEAR),
                 Some(_) => sep_w(FAR),
             } + widths[i];
             last = Some(groups[i]);
@@ -1176,15 +380,6 @@ fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme, near: &str) ->
     };
 
     // What to keep: by rank, least diagnostic first out.
-    //
-    // *Not* by the tab. Biasing this toward the tab's own group was tried and
-    // is wrong: `Group` says where a figure sits, not how much it explains, and
-    // `Compute` holds both the two figures that answer "why is this slow" and
-    // the load average that conflates them. Promoting the group promoted the
-    // one figure the ladder had deliberately demoted.
-    //
-    // The header is about the machine, and "why is this machine slow" has the
-    // same answer whichever table you are reading. The tab governs the columns.
     let mut order: Vec<usize> = (0..figures.len()).collect();
     order.sort_by_key(|&i| figures[i].rank);
     let mut keep = vec![false; figures.len()];
@@ -1208,7 +403,7 @@ fn fit<'a>(figures: Vec<Figure<'a>>, width: usize, theme: &Theme, near: &str) ->
     for &i in &shown {
         match last {
             None => {}
-            Some(g) if g == groups[i] => out.push(Span::raw(near.to_string())),
+            Some(g) if g == groups[i] => out.push(Span::raw(NEAR)),
             Some(_) => out.push(Span::styled(FAR, theme.chrome_style())),
         }
         last = Some(groups[i]);
@@ -1409,32 +604,7 @@ fn short_mount(mount: &str) -> String {
 /// all would be the figure that taught everyone to ignore it.
 pub const CLOCK_NOMINAL: f32 = 99.0;
 
-/// A per-second count, shortened once it stops being readable in full.
-///
-/// A busy box switches a hundred thousand times a second, and `103847/s` is six
-/// characters of precision nobody uses on a row that is already fighting for
-/// width.
-#[cfg(test)]
-pub fn rate_per_s_for_test(n: u64) -> String {
-    rate_per_s(n)
-}
-
-fn rate_per_s(n: u64) -> String {
-    match n {
-        0..=9_999 => format!("{n}/s"),
-        10_000..=999_999 => format!("{:.0}k/s", n as f64 / 1_000.0),
-        1_000_000..=999_999_999 => format!("{:.1}M/s", n as f64 / 1_000_000.0),
-        // A machine cannot switch a billion times a second. A figure this large
-        // is a counter that wrapped or a clock that jumped, and the honest
-        // rendering of "this number is not a rate" is not to print it — but it
-        // is still a fact about the machine, so the row says there was one
-        // rather than going blank.
-        _ => "≫1G/s".to_string(),
-    }
-}
-
 fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
-    let area = content(app, area);
     let mem_pct = s.mem.used_pct();
     let dim = app.theme.dim_style();
     let cores = s.cpu_per_core.len().max(1);
@@ -1765,13 +935,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             group: Group::Network,
             rank: 55,
             spans: vec![
-                // The name in a fixed cell too: a laptop's busiest interface
-                // flips between `lo0` and `en0` from second to second, and the
-                // figure cannot change width when it does.
-                Span::styled(format!("{:<IFACE_W$} ", elide_middle(&name, IFACE_W)), dim),
-                Span::styled(format!("{down}{}", fmt_rate(rx)), dim),
+                Span::styled(format!("{name} "), dim),
+                Span::styled(format!("{down}{}/s", fmt_bytes(rx)), dim),
                 Span::styled(" ", dim),
-                Span::styled(format!("{up}{}", fmt_rate(tx)), dim),
+                Span::styled(format!("{up}{}/s", fmt_bytes(tx)), dim),
             ],
         });
     }
@@ -1850,33 +1017,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         rank: 80,
         spans: vec![
             Span::styled("PROCS ", dim),
-            // Right-aligned in four: a box crossing a thousand processes must
-            // not move the figures beside it.
-            Span::raw(format!("{:>4}", s.procs.len())),
+            Span::raw(s.procs.len().to_string()),
         ],
     });
-    // Only where the platform counts them, which is Linux: macOS has no
-    // `/proc/stat`, and a zero there would be a fabricated figure about the one
-    // thing this row exists to notice.
-    //
-    // This is the honest end of "energy". Activity Monitor scores it, from a
-    // formula that is not public, using a per-process wakeup count that neither
-    // platform gives up cheaply — `CONFIG_SCHEDSTATS` is off by default on
-    // Linux and `task_power_info` needs root on macOS. What *is* measured is
-    // the machine's switch and interrupt rate, and a machine thrashing between
-    // threads looks identical to a busy one without it. See cairn 126.
-    if let Some(csw) = s.ctxt {
-        figures.push(Figure {
-            group: Group::Compute,
-            rank: 95,
-            spans: vec![
-                Span::styled("CSW ", dim),
-                Span::raw(rate_per_s(csw)),
-                Span::styled("  IRQ ", dim),
-                Span::raw(s.intr.map_or_else(|| "—".to_string(), rate_per_s)),
-            ],
-        });
-    }
     // Last to survive. Load conflates runnable and blocked into one number,
     // which is exactly the confusion `RUN` and `BLOCKED` exist to undo — and
     // the smoothing it adds is what the timeline is for. Kept for the people
@@ -1921,9 +1064,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // vanished from. Against the full set the condition depends on width alone,
     // and the scale is strictly the first thing given up — which is what the
     // ladder always said it was.
-    let scale = heat_scale(area.width, &app.theme).filter(|s| {
-        state_w + full_width(&figures, app.density.header_gap()) + 2 + cols(s) <= width
-    });
+    let scale = heat_scale(area.width, &app.theme)
+        .filter(|s| state_w + full_width(&figures) + 2 + cols(s) <= width);
     let reserved = scale.as_ref().map_or(0, |s| cols(s) + 2);
 
     let mut line = vec![state];
@@ -1931,7 +1073,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         figures,
         width.saturating_sub(state_w + reserved),
         &app.theme,
-        app.density.header_gap(),
     );
 
     line.extend(spans);
@@ -2148,38 +1289,6 @@ pub fn draw_timeline_for_test(f: &mut Frame, area: Rect, app: &App) {
     draw_timeline(f, area, app);
 }
 
-/// The span of history the timeline is showing: first sample, sample count, and
-/// the zoom those samples are aggregated at.
-///
-/// Extracted so the table's sparklines can be drawn on the same clock. A spike
-/// halfway along the timeline has to sit halfway along the row's history too,
-/// or the two pictures are of different spans and the reader has to know which
-/// before either can be believed.
-///
-/// Derived rather than stored, like `window_start` itself: it depends on panel
-/// width and zoom, both of which are render-time facts.
-pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
-    // The drawn width, margin included, or the window the table's sparklines
-    // are aggregated over would not be the window the graph shows.
-    let area = content(app, area);
-    let inner_w = area.width as usize;
-    let inner_h = area.height.saturating_sub(1) as usize;
-    if inner_w == 0 || inner_h == 0 {
-        return (0, 0, 1);
-    }
-    let graph_rows = inner_h.saturating_sub(1).max(1);
-    let gutter = if inner_w >= MIN_WIDTH_FOR_GUTTER && graph_rows >= MIN_ROWS_FOR_AXIS {
-        GUTTER_W
-    } else {
-        0
-    };
-    let slots = inner_w.saturating_sub(gutter) * app.glyphs.samples_per_cell();
-    let len = app.history.len();
-    let zoom = app::effective_zoom(app.zoom(), len, slots);
-    let shown = (slots * zoom).min(len);
-    (window_start(&app.history, shown), shown, zoom)
-}
-
 /// The scrubable timeline, oldest on the left.
 ///
 /// Two packings compose here: each character cell holds `samples_per_cell`
@@ -2187,11 +1296,6 @@ pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
 /// with braille that is ten seconds per cell, so a normal terminal shows the
 /// entire buffer.
 fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
-    // The graph rows take the margin; the divider above them does not. A
-    // divider that stopped short of the edge reads as a box missing its
-    // corners, which is why the process panel's spans too.
-    let full = area;
-    let area = content(app, area);
     let inner_w = area.width as usize;
     let inner_h = area.height.saturating_sub(1) as usize;
     if inner_w == 0 || inner_h == 0 {
@@ -2217,18 +1321,11 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     };
     let graph_w = inner_w.saturating_sub(gutter);
 
-    // One sample a cell. The old packing put two side by side to double the
-    // horizontal resolution of an *area*; a line has one stroke a column, and two
-    // values sharing a cell would be a smear rather than two readings. The trade
-    // is real — half as many samples on screen — and `+`/`-` answers it, since
-    // zoom aggregates by peak so a spike survives the compression.
     let spc = app.glyphs.samples_per_cell();
     let slots = graph_w * spc;
     let samples: Vec<&Sample> = app.history.iter().collect();
-    // From the shared computation, not a second copy of it: the table's
-    // sparklines are drawn on this window too, and two derivations of the same
-    // window drift the moment either is touched.
-    let (window_start, shown, zoom) = shown_window(app, area);
+    let zoom = app::effective_zoom(app.zoom(), samples.len(), slots);
+    let shown = (slots * zoom).min(samples.len());
     // Text-editor scrolling. The window stays anchored to the live edge while
     // the cursor is inside it, and follows only once the cursor would leave —
     // so the live view never shuffles, and scrubbing never takes you somewhere
@@ -2237,6 +1334,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Stateless on purpose: the window position is derived from the cursor each
     // frame rather than stored, so there is no scroll offset to keep in sync
     // with a buffer that is being written to at the same time.
+    let window_start = window_start(&app.history, shown);
     let window = &samples[window_start..window_start + shown];
 
     // The selected process's own history, in place of the machine's. Same
@@ -2363,62 +1461,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let row_split = sections(graph_rows, candidates.len(), gutter);
     candidates.truncate(row_split.len());
 
-    // Slotted once, here, because two things read these values and they have to
-    // be the same values: the ceiling below is picked from them, and the rows
-    // are drawn from them.
-    let slotted: Vec<Vec<Option<f32>>> = candidates
-        .iter()
-        .map(|(_, raw, _)| history::peak_slots(raw, zoom, slots))
-        .collect();
-
-    // One ceiling per unit, not one per panel.
-    //
-    // Each panel used to walk the ladder on its own peak, which made the stack
-    // of graphs move as three pictures rather than one: memory sat at 100 while
-    // CPU crossed 25 and jumped to 100 in a single frame, redrawing every
-    // sample already on screen a quarter as tall. Nothing about the past had
-    // changed — only the axis — and a graph whose history redraws itself is one
-    // nobody can read a trend off.
-    //
-    // It also made the two panels incomparable, which is the older complaint:
-    // CPU at 20% on a ceiling of 25 is drawn taller than memory at 72% on a
-    // ceiling of 100, and the shapes say the opposite of the figures.
-    //
-    // Shared, not fixed. A machine idle at 3% CPU and 20% memory still gets a
-    // ceiling of 25 rather than a panel of blank rows — which is what a fixed
-    // 0..100 axis would cost, and the reason the ladder exists at all. Percent
-    // shares with percent and a byte rate with a byte rate; the two never share
-    // with each other, because they are not the same question.
-    // And held across frames, so it rises the instant the data needs it and
-    // falls only once the peak has stayed under it. A byte rate has no natural
-    // maximum to pin it to, so without this the network panel redraws its whole
-    // history every time a burst arrives or leaves — 512K to 1.0M and back,
-    // with the same samples drawn half as tall each way. See `HeldCeilings`.
-    //
-    // Only while live. Scrubbing is a deliberate move to another span, and a
-    // scale chosen by a moment the reader has left is not a scale for the one
-    // they are looking at.
-    let live = app.history.is_live();
-    let unit_ceiling = |unit: Unit| -> f32 {
-        let peak = candidates
-            .iter()
-            .zip(&slotted)
-            .filter(|((_, _, u), _)| *u == unit)
-            .flat_map(|(_, v)| v.iter().flatten().copied())
-            .fold(0.0_f32, f32::max);
-        let want = unit.ceiling(peak);
-        match samples.last().map(|s| s.at).filter(|_| live) {
-            Some(now) => app.ceilings.settle(unit, subject.is_some(), want, now),
-            None => {
-                // Dropped rather than merely ignored, so coming back to the
-                // live edge starts from what is there now instead of from a
-                // scale chosen before the reader went looking.
-                app.ceilings.forget();
-                want
-            }
-        }
-    };
-
     // Gaps are found over the whole buffer, not the window, so a discontinuity
     // falling on the first drawn sample is still seen — within the window it
     // has no predecessor to be discontinuous with.
@@ -2458,9 +1500,10 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let labelled = gutter > 0 && row_split.iter().all(|&r| r >= MIN_ROWS_FOR_LABEL);
 
     let mut lines: Vec<Line> = Vec::with_capacity(inner_h);
-    for (i, (name, _, unit)) in candidates.iter().enumerate() {
+    for (i, (name, raw, unit)) in candidates.iter().enumerate() {
         let rows = row_split[i];
-        let values = &slotted[i];
+        let slots_for = history::peak_slots(raw, zoom, slots);
+        let values = &slots_for;
         // Alternating rather than one hue each, because there is no sixth hue
         // to give the third series: the palette avoids green for colour vision
         // reasons and the remaining space is warning-orange or beside `ok`.
@@ -2471,18 +1514,10 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         } else {
             app.theme.series_mem
         };
-        // Each graph scales to its own data: memory at 78% and CPU at 16% are
-        // different questions and deserve different axes. The floor moves too —
-        // a series living in a narrow band high up gets an axis fitted to that
-        // band, because a zero-based panel would spend most of its rows on ink
-        // that never changes. See `glyphs::Scale`.
+        // Each graph scales to its own peak: memory at 78% and CPU at 16% are
+        // different questions and deserve different axes.
         let peak = values.iter().flatten().copied().fold(0.0_f32, f32::max);
-        let trough = values
-            .iter()
-            .flatten()
-            .copied()
-            .fold(f32::INFINITY, f32::min);
-        let scale = glyphs::Scale::pick(trough, peak, unit_ceiling(*unit), app.axis);
+        let ceiling = unit.ceiling(peak);
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
@@ -2498,7 +1533,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         } else {
             [app.theme.warn_pct, app.theme.critical_pct]
                 .iter()
-                .filter_map(|&pct| glyphs::rule_position(scale, pct, rows))
+                .filter_map(|&pct| glyphs::rule_position_scaled(pct, rows, ceiling))
                 .collect()
         };
         // A figure this row could not read joins the gaps, for this row only.
@@ -2514,7 +1549,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 gutter,
                 &app.theme,
                 labelled.then_some(name),
-                scale,
+                ceiling,
                 *unit,
             );
             spans.extend(
@@ -2527,7 +1562,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                         spc,
                         rule_level,
                         series,
-                        scale,
+                        ceiling,
                         gaps: &row_gaps,
                     },
                     &app.theme,
@@ -2695,15 +1730,9 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         None => format!(" timeline — {span} of {cap} buffered "),
     };
 
-    let m = (full.width - area.width) / 2;
-    let pad = " ".repeat(m as usize);
-    let mut all = vec![divider(&title, full.width, &app.theme)];
-    all.extend(lines.into_iter().map(|l| {
-        let mut spans = vec![Span::raw(pad.clone())];
-        spans.extend(l.spans);
-        Line::from(spans)
-    }));
-    f.render_widget(Paragraph::new(all), full);
+    let mut all = vec![divider(&title, area.width, &app.theme)];
+    all.extend(lines);
+    f.render_widget(Paragraph::new(all), area);
 
     // The time before the buffer starts, said rather than left blank.
     //
@@ -2717,10 +1746,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     //
     // A clock time rather than "poptop started", because a replayed day's
     // buffer starts where its log does, not where this process did.
-    //
-    // Placed against `area`, the content rect the rows are drawn in, so the
-    // margin is counted once: the rows carry it as padding and this carries it
-    // in its origin.
     let used = shown.div_ceil(zoom).div_ceil(spc);
     let empty = graph_w.saturating_sub(used);
     if window_start == 0
@@ -2749,15 +1774,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// A peak that is a value, or `None` for a cell no sample landed in.
-///
-/// `peak` folds with `f32::max` from `NEG_INFINITY`, so an empty cell comes back
-/// as that rather than as a number. Passing it on as zero is the one thing this
-/// tool must never do.
-fn finite(v: f32) -> Option<f32> {
-    v.is_finite().then_some(v)
-}
-
 /// One row of graph. `row` counts from the top of a `rows`-tall graph.
 /// Everything one graph row needs to draw itself. Bundled because seven
 /// positional parameters had become eight and the call site was unreadable.
@@ -2774,15 +1790,15 @@ struct GraphRow<'a> {
     rule_level: Option<usize>,
     /// Identity of the series — never a judgement about its value.
     series: Color,
-    /// The range this graph's rows cover, floor to ceiling.
-    scale: glyphs::Scale,
+    /// Top of the y-axis for this graph.
+    ceiling: f32,
     /// Per-slot flags marking where time is missing from the buffer.
     gaps: &'a [bool],
 }
 
 /// Draw one row of a graph.
 fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
-    let (set, values, row, rows, spc, rule_level, series, scale, gaps) = (
+    let (set, values, row, rows, spc, rule_level, series, ceiling, gaps) = (
         g.set,
         g.values,
         g.row,
@@ -2790,7 +1806,7 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
         g.spc,
         g.rule_level,
         g.series,
-        g.scale,
+        g.ceiling,
         g.gaps,
     );
     let spans = values
@@ -2818,56 +1834,10 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             {
                 return Span::styled(set.gap_glyph().to_string(), theme.chrome_style());
             }
-            // This cell's value and the next one, so the stroke can join them.
-            // The peak within a cell, matching how zoom aggregates: a line drawn
-            // through the mean would smooth away the spike the tool exists to
-            // catch.
-            let peak = |c: &[Option<f32>]| {
-                c.iter()
-                    .filter_map(|v| *v)
-                    .fold(f32::NEG_INFINITY, f32::max)
-            };
-            let here = finite(peak(cell));
-            // A cell with no sample draws nothing. An area fill got this for
-            // free — level zero is a blank glyph — but a line does not: it
-            // would draw a flat stroke along the baseline across the part of
-            // the buffer that has not been filled yet, which says the machine
-            // was idle then. It was not. Nothing was recorded then.
-            let Some(here) = here else {
-                return Span::raw(" ");
-            };
-            // Joined to the next cell only if there is one. Running the stroke
-            // into an empty cell invents the same zero at one remove.
-            let next = values
-                .get((i + 1) * spc..((i + 2) * spc).min(values.len()))
-                .map(peak)
-                .and_then(finite)
-                .unwrap_or(here);
-            // The form follows the axis, not the setting. Bars encode
-            // magnitude by area, so a truncated axis makes 74 look like a third
-            // of 84 — the classic misleading chart. A line encodes change, for
-            // which a fitted axis is standard and honest, and the gutter states
-            // the floor either way.
-            let draws = if scale.fitted {
-                glyphs::Draw::Line
-            } else {
-                set.draws()
-            };
-            let glyph = match draws {
-                // A bar from the baseline to the value. Every cell below the
-                // value is full, the cell the value lands in is part-full, and
-                // everything above is empty — the shape a sparkline has always
-                // had, read as height rather than traced as a path.
-                glyphs::Draw::Bars => set.bar(glyphs::fill_in_row(
-                    scale.frac(here),
-                    row,
-                    rows,
-                    set.sub_rows(),
-                )),
-                // Box drawing needs the direction of travel to pick a corner,
-                // which a height cannot carry.
-                glyphs::Draw::Line => set.line(scale.frac(here), scale.frac(next), row, rows),
-            };
+            let pcts: Vec<f32> = cell.iter().map(|v| v.unwrap_or(0.0)).collect();
+            let left = glyphs::level_in_row_scaled(pcts[0], row, rows, ceiling);
+            let right =
+                glyphs::level_in_row_scaled(*pcts.get(1).unwrap_or(&pcts[0]), row, rows, ceiling);
             // Colour is identity here, not magnitude — see `Theme::series_style`.
             // The threshold rules now carry "is this bad", which is what the
             // heat ramp was doing redundantly on top of the bar height.
@@ -2879,33 +1849,16 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // bar does not reach this row. Drawing the rule across the part of
             // the buffer that has not been filled yet is noise about a region
             // where there is nothing to reference.
-            // How often the rule shows through depends on how much of the panel
-            // the series leaves empty. A bar leaves the space *above* it, a
-            // minority on a busy machine; a line leaves nearly every cell, so
-            // the same spacing would paint half the panel in chrome and the
-            // reference would compete with the signal.
-            // Proportional to the panel, not a fixed stride. Every second cell
-            // was tuned against an area fill that reached most of them, and it
-            // is roughly forty marks on a hundred-column terminal: on an idle
-            // machine, where nearly every cell is empty, that is not a
-            // reference line but the loudest thing on the screen. A reference
-            // has to be findable and recessive at the same time, and about ten
-            // marks across a panel is both however wide the panel is.
-            let cells = values.len().div_ceil(spc.max(1));
-            let every = (cells / 10).clamp(4, 24);
-            // The alphabet in force is a function of the set *and* the form,
-            // and both of these questions are asked of it: which character
-            // means "empty", and which one means "a reference line". A fitted
-            // braille panel is drawn in box characters, whose empty is a space
-            // — while braille's own is `U+2800`, so asking the set alone said
-            // no cell was ever empty and no rule was ever drawn.
-            let alphabet = set.drawn_as(draws);
+            let has_data = cell.iter().any(|v| v.is_some());
+            let empty = left.max(right) == 0;
             match rule_level {
-                Some(lvl) if glyph == alphabet.blank() && i % every == 0 => {
-                    let mark = alphabet.rule_glyph(lvl);
-                    Span::styled(mark.to_string(), theme.chrome_style())
+                Some(lvl) if has_data && empty && i % 2 == 0 => {
+                    Span::styled(set.rule_glyph(lvl).to_string(), theme.chrome_style())
                 }
-                _ => Span::styled(glyph.to_string(), theme.series_style(series)),
+                _ => Span::styled(
+                    set.glyph(left, right).to_string(),
+                    theme.series_style(series),
+                ),
             }
         })
         .collect::<Vec<_>>();
@@ -3010,7 +1963,7 @@ pub fn axis_label_for_test(row: usize, rows: usize, name: Option<&str>) -> Strin
         GUTTER_W,
         &Theme::new(crate::theme::Palette::Safe, Theme::default().tier),
         name,
-        glyphs::Scale::zero(100.0),
+        100.0,
         Unit::Percent,
     )
     .iter()
@@ -3044,17 +1997,6 @@ pub enum Unit {
     Rate,
     /// A plain count, like threads. An axis, and no rules for the same reason.
     Count,
-}
-
-impl Unit {
-    /// Which slot of [`crate::app::HeldCeilings`] this unit's ceiling lives in.
-    pub fn slot(self) -> usize {
-        match self {
-            Unit::Percent => 0,
-            Unit::Rate => 1,
-            Unit::Count => 2,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3142,7 +2084,7 @@ fn axis_label(
     gutter: usize,
     theme: &Theme,
     series: Option<&str>,
-    scale: glyphs::Scale,
+    ceiling: f32,
     unit: Unit,
 ) -> Vec<Span<'static>> {
     if gutter == 0 {
@@ -3166,12 +2108,9 @@ fn axis_label(
         // The ceiling, not a fixed 100 — the axis has to say what it is, or
         // scaling it would be the misleading kind of clever. In the series'
         // own units, because `4194304` is arithmetic and `4.0M` is a scale.
-        unit.axis(scale.ceiling)
+        unit.axis(ceiling)
     } else if row + 1 == rows {
-        // The floor, not a fixed `0`. A fitted axis that labelled its bottom
-        // row zero would be the misleading kind of clever — the whole reason
-        // the floor is allowed to move is that it is stated when it does.
-        unit.axis(scale.floor)
+        "0".to_string()
     } else if row == 1 {
         // The first row not already carrying an anchor.
         series.unwrap_or_default().to_string()
@@ -3332,7 +2271,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     let slot = history::slot_of_index(idx, n_values, zoom, slots);
 
     let cell = (slot / spc).min(graph_w.saturating_sub(1));
-    let marker = app.glyphs.cursor_marker();
+    let marker = app.glyphs.cursor_marker(spc == 2 && slot % spc == 1);
 
     // This row is positional. It used to carry the values at the cursor as
     // well, which read as a crosshair readout and was in fact a copy: while
@@ -3372,30 +2311,25 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     // and lost a character to it — `1▐/slot`, which names nothing and hides the
     // scale it was there to state.
     let room = |a: usize, b: usize| b.saturating_sub(a);
-    //
-    // Both the side and the column are independent of where exactly the marker
-    // is. Centring the caption in the space beside it made the caption chase
-    // the cursor across the row, sliding a column on every keypress; the side
-    // now flips once, when the cursor crosses the midpoint, and the caption
-    // sits at a fixed column on whichever side it lands.
-    let side = |n: usize, anchors: bool| -> Option<usize> {
+    let side = |n: usize, anchors: bool| -> Option<(usize, usize)> {
         let (l0, r1) = if anchors {
             (ANCHOR_L + 1, width.saturating_sub(ANCHOR_R))
         } else {
             (0, width)
         };
         let pad = if anchors { 2 } else { 1 };
-        let fits_left = room(l0, cell.min(r1)) >= n + pad;
-        let fits_right = room((cell + 1).max(l0), r1) >= n + pad;
-        let at_left = l0 + 1;
-        let at_right = r1.saturating_sub(n + 1);
-        // The caption takes the half the marker is not in.
-        match (cell * 2 < width, fits_left, fits_right) {
-            (true, _, true) => Some(at_right),
-            (false, true, _) => Some(at_left),
-            (_, _, true) => Some(at_right),
-            (_, true, _) => Some(at_left),
-            _ => None,
+        let left = (l0, cell);
+        let right = (cell + 1, r1);
+        let ok = |(a, b): (usize, usize)| room(a, b) >= n + pad;
+        match (ok(left), ok(right)) {
+            (true, true) => Some(if room(left.0, left.1) >= room(right.0, right.1) {
+                left
+            } else {
+                right
+            }),
+            (true, false) => Some(left),
+            (false, true) => Some(right),
+            (false, false) => None,
         }
     };
     // Anchors first, because they are what make the marker's position mean
@@ -3408,17 +2342,17 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
         .iter()
         .find_map(|c| {
             let n = cols(c);
-            (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), s, true)))?
+            (n > 0 && n <= width).then(|| side(n, true).map(|s| (c.as_str(), n, s, true)))?
         })
         .or_else(|| {
             w.captions.iter().find_map(|c| {
                 let n = cols(c);
-                (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), s, false)))?
+                (n > 0 && n <= width).then(|| side(n, false).map(|s| (c.as_str(), n, s, false)))?
             })
         });
 
     match chosen {
-        Some((caption, at, anchors)) => {
+        Some((caption, n, (a, b), anchors)) => {
             if anchors {
                 // An anchor the marker would land in is not drawn at all. That
                 // is agreement rather than collision — a marker at the right
@@ -3431,7 +2365,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
                     put(&mut row, width.saturating_sub(ANCHOR_R), "now");
                 }
             }
-            put(&mut row, at, caption);
+            put(&mut row, a + (b - a - n) / 2, caption);
         }
         // Nothing to say but where the cursor is.
         None => {
@@ -3463,37 +2397,15 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
 /// default. Adding up what the table actually asks for is the only way to know
 /// where that starts, and doing it here rather than by eye means it cannot
 /// drift as columns change.
-/// The shape a plain CPU table has, as the width arithmetic's starting point.
-fn cpu_shape(show_io: bool, show_user: bool) -> TableShape {
-    TableShape {
-        bars: true,
-        thr: true,
-        io: show_io,
-        pss: false,
-        vsize: false,
-        majflt: false,
-        grow: false,
-        rss: true,
-        state: true,
-        pid: true,
-        spark: true,
-        // The widest the table can be, which is what this shape is for: the
-        // question it answers is where the columns stop fitting, and a
-        // buffer that happens to be flat today is not a width.
-        flat: false,
-        user: show_user,
-        cid: false,
-    }
-}
-
-/// Room enough for a command name to be worth reading, over the column's floor.
-///
-/// What `min_width_for_io` spends on top of the table's own request: the disk
-/// figures are worth having only if what they crowd out still identifies the
-/// row they are on.
-const COMMAND_WORTH_READING: u16 = 16;
+/// Everything to the left of the command: pid, user, cpu% and its bar, rss and
+/// its bar, state, threads, history.
+const FIXED_COLUMNS: u16 =
+    7 + 10 + 6 + (BAR_W as u16 + 1) + 8 + BAR_W as u16 + 2 + 4 + SPARK_W as u16;
 
 /// The narrowest terminal the IO columns will appear on.
+///
+/// The two IO columns, one space between each of the twelve, and enough left
+/// for a command name to be worth reading.
 ///
 /// Takes `show_user` for the same reason [`command_width`] does: when that
 /// column has been folded into the title its ten columns are free, and the IO
@@ -3501,7 +2413,7 @@ const COMMAND_WORTH_READING: u16 = 16;
 /// than they needed to be.
 #[cfg(test)]
 pub fn command_width_for_test(width: u16, show_io: bool, show_user: bool) -> usize {
-    command_width(&cpu_shape(show_io, show_user), width, 1)
+    command_width(width, show_io, show_user, false, 0, 0)
 }
 
 #[cfg(test)]
@@ -3510,7 +2422,8 @@ pub fn min_width_for_io_for_test(show_user: bool) -> u16 {
 }
 
 fn min_width_for_io(show_user: bool) -> u16 {
-    table_request(&cpu_shape(true, show_user), 1) - MIN_COMMAND_W + COMMAND_WORTH_READING
+    let user = if show_user { USER_W } else { 0 };
+    FIXED_COLUMNS - USER_W + user + 9 + 9 + 11 + 16
 }
 
 /// The command column's own `Constraint::Min`, and so the narrowest it is ever
@@ -3569,7 +2482,127 @@ fn spark_header(ceiling: f32) -> String {
 
 /// Width of the `USER` column, and the width `COMMAND` gets back when it is
 /// folded into the title. See [`crate::app::App::one_user`].
-pub const USER_W: u16 = 10;
+const USER_W: u16 = 10;
+
+/// Which of the process table's columns are drawn, and so how wide it is.
+///
+/// One description used both to decide what fits and to lay the table out, so
+/// the two cannot disagree. They did: every column was a fixed `Length`, and
+/// below about sixty-six columns ratatui squeezed the fixed lengths rather
+/// than dropping any — and a right-aligned number squeezed loses its *leading*
+/// digits. `100.9` read `00.9`, `17.2` read `7.2`, `1.2M` read `.2M` (0105).
+/// A wrong number is the one thing this table must never show, so a column
+/// goes before a digit does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Columns {
+    pub bars: bool,
+    pub rss: bool,
+    pub state: bool,
+    pub thr: bool,
+    pub io: bool,
+    pub mem: bool,
+    pub spark: bool,
+    pub pid: bool,
+    pub user: bool,
+    pub cid: bool,
+}
+
+impl Columns {
+    /// The fixed columns' widths, in the order the cells are pushed. `COMMAND`
+    /// is not among them: it takes whatever is left.
+    fn widths(&self) -> Vec<u16> {
+        let mut w = vec![6];
+        if self.bars {
+            // The bar, plus room for the over-100 mark.
+            w.push(BAR_W as u16 + 1);
+        }
+        if self.rss {
+            w.push(8);
+            if self.bars {
+                w.push(BAR_W as u16);
+            }
+        }
+        if self.state {
+            w.push(2);
+        }
+        if self.thr {
+            w.push(4);
+        }
+        if self.io {
+            w.extend([9, 9]);
+        }
+        if self.mem {
+            w.extend([8, 8, 7, 8]);
+        }
+        if self.spark {
+            w.push(SPARK_W as u16);
+        }
+        if self.pid {
+            w.push(7);
+        }
+        if self.user {
+            w.push(USER_W);
+        }
+        if self.cid {
+            w.push(CID_W);
+        }
+        w
+    }
+
+    /// Everything left of the command, gaps included: one column of spacing
+    /// after each fixed column.
+    fn fixed(&self) -> u16 {
+        self.widths().iter().map(|w| w + 1).sum()
+    }
+
+    /// Drop columns, least useful first, until the fixed ones leave the
+    /// command its minimum.
+    ///
+    /// The order is what a narrow terminal should keep longest: the numbers
+    /// the table is sorted by, then the name. The history sparkline goes first
+    /// — it is ten columns and the one least readable at a glance — then the
+    /// bars, which repeat the figures beside them; then the user, the thread
+    /// count, a view's own columns, the state, the memory figure and the pid.
+    /// CPU% and the command stay, whatever the width.
+    fn fit(&mut self, width: u16) {
+        let ladder: [fn(&mut Columns) -> &mut bool; 10] = [
+            |c| &mut c.spark,
+            |c| &mut c.bars,
+            |c| &mut c.cid,
+            |c| &mut c.user,
+            |c| &mut c.thr,
+            |c| &mut c.mem,
+            |c| &mut c.io,
+            |c| &mut c.state,
+            |c| &mut c.rss,
+            |c| &mut c.pid,
+        ];
+        for drop in ladder {
+            if self.fixed() + MIN_COMMAND_W <= width {
+                return;
+            }
+            *drop(self) = false;
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn fitted_columns_for_test(width: u16, all: bool) -> (Columns, u16) {
+    let mut c = Columns {
+        bars: true,
+        rss: true,
+        state: true,
+        thr: true,
+        io: all,
+        mem: all,
+        spark: true,
+        pid: true,
+        user: true,
+        cid: all,
+    };
+    c.fit(width);
+    (c, c.fixed())
+}
 
 /// How much of the line is left for the command name.
 ///
@@ -3578,22 +2611,42 @@ pub const USER_W: u16 = 10;
 /// nineteen, one more than the two disk-rate columns together. Knowing the
 /// figure is what lets the name be elided deliberately rather than clipped by
 /// the terminal.
-///
-/// Asked of the same column list the table is laid out from, rather than added
-/// up again here. The hand-added version had to know which columns a view
-/// drops and which it adds, and it got that wrong three times: once too
-/// generous by thirteen columns and the command chopped at the right edge with
-/// no elision mark, once too cautious and a name cut for no reason, once
-/// thirty-five columns out on the memory tab. There is nothing left to get
-/// wrong when the two arithmetics are one arithmetic.
-///
-/// Floored at the column's own `Min`, because below that width ratatui stops
-/// honouring the fixed lengths and squeezes them instead — the command cell is
-/// then *wider* than this says, and eliding against the arithmetic rendered
-/// `Google Chrome Helper (Renderer)` as the single letter `G`.
-fn command_width(shape: &TableShape, width: u16, gap: u16) -> usize {
-    let others = table_request(shape, gap) - MIN_COMMAND_W;
-    width.saturating_sub(others).max(MIN_COMMAND_W) as usize
+fn command_width(
+    width: u16,
+    show_io: bool,
+    show_user: bool,
+    show_cid: bool,
+    dropped: u16,
+    taken: u16,
+) -> usize {
+    let (io, columns) = if show_io { (18, 12) } else { (0, 10) };
+    // The container column and its gap. Left out, the elision arithmetic is
+    // thirteen columns too generous and the command is elided in the middle
+    // *and then* chopped at the right edge — losing the tail with no marker,
+    // which is the failure the comment below is about.
+    let (cid, columns) = if show_cid {
+        (CID_W + 1, columns + 1)
+    } else {
+        (0, columns)
+    };
+    let (user, columns) = if show_user {
+        (USER_W, columns)
+    } else {
+        (0, columns - 1)
+    };
+    // Floored at the column's own `Min`, not at one. Below that width ratatui
+    // stops honouring the fixed lengths and squeezes them instead, so the
+    // command cell is *wider* than this arithmetic says — and eliding against
+    // the arithmetic rendered `Google Chrome Helper (Renderer)` as the single
+    // letter `G` on an eighty-column terminal.
+    // `dropped` is the width a view has given back: the bars and the thread
+    // count are not always drawn, and the command gets what they were using.
+    // Left out, the elision is more cautious than it needs to be — a milder
+    // failure than the other direction, but still a name cut for no reason.
+    width
+        .saturating_sub(FIXED_COLUMNS - USER_W + user + io + cid + taken + (columns - 1))
+        .saturating_add(dropped)
+        .max(MIN_COMMAND_W) as usize
 }
 
 /// A signed byte delta, with the sign carried rather than implied.
@@ -3880,458 +2933,7 @@ fn short_cgroup(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-/// What the rows on screen add up to.
-///
-/// About the *shown* processes, not the machine: the header above already says
-/// what the machine is doing, and the question this answers is the one the
-/// filter just asked. Four postgres processes using 142% of a core between them
-/// is a fact nothing else on screen states, and it changes with every filter,
-/// every grouping and every kernel-thread toggle.
-pub struct Totals {
-    pub procs: usize,
-    pub cpu: f32,
-    pub rss: u64,
-    /// `None` where any row would not say, rather than a sum that quietly
-    /// leaves some out — the same rule the thread column follows.
-    pub threads: Option<u64>,
-    /// How many of the rows are folded groups, if any are.
-    pub groups: usize,
-    /// Bytes a second read and written, where the rows say.
-    pub disk: Option<(u64, u64)>,
-}
-
-/// Add up what is on screen.
-///
-/// Counted the same way the scope line counts, so the two cannot disagree about
-/// how many processes are being described: thread rows are skipped, and a
-/// folded row stands for everything folded into it.
-pub fn totals(app: &App) -> Totals {
-    let rows = app.visible_rows();
-    let mut out = Totals {
-        procs: 0,
-        cpu: 0.0,
-        rss: 0,
-        threads: Some(0),
-        groups: 0,
-        disk: Some((0, 0)),
-    };
-    for r in rows.iter().filter(|r| !r.is_thread()) {
-        out.procs += r.count();
-        out.cpu += r.proc.cpu;
-        out.rss += r.proc.rss;
-        out.groups += usize::from(r.members.is_some());
-        out.threads = match (out.threads, r.proc.threads) {
-            (Some(n), Some(t)) => Some(n + u64::from(t)),
-            _ => None,
-        };
-        out.disk = match (out.disk, r.proc.io) {
-            (Some((r0, w0)), Some(io)) => Some((r0 + io.read, w0 + io.write)),
-            _ => None,
-        };
-    }
-    out
-}
-
-/// The summary strip, drawn between the panel title and the column headers.
-fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>> {
-    let t = totals(app);
-    if t.procs == 0 {
-        return None;
-    }
-    let dim = app.theme.dim_style();
-    let share = if total_mem > 0 {
-        format!(" ({:.0}%)", t.rss as f64 / total_mem as f64 * 100.0)
-    } else {
-        String::new()
-    };
-    // Its own ladder, given up from the least diagnostic end. The count goes
-    // last because the scope line already says it — this row is here for the
-    // magnitudes, which nothing else states.
-    // Led by whatever the tab is about. The strip is inside the table panel and
-    // describes the rows in it, so on the Memory tab the first figure after the
-    // count should be memory — a tab that changes the columns and leaves the
-    // summary reading the same way has only half-changed the question.
-    let cpu = format!("CPU {:.1}%", t.cpu);
-    let mem = format!("MEM {}{share}", fmt_bytes(t.rss));
-    let disk = t
-        .disk
-        .map(|(r, w)| format!("DISK {} · {}", fmt_rate(r).trim(), fmt_rate(w).trim()));
-    let lead: Vec<String> = match app.view {
-        crate::app::View::Cpu => vec![cpu.clone(), mem.clone()],
-        crate::app::View::Memory => vec![mem.clone(), cpu.clone()],
-        crate::app::View::Disk => match &disk {
-            Some(d) => vec![d.clone(), cpu.clone()],
-            None => vec![cpu.clone(), mem.clone()],
-        },
-    };
-    // Dropped rather than dashed when the platform will not say. An em dash
-    // here is a clause that says nothing on every frame — and on macOS, where
-    // a process poptop cannot open reports no thread count, that is most of
-    // them.
-    let mut rungs = Vec::new();
-    if let Some(thr) = t.threads {
-        rungs.push(format!(
-            " {} shown · {} · {thr} threads",
-            t.procs,
-            lead.join(" · ")
-        ));
-    }
-    rungs.extend([
-        format!(" {} shown · {}", t.procs, lead.join(" · ")),
-        format!(" {}", lead.join(" · ")),
-        format!(" {}", lead[0]),
-    ]);
-    let text = rungs.into_iter().find(|r| cols(r) <= width)?;
-    let mut spans = vec![Span::styled(text, dim)];
-    // Only when something is folded, because otherwise it is a fact about
-    // nothing: an ungrouped table has as many rows as processes and saying so
-    // is noise.
-    if t.groups > 0 {
-        let note = format!("  ({} groups)", t.groups);
-        if cols(&note) + spans.iter().map(|s| cols(&s.content)).sum::<usize>() <= width {
-            spans.push(Span::styled(note, dim));
-        }
-    }
-    Some(Line::from(spans))
-}
-
-/// The part of a panel its content is drawn in.
-///
-/// Every row that is not a full-width divider starts here, which is the whole
-/// of what `Density::margin` buys: a left edge you can run your eye down.
-pub fn content(app: &App, area: Rect) -> Rect {
-    let m = app.density.margin(area.width);
-    Rect {
-        x: area.x + m,
-        width: area.width.saturating_sub(m * 2),
-        ..area
-    }
-}
-
-/// Where the table's rows and headers are drawn, inside the panel.
-///
-/// One derivation, because the mouse resolves a click through the same
-/// arithmetic — and a hit box an inset away from the column it is over is the
-/// bug this milestone has already had twice.
-pub fn table_body(app: &App, area: Rect) -> Rect {
-    Rect {
-        y: area.y + 1 + summary_height(area),
-        height: area.height.saturating_sub(1 + summary_height(area)),
-        ..content(app, area)
-    }
-}
-
-/// Whether the summary strip is drawn, for a table panel of this height.
-///
-/// Given up before the table drops below its floor, the same way the tab strip
-/// is: a summary of rows you cannot see is worth less than the rows.
-pub fn summary_height(table: Rect) -> u16 {
-    u16::from(table.height > PROCS_FLOOR_H + 3)
-}
-
-/// The row the column headers are drawn on.
-///
-/// One derivation, because the mouse needs it to know a header was clicked and
-/// the table needs it to draw them — and an off-by-one between those two is a
-/// click that sorts by the column above the one under the pointer.
-pub fn table_header_y(table: Rect) -> u16 {
-    table.y + 1 + summary_height(table)
-}
-
-/// Which of the table's optional columns are on, for a table drawn in `area`.
-///
-/// One derivation, used by `draw_procs` to lay the table out and by the mouse
-/// to work out which header was clicked. It was briefly two, and the second one
-/// guessed `show_user` — so a click on `COMMAND` landed on the column before it
-/// and sorted by something else. A hit box computed separately from the column
-/// it is over agrees until it does not.
-#[derive(Debug)]
-pub struct TableShape {
-    pub bars: bool,
-    pub thr: bool,
-    pub io: bool,
-    /// The memory tab's own columns, each on only where the platform has the
-    /// figure to put under it.
-    ///
-    /// One flag each rather than one for the set, because the set is never
-    /// whole: macOS publishes none of the three the kernel is asked for, and
-    /// Linux publishes proportional memory only to a process allowed to read
-    /// another's `smaps_rollup`. Thirty-one columns of em dash is the same
-    /// waste `App::one_user` exists to stop, and here it was crowding out the
-    /// RSS figure beside it.
-    pub pss: bool,
-    pub vsize: bool,
-    pub majflt: bool,
-    pub grow: bool,
-    /// The per-process history. The thing no other monitor draws, and so the
-    /// last picture given up — but it is a picture, and a figure beside it
-    /// that has been truncated to keep it is a worse trade than losing it.
-    /// The resident figure, the state letter and the pid.
-    ///
-    /// Droppable, and last of all, because below about sixty columns the
-    /// alternative is worse than losing them: every column here is a fixed
-    /// `Length`, ratatui squeezes a set that does not fit rather than dropping
-    /// any, and a squeezed right-aligned figure loses its *leading* digits —
-    /// `100.9` renders as `.9` (0105). A column that is not there says nothing;
-    /// a column that is there and wrong says something false.
-    pub rss: bool,
-    pub state: bool,
-    pub pid: bool,
-    pub spark: bool,
-    /// Why `spark` is off, when the reason is the data rather than the width.
-    ///
-    /// The column is dropped by two different rules and the title says so only
-    /// for one of them, so the shape carries which — recomputing the movement
-    /// test beside the title would be a second fold over the buffer every
-    /// frame, and a second chance for the two answers to disagree.
-    pub flat: bool,
-    pub user: bool,
-    pub cid: bool,
-}
-
-/// What a shape's columns add up to, gaps and a readable command included.
-///
-/// Derived from [`table_columns`] rather than re-added by hand, for the reason
-/// that function exists: a second copy of this arithmetic agrees until it does
-/// not, and the way it fails here is silent.
-#[cfg(test)]
-pub fn table_request_for_test(shape: &TableShape, gap: u16) -> u16 {
-    table_request(shape, gap)
-}
-
-fn table_request(shape: &TableShape, gap: u16) -> u16 {
-    let (widths, _) = table_columns(shape);
-    let fixed: u16 = widths
-        .iter()
-        .map(|c| match c {
-            Constraint::Length(w) | Constraint::Min(w) => *w,
-            _ => 0,
-        })
-        .sum();
-    fixed + gap * (widths.len() as u16).saturating_sub(1)
-}
-
-pub fn table_shape(app: &App, area: Rect) -> TableShape {
-    // The width the columns actually get, which is the panel less the air
-    // either side of them. Using the panel's own width made every column
-    // decision two columns too generous, and the command was elided to a width
-    // it was then chopped at.
-    let area = Rect {
-        width: table_body(app, area).width,
-        ..area
-    };
-    let one_user = app.one_user();
-    let user = one_user.is_none() && app.group != crate::app::Grouping::User;
-    let bars = app.view != crate::app::View::Disk;
-    let thr = app.view == crate::app::View::Cpu;
-    let mem_cols = app.view == crate::app::View::Memory;
-    let io = app.show_io
-        && app.view.wants_io()
-        && (app.view == crate::app::View::Disk || area.width >= min_width_for_io(user));
-    // A column nobody can fill is a column of em dashes. The platform decides
-    // three of these four: macOS publishes none of them, and on Linux
-    // proportional memory needs permission to read another process's
-    // `smaps_rollup`. Growth is poptop's own arithmetic over two samples and is
-    // always available, so the memory tab always has something on it.
-    let has = app.mem_columns_available();
-    // The history column earns its width by showing change. The CPU% beside it
-    // already says how busy each process is; what only the sparkline can say is
-    // how that moved. When no row on screen moved — every line flat, which on a
-    // quiet machine is every line — it was ten columns repeating the CPU column
-    // as a picture, while the command was elided for want of room (0110). So it
-    // is drawn when some row's history moves, on the one shared scale, and
-    // otherwise gives its width back and says why.
-    //
-    // Not a log scale, which was tried: four levels cannot be both fine at the
-    // bottom and readable at the top, and the top is where a process pinning
-    // several cores lives.
-    //
-    // Not judged until there is history to judge: before `App::CONSTANT_FOR`
-    // samples nothing has had time to move, and a column that appeared a few
-    // seconds after start would move the layout under the reader for no reason.
-    // The same threshold the user column folds on.
-    let flat = app.history.len() >= crate::app::App::CONSTANT_FOR
-        && !any_history_moves(app, buffer_ceiling(app));
-    let mut shape = TableShape {
-        bars,
-        thr,
-        io,
-        pss: mem_cols && has.pss,
-        vsize: mem_cols && has.vsize,
-        majflt: mem_cols && has.majflt,
-        grow: mem_cols,
-        rss: true,
-        state: true,
-        pid: true,
-        spark: !flat,
-        flat,
-        user,
-        cid: false,
-    };
-
-    // Drop columns until the rest fit, least identifying first.
-    //
-    // Every column but the command is a fixed `Length`, and ratatui squeezes a
-    // set of fixed lengths that does not fit rather than dropping any. A
-    // right-aligned figure squeezed by two columns keeps its tail: `301.7M`
-    // renders as `01.7M`, which is not a narrower number but a wrong one, and
-    // nothing on screen says so. `min_width_for_io` was this argument applied
-    // to the disk columns alone; below seventy-six columns the same thing was
-    // happening to CPU% and RSS, and on the memory tab it started at eighty.
-    //
-    // The order is what each column costs against what it says. The bars
-    // restate the figure beside them; the thread count and the owner are
-    // usually implied by the command; reserved address space says least of the
-    // four memory figures and proportional memory says most. A view's own
-    // columns go late, because without them it is not that view any more — but
-    // they do go: the disk tab exists to show figures the width test would
-    // otherwise hide, not to show them wrong.
-    // Below the view's own columns come the three that every view has had
-    // since the first version — the resident figure, the state letter and the
-    // pid. They go last and they do go: at twenty columns the alternative is
-    // not a narrower table but a wrong one, with `100.9` drawn as `.9`.
-    // What survives to the bottom is CPU% and the name, which is the least a
-    // row can be and still be about a process.
-    let gap = app.density.column_gap();
-    for step in 0..12 {
-        if table_request(&shape, gap) <= area.width {
-            break;
-        }
-        match step {
-            0 => shape.bars = false,
-            1 => shape.thr = false,
-            2 => shape.vsize = false,
-            3 => shape.majflt = false,
-            4 => shape.user = false,
-            5 => shape.grow = false,
-            6 => shape.pss = false,
-            7 => shape.spark = false,
-            8 => shape.io = false,
-            9 => shape.state = false,
-            10 => shape.pid = false,
-            _ => shape.rss = false,
-        }
-    }
-
-    shape.cid = app.group != crate::app::Grouping::User
-        && app.any_container()
-        && command_width(&shape, area.width, gap) as u16 > MIN_COMMAND_W + CID_W + gap;
-    shape
-}
-
-/// The sort key of the column at `x`, for a table drawn in `area`.
-///
-/// Uses the same list the header and the table do, split the same way: a hit
-/// box computed separately from the column it is over agrees until it does not.
-///
-/// The widths depend on what the tab is showing, which is what `table_shape`
-/// answers — one derivation, so the caret and the click cannot disagree.
-pub fn sort_at(app: &App, area: Rect, x: u16) -> Option<crate::app::Sort> {
-    let s = table_shape(app, area);
-    let (widths, sorts) = table_columns(&s);
-    let cells = Layout::horizontal(widths)
-        .spacing(app.density.column_gap())
-        .split(table_body(app, area));
-    cells
-        .iter()
-        .position(|r| x >= r.x && x < r.x + r.width)
-        .and_then(|i| sorts.get(i).and_then(|c| c.sort))
-}
-
-/// One of the table's columns.
-pub struct Column {
-    /// The ordering this column stands for, or `None` if it is not one.
-    pub sort: Option<crate::app::Sort>,
-    /// Figures right, text left. Bars and the sparkline are neither.
-    pub numeric: bool,
-}
-
-/// The table's columns: how wide each is, and which sort key it stands for.
-///
-/// One list, used by the header to mark the sorted column, by the table to lay
-/// itself out, and by the mouse to work out which header was clicked. Three
-/// copies of this arithmetic would put the caret over one column and the click
-/// target over another, and nothing would say so.
-///
-/// `None` is a column nothing can be sorted by — a bar, a state letter, the
-/// sparkline. Clicking one does nothing rather than doing something arbitrary.
-pub fn table_columns(s: &TableShape) -> (Vec<Constraint>, Vec<Column>) {
-    use crate::app::Sort;
-    let (show_bars, show_thr, show_io) = (s.bars, s.thr, s.io);
-    let (show_user, show_cid) = (s.user, s.cid);
-    let mut widths = Vec::new();
-    let mut sorts = Vec::new();
-    // `numeric` is the alignment rule written down: figures right, text left,
-    // and the bars and the sparkline are pictures rather than either. It was a
-    // convention followed by hand in eleven places and checked nowhere.
-    let mut col = |w: Constraint, sort: Option<Sort>, numeric: bool| {
-        widths.push(w);
-        sorts.push(Column { sort, numeric });
-    };
-    col(Constraint::Length(6), Some(Sort::Cpu), true);
-    if show_bars {
-        // The bar, plus room for the over-100 mark.
-        // The bar is the same key as the figure beside it, and `None` here
-        // because the caret belongs on the label, not on both.
-        col(Constraint::Length(BAR_W as u16 + 1), None, false);
-    }
-    if s.rss {
-        col(Constraint::Length(8), Some(Sort::Mem), true);
-        if show_bars {
-            col(Constraint::Length(BAR_W as u16), None, false);
-        }
-    }
-    if s.state {
-        col(Constraint::Length(2), None, false);
-    }
-    if show_thr {
-        col(Constraint::Length(4), None, true);
-    }
-    if show_io {
-        // The pair is ordered by read *plus* write. The caret goes on the
-        // first of them, which reads as "sorted from here" rather than as a
-        // claim about that column alone.
-        col(Constraint::Length(9), Some(Sort::Disk), true);
-        col(Constraint::Length(9), None, true);
-    }
-    for (on, w) in [(s.pss, 8), (s.vsize, 8), (s.majflt, 7), (s.grow, 8)] {
-        if on {
-            col(Constraint::Length(w), None, true);
-        }
-    }
-    if s.spark {
-        col(Constraint::Length(SPARK_W as u16), None, false);
-    }
-    if s.pid {
-        col(Constraint::Length(7), Some(Sort::Pid), true);
-    }
-    if show_user {
-        col(Constraint::Length(USER_W), None, false);
-    }
-    if show_cid {
-        // Twelve characters, which is what `docker ps` shows.
-        col(Constraint::Length(CID_W), None, false);
-    }
-    col(Constraint::Min(MIN_COMMAND_W), Some(Sort::Name), false);
-    (widths, sorts)
-}
-
-/// How long the table's figures are averaged over, in the units it was asked in.
-fn fmt_smooth(samples: usize, interval: Duration) -> String {
-    let secs = samples as f64 * interval.as_secs_f64();
-    if secs >= 1.0 {
-        format!("{secs:.0}s")
-    } else {
-        format!("{:.0}ms", secs * 1000.0)
-    }
-}
-
-/// `strip` is whether the tab strip is on screen. When it is not — a terminal
-/// too short to spend a row on it — the settings it names come back here, at
-/// the rank the sort clause used to have. A setting that is stated nowhere is
-/// a table whose ordering has no visible reason, and the row this panel would
-/// save by staying quiet is not worth that.
-fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool) {
+fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
     // the ratchet is a history one, so widening the window brings them back
@@ -4344,20 +2946,37 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
     // would be the same word twice. That inverts 0043's rule, which drops the
     // column when every row shares a value — here every row has a different
     // one and it is still redundant.
-    // From `table_shape`, not computed again here: the mouse asks that function
-    // which column it clicked, and two derivations of the same six flags put
-    // the caret over one column and the click target over another.
-    let shape = table_shape(app, area);
-    let show_user = shape.user;
+    let show_user = one_user.is_none() && app.group != crate::app::Grouping::User;
     // In the disk view the throughput columns are the point, so they are not
     // subject to the width test that hides them elsewhere — which is the
     // concrete thing views fix: today those figures vanish on a narrow terminal
     // with nothing to bring them back, and this key is what brings them back.
-    let show_io = shape.io;
+    let show_io = app.show_io
+        && app.view.wants_io()
+        && (app.view == crate::app::View::Disk || area.width >= min_width_for_io(show_user));
     // What the disk columns are given room by. A view is a named list of
     // columns over one renderer, not a second renderer.
-    let show_bars = shape.bars;
-    let show_thr = shape.thr;
+    let show_bars = app.view != crate::app::View::Disk;
+    let show_thr = app.view == crate::app::View::Generic;
+    // The memory view's own columns: what a process's memory actually costs,
+    // what it has reserved, whether it is being paged in, and which way it is
+    // going.
+    let show_mem_cols = app.view == crate::app::View::Memory;
+    // What the view has given back, in columns, for the command to use — less
+    // what it has taken. The memory view drops the thread count and *adds* four
+    // columns of its own, so counting only the drops left the arithmetic
+    // thirty-five columns too generous, and the command was elided in the
+    // middle and then chopped at the right edge with no marker: the exact
+    // failure `command_width` exists to prevent.
+    let given = i32::from(if show_bars { 0 } else { BAR_W as u16 * 2 + 3 })
+        + if show_thr { 0 } else { 5 }
+        - if show_mem_cols {
+            8 + 8 + 7 + 8 + 4i32
+        } else {
+            0
+        };
+    let dropped = given.max(0) as u16;
+    let taken = (-given).max(0) as u16;
     // Dropped on a box running no containers, where it would be twelve columns
     // of nothing. The same rule as the user column, and why a process in no
     // container shows a blank rather than an em dash.
@@ -4371,18 +2990,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
     // members can be in different ones — so the column would be a header and
     // twelve blank columns on every row, which is the argument that drops
     // `USER` two lines up.
-    let show_cid = shape.cid;
-    let cmd_w = command_width(
-        &shape,
-        table_body(app, area).width,
-        app.density.column_gap(),
-    );
-    // The same averaging the ordering used, so a row's figure and its position
-    // are describing the same thing. Computed again rather than threaded
-    // through `visible_rows`: it is a fold over a few hundred processes across
-    // five samples, and the alternative is a cache invalidated by every one of
-    // `History`'s six cursor movements.
-    let sm = app.smoothing();
+    let show_cid = app.group != crate::app::Grouping::User
+        && app.any_container()
+        && command_width(area.width, show_io, show_user, true, dropped, taken) as u16
+            > MIN_COMMAND_W;
     let rows_data = app.visible_rows();
     // Memory bars are scaled against the displayed sample's total, not the
     // live one, so they stay correct while scrubbed like everything else here.
@@ -4410,24 +3021,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         .take(visible_rows)
         .filter_map(|r| r.proc.key())
         .collect();
-    // The window the timeline is showing, not the whole buffer.
-    //
-    // This used to be the whole buffer, on the reasoning that "what has this
-    // process been doing" is a fixed question deserving a fixed answer. The
-    // objection to that is stronger: the two pictures are then of different
-    // spans, side by side, with nothing saying so. A spike halfway along the
-    // timeline sits somewhere else entirely in the row beside it, and the
-    // reader has to know which span each is drawn over before either can be
-    // read against the other. Same window, same zoom, same cursor — the same
-    // rule the detail view already follows.
-    let (spark_start, spark_shown, _) = shown_window(app, timeline);
-    let series = history::series_in(&app.history, &keys, spark_start, spark_shown);
-    // Same span, harder compression. Ten cells against the timeline's hundred
-    // means each one covers ten times as much, so the sparkline needs its own
-    // zoom over the same samples rather than the timeline's — synchronised is
-    // about the span, not the stride.
-    let spark_slots = SPARK_W * app.glyphs.spark_samples_per_cell();
-    let spark_zoom = spark_shown.div_ceil(spark_slots.max(1)).max(1);
+    // The whole retained buffer, not a slice of it. A per-row summary that
+    // shifted every time the timeline zoomed would be a second, contradictory
+    // reading of the same history; "what this process has been doing" is a
+    // fixed question with a fixed answer.
+    let series = history::series_for(&app.history, &keys, app.history.len());
+    let spark_slots = SPARK_W * app.glyphs.samples_per_cell();
+    let spark_zoom = app.history.len().div_ceil(spark_slots.max(1)).max(1);
 
     // One ceiling across every row. Scaling each sparkline to its own peak
     // makes a flat 12% process look exactly like one spiking to 90%, which
@@ -4440,18 +3040,63 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
     // it scrolls off. That is the same objection as the comment above — the
     // answer to "what has this process been doing" must not depend on where the
     // list happens to be sitting.
-    // Over the window rather than the whole buffer, now that the window is what
-    // is drawn: a ceiling set by a spike that scrolled out of view flattens
-    // every row still on screen.
     let spark_ceiling = glyphs::ceiling_for(
         app.history
             .iter()
-            .skip(spark_start)
-            .take(spark_shown)
             .flat_map(|s| s.procs.iter())
             .map(|p| p.cpu)
             .fold(0.0_f32, f32::max),
     );
+    // The history column earns its width by showing change. The CPU% beside
+    // it already says how busy each process is; what only the sparkline can
+    // say is how that moved. When no row on screen moved — every line flat,
+    // which on a quiet machine is every line — it was ten columns repeating
+    // the CPU column as a picture, while the command was elided for want of
+    // room (0110). So it is drawn when some row's history moves, on the one
+    // shared scale, and otherwise gives its width back and says why.
+    //
+    // Not a log scale, which was tried: four levels cannot be both fine at the
+    // bottom and readable at the top, and the top is where a process pinning
+    // several cores lives.
+    //
+    // Not judged until there is history to judge: before
+    // `App::CONSTANT_FOR` samples nothing has had time to move, and a column
+    // that appeared a few seconds after start would move the layout under the
+    // reader for no reason. The same threshold the user column folds on.
+    let history_moves =
+        app.history.len() < crate::app::App::CONSTANT_FOR || any_history_moves(app, spark_ceiling);
+    let mut columns = Columns {
+        bars: show_bars,
+        rss: true,
+        state: true,
+        thr: show_thr,
+        io: show_io,
+        mem: show_mem_cols,
+        spark: history_moves,
+        pid: true,
+        user: show_user,
+        cid: show_cid,
+    };
+    // One column reserved at the left for the selection mark (0114), so the
+    // table is laid out one narrower than the panel.
+    let table_w = area.width.saturating_sub(MARK_W);
+    columns.fit(table_w);
+    let Columns {
+        bars: show_bars,
+        rss: show_rss,
+        state: show_state,
+        thr: show_thr,
+        io: show_io,
+        mem: show_mem_cols,
+        spark: show_spark,
+        pid: show_pid,
+        user: show_user,
+        cid: show_cid,
+    } = columns;
+    // What the fixed columns leave, measured by the same description that
+    // lays them out. Floored at the column's own `Min`, and above it exactly:
+    // an elision against a guess is either too cautious or chopped at the edge.
+    let cmd_w = table_w.saturating_sub(columns.fixed()).max(MIN_COMMAND_W) as usize;
     let collected = app.history.current().is_some_and(|s| s.io_collected);
     let rows_visible = area.height.saturating_sub(2) as usize;
 
@@ -4490,20 +3135,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         .take(rows_visible)
         .map(|(i, r)| {
             let p = &r.proc;
-            // Every other row gets a slightly lighter ground. A process table
-            // is wide — a figure on the left and the name it belongs to on the
-            // right, with eight columns between — and the eye loses the line it
-            // is on somewhere in the middle. Striping is the oldest fix there
-            // is for that, and it costs nothing a border would not cost more.
-            //
-            // Subtle on purpose: a stripe loud enough to notice competes with
-            // the figures it is there to help you read across. See
-            // `Theme::stripe_style`.
-            let mut style = if i % 2 == 1 {
-                app.theme.stripe_style()
-            } else {
-                Style::default()
-            };
+            let mut style = Style::default();
             if Some(i) == selected {
                 style = app.theme.selection_style();
             } else if r.context_only {
@@ -4522,13 +3154,13 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                 if show_bars {
                     cells.push(Cell::from(cpu_bar(th.cpu)).style(app.theme.dim_style()));
                 }
-                if shape.rss {
+                if show_rss {
                     cells.push(num("—").style(app.theme.dim_style()));
                     if show_bars {
                         cells.push(Cell::from(""));
                     }
                 }
-                if shape.state {
+                if show_state {
                     cells.push(Cell::from(th.state.to_string()));
                 }
                 if show_thr {
@@ -4538,26 +3170,21 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                     cells.push(num("—").style(app.theme.dim_style()));
                     cells.push(num("—").style(app.theme.dim_style()));
                 }
-                // A thread has no memory of its own; it shares its process's,
-                // one row up. One dash per column actually drawn — a fixed four
-                // put the sparkline under `GROW` the moment a column was
-                // dropped for want of anything to put in it.
-                for _ in 0..[shape.pss, shape.vsize, shape.majflt, shape.grow]
-                    .iter()
-                    .filter(|on| **on)
-                    .count()
-                {
-                    cells.push(num("—").style(app.theme.dim_style()));
+                if show_mem_cols {
+                    // A thread has no memory of its own; it shares its
+                    // process's, one row up.
+                    for _ in 0..4 {
+                        cells.push(num("—").style(app.theme.dim_style()));
+                    }
                 }
                 // No sparkline. The retained history is per process, so the
                 // only series available here is the parent's — drawing it on
                 // every thread row would put the same shape beside forty
-                // different numbers and invite reading it as each one's. Blank
-                // rather than absent, because the column is still there.
-                if shape.spark {
+                // different numbers and invite reading it as each one's.
+                if show_spark {
                     cells.push(Cell::from(""));
                 }
-                if shape.pid {
+                if show_pid {
                     cells.push(num(th.tid.to_string()));
                 }
                 if show_user {
@@ -4577,7 +3204,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             let mut cells = vec![if unmeasured {
                 num("—").style(app.theme.dim_style())
             } else {
-                num(format!("{:.1}", sm.cpu(p))).style(app.theme.heat_style(sm.cpu(p)))
+                num(format!("{:.1}", p.cpu)).style(app.theme.heat_style(p.cpu))
             }];
             // A bar beside the number turns a column that must be read into
             // one that can be scanned. htop does the same, for the same reason.
@@ -4593,25 +3220,25 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                 cells.push(if unmeasured {
                     Cell::from("")
                 } else {
-                    Cell::from(cpu_bar(sm.cpu(p))).style(app.theme.dim_style())
+                    Cell::from(cpu_bar(p.cpu)).style(app.theme.dim_style())
                 });
             }
-            if shape.rss {
+            if show_rss {
                 cells.push(if unmeasured {
                     num("—").style(app.theme.dim_style())
                 } else {
-                    num(fmt_bytes(sm.rss(p)))
+                    num(fmt_bytes(p.rss))
                 });
                 if show_bars {
                     cells.push(if unmeasured {
                         Cell::from("")
                     } else {
-                        Cell::from(glyphs::micro_bar(mem_frac(sm.rss(p), total_mem), BAR_W))
+                        Cell::from(glyphs::micro_bar(mem_frac(p.rss, total_mem), BAR_W))
                             .style(app.theme.dim_style())
                     });
                 }
             }
-            if shape.state {
+            if show_state {
                 cells.push(Cell::from(p.state.to_string()));
             }
             if show_thr {
@@ -4627,24 +3254,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                 cells.push(io_cell(collected, p.io, false, &app.theme));
                 cells.push(io_cell(collected, p.io, true, &app.theme));
             }
-            // Never a zero for any of these: a share nobody measured, a size
-            // the platform does not publish and a fault count that was not
-            // collected are all "not known", and this table has one way of
-            // saying that. The column is there at all only where somebody
-            // answers — see `App::mem_columns_available`.
-            if shape.pss {
+            if show_mem_cols {
+                // Never a zero for any of these: a share nobody measured, a
+                // size the platform does not publish and a fault count that was
+                // not collected are all "not known", and this table has one way
+                // of saying that.
                 cells.push(num(match p.pss {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
-            }
-            if shape.vsize {
                 cells.push(num(match p.vsize {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
-            }
-            if shape.majflt {
                 cells.push(match p.majflt {
                     // Coloured against a *fault* threshold, not through
                     // `heat_style`: that compares against the warn and critical
@@ -4658,8 +3280,6 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                     Some(n) => num(n.to_string()),
                     None => num("—").style(app.theme.dim_style()),
                 });
-            }
-            if shape.grow {
                 // Not for a group. Its synthesised pid is the lowest member's
                 // and its `started` is `None`, so on a platform that also
                 // reports `None` there the lookup matches that one member and
@@ -4678,7 +3298,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             // column of shapes rather than hunting for it past ragged names —
             // and it makes the boundary between what a row *measures* and what
             // a row *is*.
-            if shape.spark {
+            if show_spark {
                 cells.push(
                     Cell::from(sparkline(
                         p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
@@ -4692,9 +3312,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             // Identity, all of it together — see the note above `rows`.
             // A group has no pid — it is not a process. The column carries how
             // many were folded in instead, which is the fact that replaces it.
+            // A group has no pid — it is not a process. The column carries how
+            // many were folded in instead, which is the fact that replaces it.
             // A group of one keeps the pid: there is a single process there and
             // `×1` says less than its number does.
-            if shape.pid {
+            if show_pid {
                 cells.push(num(match r.members {
                     Some(n) if n > 1 => format!("×{n}"),
                     _ => p.pid.to_string(),
@@ -4735,85 +3357,53 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         })
         .collect();
 
+    // A header aligned against its column is a header for a different column.
+    // `right` marks the numeric ones; the bars and the text columns stay left.
+    let right = |s| num(s).style(app.theme.table_header_style());
+    let left = |s: &str| Cell::from(s.to_string()).style(app.theme.table_header_style());
     // In the order the cells are pushed, which is what `Table` pairs them by.
     // With the IO columns shown these had drifted a place: `HISTORY` sat over
     // DISK R, `DISK R` over DISK W, and `DISK W` over the sparkline — every one
     // of the three naming the column beside it.
-    // The caret goes in the header of the column the ordering is over, which is
-    // where the reader is already looking. It used to be stated in the panel
-    // title several rows away, in a clause the width ladder can drop — so the
-    // ordering was named furthest from the thing it ordered.
-    //
-    // Always descending, because "what is using the most" is the question. The
-    // caret says *which* column, not which direction.
-    // One walk of the column list, giving each header both its caret and its
-    // alignment. The alignment used to be chosen by hand at each of fourteen
-    // push sites, so a column could be declared numeric and drawn left with
-    // nothing to say the two had parted company.
-    let (_, cols) = table_columns(&shape);
-    let mut nth = 0usize;
-    let mut head = move |label: &str| {
-        let col = cols.get(nth);
-        nth += 1;
-        let mark = if col.and_then(|c| c.sort) == Some(app.sort) {
-            "▾"
-        } else {
-            ""
-        };
-        // Prefixed on a right-aligned header and suffixed on a left-aligned
-        // one, so the caret sits in the padding the column already has.
-        // Appending it to a right-aligned label pushes the label two columns
-        // left and the header stops sharing a right edge with the figures under
-        // it — `a_column_of_figures_shares_a_right_edge` is about exactly that.
-        if col.is_some_and(|c| c.numeric) {
-            num(format!("{mark}{label}")).style(app.theme.table_header_style())
-        } else {
-            Cell::from(format!("{label}{mark}")).style(app.theme.table_header_style())
-        }
-    };
-    let mut header_cells = vec![head("CPU%")];
+    let mut header_cells = vec![right("CPU%")];
     if show_bars {
-        header_cells.push(head(""));
+        header_cells.push(left(""));
     }
-    if shape.rss {
-        header_cells.push(head("RSS"));
+    if show_rss {
+        header_cells.push(right("RSS"));
         if show_bars {
-            header_cells.push(head(""));
+            header_cells.push(left(""));
         }
     }
-    if shape.state {
-        header_cells.push(head("S"));
+    if show_state {
+        header_cells.push(left("S"));
     }
     if show_thr {
-        header_cells.push(head("THR"));
+        header_cells.push(right("THR"));
     }
     if show_io {
-        header_cells.push(head("DISK R"));
-        header_cells.push(head("DISK W"));
+        header_cells.push(right("DISK R"));
+        header_cells.push(right("DISK W"));
     }
-    for (on, label) in [
-        (shape.pss, "PSS"),
-        (shape.vsize, "VSZ"),
-        (shape.majflt, "MAJF/s"),
-        (shape.grow, "GROW"),
-    ] {
-        if on {
-            header_cells.push(head(label));
-        }
+    if show_mem_cols {
+        header_cells.push(right("PSS"));
+        header_cells.push(right("VSZ"));
+        header_cells.push(right("MAJF/s"));
+        header_cells.push(right("GROW"));
     }
-    if shape.spark {
-        header_cells.push(head(&spark_header(spark_ceiling)));
+    if show_spark {
+        header_cells.push(left(&spark_header(spark_ceiling)));
     }
-    if shape.pid {
-        header_cells.push(head("PID"));
+    if show_pid {
+        header_cells.push(right("PID"));
     }
     if show_user {
-        header_cells.push(head("USER"));
+        header_cells.push(left("USER"));
     }
     if show_cid {
-        header_cells.push(head("CID"));
+        header_cells.push(left("CID"));
     }
-    header_cells.push(head("COMMAND"));
+    header_cells.push(left("COMMAND"));
     let header = Row::new(header_cells).style(app.theme.table_header_style());
 
     // What the table cannot show, said out loud. A process that lived 200ms is
@@ -4954,18 +3544,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             n => format!(" · all {u} but {n} unknown"),
         });
 
-    // What the table cannot show, ranked and given up from the least important
-    // end — because at eighty columns not all of it fits, and a clipped title
-    // reads as a message called `io: panel too narr`.
-    //
-    // Everything here is an omission or an event: something withheld, stopped,
-    // missing or over. What the *reader* did to the table — the sort, the
-    // folding, the averaging — is on the strip above, where the tabs that
-    // change it are. The two kinds of statement were mixed in this one line
-    // and read as one string of facts, so a reason a column was empty sat
-    // behind an identical `·` as a preference somebody had set.
-    //
-    // The ranks are the argument:
+    // Ranked, and given up from the least important end, because at eighty
+    // columns not all of it fits and a clipped title reads as a message called
+    // `io: panel too narr`. The ranks are the argument:
     //
     //   0  the count            — the panel's subject
     //  10  `all <user>`         — this one *replaces a column*; without it the
@@ -4978,18 +3559,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
     //                             to exist at all
     //  28  the thread note      — the message the `y` key looks broken without:
     //                             an expanded process with no rows under it
-    //  30  the io status        — the message the disk columns look broken
-    //                             without
-    //  36  `history flat`       — why the history column is not there
-    //  45  the constraint       — advice, and the only clause here the reader
-    //                             can act on
+    //  30  the io status        — the message the `i` key looks broken without
+    //  40  the sort column      — not otherwise stated anywhere
+    //  50  `tree`               — visible in the rows themselves
     //  58  OOM kills            — an event, and the answer to "what happened
     //                             to my process"
     //  60  churn                — a nicety
+    //  70  the history axis     — a nicety, and the ladder it was already at
+    //                             the bottom of
     //
     // Display order and drop order are separate: the list below reads left to
     // right as it appears on screen, and the rank beside each says when it
-    // goes.
+    // goes. The sort clause reads better before the io status and is given up
+    // first of the two.
     //
     // Each clause carries its own style, because they are not all the same kind
     // of statement. `N/M need root` is a warning — a reason a column is empty,
@@ -5034,27 +3616,6 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
 
     let (io_text, io_is_warning) = io_status(show_io, app, collected);
     let plain = app.theme.title_style();
-    // An em dash before the first of them and a `·` before the rest, so they
-    // read as one clause about the table rather than as three more facts —
-    // and so the first one still reads correctly when the other two are gone.
-    let settings = if strip {
-        [String::new(), String::new(), String::new()]
-    } else {
-        let [sort, fold, avg] = settings_parts(app);
-        [
-            format!(" — {sort}"),
-            if fold.is_empty() {
-                fold
-            } else {
-                format!(" · {fold}")
-            },
-            if avg.is_empty() {
-                avg
-            } else {
-                format!(" · {avg}")
-            },
-        ]
-    };
     let parts = [
         (0u8, format!(" processes ({})", shown_procs), plain),
         (5, absent, plain),
@@ -5068,24 +3629,25 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         // the byte budget, or the disk.
         (23, logging, app.theme.warning_style()),
         (28, threads, plain),
-        // Only when the strip above the table is not there to say them. See
-        // the note on this function. One clause each, at three ranks, so a
-        // narrow rule gives up the averaging before the folding and the
-        // folding before the ordering — the same order the strip drops them
-        // in, reached through the machinery this line already has.
-        (40, settings[0].clone(), plain),
-        (48, settings[1].clone(), plain),
-        (52, settings[2].clone(), plain),
         // Why the history column is missing, when that is the reason: said,
         // because a column that comes and goes unexplained reads as a bug.
-        // Under the averaging note, which is about a figure on every row
-        // rather than about a column that is not there.
         (
-            36,
-            if shape.flat {
-                " · history flat".to_string()
-            } else {
+            35,
+            if history_moves {
                 String::new()
+            } else {
+                " · history flat".to_string()
+            },
+            plain,
+        ),
+        (
+            40,
+            // Both named, because `s` now cycles within the view and the two
+            // can no longer disagree — so saying one without the other leaves
+            // the reader guessing which columns the ordering is over.
+            match app.view {
+                crate::app::View::Generic => format!(" — sort: {}", app.sort.label()),
+                v => format!(" — {} view, sort: {}", v.label(), app.sort.label()),
             },
             plain,
         ),
@@ -5094,6 +3656,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         // advice rather than a fact about the data.
         (45, constraint, plain),
         (46, crowd, plain),
+        (
+            50,
+            match (app.tree, app.group) {
+                (true, _) => " · tree".into(),
+                // Named, not just "grouped": the rows say what they fold only
+                // if you already know which key is in force, and `g` now has
+                // three states rather than two.
+                (_, g) if g != crate::app::Grouping::Off => format!(" · {}", g.label()),
+                _ => String::new(),
+            },
+            plain,
+        ),
         (60, churn, plain),
         // Ranked with the churn it sits beside, one above: a process that was
         // killed is a stronger fact than one that merely came and went, and it
@@ -5111,48 +3685,56 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
     ];
     let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
 
-    let (widths, sorts) = table_columns(&shape);
-    let _ = &sorts;
+    let widths: Vec<Constraint> = columns
+        .widths()
+        .into_iter()
+        .map(Constraint::Length)
+        .chain([Constraint::Min(MIN_COMMAND_W)])
+        .collect();
 
     f.render_widget(
         Paragraph::new(divider_of(title, area.width, &app.theme)),
         Rect { height: 1, ..area },
     );
-    // Between the title and the column headers: the title says which processes
-    // these are, this says what they add up to, and the headers name the
-    // columns. Each row is one step closer to the figures.
-    let summary = summary_height(area);
-    if summary > 0
-        && let Some(line) = summary_line(
-            app,
-            app.history.current().map_or(0, |s| s.mem.total),
-            area.width as usize,
-        )
-    {
-        f.render_widget(
-            Paragraph::new(line).style(app.theme.panel_style()),
-            Rect {
-                y: area.y + 1,
-                height: 1,
-                x: table_body(app, area).x,
-                width: table_body(app, area).width,
-            },
-        );
+    let table = Table::new(rows, widths).header(header);
+    f.render_widget(
+        table,
+        Rect {
+            x: area.x + MARK_W,
+            y: area.y + 1,
+            width: table_w,
+            height: area.height.saturating_sub(1),
+        },
+    );
+    // The selection's mark, in the margin where the eye starts reading a row.
+    // The row's own highlight was a dark background and bold — faint on most
+    // themes, among rows that reorder every second (0114). Below the title and
+    // the header, at the row's place in the scrolled list.
+    if let Some(i) = selected.filter(|i| (offset..offset + rows_visible).contains(i)) {
+        let y = area.y + 2 + (i - offset) as u16;
+        if y < area.y + area.height && area.width > 0 {
+            let mark = if app.glyphs == GlyphSet::Ascii {
+                ">"
+            } else {
+                "▶"
+            };
+            f.render_widget(
+                Paragraph::new(Span::styled(mark, app.theme.live_style())),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: MARK_W.min(area.width),
+                    height: 1,
+                },
+            );
+        }
     }
-    // The same gap the hit-testing splits with. Left at ratatui's default of
-    // one while `sort_at` split with two, a click on a header landed a column
-    // short of the column it was over.
-    let table = Table::new(rows, widths)
-        .header(header)
-        .column_spacing(app.density.column_gap());
-    f.render_widget(table, table_body(app, area));
 }
 
-/// Width of the per-process history sparkline, in cells.
-/// The cursor's mark, named once so the renderer and the tests cannot drift.
-#[cfg(test)]
-pub const MARK: char = '▲';
+/// The margin the selection mark is drawn in. See the end of the table.
+const MARK_W: u16 = 1;
 
+/// Width of the per-process history sparkline, in cells.
 pub const SPARK_W: usize = 10;
 
 /// One process's CPU history as a sparkline.
@@ -5167,20 +3749,10 @@ fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling
     let Some(series) = series else {
         return " ".repeat(SPARK_W);
     };
-    let spc = set.spark_samples_per_cell();
+    let spc = set.samples_per_cell();
     let slots = SPARK_W * spc;
     let values: Vec<f32> = series.iter().map(|v| v.unwrap_or(0.0)).collect();
     let agg = history::peak_slots(&values, zoom.max(1), slots);
-    if spc == 1 {
-        // The eighths ramp: one sample a cell, nine heights.
-        return agg
-            .iter()
-            .map(|v| match v {
-                None => ' ',
-                Some(v) => set.spark_glyph(eighths(*v, ceiling)),
-            })
-            .collect();
-    }
     agg.chunks(spc)
         .map(|cell| {
             let a = cell[0].unwrap_or(0.0);
@@ -5190,34 +3762,6 @@ fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling
             set.glyph(l, r)
         })
         .collect()
-}
-
-/// A value as eighths of a ceiling, 0..=8.
-///
-/// Anything above zero rounds *up* to at least one eighth. A process using 0.4%
-/// of the machine is running, and a blank cell says it was not there at all —
-/// the same distinction the gap above is drawing.
-fn eighths(v: f32, ceiling: f32) -> usize {
-    if v <= 0.0 || !v.is_finite() || ceiling <= 0.0 {
-        return 0;
-    }
-    ((v / ceiling * 8.0).ceil() as usize).clamp(1, 8)
-}
-
-/// The scale the movement test is judged on: the whole buffer's peak.
-///
-/// Not the window's, which is what the drawn sparklines are scaled to. The
-/// question here is whether anything moved at all, and an answer that changed
-/// as the window scrolled would take the column away and give it back while
-/// the reader scrubbed.
-fn buffer_ceiling(app: &App) -> f32 {
-    glyphs::ceiling_for(
-        app.history
-            .iter()
-            .flat_map(|s| s.procs.iter())
-            .map(|p| p.cpu)
-            .fold(0.0_f32, f32::max),
-    )
 }
 
 /// Whether any process in the buffer has a history that moves: whether, on the
@@ -5308,11 +3852,7 @@ fn io_cell(collected: bool, io: Option<IoRates>, write: bool, theme: &Theme) -> 
 /// it — while the rest explain why the columns are absent and need no action.
 /// The `bool` is what lets the two be drawn differently.
 fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
-    // Nothing to report on a tab that does not carry these columns. The memory
-    // tab was announcing `! io: panel too narrow` at every width, about columns
-    // it would not have drawn at any of them — a warning that named a problem
-    // the reader could not have, next to the four columns they had asked for.
-    if !app.show_io || !app.view.wants_io() {
+    if !app.show_io {
         return (String::new(), false);
     }
     // Asked for but not drawn. Without this the key is a silent no-op on a
@@ -5362,80 +3902,20 @@ fn io_status(show_io: bool, app: &App, collected: bool) -> (String, bool) {
     (format!(" ! io: {}/{eligible} need root", s.io_denied), true)
 }
 
-/// What can be done to the selected process, and what cannot and why.
-///
-/// Activity Monitor puts three controls in its title bar and attaches them to
-/// the selection: they are visible, they are few, and which of them are
-/// available tells you what can be done to what you have picked. This is the
-/// terminal's version — the footer already changes with the mode, and a
-/// selection is a mode.
-///
-/// `None` when nothing is selected, so the row says nothing rather than
-/// offering actions with no subject.
-fn selection_actions(app: &App, width: usize) -> Option<Line<'static>> {
-    let name = match app.selected.as_ref()? {
-        // The *short* name, not the command line. `Watched` keeps the full
-        // command so a missing process can be named unambiguously, and putting
-        // that in a one-line bar spends sixty columns identifying a row the
-        // reader is already looking at.
-        crate::app::Watched::Process { pid, name, .. } => {
-            let short = name.split_whitespace().next().unwrap_or(name);
-            let short = short.rsplit('/').next().unwrap_or(short);
-            format!("{short} · {pid}")
-        }
-        // A folded row is several processes, and "signal the one under the
-        // cursor" there means picking one of them — which is not a decision a
-        // confirmation could describe. So it offers nothing.
-        crate::app::Watched::Group { .. } => return None,
-    };
-    let mut spans = vec![
-        Span::styled(" ", app.theme.dim_style()),
-        Span::styled(name, app.theme.title_style()),
-        Span::styled("  ⏎ inspect", app.theme.dim_style()),
-    ];
-    // Said before it is attempted, not after. An action bar offering `x quit`
-    // on a recorded day and then refusing it is worse than one that never
-    // offered it: the reader has already decided by the time they find out.
-    match app.signal_refusal() {
-        None => spans.push(Span::styled(
-            " · x TERM · X KILL".to_string(),
-            app.theme.dim_style(),
-        )),
-        Some(why) => spans.push(Span::styled(
-            format!(" · no signal: {}", why.short()),
-            app.theme.warning_style(),
-        )),
-    }
-    // Its own ladder, because this row is shared. What the reader picked and
-    // what can be done to it outrank the key hints, which are a reminder; but
-    // the whole bar is given up before it clips, because a clipped action list
-    // reads as an action that does not exist.
-    let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
-    if used > width {
-        return None;
-    }
-    let rest = width.saturating_sub(used + 3);
-    let hints = fit_hints(KEY_HINTS, rest as u16);
-    if !hints.is_empty() {
-        spans.push(Span::styled(format!("   {hints}"), app.theme.dim_style()));
-    }
-    Some(Line::from(spans))
-}
-
 fn draw_help(f: &mut Frame, area: Rect, app: &App) {
-    let area = content(app, area);
     let line = if app.editing_filter {
-        // The field itself is on the scope line, where the filter is the scope.
-        // What is left for this row is what the field takes and how to leave
-        // it — which a one-line box had nowhere else to put, and which is the
-        // reason the box existed at all.
-        match app.filter_error() {
-            Some(why) => Line::from(Span::styled(format!(" {why}"), app.theme.warning_style())),
-            None => Line::from(Span::styled(
-                " ⏎ keep · esc cancel · try `postgres`, `user:root`, `cpu>50`".to_string(),
-                app.theme.dim_style(),
-            )),
-        }
+        // The error, where the query is being typed. A one-line filter box has
+        // nowhere else to teach the field names, so the message carries them.
+        let tail = match app.filter_error() {
+            Some(why) => Span::styled(format!("   {why}"), app.theme.warning_style()),
+            None => Span::styled("   (Enter/Esc to finish)", app.theme.dim_style()),
+        };
+        Line::from(vec![
+            Span::styled("filter: ", app.theme.cursor_style()),
+            Span::raw(&app.filter),
+            Span::styled("█", app.theme.cursor_style()),
+            tail,
+        ])
     } else if let Some(p) = app.pending.as_ref() {
         // The question, naming the process. The number is the part that gets
         // misread, and it is the only thing the alternative workflow — reading
@@ -5479,11 +3959,6 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         // was recorded at 03:00 is the whole point of asking, and a message
         // that vanished with the prompt would be one nobody read.
         Line::from(Span::styled(format!(" {note}"), app.theme.warning_style()))
-    } else if let Some(actions) = selection_actions(app, area.width as usize) {
-        // Last, after every prompt: a pending confirmation, a jump note and a
-        // filter error are all about something the reader just did, and this is
-        // about something they are still looking at.
-        actions
     } else {
         Line::from(Span::styled(
             fit_hints(KEY_HINTS, area.width),
@@ -5507,9 +3982,6 @@ pub fn fit_hints_for_test(width: u16) -> String {
 
 pub const KEY_HINTS: &[&str] = &[
     "q quit",
-    // Second, because it is the one hint that leads to all the others: the bar
-    // names every command there is, beside the key that also runs it.
-    "F10 menu",
     "←/→ scrub",
     "b jump",
     "+/- zoom",
@@ -5522,9 +3994,8 @@ pub const KEY_HINTS: &[&str] = &[
     // key exists — which is worth less than `s sort` and more than `K kernel`.
     "x signal",
     "t tree",
-    // `Tab` rather than `v`: the strip above the table is what it moves, and
-    // the strip is on screen saying so.
-    "Tab tabs",
+    "i io",
+    "v view",
     "y threads",
     "C cgroups",
     "K kernel",
@@ -5586,17 +4057,7 @@ pub const HELP: &[(&str, &str, &str)] = &[
     ("v", "v", "the next view: memory, then disk"),
     ("C", "C", "cgroups in place of processes"),
     ("K", "K", "kernel threads"),
-    (
-        "Tab",
-        "Tab",
-        "the next tab, Shift-Tab the previous, 1-9 one by number",
-    ),
-    ("Enter", "Enter", "the inspector on the selected process"),
-    (
-        "F10",
-        "F10",
-        "the menu bar, which names every command there is",
-    ),
+    ("i", "i", "the disk IO columns"),
     ("?", "?", "this list"),
 ];
 

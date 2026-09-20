@@ -52,26 +52,3 @@ takes a real input and bends it — each line removed or doubled, each number at
 the edge of its type, bytes that are not UTF-8, the file cut at every line — and
 the parsers' tests assert that none of it panics. That runs on every
 `cargo test`, on stable, on both platforms.
-
-## Soaking
-
-The tests run for seconds and poptop is meant to be left running for days. A
-leak of a kilobyte a sample is invisible in either, and obvious after a day.
-
-```sh
-cargo build --release
-soak/run target/release/poptop /tmp/soak 24     # hours
-soak/analyse target/release/poptop /tmp/soak
-```
-
-It leaves the monitor on a real terminal at a 200 ms interval, logging, in an
-empty home of its own with a process-churn generator beside it, and records its
-resident memory, open descriptors, CPU time and log size every minute. Partway
-through it does what real use does to a monitor: steps the wall clock backwards
-(where libfaketime is available), stops and resumes the process as a laptop's
-sleep does, and runs across a local midnight so the day log rolls over.
-`soak/analyse` reads the `metrics.tsv` afterwards and says whether anything
-grew that should not have. See [`soak/README.md`](../../soak/README.md).
-
-Nothing in CI depends on it; it is run by hand before a release, and by anyone
-who wants to know what a day of poptop costs.

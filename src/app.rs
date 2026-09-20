@@ -17,14 +17,6 @@ use std::sync::Arc;
 /// a gap in the buffer from an ordinary interval is a question about the
 /// nominal rate, and two copies of that number would drift the moment item
 /// 0013 makes it configurable.
-/// Samples the table averages over by default.
-///
-/// Five, which at the default one-second interval is Activity Monitor's own
-/// refresh period — long enough that a row stops twitching and short enough
-/// that a process starting is on screen before you have finished reading the
-/// row above it.
-pub const DEFAULT_SMOOTH: usize = 5;
-
 pub const DEFAULT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Samples per display slot.
@@ -76,31 +68,15 @@ impl Sort {
     /// Order two processes under this sort. Shared by the flat table and by
     /// sibling ordering inside the tree, so both agree.
     pub fn compare(self, a: &ProcSample, b: &ProcSample) -> Ordering {
-        self.compare_with(&Smoothing::default(), a, b)
-    }
-
-    /// The same ordering, over averaged figures.
-    ///
-    /// Sorting on the smoothed value is the half of smoothing that matters. A
-    /// row whose *number* twitches is mildly annoying; a row that swaps places
-    /// with its neighbour while you are reading it is the thing that makes a
-    /// table unreadable, and that happens on a single noisy sample unless the
-    /// ordering is over the average too.
-    pub fn compare_with(self, sm: &Smoothing, a: &ProcSample, b: &ProcSample) -> Ordering {
         match self {
             // Descending for resource columns: the interesting rows go top.
             // A process the kernel said nothing about goes after one it did,
-            // not among the idle — its zeros were never measured. Ahead of the
-            // figures rather than folded into them, so it holds whether the
-            // figure compared is the raw one or the average.
+            // not among the idle — its zeros were never measured.
             Sort::Cpu => a
                 .unmeasured()
                 .cmp(&b.unmeasured())
-                .then(sm.cpu(b).total_cmp(&sm.cpu(a))),
-            Sort::Mem => a
-                .unmeasured()
-                .cmp(&b.unmeasured())
-                .then(sm.rss(b).cmp(&sm.rss(a))),
+                .then(b.cpu.total_cmp(&a.cpu)),
+            Sort::Mem => a.unmeasured().cmp(&b.unmeasured()).then(b.rss.cmp(&a.rss)),
             // Unreadable sorts last, not as zero. A process whose IO could not
             // be read is not an idle one, and putting it among the idle ones
             // would be the fabricated zero this codebase refuses everywhere
@@ -187,95 +163,11 @@ const BUDGET_STRIKES: u32 = 3;
 ///
 /// `d` is neither: it changes the *timeline* panel, not the table, and calling
 /// it a table mode was the thing that made this look like four axes.
-/// The ceiling each kind of graph is being drawn on, and when the data last
-/// justified it.
-///
-/// A byte rate has no natural maximum, so its axis has to follow the data —
-/// and an axis that follows the data exactly redraws every sample on screen
-/// the moment a burst arrives or leaves. Nothing about the past has changed;
-/// only the scale has, and a graph whose history redraws itself is one nobody
-/// can read a trend off.
-///
-/// So the ceiling rises the instant the data needs it, because a clipped graph
-/// is not a smaller graph but a wrong one, and falls only once the peak has
-/// stayed under it for [`SETTLE`]. A burst no longer leaves a cliff behind it.
-///
-/// Three slots, one per [`crate::ui::Unit`], doubled: the machine's panels and
-/// one process's panels are different subjects and must not inherit each
-/// other's scale. Held in a `Cell` because drawing takes `&App` everywhere and
-/// this is the one fact about a frame that has to outlive it — a ceiling
-/// recomputed from scratch every frame is exactly the flicker being fixed.
-#[derive(Clone, Debug, Default)]
-pub struct HeldCeilings(std::cell::Cell<[(f32, Option<std::time::SystemTime>); 6]>);
-
-/// How long a graph's ceiling stays up after the data stops needing it.
-///
-/// Long enough that a burst and the quiet after it are one picture, short
-/// enough that a panel does not spend a minute mostly empty once traffic
-/// genuinely drops.
-pub const SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
-
-impl HeldCeilings {
-    /// The ceiling to draw `unit` on, given what this frame's data wants.
-    ///
-    /// `now` is the newest sample's own timestamp rather than the wall clock,
-    /// so the settling is a fact about the recording and a test can state it
-    /// without sleeping.
-    pub fn settle(
-        &self,
-        unit: crate::ui::Unit,
-        subject: bool,
-        want: f32,
-        now: std::time::SystemTime,
-    ) -> f32 {
-        let at = unit.slot() * 2 + usize::from(subject);
-        let mut held = self.0.get();
-        let (ceiling, since) = held[at];
-        let keep = match since {
-            // Nothing held yet, or the data has caught up with what is held:
-            // take it, and the clock starts again from here.
-            _ if want >= ceiling => (want, Some(now)),
-            None => (want, Some(now)),
-            // Smaller than what is drawn. Hold it until it has been smaller
-            // for long enough to be the new shape of things rather than a lull.
-            Some(t) => match now.duration_since(t) {
-                Ok(d) if d >= SETTLE => (want, Some(now)),
-                // A clock that went backwards says nothing about how long
-                // anything has been true. Hold rather than guess.
-                _ => (ceiling, Some(t)),
-            },
-        };
-        held[at] = keep;
-        self.0.set(held);
-        keep.0
-    }
-
-    /// Forget every held ceiling.
-    ///
-    /// Scrubbing to another part of the buffer is a deliberate move to a
-    /// different span, and carrying the live view's scale into it would draw
-    /// that span on an axis chosen by a moment the reader has left.
-    pub fn forget(&self) {
-        self.0.set(Default::default());
-    }
-}
-
-/// Which of the memory tab's platform figures this machine actually publishes.
-///
-/// See [`App::mem_columns_available`]. Growth is not here: poptop computes it
-/// from two of its own samples, so it is available wherever the tab is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MemColumns {
-    pub pss: bool,
-    pub vsize: bool,
-    pub majflt: bool,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
     /// What poptop has always shown: CPU, memory, state, threads, history.
     #[default]
-    Cpu,
+    Generic,
     /// Memory, with the room the other columns were using.
     Memory,
     /// Disk throughput, always — not only when it happens to fit.
@@ -289,47 +181,26 @@ pub enum View {
 impl View {
     pub fn next(self) -> Self {
         match self {
-            View::Cpu => View::Memory,
+            View::Generic => View::Memory,
             View::Memory => View::Disk,
-            View::Disk => View::Cpu,
+            View::Disk => View::Generic,
         }
     }
 
-    /// Every tab, in the order they are drawn.
-    ///
-    /// The list rather than a `next` chain: a tab strip has to draw them all,
-    /// and deriving the strip by walking `next` until it came back round would
-    /// be a loop that only works because the cycle happens to be closed.
-    pub const ALL: [View; 3] = [View::Cpu, View::Memory, View::Disk];
-
-    /// The name on the tab.
-    ///
-    /// Capitalised, because these are now proper nouns on a navigation strip
-    /// rather than a word in a sentence in a panel title.
     pub fn label(self) -> &'static str {
         match self {
-            View::Cpu => "CPU",
-            View::Memory => "Memory",
-            View::Disk => "Disk",
+            View::Generic => "generic",
+            View::Memory => "memory",
+            View::Disk => "disk",
         }
-    }
-
-    pub fn prev(self) -> Self {
-        // Two forward is one back in a cycle of three, and writing it this way
-        // means the order lives in one place.
-        self.next().next()
     }
 
     /// Whether the per-process disk columns belong in this view.
     ///
     /// In the disk view they are the point, so they are not subject to the
-    /// width test that hides them elsewhere. On the CPU tab they are subject to
-    /// it and still present by default, which `io_columns_are_there_before_anyone_asks`
-    /// argues for and this deliberately did not disturb: the header can say the
-    /// machine is blocked on IO, and the table under it is where the culprit is
-    /// named. Making that answer a tab away would be a real loss to save a key.
+    /// width test that hides them elsewhere.
     pub fn wants_io(self) -> bool {
-        matches!(self, View::Cpu | View::Disk)
+        matches!(self, View::Generic | View::Disk)
     }
 
     /// The sort keys reachable from this view.
@@ -340,7 +211,7 @@ impl View {
     /// panel can name both without either contradicting the table.
     pub fn sorts(self) -> &'static [Sort] {
         match self {
-            View::Cpu => &[Sort::Cpu, Sort::Mem, Sort::Disk, Sort::Pid, Sort::Name],
+            View::Generic => &[Sort::Cpu, Sort::Mem, Sort::Disk, Sort::Pid, Sort::Name],
             View::Memory => &[Sort::Mem, Sort::Cpu, Sort::Pid, Sort::Name],
             View::Disk => &[Sort::Disk, Sort::Cpu, Sort::Pid, Sort::Name],
         }
@@ -464,8 +335,6 @@ pub struct App {
     last_row: std::cell::Cell<usize>,
     pub filter: String,
     pub editing_filter: bool,
-    /// What the filter was before editing began, so Escape can put it back.
-    pub filter_before: String,
     /// Whether the jump box is open, and what has been typed into it.
     ///
     /// An incident has a time. Scrubbing to it by pressing the left arrow six
@@ -605,20 +474,9 @@ pub struct App {
     /// Index into [`ZOOM_LEVELS`].
     zoom_idx: usize,
     pub glyphs: GlyphSet,
-    pub axis: crate::glyphs::Axis,
-    /// How much air the layout is given. See `ui::Density`.
-    pub density: crate::ui::Density,
-    /// Which dropdown is open, if any. See `menu.rs`.
-    pub menu: crate::menu::MenuState,
-    /// Whether the inspector is open on the selected process. See `ui::draw_inspector`.
-    pub inspecting: bool,
     pub theme: Theme,
     /// Nominal time between samples, for spotting gaps in the buffer.
     pub interval: std::time::Duration,
-    /// Samples the table's figures are averaged over. 1 is off. See `Smoothing`.
-    pub smooth: usize,
-    /// The scale each graph is being drawn on. See [`HeldCeilings`].
-    pub ceilings: HeldCeilings,
 }
 
 impl App {
@@ -631,7 +489,6 @@ impl App {
             last_row: std::cell::Cell::new(0),
             filter: String::new(),
             editing_filter: false,
-            filter_before: String::new(),
             editing_jump: false,
             replaying: false,
             jump: String::new(),
@@ -665,14 +522,8 @@ impl App {
             baseline_over: false,
             zoom_idx: 0,
             glyphs: GlyphSet::default(),
-            axis: crate::glyphs::Axis::default(),
-            density: crate::ui::Density::default(),
-            menu: crate::menu::MenuState::default(),
-            inspecting: false,
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,
-            smooth: DEFAULT_SMOOTH,
-            ceilings: HeldCeilings::default(),
         }
     }
 
@@ -803,33 +654,6 @@ impl App {
     /// moment of sending, so the reader is told before typing `y` rather than
     /// after. A prompt that can only be answered "no" is worse than the key
     /// saying why.
-    /// Why a signal would be refused right now, if it would.
-    ///
-    /// Split out so the affordance and the attempt cannot disagree. An action
-    /// bar offering `x quit` on a recorded day, which then refuses it, is worse
-    /// than one that never offered it: the reader has already decided before
-    /// they find out.
-    ///
-    /// Returns the reason rather than a sentence, because the two callers need
-    /// different lengths of it — a footer shared with the key hints cannot
-    /// carry the hundred and twenty characters the note line is written for.
-    pub fn signal_refusal(&self) -> Option<Blocked> {
-        if !self.signals {
-            return Some(Blocked::Off);
-        }
-        // `replaying` before `is_live`: that method means "the cursor is
-        // untethered", which in a day opened with `--read` is true the moment
-        // somebody presses `End` — and every check below would then be made
-        // against last Tuesday's process table.
-        if self.replaying {
-            return Some(Blocked::Recorded);
-        }
-        if !self.history.is_live() {
-            return Some(Blocked::Scrubbing);
-        }
-        None
-    }
-
     pub fn ask_to_signal(&mut self, signal: crate::signal::Signal) {
         self.signal_note = None;
         if !self.signals {
@@ -837,8 +661,19 @@ impl App {
                 Some("signals are off — `signals = on` in the config, or --signals=on".into());
             return;
         }
-        if let Some(why) = self.signal_refusal() {
-            self.signal_note = Some(why.why());
+        // `replaying` before `is_live`: that method means "the cursor is
+        // untethered", which in a day opened with `--read` is true the moment
+        // somebody presses `End` — and every check below would then be made
+        // against last Tuesday's process table.
+        let refused = if self.replaying {
+            Some(crate::signal::Refused::Recorded)
+        } else if !self.history.is_live() {
+            Some(crate::signal::Refused::Scrubbing)
+        } else {
+            None
+        };
+        if let Some(why) = refused {
+            self.signal_note = Some(why.why(None));
             return;
         }
         let Some(p) = self.selected_process() else {
@@ -968,36 +803,10 @@ impl App {
     ///
     /// The budget names what it withholds until somebody asks for it by name,
     /// and for a view's columns the key that asks is the one that opens it.
-    /// Ask for whatever this tab needs to answer its own question.
-    ///
-    /// This is where the `i` key went. It gated the disk columns, which made a
-    /// collection decision wear a display key: the figures are expensive to
-    /// read, not optional to see, and the tab that exists to show them is the
-    /// one that should be paying for them. Choosing Disk *is* asking for disk.
     pub fn insist_for_view(&mut self) {
-        match self.view {
-            View::Memory => self.insist(Source::Pss),
-            View::Disk => self.reveal_io(),
-            View::Cpu => {}
+        if self.view == View::Memory {
+            self.insist(Source::Pss);
         }
-    }
-
-    /// Order the table by the resource the tab is named after.
-    ///
-    /// A tab that says Disk and lists the busiest processes by CPU, each with
-    /// a pair of zeroes under DISK R and DISK W, has answered a question
-    /// nobody asked. The tab *is* the question; the ordering is half of the
-    /// answer, and `s` cycles within the view when it is the wrong half.
-    ///
-    /// The disk key is reachable on the strength of `show_io`, which
-    /// `insist_for_view` has just set, rather than of `io_collected`, which
-    /// describes the sample already taken. Otherwise the first press of the
-    /// key that exists to ask for disk figures would find none collected yet,
-    /// fall back to CPU, and stay there once they arrived.
-    pub fn adopt_view_sort(&mut self) {
-        self.sort = self
-            .view
-            .default_sort_for(self.show_io || self.io_collected());
     }
 
     /// Show cgroups instead of processes, or stop.
@@ -1140,7 +949,7 @@ impl App {
             // hidden kernel thread must not survive as somebody's visible
             // ancestor, and `kthreadd` is the ancestor of every one of them.
             let procs: Vec<&ProcSample> = sample.procs.iter().chain(exited).filter(shown).collect();
-            return tree::build(&procs, self.sort, &self.smoothing(), matched.as_ref());
+            return tree::build(&procs, self.sort, matched.as_ref());
         }
 
         let mut v: Vec<&ProcSample> = sample
@@ -1153,16 +962,14 @@ impl App {
 
         if self.group != Grouping::Off {
             let mut rows = grouped(&v, self.group);
-            let sm = self.smoothing();
-            rows.sort_by(|a, b| self.sort.compare_with(&sm, &a.proc, &b.proc));
+            rows.sort_by(|a, b| self.sort.compare(&a.proc, &b.proc));
             // Not spliced: a group row stands for a name, and the threads of
             // one of its members belong under a process, not under a heading
             // that folds several.
             return rows;
         }
 
-        let sm = self.smoothing();
-        v.sort_by(|a, b| self.sort.compare_with(&sm, a, b));
+        v.sort_by(|a, b| self.sort.compare(a, b));
         self.with_threads(sample, v.into_iter().map(TreeRow::of).collect())
     }
 
@@ -1321,7 +1128,7 @@ impl App {
                     // Both views fall back to the generic one, so the state
                     // stays consistent: a view whose defining column is no
                     // longer collected would be a panel of em dashes.
-                    Source::Pss => self.view = View::Cpu,
+                    Source::Pss => self.view = View::Generic,
                     // Neither has a view to turn off: exit records go into the
                     // table beside live rows, and the clock ceiling is a header
                     // figure. The withheld clause is what says they stopped.
@@ -1376,26 +1183,6 @@ impl App {
         self.history
             .current()
             .is_some_and(|s| s.procs.iter().any(|p| p.container.is_some()))
-    }
-
-    /// Which of the memory tab's platform figures anybody actually reports.
-    ///
-    /// The same rule as [`App::any_container`] and [`App::one_user`], applied
-    /// to the three columns whose contents come from the kernel rather than
-    /// from poptop. macOS publishes none of them and Linux publishes
-    /// proportional memory only where the process is allowed to read another's
-    /// `smaps_rollup`, so on most machines this is three columns of em dash —
-    /// twenty-five columns spent saying nothing, next to an RSS figure the
-    /// table was truncating for want of them.
-    pub fn mem_columns_available(&self) -> MemColumns {
-        let Some(s) = self.history.current() else {
-            return MemColumns::default();
-        };
-        MemColumns {
-            pss: s.procs.iter().any(|p| p.pss.is_some()),
-            vsize: s.procs.iter().any(|p| p.vsize.is_some()),
-            majflt: s.procs.iter().any(|p| p.majflt.is_some()),
-        }
     }
 
     /// Kernel threads withheld from the table right now.
@@ -1782,126 +1569,6 @@ impl App {
         self.selected = Some(Watched::of(&rows[i]));
     }
 
-    /// Select the row at `i`, if there is one.
-    ///
-    /// The mouse's version of `select_delta`: it points at a row rather than a
-    /// direction. Thread rows are skipped the same way and for the same reason
-    /// — a thread carries its process's identity, so selecting one would select
-    /// the process and leave the highlight where it started.
-    pub fn select_row(&mut self, i: usize) {
-        let rows = self.visible_rows();
-        if rows.is_empty() {
-            return;
-        }
-        let mut i = i.min(rows.len() - 1);
-        while rows[i].is_thread() && i > 0 {
-            i -= 1;
-        }
-        self.selected = Some(Watched::of(&rows[i]));
-    }
-
-    /// Average every process's figures over the last `smooth` samples ending at
-    /// the cursor.
-    ///
-    /// Computed per frame rather than cached. It is a fold over at most a few
-    /// hundred processes across a handful of samples, and a cache would have to
-    /// be invalidated by every one of `History`'s six cursor movements — which
-    /// is exactly the kind of fact-derived-twice this interface keeps being
-    /// bitten by.
-    ///
-    /// Ends *at the cursor*, not at the live edge: scrubbed to 14:32, the table
-    /// shows what those processes were doing around 14:32, which is the only
-    /// reading that agrees with the timeline beside it.
-    /// Where the averaging window ends.
-    ///
-    /// While live this is a *boundary* rather than the newest sample, so the
-    /// averages — and therefore the ordering — hold still between one boundary
-    /// and the next. That is where the calm comes from: averaging alone only
-    /// makes reordering less frequent, and Activity Monitor is restful because
-    /// it redraws every five seconds rather than because it means.
-    ///
-    /// The rows themselves still come from the newest sample. Quantising those
-    /// too was tried and is wrong: a process that had just started would not be
-    /// listed for five seconds, and "what is running now" is the question the
-    /// table exists to answer.
-    ///
-    /// While scrubbing it is the cursor exactly. The reader is asking about a
-    /// particular moment, and quantising the answer would show them a different
-    /// one.
-    fn table_index(&self) -> Option<usize> {
-        if self.history.len() == 0 {
-            return None;
-        }
-        let at = self.history.cursor_index();
-        Some(if self.smooth > 1 && self.history.is_live() {
-            at - (at % self.smooth)
-        } else {
-            at
-        })
-    }
-
-    /// The averaging window in samples, for a span asked for in seconds.
-    ///
-    /// The buffer is counted in samples and the setting is stated in seconds,
-    /// because the interval is itself a setting: "five seconds" has to mean the
-    /// same thing at either end of it. One sample is the floor, and one sample
-    /// is what "off" is — an average of a single reading is that reading.
-    pub fn smooth_samples(&self, span: std::time::Duration) -> usize {
-        if self.interval.is_zero() {
-            return 1;
-        }
-        (span.as_secs_f64() / self.interval.as_secs_f64())
-            .round()
-            .max(1.0) as usize
-    }
-
-    /// Average the table's figures over this much time.
-    pub fn set_smooth(&mut self, span: std::time::Duration) {
-        self.smooth = self.smooth_samples(span);
-    }
-
-    pub fn smoothing(&self) -> Smoothing {
-        let window = self.smooth;
-        if window <= 1 {
-            return Smoothing::default();
-        }
-        // While live, the window ends on a boundary rather than on the newest
-        // sample — so between one boundary and the next *nothing in the table
-        // changes*, which is where the calm actually comes from. Averaging
-        // alone only makes the reordering less frequent; Activity Monitor is
-        // restful because it redraws every five seconds, not because it means.
-        //
-        // While scrubbing it ends exactly at the cursor. Then the reader is
-        // asking about a particular moment, and quantising the answer would be
-        // showing them a different one.
-        let at = self.table_index().unwrap_or(0);
-        let first = (at + 1).saturating_sub(window);
-        let mut sums: HashMap<(i32, Option<u64>), (f32, u64, u32)> = HashMap::new();
-        for s in self.history.iter().skip(first).take(at + 1 - first) {
-            for p in s.procs.iter().chain(s.exited.as_deref().unwrap_or(&[])) {
-                let e = sums.entry((p.pid, p.started)).or_default();
-                e.0 += p.cpu;
-                e.1 += p.rss;
-                e.2 += 1;
-            }
-        }
-        Smoothing {
-            by_key: sums
-                .into_iter()
-                .map(|(k, (cpu, rss, n))| {
-                    let n = n.max(1);
-                    (
-                        k,
-                        Averaged {
-                            cpu: cpu / n as f32,
-                            rss: rss / u64::from(n),
-                        },
-                    )
-                })
-                .collect(),
-        }
-    }
-
     /// Where the watched process is in these rows, if it is in them at all.
     pub fn row_of(&self, rows: &[TreeRow<'_>]) -> Option<usize> {
         let w = self.selected.as_ref()?;
@@ -1993,90 +1660,6 @@ pub enum Watched {
     },
 }
 
-/// Why signalling is refused right now.
-///
-/// The reason rather than a sentence: the footer says `while scrubbing` beside
-/// what else can be done, and the note line says the whole thing when somebody
-/// tries anyway. Two lengths, one decision about whether.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Blocked {
-    Off,
-    Recorded,
-    Scrubbing,
-}
-
-impl Blocked {
-    /// Four words, for a row that is shared with the key hints.
-    pub fn short(self) -> &'static str {
-        match self {
-            Blocked::Off => "signals off",
-            Blocked::Recorded => "a recorded day",
-            Blocked::Scrubbing => "while scrubbing",
-        }
-    }
-
-    /// The whole reason, for the row that has nothing else on it.
-    pub fn why(self) -> String {
-        match self {
-            Blocked::Off => {
-                "signals are off — `signals = on` in the config, or --signals=on".to_string()
-            }
-            Blocked::Recorded => crate::signal::Refused::Recorded.why(None),
-            Blocked::Scrubbing => crate::signal::Refused::Scrubbing.why(None),
-        }
-    }
-}
-
-/// Each process's figures, averaged over the last few samples.
-///
-/// A process table read at one sample a second is mostly noise: a row's CPU
-/// figure swings from 3 to 40 and back, and — far worse for reading it — the
-/// rows swap places while your eye is on them. Activity Monitor answers this by
-/// refreshing every five seconds. poptop keeps every second and averages what
-/// it shows, which is the same calm with none of the delay: a spike still
-/// happens at the second it happened, and the timeline still draws it.
-///
-/// **Mean here, and peak in the timeline.** That looks like a contradiction and
-/// is the opposite: the timeline is where a spike must be found, so averaging
-/// it away would be a lie; the table is a thing you *read*, and the spike is on
-/// the graph directly above it. Each aggregation matches the question its panel
-/// answers.
-///
-/// Absences are skipped rather than counted as zero. A process that was not
-/// running for three of the five samples was not idle for them, and dividing by
-/// five would report a figure it never had.
-#[derive(Default)]
-pub struct Smoothing {
-    by_key: HashMap<(i32, Option<u64>), Averaged>,
-}
-
-#[derive(Clone, Copy, Default)]
-struct Averaged {
-    cpu: f32,
-    rss: u64,
-}
-
-impl Smoothing {
-    /// The averaged CPU of this process, or its own figure when there is no
-    /// average to use.
-    pub fn cpu(&self, p: &ProcSample) -> f32 {
-        self.by_key
-            .get(&(p.pid, p.started))
-            .map_or(p.cpu, |a| a.cpu)
-    }
-
-    pub fn rss(&self, p: &ProcSample) -> u64 {
-        self.by_key
-            .get(&(p.pid, p.started))
-            .map_or(p.rss, |a| a.rss)
-    }
-
-    /// Whether anything is being averaged, for the panel to say so.
-    pub fn is_on(&self) -> bool {
-        !self.by_key.is_empty()
-    }
-}
-
 impl Watched {
     fn of(row: &TreeRow<'_>) -> Self {
         if row.is_group() {
@@ -2095,18 +1678,6 @@ impl Watched {
     pub fn name(&self) -> &Arc<str> {
         match self {
             Watched::Process { name, .. } | Watched::Group { name } => name,
-        }
-    }
-
-    /// Whether this sample's process is the one being watched.
-    ///
-    /// Keyed on pid *and* start time, like `is` above and like `series_for`: on
-    /// pid alone a number reused after an exit splices two unrelated processes
-    /// into one.
-    pub fn matches(&self, p: &crate::sample::ProcSample) -> bool {
-        match self {
-            Watched::Process { pid, started, .. } => p.pid == *pid && p.started == *started,
-            Watched::Group { name } => **name == *p.name,
         }
     }
 

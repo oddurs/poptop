@@ -44,7 +44,7 @@ publish (`src/collect/darwin.rs`).
 processes, which needs `CAP_SYS_PTRACE`, and exited processes, which need
 `CAP_NET_ADMIN`. If most of the table is unreadable poptop withdraws the IO
 columns entirely rather than draw a wall of dashes, and says so in the
-panel rule.
+panel title.
 
 **macOS.** About a third of a typical Mac's process table belongs to other
 users or to the system, and the kernel will not describe those processes to

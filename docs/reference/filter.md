@@ -48,7 +48,7 @@ task = D               a process with any thread stuck, which the header counts
 IO, so it does not answer a question about its IO in either direction.
 
 **A malformed query filters nothing away, and says what is wrong.** The
-error names the part it could not read, and the panel rule carries it so
+error names the part it could not read, and the panel title carries it so
 the table is never silently filtering on a query you have not finished
 typing.
 

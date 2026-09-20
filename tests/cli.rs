@@ -51,12 +51,6 @@ fn once_prints_a_sample_and_every_setting_is_accepted_on_the_command_line() {
     home.run(&[
         "--once",
         "--glyphs=ascii",
-        "--graph=line",
-        "--scale=fit",
-        "--density=compact",
-        "--surface=off",
-        "--mouse=off",
-        "--smooth=2s",
         "--color=mono",
         "--interval=200ms",
         "--window=1m",
@@ -78,12 +72,6 @@ fn a_setting_at_a_value_it_does_not_take_is_exit_2_naming_it() {
     let home = Home::new();
     for flag in [
         "--glyphs=crayon",
-        "--graph=crayon",
-        "--scale=sideways",
-        "--density=airy",
-        "--surface=maybe",
-        "--mouse=maybe",
-        "--smooth=later",
         "--color=loud",
         "--interval=soon",
         "--window=forever",
@@ -247,6 +235,87 @@ fn the_machine_now_is_exported_in_both_formats() {
     assert!(json.out.starts_with("{\"at\":"), "{}", json.out);
     let line = home.run(&["--export", "line", "--interval=200ms"]).ok();
     assert!(line.out.lines().count() > 2);
+}
+
+#[test]
+fn config_says_what_every_setting_is_and_where_it_came_from() {
+    let home = Home::new();
+    // Nothing set: every setting is its default.
+    let r = home.run(&["--config"]).ok();
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert!(
+        lines.iter().all(|l| l.ends_with("the default")),
+        "{}",
+        r.out
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("interval ")),
+        "{}",
+        r.out
+    );
+
+    // A file, a flag and the environment each name themselves.
+    home.write_config("# a comment\ninterval = 2s\n");
+    let r = home
+        .cmd(&["--config", "--window=30m"])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let r = Run::of(&["--config", "--window=30m"], r).ok();
+    let at = |key: &str| {
+        r.out
+            .lines()
+            .find(|l| l.starts_with(&format!("{key} ")))
+            .unwrap_or_else(|| panic!("no `{key}` in:\n{}", r.out))
+    };
+    assert!(
+        at("interval").ends_with("poptop.conf:2"),
+        "{}",
+        at("interval")
+    );
+    assert!(at("interval").contains(" 2s "), "{}", at("interval"));
+    assert!(at("window").ends_with("--window=30m"), "{}", at("window"));
+    assert!(at("color").ends_with("NO_COLOR"), "{}", at("color"));
+    assert!(
+        at("log-days").ends_with("the default"),
+        "{}",
+        at("log-days")
+    );
+}
+
+#[test]
+fn write_config_writes_a_file_poptop_reads_back() {
+    let home = Home::new();
+    let r = home.run(&["--write-config"]).ok();
+    assert!(r.out.starts_with("wrote "), "{}", r.out);
+    let path = r.out.trim().trim_start_matches("wrote ").to_string();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("# poptop configuration"), "{text}");
+
+    // Every setting is in it, and reading it back changes nothing: each line
+    // is now the origin of a value that is the same as the default it wrote.
+    let after = home.run(&["--config"]).ok();
+    for line in after.out.lines() {
+        assert!(line.contains("poptop.conf:"), "not from the file: {line}");
+    }
+    let plain = Home::new().run(&["--config"]).ok();
+    let values = |out: &str| -> Vec<String> {
+        out.lines()
+            .map(|l| {
+                l.rsplit_once("  ")
+                    .map(|(v, _)| v.trim().to_string())
+                    .unwrap_or_default()
+            })
+            .collect()
+    };
+    assert_eq!(
+        values(&after.out),
+        values(&plain.out),
+        "the round trip changed a value"
+    );
+
+    // It never writes over one.
+    home.run(&["--write-config"]).refused(2, &path);
 }
 
 #[test]

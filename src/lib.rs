@@ -26,8 +26,6 @@ pub mod check;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod collect;
 #[cfg(all(feature = "fuzzing", not(test)))]
-pub mod command;
-#[cfg(all(feature = "fuzzing", not(test)))]
 pub mod config;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod cvd;
@@ -40,8 +38,6 @@ pub mod history;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod log;
 #[cfg(all(feature = "fuzzing", not(test)))]
-pub mod menu;
-#[cfg(all(feature = "fuzzing", not(test)))]
 pub mod persist;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod query;
@@ -53,8 +49,6 @@ pub mod sample;
 pub mod signal;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod store;
-#[cfg(all(feature = "fuzzing", not(test)))]
-pub mod term;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod theme;
 #[cfg(all(feature = "fuzzing", not(test)))]
