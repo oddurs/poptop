@@ -55,6 +55,33 @@ poptop had the field.
 With a date, `--export=json 2026-09-08` writes the whole of that recorded
 day instead of the machine now.
 
+### `--fields`: a narrower feed
+
+```console
+$ poptop --export=json --fields cpu_total,mem.used,load
+{"at":1789863678.19,"cpu_total":13.1,"mem":{"used":13034962944},"load":[2.1,2.3,2.4]}
+```
+
+Dotted paths into the schema. A list is transparent — `procs.name` is that
+field of every process — and naming a record takes all of its fields
+(`--fields mem`). The spelling the line format prints works too, so
+`sample.cpu_total` and `cpu_total` are the same field.
+
+Order is the schema's, not the order you asked in, so a consumer builds one
+column map whatever the caller wrote. `at` is always included: a record that
+cannot say when it was taken is not a sample of anything.
+
+A name the schema does not have is refused, with the nearest one it does:
+
+```console
+$ poptop --export=json --fields cpu_totl
+poptop: no field `cpu_totl` — did you mean `cpu_total`?
+```
+
+Absence survives the filter: a field nobody reported is still `null` (or `-`),
+never a missing column. Measured at four hundred processes, a whole JSON
+sample is 86 KB and `cpu_total,mem.used,load` is 64 bytes.
+
 ### `--follow`: a feed rather than a snapshot
 
 ```console

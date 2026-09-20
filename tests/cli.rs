@@ -147,6 +147,11 @@ fn a_command_line_that_cannot_run_is_exit_2_on_stderr() {
         ),
         (&["--check-theme"], "--check-theme needs a theme name"),
         (&["--verify", "today"], "`today` is not a date"),
+        (&["--export=json", "--fields"], "--fields needs a list"),
+        (
+            &["--export=json", "--fields", "cpu_totl"],
+            "no field `cpu_totl`",
+        ),
         (
             &["--verify", "2026-09-08", "x"],
             "--verify does not take `x`",
@@ -664,4 +669,42 @@ fn verify_reports_a_day_and_exits_by_whether_it_is_intact() {
     empty
         .run(&["--verify", "2026-09-08"])
         .refused(1, "nothing recorded on 2026-09-08");
+}
+
+/// `--fields` end to end: the narrow feed a dashboard actually wants.
+#[test]
+fn a_feed_can_be_narrowed_to_named_fields() {
+    let home = Home::new();
+    let whole = home.run(&["--export=json", "--interval=200ms"]).ok();
+    let narrow = home
+        .run(&[
+            "--export=json",
+            "--fields",
+            "cpu_total,mem.used",
+            "--interval=200ms",
+        ])
+        .ok();
+    assert!(
+        narrow.out.len() * 10 < whole.out.len(),
+        "narrowing saved almost nothing: {} of {} bytes",
+        narrow.out.len(),
+        whole.out.len()
+    );
+    assert!(narrow.out.starts_with("{\"at\":"), "{}", narrow.out);
+    assert!(narrow.out.contains("\"cpu_total\":"), "{}", narrow.out);
+    assert!(narrow.out.contains("\"used\":"), "{}", narrow.out);
+    assert!(!narrow.out.contains("\"procs\""), "{}", narrow.out);
+
+    // And in the line format, where the header names exactly what the rows
+    // carry.
+    let lines = home
+        .run(&["--export=line", "--fields=cpu_total", "--interval=200ms"])
+        .ok();
+    let header = lines
+        .out
+        .lines()
+        .find(|l| l.starts_with("#sample\t"))
+        .expect("no header");
+    assert_eq!(header, "#sample\tat\tcpu_total", "{}", lines.out);
+    assert_eq!(lines.out.lines().count(), 2, "{}", lines.out);
 }
