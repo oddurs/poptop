@@ -254,18 +254,23 @@ pub enum Landing {
     Nearest(std::time::Duration),
 }
 
-/// One series of CPU figures per process key, over a range of the buffer.
+/// CPU history for a set of processes, over the newest `window` samples.
 ///
-/// A range rather than a length, because the timeline's window is not always
-/// the tail: scrubbing back moves it, and the sparklines beside it are drawn
-/// over the same span.
+/// Returns one series per requested key, aligned oldest-first, with `None`
+/// wherever the process was not present in that sample — a process that has
+/// only just started leaves a gap rather than a run of zeroes, which would
+/// read as "it was here and idle".
 ///
-/// A process absent from a sample gets `None` for it rather than a zero. "It
-/// was not running" and "it was running and idle" are different facts.
-pub fn series_in(
+/// Keyed on pid **and** start time. On pid alone a recycled pid splices two
+/// unrelated processes into one line, which is the same trap the name cache
+/// had, with a more misleading result: a graph of two different programs.
+///
+/// One pass over the window, checking each process against the requested set,
+/// rather than a scan per process per sample. The set is the visible rows, so
+/// it is bounded by the terminal height however many processes the machine has.
+pub fn series_for(
     history: &History,
     keys: &[(i32, u64)],
-    start: usize,
     window: usize,
 ) -> std::collections::HashMap<(i32, u64), Vec<Option<f32>>> {
     use std::collections::{HashMap, HashSet};
@@ -275,7 +280,8 @@ pub fn series_in(
         .map(|&k| (k, Vec::with_capacity(window)))
         .collect();
 
-    for sample in history.iter().skip(start).take(window) {
+    let skip = history.len().saturating_sub(window);
+    for sample in history.iter().skip(skip) {
         // Start every series with a gap, then fill the ones this sample has.
         for series in out.values_mut() {
             series.push(None);

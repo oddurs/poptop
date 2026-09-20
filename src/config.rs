@@ -12,7 +12,7 @@
 //! cannot come to disagree about what a value means, and a setting added for
 //! one gets the other for free.
 
-use crate::glyphs::{Axis, GlyphSet};
+use crate::glyphs::GlyphSet;
 use crate::sample::{ProcSample, Sample};
 use crate::theme::{Palette, Theme, Tier, Token};
 use ratatui::style::Color;
@@ -21,16 +21,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// Everything settable, resolved.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub struct Settings {
     pub glyphs: GlyphSet,
-    pub axis: Axis,
-    /// How much air the layout is given.
-    pub density: crate::ui::Density,
-    /// Whether to take the mouse. Off gives terminal text selection back.
-    pub mouse: bool,
-    /// Whether to derive panel surfaces from the terminal's own background.
-    pub surfaces: bool,
     pub tier: Tier,
     /// The theme asked for: a built-in, or a file in `~/.config/poptop/themes`.
     /// Whether it resolves is settled in [`resolve`], which is where the
@@ -44,6 +37,12 @@ pub struct Settings {
     /// is the one key that has to carry its origin forward. Without it a bad
     /// theme is the only config error that cannot point at a line.
     pub theme_origin: Option<String>,
+    /// Where each setting was last set, for `--config`: the file and line, the
+    /// flag, or the environment. A setting nothing set is a default, so this
+    /// holds only what was said out loud, and `Settings::origin` fills in the
+    /// rest. Not part of what a setting *is*, which is why every comparison in
+    /// the tests is of a field rather than of the whole.
+    pub origins: Vec<(&'static str, String)>,
     /// Filled in by [`resolve`]: the built-in to start from, and the user's
     /// colours to write over it.
     pub palette: Palette,
@@ -53,8 +52,6 @@ pub struct Settings {
     pub critical: f32,
     /// Time between samples.
     pub interval: Duration,
-    /// How long the table's figures are averaged over. Zero is off.
-    pub smooth: Duration,
     /// How much history to retain, in time rather than samples. Sample count
     /// is a fact about the buffer; the span is what the user actually wants.
     pub window: Duration,
@@ -105,13 +102,6 @@ pub struct Settings {
 /// atop's logging default, and for the same reason: a day of ten-minute
 /// snapshots is what an incident review reads, and it is 144 samples rather
 /// than 86,400.
-/// How long the table's figures are averaged over by default.
-///
-/// Five seconds, which is Activity Monitor's own refresh period. Long enough
-/// that a row stops twitching, short enough that a process starting is on
-/// screen before you have finished reading the row above it.
-pub const DEFAULT_SMOOTH: Duration = Duration::from_secs(5);
-
 pub const DEFAULT_LOG_INTERVAL: Duration = Duration::from_secs(600);
 /// Days of log kept, unless asked otherwise.
 ///
@@ -129,19 +119,15 @@ impl Settings {
     pub fn detect() -> Self {
         Self {
             glyphs: default_glyphs(),
-            axis: Axis::default(),
-            density: crate::ui::Density::default(),
-            mouse: true,
-            surfaces: true,
             tier: Tier::detect(),
             theme: Palette::default().name().to_string(),
             theme_origin: None,
+            origins: Vec::new(),
             palette: Palette::default(),
             overrides: Vec::new(),
             warn: Theme::DEFAULT_WARN_PCT,
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
-            smooth: DEFAULT_SMOOTH,
             window: DEFAULT_WINDOW,
             store: false,
             log: false,
@@ -183,20 +169,16 @@ impl Settings {
     /// the test.
     fn fixed() -> Self {
         Self {
-            glyphs: GlyphSet::default(),
-            axis: Axis::default(),
-            density: crate::ui::Density::default(),
-            mouse: true,
-            surfaces: true,
+            glyphs: GlyphSet::Braille,
             tier: Tier::TrueColor,
             theme: Palette::Safe.name().to_string(),
             theme_origin: None,
+            origins: Vec::new(),
             palette: Palette::Safe,
             overrides: Vec::new(),
             warn: Theme::DEFAULT_WARN_PCT,
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
-            smooth: DEFAULT_SMOOTH,
             window: DEFAULT_WINDOW,
             store: false,
             log: false,
@@ -233,16 +215,8 @@ const MIN_WINDOW: Duration = Duration::from_secs(10);
 /// needs. See [`Settings::history_len`].
 const MAX_SAMPLES: usize = 24 * 60 * 60 + 1;
 
-/// The set poptop draws with when nothing has asked for one.
-///
-/// [`GlyphSet::default`] everywhere except a real Linux console, whose font has
-/// neither braille nor the block elements. btop makes the same check
-/// (`btop.cpp:815`).
-///
-/// Deferring to `GlyphSet::default` rather than naming a set here is the whole
-/// point: this function *is* the default as far as the running program is
-/// concerned, and when it named one itself, changing the derived default
-/// changed nothing a user could see.
+/// Braille unless we are on a real Linux console, whose font has no braille
+/// glyphs. btop makes the same check (`btop.cpp:815`).
 fn default_glyphs() -> GlyphSet {
     default_glyphs_for(std::env::var("TERM").ok().as_deref())
 }
@@ -251,134 +225,287 @@ fn default_glyphs() -> GlyphSet {
 fn default_glyphs_for(term: Option<&str>) -> GlyphSet {
     match term {
         Some("linux") => GlyphSet::Ascii,
-        _ => GlyphSet::default(),
+        _ => GlyphSet::Braille,
     }
+}
+
+/// Two settings are the same when their values are, whatever said them.
+///
+/// `origins` is how each value was arrived at, not what it is: a file and a
+/// flag that both ask for `block` produce the same settings, and a test that
+/// compares the two is asking about the values.
+impl PartialEq for Settings {
+    fn eq(&self, other: &Self) -> bool {
+        self.glyphs == other.glyphs
+            && self.tier == other.tier
+            && self.theme == other.theme
+            && self.theme_origin == other.theme_origin
+            && self.palette == other.palette
+            && self.overrides == other.overrides
+            && self.warn == other.warn
+            && self.critical == other.critical
+            && self.interval == other.interval
+            && self.window == other.window
+            && self.store == other.store
+            && self.log == other.log
+            && self.log_interval == other.log_interval
+            && self.log_days == other.log_days
+            && self.log_bytes == other.log_bytes
+            && self.signals == other.signals
+    }
+}
+
+impl Settings {
+    /// Remember where a setting came from, replacing whatever said it last:
+    /// the flag beats the file, which is the precedence `resolve` applies.
+    fn set_origin(&mut self, key: &'static str, from: String) {
+        match self.origins.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, was)) => *was = from,
+            None => self.origins.push((key, from)),
+        }
+    }
+
+    /// Where a setting came from, or `the default` when nothing set it.
+    pub fn origin(&self, key: &str) -> &str {
+        self.origins
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or("the default", |(_, from)| from.as_str())
+    }
+
+    /// Every setting, as `(name, value, origin)`, in the order [`KEYS`]
+    /// declares them.
+    pub fn resolved(&self) -> Vec<(&'static str, String, &str)> {
+        KEYS.iter()
+            .map(|k| (k.name, (k.show)(self), self.origin(k.name)))
+            .collect()
+    }
+
+    /// A config file of these settings, for `--write-config`.
+    ///
+    /// Every setting, with its note above it, so the file says what it is for
+    /// without the reader opening the documentation. Read back by poptop it
+    /// gives exactly these settings again.
+    pub fn as_config_file(&self) -> String {
+        let mut out = String::new();
+        for line in [
+            "# poptop configuration, written by `poptop --write-config`.",
+            "# Every setting is at the value poptop had when it was written.",
+            "# A line that is wrong warns and is ignored; poptop still starts.",
+        ] {
+            out.push_str(line);
+            out.push('\n');
+        }
+        for k in KEYS {
+            // `color` writes `auto` unless something asked for a tier: it is
+            // the default, and writing the tier this terminal happens to have
+            // would pin it for every terminal the file is later read in.
+            let value = match (k.name, self.origin(k.name)) {
+                ("color", "the default") => "auto".to_string(),
+                _ => (k.show)(self),
+            };
+            out.push_str(&format!("\n# {}\n{} = {}\n", k.note, k.name, value));
+        }
+        out
+    }
+}
+
+/// A percentage as a config file writes it: no trailing `.0` on a whole one.
+fn fmt_pct(v: f32) -> String {
+    if v.fract() == 0.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v}")
+    }
+}
+
+/// A span in the units [`duration`] takes, and the largest that stays whole:
+/// 600s is `10m`, 1500ms is `1500ms`.
+fn fmt_span(d: Duration) -> String {
+    let ms = d.as_millis();
+    for (unit, size) in [("h", 3_600_000u128), ("m", 60_000), ("s", 1000)] {
+        if ms.is_multiple_of(size) && ms >= size {
+            return format!("{}{unit}", ms / size);
+        }
+    }
+    format!("{ms}ms")
+}
+
+/// A size in the units [`bytes`] takes.
+fn fmt_bytes(v: u64) -> String {
+    for (unit, size) in [("G", 1u64 << 30), ("M", 1 << 20), ("K", 1 << 10)] {
+        if v.is_multiple_of(size) && v >= size {
+            return format!("{}{unit}", v / size);
+        }
+    }
+    v.to_string()
+}
+
+fn on_off(v: bool) -> &'static str {
+    if v { "on" } else { "off" }
 }
 
 /// How to apply one value. Returns what was expected, for the error message.
 type Apply = fn(&mut Settings, &str) -> Result<(), &'static str>;
 
+/// How to write one value back out, for `--config` and `--write-config`.
+///
+/// The inverse of [`Apply`], and beside it: a setting whose value cannot be
+/// shown is one `--write-config` would drop silently, and the round trip in
+/// `a_written_config_reads_back_the_same` is what holds the pair together.
+type Show = fn(&Settings) -> String;
+
+/// One setting: how to read it, how to write it, and one line saying what it
+/// is for whoever opens the file `--write-config` leaves behind.
+pub struct Setting {
+    pub name: &'static str,
+    apply: Apply,
+    show: Show,
+    pub note: &'static str,
+}
+
 /// Every setting, named once.
-pub const KEYS: &[(&str, Apply)] = &[
-    // How the graphs are drawn. `graph` is the name; `glyphs` is what it was
-    // called when the sets differed only in alphabet, and it is kept because it
-    // is in the README, in `--help` and in people's config files.
-    ("graph", |s, v| {
-        s.glyphs = GlyphSet::parse(v).ok_or(GlyphSet::NAMES)?;
-        Ok(())
-    }),
-    ("glyphs", |s, v| {
-        s.glyphs = GlyphSet::parse(v).ok_or(GlyphSet::NAMES)?;
-        Ok(())
-    }),
-    // Where the axis starts. Separate from the character set, because it is a
-    // different decision: the set is what the graph is drawn with, this is what
-    // the rows mean.
-    ("scale", |s, v| {
-        s.axis = Axis::parse(v).ok_or(Axis::NAMES)?;
-        Ok(())
-    }),
-    ("density", |s, v| {
-        s.density = crate::ui::Density::parse(v).ok_or(crate::ui::Density::NAMES)?;
-        Ok(())
-    }),
-    ("mouse", |s, v| {
-        s.mouse = match v {
-            "on" | "true" | "yes" => true,
-            "off" | "false" | "no" => false,
-            _ => return Err("on or off"),
-        };
-        Ok(())
-    }),
-    ("surface", |s, v| {
-        s.surfaces = match v {
-            "auto" | "on" | "true" | "yes" => true,
-            "off" | "none" | "false" | "no" => false,
-            _ => return Err("auto or off"),
-        };
-        Ok(())
-    }),
-    ("color", |s, v| {
-        // Re-detect rather than no-op, so a later `--color=auto` can override
-        // an earlier one baked into a wrapper script or the config file.
-        s.tier = match v {
-            "auto" => Tier::detect(),
-            _ => Tier::parse(v).ok_or("auto, mono, 16, 256 or true")?,
-        };
-        Ok(())
-    }),
-    ("warn", |s, v| {
-        s.warn = percentage(v)?;
-        Ok(())
-    }),
-    ("critical", |s, v| {
-        s.critical = percentage(v)?;
-        Ok(())
-    }),
-    ("interval", |s, v| {
-        s.interval = duration(v)?;
-        Ok(())
-    }),
-    // A span, not a sample count: the sample interval is itself a setting, and
-    // "five seconds" means the same thing at either end of it while "five
-    // samples" does not.
-    ("smooth", |s, v| {
-        s.smooth = match v {
-            "off" | "none" | "0" => Duration::ZERO,
-            _ => duration(v)?,
-        };
-        Ok(())
-    }),
-    ("window", |s, v| {
-        s.window = duration(v)?;
-        Ok(())
-    }),
-    ("store", |s, v| {
-        s.store = match v {
-            "on" | "true" | "yes" => true,
-            "off" | "false" | "no" => false,
-            _ => return Err("on or off"),
-        };
-        Ok(())
-    }),
-    ("log", |s, v| {
-        s.log = match v {
-            "on" | "true" | "yes" => true,
-            "off" | "false" | "no" => false,
-            _ => return Err("on or off"),
-        };
-        Ok(())
-    }),
-    ("log-interval", |s, v| {
-        s.log_interval = duration(v)?;
-        Ok(())
-    }),
-    ("log-days", |s, v| {
-        s.log_days = v.parse().map_err(|_| "a whole number of days")?;
-        Ok(())
-    }),
-    ("log-bytes", |s, v| {
-        s.log_bytes = bytes(v)?;
-        Ok(())
-    }),
-    ("signals", |s, v| {
-        s.signals = match v {
-            "on" | "true" | "yes" => true,
-            "off" | "false" | "no" => false,
-            _ => return Err("on or off"),
-        };
-        Ok(())
-    }),
-    ("theme", |s, v| {
-        // Any name parses. It may name a file this table cannot see, and
-        // rejecting unknown names here would make user themes impossible.
-        // `resolve` settles whether it exists.
-        s.theme = match v {
-            "auto" | "default" => Palette::default().name().to_string(),
-            _ => v.to_string(),
-        };
-        Ok(())
-    }),
+pub const KEYS: &[Setting] = &[
+    Setting {
+        name: "glyphs",
+        apply: |s, v| {
+            s.glyphs = GlyphSet::parse(v).ok_or("braille, block or ascii")?;
+            Ok(())
+        },
+        show: |s| s.glyphs.name().to_string(),
+        note: "How the timeline is drawn: braille, block or ascii.",
+    },
+    Setting {
+        name: "color",
+        apply: |s, v| {
+            // Re-detect rather than no-op, so a later `--color=auto` can override
+            // an earlier one baked into a wrapper script or the config file.
+            s.tier = match v {
+                "auto" => Tier::detect(),
+                _ => Tier::parse(v).ok_or("auto, mono, 16, 256 or true")?,
+            };
+            Ok(())
+        },
+        show: |s| s.tier.name().to_string(),
+        note: "Colour tier: auto, mono, 16, 256 or true. NO_COLOR forces mono.",
+    },
+    Setting {
+        name: "warn",
+        apply: |s, v| {
+            s.warn = percentage(v)?;
+            Ok(())
+        },
+        show: |s| fmt_pct(s.warn),
+        note: "Where `getting busy` begins, as a percentage.",
+    },
+    Setting {
+        name: "critical",
+        apply: |s, v| {
+            s.critical = percentage(v)?;
+            Ok(())
+        },
+        show: |s| fmt_pct(s.critical),
+        note: "Where `in trouble` begins. Must exceed warn.",
+    },
+    Setting {
+        name: "interval",
+        apply: |s, v| {
+            s.interval = duration(v)?;
+            Ok(())
+        },
+        show: |s| fmt_span(s.interval),
+        note: "Time between samples.",
+    },
+    Setting {
+        name: "window",
+        apply: |s, v| {
+            s.window = duration(v)?;
+            Ok(())
+        },
+        show: |s| fmt_span(s.window),
+        note: "History retained, as time rather than samples.",
+    },
+    Setting {
+        name: "store",
+        apply: |s, v| {
+            s.store = match v {
+                "on" | "true" | "yes" => true,
+                "off" | "false" | "no" => false,
+                _ => return Err("on or off"),
+            };
+            Ok(())
+        },
+        show: |s| on_off(s.store).to_string(),
+        note: "Keep history across restarts.",
+    },
+    Setting {
+        name: "log",
+        apply: |s, v| {
+            s.log = match v {
+                "on" | "true" | "yes" => true,
+                "off" | "false" | "no" => false,
+                _ => return Err("on or off"),
+            };
+            Ok(())
+        },
+        show: |s| on_off(s.log).to_string(),
+        note: "Write a daily log that outlives the process.",
+    },
+    Setting {
+        name: "log-interval",
+        apply: |s, v| {
+            s.log_interval = duration(v)?;
+            Ok(())
+        },
+        show: |s| fmt_span(s.log_interval),
+        note: "How often a sample reaches the log. Not the sample interval.",
+    },
+    Setting {
+        name: "log-days",
+        apply: |s, v| {
+            s.log_days = v.parse().map_err(|_| "a whole number of days")?;
+            Ok(())
+        },
+        show: |s| s.log_days.to_string(),
+        note: "Days of log kept.",
+    },
+    Setting {
+        name: "log-bytes",
+        apply: |s, v| {
+            s.log_bytes = bytes(v)?;
+            Ok(())
+        },
+        show: |s| fmt_bytes(s.log_bytes),
+        note: "Bytes of log kept across every day.",
+    },
+    Setting {
+        name: "signals",
+        apply: |s, v| {
+            s.signals = match v {
+                "on" | "true" | "yes" => true,
+                "off" | "false" | "no" => false,
+                _ => return Err("on or off"),
+            };
+            Ok(())
+        },
+        show: |s| on_off(s.signals).to_string(),
+        note: "Whether x and X may signal the selected process.",
+    },
+    Setting {
+        name: "theme",
+        apply: |s, v| {
+            // Any name parses. It may name a file this table cannot see, and
+            // rejecting unknown names here would make user themes impossible.
+            // `resolve` settles whether it exists.
+            s.theme = match v {
+                "auto" | "default" => Palette::default().name().to_string(),
+                _ => v.to_string(),
+            };
+            Ok(())
+        },
+        show: |s| s.theme.clone(),
+        note: "A built-in (safe, classic) or a file in themes/.",
+    },
 ];
 
 /// A percentage, which is what every threshold in poptop is.
@@ -506,8 +633,8 @@ impl Bad {
 /// `theme = classic` and `--theme=classic` cannot come to disagree about what
 /// the value means or which values are legal.
 pub fn apply(settings: &mut Settings, key: &str, value: &str) -> Result<(), Bad> {
-    match KEYS.iter().find(|(k, _)| *k == key) {
-        Some((_, f)) => f(settings, value).map_err(|expected| Bad::Value {
+    match KEYS.iter().find(|s| s.name == key) {
+        Some(setting) => (setting.apply)(settings, value).map_err(|expected| Bad::Value {
             key: key.to_string(),
             value: value.to_string(),
             expected,
@@ -591,6 +718,7 @@ pub fn resolve(
     // the environment is the user saying something about this terminal now.
     if no_color {
         settings.tier = Tier::Mono;
+        settings.set_origin("color", "NO_COLOR".to_string());
     }
 
     // A check no single key can make on its own, so it cannot live in the
@@ -620,6 +748,12 @@ pub fn resolve(
             d.window,
         )));
         settings = d;
+        for key in ["warn", "critical", "interval", "window"] {
+            settings.set_origin(
+                key,
+                "the default, after the pair above was refused".to_string(),
+            );
+        }
     }
 
     let mut positional = Vec::new();
@@ -628,8 +762,11 @@ pub fn resolve(
         // and neither can drift. A `--flag=` naming no setting falls through
         // to be reported as an unrecognised option, which is what it is.
         match a.strip_prefix("--").and_then(|f| f.split_once('=')) {
-            Some((key, value)) if KEYS.iter().any(|(k, _)| *k == key) => {
+            Some((key, value)) if KEYS.iter().any(|s| s.name == key) => {
                 apply(&mut settings, key, value)?;
+                if let Some(k) = KEYS.iter().find(|k| k.name == key) {
+                    settings.set_origin(k.name, format!("--{key}={value}"));
+                }
                 if key == "theme" {
                     settings.theme_origin = None;
                 }
@@ -922,6 +1059,9 @@ pub fn read(warnings: &mut Vec<Warning>) -> Option<(String, String)> {
 pub fn apply_file(settings: &mut Settings, text: &str, origin: &str, warnings: &mut Vec<Warning>) {
     for_each_setting(text, origin, warnings, |key, value, line| {
         apply(settings, key, value).map_err(|bad| bad.to_string())?;
+        if let Some(k) = KEYS.iter().find(|k| k.name == key) {
+            settings.set_origin(k.name, format!("{origin}:{line}"));
+        }
         if key == "theme" {
             settings.theme_origin = Some(format!("{origin}:{line}"));
         }
@@ -1020,7 +1160,7 @@ fn strip_comment(value: &str) -> &str {
 /// Bounded by half the key's length so a genuinely unrelated word gets no
 /// suggestion — a confidently wrong hint is worse than none.
 fn closest(key: &str) -> Option<&'static str> {
-    closest_in(key, &KEYS.iter().map(|&(k, _)| k).collect::<Vec<_>>())
+    closest_in(key, &KEYS.iter().map(|s| s.name).collect::<Vec<_>>())
 }
 
 /// The nearest name in a set, or none if nothing is near enough.
@@ -1164,11 +1304,7 @@ mod tests {
     #[test]
     fn a_wrong_value_says_what_was_expected() {
         let (s, w) = apply("glyphs = crayon\n");
-        assert_eq!(
-            s.glyphs,
-            GlyphSet::default(),
-            "a rejected value was applied"
-        );
+        assert_eq!(s.glyphs, GlyphSet::Braille, "a rejected value was applied");
         assert_eq!(w.len(), 1);
         assert!(
             w[0].contains("crayon") && w[0].contains("braille"),
@@ -1207,11 +1343,11 @@ mod tests {
         let bad = apply_one("glyphs", "crayon");
         assert_eq!(
             bad.as_flag(),
-            "--glyphs=crayon: expected block, braille, line or ascii"
+            "--glyphs=crayon: expected braille, block or ascii"
         );
         assert_eq!(
             bad.to_string(),
-            "`glyphs`: expected block, braille, line or ascii, found `crayon`"
+            "`glyphs`: expected braille, block or ascii, found `crayon`"
         );
     }
 
@@ -1222,32 +1358,14 @@ mod tests {
 
     #[test]
     fn a_linux_console_gets_ascii() {
-        // A real console has neither braille nor the block elements. This moved
-        // out of `main` with the rest of the defaults and arrived here untested.
+        // A real console has no braille glyphs. This moved out of `main` with
+        // the rest of the defaults and arrived here untested.
         assert_eq!(default_glyphs_for(Some("linux")), GlyphSet::Ascii);
-    }
-
-    #[test]
-    fn the_default_a_terminal_gets_is_the_declared_default() {
-        // The one that got away. `GlyphSet::default()` said `Block`, a test
-        // asserted it, the whole suite passed — and every terminal still drew
-        // braille, because this is the function the running program asks and it
-        // named a set of its own. A default declared in one place and decided in
-        // another is not a default; it is two.
-        //
-        // Asserted against `GlyphSet::default()` rather than against `Block`, so
-        // the next change to the default needs one edit rather than a hunt.
-        for term in ["xterm-256color", "screen", "alacritty", "xterm-kitty", ""] {
-            assert_eq!(
-                default_glyphs_for(Some(term)),
-                GlyphSet::default(),
-                "TERM={term} got a set nobody asked for"
-            );
-        }
-        assert_eq!(default_glyphs_for(None), GlyphSet::default());
-        // And the whole settings path agrees, not just the helper: this is what
-        // `poptop` with no flags and no config file actually runs with.
-        assert_eq!(Settings::fixed().glyphs, GlyphSet::default());
+        assert_eq!(
+            default_glyphs_for(Some("xterm-256color")),
+            GlyphSet::Braille
+        );
+        assert_eq!(default_glyphs_for(None), GlyphSet::Braille);
     }
 
     #[test]
@@ -1330,6 +1448,82 @@ mod precedence {
     }
 
     #[test]
+    fn every_setting_says_where_it_came_from() {
+        // What `--config` prints. A setting nobody set is the default; the
+        // file names its line; a flag names itself; NO_COLOR names itself.
+        let (s, _) = run(
+            Some("# a comment\ninterval = 2s\nglyphs = block\n"),
+            true,
+            &["--window=30m"],
+        );
+        assert_eq!(s.origin("interval"), "conf:2");
+        assert_eq!(s.origin("glyphs"), "conf:3");
+        assert_eq!(s.origin("window"), "--window=30m");
+        assert_eq!(s.origin("color"), "NO_COLOR");
+        assert_eq!(s.origin("log-days"), "the default");
+        // Every setting is listed, in the order the table declares them.
+        let shown = s.resolved();
+        assert_eq!(shown.len(), KEYS.len());
+        assert_eq!(shown[0].0, KEYS[0].name);
+        assert!(shown.iter().any(|(k, v, _)| *k == "interval" && v == "2s"));
+    }
+
+    #[test]
+    fn a_pair_the_file_broke_is_not_blamed_on_the_file() {
+        // The revert puts back four settings at once, so the file's line is
+        // no longer where any of them comes from.
+        let (s, _) = run(Some("warn = 90\ncritical = 80\n"), false, &[]);
+        assert_eq!(s.warn, Theme::DEFAULT_WARN_PCT, "the pair was not reverted");
+        assert!(
+            s.origin("warn").starts_with("the default, after"),
+            "{}",
+            s.origin("warn")
+        );
+    }
+
+    #[test]
+    fn a_written_config_reads_back_the_same() {
+        // The round trip `Show` exists for: every value poptop writes is one
+        // it takes, and reading the file back gives the same settings.
+        let (before, _) = run(
+            Some("interval = 1500ms\nwindow = 30m\nlog-bytes = 2G\nwarn = 62.5\n"),
+            false,
+            // `color` explicitly: left at its default it writes `auto`,
+            // which re-detects on the way back in and is a different tier in
+            // a terminal-less container. That case is the test below.
+            &[
+                "--glyphs=ascii",
+                "--signals=on",
+                "--log-days=3",
+                "--color=256",
+            ],
+        );
+        let text = before.as_config_file();
+        let (after, warnings) = run(Some(&text), false, &[]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        for (key, value, _) in before.resolved() {
+            let got = after.resolved().into_iter().find(|(k, ..)| *k == key);
+            assert_eq!(got.map(|(_, v, _)| v), Some(value.clone()), "{key}");
+        }
+        // Every spelling the writer uses is one the reader takes.
+        assert!(text.contains("interval = 1500ms"), "{text}");
+        assert!(text.contains("window = 30m"));
+        assert!(text.contains("log-bytes = 2G"));
+        assert!(text.contains("warn = 62.5"));
+        assert!(text.contains("signals = on"));
+    }
+
+    #[test]
+    fn a_written_config_leaves_the_colour_tier_to_the_terminal() {
+        // Writing the tier this terminal happens to have would pin it for
+        // every terminal that later reads the file.
+        let (s, _) = run(None, false, &[]);
+        assert!(s.as_config_file().contains("color = auto"));
+        let (s, _) = run(None, false, &["--color=256"]);
+        assert!(s.as_config_file().contains("color = 256"));
+    }
+
+    #[test]
     fn the_last_flag_wins() {
         let (s, _) = run(None, false, &["--glyphs=block", "--glyphs=ascii"]);
         assert_eq!(s.glyphs, GlyphSet::Ascii);
@@ -1341,11 +1535,7 @@ mod precedence {
         // not cost you the tool. A flag was typed for this run, and ignoring
         // it would silently do something other than what was asked.
         let (s, _) = run(Some("glyphs = crayon\n"), false, &[]);
-        assert_eq!(
-            s.glyphs,
-            GlyphSet::default(),
-            "a rejected value was applied"
-        );
+        assert_eq!(s.glyphs, GlyphSet::Braille, "a rejected value was applied");
 
         let args = vec!["--glyphs=crayon".to_string()];
         assert!(

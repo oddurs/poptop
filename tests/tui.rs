@@ -230,6 +230,24 @@ impl Tui {
         }
     }
 
+    /// Wait until nothing more has been written for a quarter of a second,
+    /// or five seconds have passed.
+    fn settle(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last = self.output().len();
+        let mut still_since = Instant::now();
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+            let now = self.output().len();
+            if now != last {
+                last = now;
+                still_since = Instant::now();
+            } else if still_since.elapsed() >= Duration::from_millis(250) {
+                return;
+            }
+        }
+    }
+
     fn alive(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
     }
@@ -254,9 +272,12 @@ impl Tui {
             status.signal(),
             String::from_utf8_lossy(&self.output())
         );
-        // The reader has the last bytes once the child's side has closed; a
-        // moment for it to catch up.
-        std::thread::sleep(Duration::from_millis(100));
+        // The reader thread has the last bytes once the child's side has
+        // closed, and under load that is not instant. Wait for the output to
+        // stop growing rather than for a fixed moment: a fixed 100ms was
+        // enough on an idle machine and not on a busy one, where this failed
+        // with the panic message read but the restore after it not yet.
+        self.settle();
         let out = self.output();
         assert!(
             settings(&self.master) == self.before,
@@ -298,6 +319,15 @@ fn settings(fd: &impl AsRawFd) -> Termios {
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Every place `needle` appears, for a failure that needs to say where.
+fn all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
+    hay.windows(needle.len())
+        .enumerate()
+        .filter(|(_, w)| *w == needle)
+        .map(|(i, _)| i)
+        .collect()
 }
 
 fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -350,11 +380,20 @@ fn a_panic_gives_the_terminal_back() {
     let out = t.exits(Some(101), "a panic");
     let text = String::from_utf8_lossy(&out);
     let message = text.find("panicked").expect("no panic message");
-    // Printed after the screen was restored, where it can be read.
-    let left = rfind(&out, LEAVE_ALT).unwrap();
+    // Printed after the screen was restored, where it can be read: the first
+    // restore after the last time the screen was entered. Not the last one in
+    // the output — unwinding drops the terminal after the hook has run and
+    // the message has been printed, so on Linux there is a second restore
+    // after it, and asking for the last one failed there while passing on
+    // macOS.
+    let entered = rfind(&out, ENTER_ALT).expect("never entered the alternate screen");
+    let left = find(&out[entered..], LEAVE_ALT).map(|i| i + entered);
     assert!(
-        left < message,
-        "the panic was printed on the alternate screen"
+        left.is_some_and(|left| left < message),
+        "the panic was printed on the alternate screen: entered at {entered}, \
+         left at {left:?}, message at {message}, enters {:?}, leaves {:?}",
+        all(&out, ENTER_ALT),
+        all(&out, LEAVE_ALT)
     );
 }
 

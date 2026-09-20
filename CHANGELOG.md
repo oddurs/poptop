@@ -16,14 +16,7 @@ process that wrote them:
 
 ## [Unreleased]
 
-### Fixed
-
-- **The install line in the README did not work.** `cargo install --git
-  <repo>` searches the whole repository, finds `fuzz/` as a second package
-  with binaries, and refuses to guess; the package name is required. Nothing
-  tested it, because nothing here installed poptop the way a reader does.
-  The release workflow now runs the documented line against the tag before
-  publishing, so a broken one stops the release instead of shipping in it.
+Nothing since 0.1.0.
 
 ## [0.1.0] - 2026-09-19
 

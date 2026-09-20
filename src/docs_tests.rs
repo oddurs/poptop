@@ -136,7 +136,7 @@ fn the_configuration_reference_lists_every_setting() {
         .collect();
     let mut real: Vec<String> = crate::config::KEYS
         .iter()
-        .map(|(key, _)| (*key).to_string())
+        .map(|s| s.name.to_string())
         .collect();
 
     for key in &real {

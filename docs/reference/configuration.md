@@ -30,17 +30,33 @@ way and that key alone falls back to its default. The same mistake in a
 flag is fatal, because a flag is this run and you are there to read the
 error.
 
+## Seeing what a setting did
+
+A config file is read once, at startup, above a monitor that then erases
+whatever it said. `--config` answers "did my line take effect?" without
+watching the graphs: every setting, its value, and where that value came
+from — the default, the file and its line, `NO_COLOR`, or the flag.
+
+```console
+$ poptop --config --window=30m
+glyphs        braille  the default
+color         256      NO_COLOR
+interval      2s       /home/you/.config/poptop/poptop.conf:2
+window        30m      --window=30m
+```
+
+`--write-config` writes a commented file of the current settings to the
+path above, one comment per setting saying what it is for. It refuses to
+overwrite a file that is already there, so it is a starting point rather
+than a reset. `color` is written as `auto` unless something asked for a
+tier: writing the tier of the terminal it happened to run in would pin it
+for every terminal that later reads the file.
+
 ## Every setting
 
 | Key / flag | Values | Default | What it does |
 |---|---|---|---|
-| `graph` | `braille`, `block`, `ascii`, `line` | `braille` | How the timeline is drawn. `line` traces the samples instead of filling under them. Falls back to `ascii` on a Linux console automatically. |
-| `glyphs` | as `graph` | — | The older name for `graph`, from when the sets differed only in alphabet. Still read, so existing config files and `--help` examples keep working. |
-| `scale` | `zero`, `fit` | `zero` | Where the vertical axis starts. `fit` crops it to the data, which shows small movement and costs the comparison between one graph and the next. |
-| `density` | `compact`, `comfortable`, `spacious` | `comfortable` | How much air the layout takes: the margin either side of the content, the gap between columns, and whether panels are separated by a blank row. |
-| `mouse` | `on`, `off` | `on` | Whether poptop takes the mouse. While it has it, dragging selects time on the timeline rather than text — hold Shift for the terminal's own selection. |
-| `surface` | `auto`, `off` | `auto` | Whether the interface paints its own grounds. `auto` asks the terminal for its background first and builds the layers from it; `off` leaves every ground to the terminal. |
-| `smooth` | span | `0s` | How long each of the table's figures is averaged over. Off by default: the figures are the sample's own. |
+| `glyphs` | `braille`, `block`, `ascii` | `braille` | How the timeline is drawn. Falls back to `ascii` on a Linux console automatically. |
 | `color` | `auto`, `mono`, `16`, `256`, `true` | `auto` | Colour tier. `NO_COLOR` forces `mono`. |
 | `theme` | `safe`, `classic`, or a file name | `safe` | See [themes](themes.md). |
 | `warn` | percentage | `50` | Where "getting busy" begins. |

@@ -84,6 +84,17 @@ impl Tier {
         }
     }
 
+    /// The name [`Tier::parse`] takes. `auto` is not among them: it is a
+    /// question, and by here it has been answered.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tier::Mono => "mono",
+            Tier::Ansi16 => "16",
+            Tier::Ansi256 => "256",
+            Tier::TrueColor => "true",
+        }
+    }
+
     /// Best tier for the current environment.
     ///
     /// Honours `NO_COLOR` (<https://no-color.org>), which is a convention worth
@@ -109,14 +120,6 @@ impl Tier {
             _ if term.is_some_and(|t| t.contains("256color")) => Self::Ansi256,
             _ => Self::Ansi16,
         }
-    }
-
-    /// Whether this tier can paint a background poptop chooses.
-    ///
-    /// Distinct from `has_color`: the 16 ANSI slots have colour and none of it
-    /// is poptop's to spend on a surface. See `Theme::ground`.
-    pub fn paints_surfaces(self) -> bool {
-        matches!(self, Self::Ansi256 | Self::TrueColor)
     }
 
     fn has_color(self) -> bool {
@@ -232,26 +235,6 @@ pub struct Theme {
     pub selection_bg: Color,
     pub live: Color,
 
-    // Surfaces — the grounds a colour is drawn on, in order of elevation.
-    //
-    // poptop used to paint none of these: everything sat on whatever the
-    // terminal happened to have behind it. That is most of why the interface
-    // read as text rather than as a program — an application is layered, and
-    // layers are backgrounds.
-    //
-    // It also made every contrast figure a guess. `check::SURFACE` was "a dark
-    // surface typical of the terminals poptop is designed for", which is an
-    // assumption about somebody else's configuration. Painting the ground makes
-    // the legibility guarantee true rather than typical.
-    /// The application's own ground, painted over the whole frame.
-    pub surface: Color,
-    /// A panel's ground: the timeline and the table body.
-    pub panel: Color,
-    /// Raised above a panel: the menu bar and its dropdowns.
-    pub raised: Color,
-    /// Every other table row, for tracking across a wide one.
-    pub stripe: Color,
-
     /// Where "getting busy" and "in trouble" begin, as percentages.
     ///
     /// On the theme rather than beside it because they are read wherever a
@@ -264,24 +247,6 @@ pub struct Theme {
     pub critical_pct: f32,
 }
 
-/// One rung of elevation above `base`, `pct` per cent away from it.
-///
-/// Away from, not up: the direction is chosen from the base's own luminance, so
-/// a dark terminal gets lighter panels and a light one gets darker ones. Rec.
-/// 709 coefficients, which is what "how bright does this look" means.
-fn step(base: [u8; 3], pct: i32) -> Color {
-    let [r, g, b] = base;
-    let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
-    let toward: f32 = if luma < 128.0 { 255.0 } else { 0.0 };
-    let mix = pct as f32 / 100.0;
-    let blend = |c: u8| {
-        (c as f32 + (toward - c as f32) * mix)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    Color::Rgb(blend(r), blend(g), blend(b))
-}
-
 impl Theme {
     pub const DEFAULT_WARN_PCT: f32 = 50.0;
     pub const DEFAULT_CRITICAL_PCT: f32 = 80.0;
@@ -291,35 +256,6 @@ impl Theme {
     /// Applied after construction rather than threaded through seven `const
     /// fn` palettes, which are about hue and have nothing to say about where a
     /// number becomes worrying.
-    /// Derive the raised surfaces from the terminal's own background.
-    ///
-    /// `surface` stays `Reset` whatever happens: the application's ground is
-    /// the terminal's ground, and painting over it is the thing this method
-    /// exists to stop. What is painted is the elevation above it — a panel, a
-    /// stripe, a dropdown — stepped away from the base by a few per cent.
-    ///
-    /// Away, not lighter. A light terminal wants its panels darker, and a
-    /// scheme that only knows how to lighten turns a solarized-light window
-    /// into a wash. The direction is read from the base's own luminance.
-    ///
-    /// `None` means the terminal would not say, and then nothing is painted at
-    /// all. A guessed base is worse than none: the steps here are small enough
-    /// to be invisible against the wrong ground and large enough to be ugly.
-    pub fn with_surfaces(mut self, base: Option<[u8; 3]>) -> Self {
-        let Some(base) = base.filter(|_| self.tier.paints_surfaces()) else {
-            return self;
-        };
-        // Small, and bounded by the recessive floor rather than by taste. At
-        // thirteen per cent the raised surface climbed far enough toward
-        // `chrome` that a dropdown's own border fell to 1.46:1 against it —
-        // below the 1.5 a recessive mark has to clear to be findable at all.
-        // Six holds that on every dark ground from `#141417` to `#282828`.
-        self.panel = step(base, 2);
-        self.stripe = step(base, 4);
-        self.raised = step(base, 6);
-        self
-    }
-
     pub fn with_thresholds(mut self, warn: f32, critical: f32) -> Self {
         self.warn_pct = warn;
         self.critical_pct = critical;
@@ -360,10 +296,6 @@ impl Theme {
             // onto one slot destroys the border/title hierarchy at this tier.
             text_dim: Color::Gray,
             selection_bg: Color::DarkGray,
-            surface: Color::Reset,
-            panel: Color::Reset,
-            raised: Color::Reset,
-            stripe: Color::Reset,
             live: Color::Cyan,
         }
     }
@@ -394,10 +326,6 @@ impl Theme {
             text: Color::Indexed(252),
             text_dim: Color::Indexed(244),
             selection_bg: Color::Indexed(237),
-            surface: Color::Reset,
-            panel: Color::Reset,
-            raised: Color::Reset,
-            stripe: Color::Reset,
             live: Color::Indexed(80),
         }
     }
@@ -432,10 +360,6 @@ impl Theme {
             text_dim: Color::Rgb(0x80, 0x80, 0x80),
             selection_bg: Color::Rgb(0x3a, 0x3a, 0x3a),
             live: Color::Rgb(0x5c, 0xcf, 0xe6),
-            surface: Color::Reset,
-            panel: Color::Reset,
-            raised: Color::Reset,
-            stripe: Color::Reset,
         }
     }
 
@@ -455,10 +379,6 @@ impl Theme {
             text: Color::Reset,
             text_dim: Color::Reset,
             selection_bg: Color::Reset,
-            surface: Color::Reset,
-            panel: Color::Reset,
-            raised: Color::Reset,
-            stripe: Color::Reset,
             live: Color::Reset,
         }
     }
@@ -481,10 +401,6 @@ impl Theme {
             // onto one slot destroys the border/title hierarchy at this tier.
             text_dim: Color::Gray,
             selection_bg: Color::DarkGray,
-            surface: Color::Reset,
-            panel: Color::Reset,
-            raised: Color::Reset,
-            stripe: Color::Reset,
             live: Color::Green,
         }
     }
@@ -510,10 +426,6 @@ impl Theme {
             text: Color::Indexed(252),
             text_dim: Color::Indexed(244),
             selection_bg: Color::Indexed(237),
-            surface: Color::Reset,
-            panel: Color::Reset,
-            raised: Color::Reset,
-            stripe: Color::Reset,
             live: Color::Indexed(114),
         }
     }
@@ -539,10 +451,6 @@ impl Theme {
             text_dim: Color::Rgb(0x80, 0x80, 0x80),
             selection_bg: Color::Rgb(0x3a, 0x3a, 0x3a),
             live: Color::Rgb(0x77, 0xca, 0x9b),
-            surface: Color::Reset,
-            panel: Color::Reset,
-            raised: Color::Reset,
-            stripe: Color::Reset,
         }
     }
 
@@ -668,51 +576,6 @@ impl Theme {
     /// The most recessive thing on screen. Chrome should be findable when
     /// looked for and invisible when not — it competes with the data for
     /// attention otherwise, and the data is the point.
-    /// The application's ground, painted over the whole frame.
-    ///
-    /// `Reset` below the 256-colour tier, and that is not a shortcut. The 16
-    /// ANSI slots are the *user's* — their terminal theme decides what
-    /// `DarkGray` looks like — so painting one as a background is as likely to
-    /// fight their scheme as to match it. A tier that cannot promise a colour
-    /// should not promise a surface either.
-    pub fn surface_style(&self) -> Style {
-        self.ground(self.surface)
-    }
-
-    /// A panel's ground: the timeline and the table body.
-    pub fn panel_style(&self) -> Style {
-        self.ground(self.panel)
-    }
-
-    /// Raised above a panel: the menu bar and its dropdowns.
-    ///
-    /// The one surface that carries meaning rather than structure — it is what
-    /// makes a dropdown read as being *over* the table rather than cut into it.
-    pub fn raised_style(&self) -> Style {
-        self.ground(self.raised)
-    }
-
-    /// Every other table row.
-    ///
-    /// The subtlest of the four on purpose: a stripe loud enough to notice is
-    /// one that competes with the figures it is there to help you read across.
-    pub fn stripe_style(&self) -> Style {
-        self.ground(self.stripe)
-    }
-
-    /// A background, or nothing where there is none to paint.
-    ///
-    /// The foreground is deliberately not set. These are grounds, and a ground
-    /// that also claimed the text colour would override the terminal's on every
-    /// empty cell — which is most of them, and exactly the overreach this whole
-    /// mechanism is a retreat from.
-    fn ground(&self, bg: Color) -> Style {
-        match bg {
-            Color::Reset => Style::default(),
-            _ => Style::default().bg(bg),
-        }
-    }
-
     pub fn chrome_style(&self) -> Style {
         if self.tier.has_color() {
             Style::default().fg(self.chrome)
@@ -729,12 +592,7 @@ impl Theme {
     /// where weight alone is not enough separation.
     pub fn table_header_style(&self) -> Style {
         let base = Style::default().add_modifier(Modifier::BOLD);
-        if self.tier.paints_surfaces() {
-            // A ground rather than an underline, where there is one to give it:
-            // the header is a band across the table, and a band is what a
-            // surface says. The underline stays at the tiers that cannot paint.
-            base.bg(self.raised).fg(self.text_dim)
-        } else if self.tier.has_color() {
+        if self.tier.has_color() {
             base.add_modifier(Modifier::UNDERLINED).fg(self.text_dim)
         } else {
             base.add_modifier(Modifier::REVERSED)

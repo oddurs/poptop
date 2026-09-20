@@ -84,7 +84,6 @@ impl<'a> TreeRow<'a> {
 pub fn build<'a>(
     procs: &[&'a ProcSample],
     sort: Sort,
-    sm: &crate::app::Smoothing,
     matched: Option<&HashSet<i32>>,
 ) -> Vec<TreeRow<'a>> {
     let by_pid: HashMap<i32, &'a ProcSample> = procs.iter().map(|p| (p.pid, *p)).collect();
@@ -107,29 +106,20 @@ pub fn build<'a>(
         }
     }
 
-    // Ordered by what each branch adds up to, not by what its own row says.
-    //
-    // A tree sorted on the node alone buries the busiest process under every
-    // idle daemon on the box the moment its parent reads zero — and on macOS
-    // that is always, because everything descends from `launchd`, whose own
-    // figures need root to read. Pressing `t` there gave eight hundred rows of
-    // nothing with the whole machine folded under one of them.
-    //
-    // "What is using the most" asked of a branch is a question about the
-    // branch. The figure drawn on the row is still the process's own; this is
-    // an ordering, which is why summing RSS across a subtree is honest here
-    // and would not be in a column — shared pages are counted once per process
-    // either way, and the alternative is no ordering at all.
-    let totals = subtree_totals(&roots, &children, sort, sm);
-    let order = |a: &&ProcSample, b: &&ProcSample| match (totals.get(&a.pid), totals.get(&b.pid)) {
-        (Some(x), Some(y)) => by_total(*x, *y).then_with(|| sort.compare_with(sm, a, b)),
-        // Anything stranded in a cycle has no branch to be summed over.
-        _ => sort.compare_with(sm, a, b),
-    };
     for kids in children.values_mut() {
-        kids.sort_by(order);
+        kids.sort_by(|a, b| sort.compare(a, b));
     }
-    roots.sort_by(order);
+    // Roots by their whole branch, not by themselves. On macOS, launchd is a
+    // root the kernel will not describe — zero CPU, zero memory — and it is the
+    // parent of every process the user owns, while 189 unreadable daemons are
+    // roots beside it with the same zeros. Ordered by their own figures they
+    // tied, and the tree opened on a page of `?` (0107). A branch's figure is
+    // its busiest member's, so the root that holds the work comes first.
+    let peak = branch_peaks(&roots, &children, sort);
+    roots.sort_by(|a, b| {
+        let (pa, pb) = (&peak[&a.pid], &peak[&b.pid]);
+        sort.compare(pa, pb).then_with(|| sort.compare(a, b))
+    });
 
     let mut out = Vec::with_capacity(procs.len());
     let mut visited = HashSet::new();
@@ -164,64 +154,36 @@ pub fn build<'a>(
     out
 }
 
-/// What each branch adds up to under the active ordering, by root pid.
+/// For each root, the member of its branch that sorts first — the busiest
+/// process under it, for a resource sort.
 ///
-/// Empty for the orderings that do not aggregate: a tree sorted by pid or by
-/// name is sorted by a fact about the row, and a subtree has neither.
-///
-/// `None` against a pid means nothing in that branch could be read — which is
-/// a different claim from zero, and is why the disk ordering sorts those last
-/// rather than among the idle. See [`Sort::compare_with`].
-fn subtree_totals(
-    roots: &[&ProcSample],
-    children: &HashMap<i32, Vec<&ProcSample>>,
+/// Iterative, and each process visited once, so a deep chain cannot overflow
+/// the stack and a cycle cannot loop: anything already seen is not descended
+/// into again.
+fn branch_peaks<'a>(
+    roots: &[&'a ProcSample],
+    children: &HashMap<i32, Vec<&'a ProcSample>>,
     sort: Sort,
-    sm: &crate::app::Smoothing,
-) -> HashMap<i32, Option<f64>> {
-    let own: fn(&ProcSample, &crate::app::Smoothing) -> Option<f64> = match sort {
-        Sort::Cpu => |p, sm| Some(f64::from(sm.cpu(p))),
-        Sort::Mem => |p, sm| Some(sm.rss(p) as f64),
-        Sort::Disk => |p, _| p.io.map(|io| (io.read + io.write) as f64),
-        Sort::Pid | Sort::Name => return HashMap::new(),
-    };
-
-    let mut totals = HashMap::new();
+) -> HashMap<i32, &'a ProcSample> {
+    let mut peaks = HashMap::with_capacity(roots.len());
     let mut seen = HashSet::new();
-    // Post-order over an explicit stack rather than by recursion: a `ppid`
-    // cycle is the reason `walk` carries a visited set, and a thousand-deep
-    // chain of them must not be a stack overflow either.
-    let mut stack: Vec<(&ProcSample, bool)> = roots.iter().rev().map(|p| (*p, false)).collect();
-    while let Some((p, summing)) = stack.pop() {
-        if !summing {
+    for &root in roots {
+        let mut best = root;
+        let mut stack = vec![root];
+        while let Some(p) = stack.pop() {
             if !seen.insert(p.pid) {
                 continue;
             }
-            stack.push((p, true));
+            if sort.compare(p, best).is_lt() {
+                best = p;
+            }
             if let Some(kids) = children.get(&p.pid) {
-                stack.extend(kids.iter().map(|k| (*k, false)));
-            }
-            continue;
-        }
-        let mut sum = own(p, sm);
-        for k in children.get(&p.pid).into_iter().flatten() {
-            if let Some(v) = totals.get(&k.pid).copied().flatten() {
-                sum = Some(sum.unwrap_or(0.0) + v);
+                stack.extend(kids.iter().copied());
             }
         }
-        totals.insert(p.pid, sum);
+        peaks.insert(root.pid, best);
     }
-    totals
-}
-
-/// Largest branch first, and a branch nobody could read last.
-fn by_total(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        (Some(x), Some(y)) => y.total_cmp(&x),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
-    }
+    peaks
 }
 
 /// Expand a match set to include every ancestor of every match.
@@ -266,9 +228,15 @@ fn walk<'a>(
     } else {
         let mut s = String::new();
         // Every ancestor above the immediate parent contributes either a
-        // continuing spine or blank space.
-        for &last in &ancestors_last[..ancestors_last.len() - 1] {
-            s.push_str(if last { "   " } else { "│  " });
+        // continuing spine or blank space — except a root's, whose siblings
+        // are other roots and are drawn with no connector at all. A spine
+        // there hung in the first column under every root but the last,
+        // joining nothing to nothing.
+        for (depth, &last) in ancestors_last[..ancestors_last.len() - 1]
+            .iter()
+            .enumerate()
+        {
+            s.push_str(if last || depth == 0 { "   " } else { "│  " });
         }
         s.push_str(if is_last { "└─ " } else { "├─ " });
         s
@@ -280,11 +248,7 @@ fn walk<'a>(
     });
 
     if let Some(kids) = children.get(&node.pid) {
-        // A root contributes no spine, whatever follows it, because roots are
-        // drawn without connectors: a │ in the first column reaching down to the
-        // next root is a line to something that has no line. Under eight hundred
-        // roots that was every row of the tree below the first level.
-        ancestors_last.push(is_last || ancestors_last.is_empty());
+        ancestors_last.push(is_last);
         for (i, kid) in kids.iter().enumerate() {
             walk(
                 kid,
@@ -339,85 +303,8 @@ mod tests {
             p(2, 1, "sshd", 1.0),
             p(3, 2, "bash", 2.0),
         ];
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            None,
-        );
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(names(&rows), vec!["init", "└─ sshd", "   └─ bash"]);
-    }
-
-    #[test]
-    fn a_branch_is_ordered_by_what_it_adds_up_to() {
-        // The parent of everything interesting reads zero — which on macOS is
-        // `launchd`, whose own figures need root — and eight hundred idle
-        // daemons sat above it. Pressing `t` there gave a screen of nothing
-        // with the whole machine folded under one row of it.
-        let procs = vec![
-            p(1, 0, "launchd", 0.0),
-            p(2, 1, "chrome", 0.5),
-            p(3, 2, "renderer", 90.0),
-            p(10, 0, "idle-a", 0.0),
-            p(11, 0, "idle-b", 0.0),
-        ];
-        let rows = build(
-            &refs(&procs),
-            Sort::Cpu,
-            &crate::app::Smoothing::default(),
-            None,
-        );
-        assert_eq!(
-            names(&rows),
-            vec!["launchd", "└─ chrome", "   └─ renderer", "idle-a", "idle-b",],
-            "the busy branch did not come first"
-        );
-    }
-
-    #[test]
-    fn ordering_by_pid_is_still_a_fact_about_the_row() {
-        // The aggregate is an answer to "what is using the most". A pid is not
-        // a quantity and a subtree does not have one, so this ordering is left
-        // alone — otherwise the tree would be sorted by something with no name.
-        let procs = vec![
-            p(1, 0, "launchd", 0.0),
-            p(9, 0, "nine", 0.0),
-            p(2, 0, "two", 0.0),
-        ];
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            None,
-        );
-        assert_eq!(names(&rows), vec!["launchd", "two", "nine"]);
-    }
-
-    #[test]
-    fn a_branch_nobody_could_read_sorts_last_rather_than_as_idle() {
-        // The same rule `Sort::compare_with` holds for a row: a process whose
-        // IO could not be read is not an idle one, and putting a whole branch
-        // of them among the idle would hide the busiest thing on the box from
-        // somebody who had just asked to see it.
-        let io = |r: u64| Some(crate::sample::IoRates { read: r, write: 0 });
-        let mut procs = vec![
-            p(1, 0, "unreadable", 0.0),
-            p(2, 0, "quiet", 0.0),
-            p(3, 2, "quiet-child", 0.0),
-        ];
-        procs[1].io = io(0);
-        procs[2].io = io(4096);
-        let rows = build(
-            &refs(&procs),
-            Sort::Disk,
-            &crate::app::Smoothing::default(),
-            None,
-        );
-        assert_eq!(
-            names(&rows),
-            vec!["quiet", "└─ quiet-child", "unreadable"],
-            "a branch nobody could read was ordered as though it were idle"
-        );
     }
 
     #[test]
@@ -428,12 +315,7 @@ mod tests {
             p(3, 1, "high", 90.0),
         ];
         // Sorted by CPU descending, so "high" comes first and "low" is last.
-        let rows = build(
-            &refs(&procs),
-            Sort::Cpu,
-            &crate::app::Smoothing::default(),
-            None,
-        );
+        let rows = build(&refs(&procs), Sort::Cpu, None);
         assert_eq!(names(&rows), vec!["init", "├─ high", "└─ low"]);
     }
 
@@ -441,12 +323,7 @@ mod tests {
     fn an_orphan_becomes_a_root() {
         // Parent 999 exited between samples; the child must not vanish with it.
         let procs = vec![p(1, 0, "init", 0.0), p(5, 999, "orphan", 0.0)];
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            None,
-        );
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(rows.len(), 2);
         assert!(names(&rows).contains(&"orphan".to_string()));
     }
@@ -455,24 +332,14 @@ mod tests {
     fn a_ppid_cycle_neither_hangs_nor_drops_a_process() {
         // 2 and 3 claim each other as parent: neither is a root.
         let procs = vec![p(1, 0, "init", 0.0), p(2, 3, "a", 0.0), p(3, 2, "b", 0.0)];
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            None,
-        );
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(rows.len(), 3, "every process must appear exactly once");
     }
 
     #[test]
     fn a_self_parented_process_is_a_root() {
         let procs = vec![p(1, 1, "weird", 0.0)];
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            None,
-        );
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(names(&rows), vec!["weird"]);
     }
 
@@ -488,12 +355,7 @@ mod tests {
                 )
             })
             .collect();
-        let rows = build(
-            &refs(&procs),
-            Sort::Cpu,
-            &crate::app::Smoothing::default(),
-            None,
-        );
+        let rows = build(&refs(&procs), Sort::Cpu, None);
         assert_eq!(rows.len(), 50);
         let seen: HashSet<i32> = rows.iter().map(|r| r.proc.pid).collect();
         assert_eq!(seen.len(), 50);
@@ -508,12 +370,7 @@ mod tests {
             p(4, 1, "unrelated", 0.0),
         ];
         let matched = HashSet::from([3]);
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            Some(&matched),
-        );
+        let rows = build(&refs(&procs), Sort::Pid, Some(&matched));
 
         assert_eq!(names(&rows), vec!["init", "└─ sshd", "   └─ target"]);
         // Ancestors are context, the match is not.
@@ -526,12 +383,7 @@ mod tests {
     fn filtering_with_a_cycle_above_the_match_terminates() {
         let procs = vec![p(1, 2, "a", 0.0), p(2, 1, "b", 0.0), p(3, 1, "target", 0.0)];
         let matched = HashSet::from([3]);
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            Some(&matched),
-        );
+        let rows = build(&refs(&procs), Sort::Pid, Some(&matched));
         assert!(rows.iter().any(|r| r.proc.name.as_ref() == "target"));
     }
 
@@ -540,12 +392,52 @@ mod tests {
         let procs: Vec<ProcSample> = (1..=4)
             .map(|i| p(i, i - 1, &format!("d{i}"), 0.0))
             .collect();
-        let rows = build(
-            &refs(&procs),
-            Sort::Pid,
-            &crate::app::Smoothing::default(),
-            None,
-        );
+        let rows = build(&refs(&procs), Sort::Pid, None);
         assert_eq!(names(&rows), vec!["d1", "└─ d2", "   └─ d3", "      └─ d4"]);
+    }
+    /// A process the kernel would not describe to this user, as macOS reports
+    /// one: no parent it will name, no memory, no thread count, no owner.
+    fn unreadable(pid: i32, name: &str) -> ProcSample {
+        ProcSample {
+            rss: 0,
+            threads: None,
+            user: Arc::from("?"),
+            ..p(pid, 0, name, 0.0)
+        }
+    }
+
+    #[test]
+    fn the_busy_branch_comes_first_whatever_its_root_shows() {
+        // 0107. On macOS, sysinfo cannot read another user's processes and
+        // gives each a parent of 0, so every root-owned daemon becomes a root
+        // — 189 of them — and so does launchd, which is unreadable too and
+        // holds every process the user owns. Ordered by their own figures, the
+        // 189 zeros and launchd tied, and the tree opened on a page of `?`
+        // with the user's processes somewhere below. A root sorts by its whole
+        // branch; one the kernel told nothing about sorts after one it did.
+        let mut launchd = unreadable(1, "launchd");
+        launchd.ppid = 0;
+        let procs = vec![
+            unreadable(400, "cfprefsd"),
+            unreadable(401, "trustd"),
+            launchd,
+            p(500, 1, "ghostty", 2.0),
+            p(501, 500, "cargo", 90.0),
+            p(600, 0, "idle-root", 0.0),
+            unreadable(402, "backupd"),
+        ];
+        let rows = build(&refs(&procs), Sort::Cpu, None);
+        assert_eq!(
+            names(&rows),
+            vec![
+                "launchd",
+                "└─ ghostty",
+                "   └─ cargo",
+                "idle-root",
+                "cfprefsd",
+                "trustd",
+                "backupd"
+            ]
+        );
     }
 }
