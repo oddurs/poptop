@@ -90,8 +90,11 @@ $ poptop --export=json --follow --for 10m >feed.jsonl
 
 One record per `--interval`, each written and flushed as it is taken. The
 first arrives one interval in, since a rate needs two readings. The feed
-ends on `SIGTERM`, on `SIGHUP`, when `--for SPAN` has passed, or when the
-reader goes away — a closed pipe exits 0, as `--once` does.
+ends on `SIGTERM`, when `--for SPAN` has passed, or when the reader goes
+away — a closed pipe exits 0, as `--once` does. `SIGHUP` depends on whether
+there is a terminal: on one it quits, and off one it means "reopen", which
+for a followed day is finding the file again by name after a rotation and for
+a live feed is a line saying there is nothing poptop can reopen.
 
 The line format writes its header block **once, at the top of the stream**,
 which is the same rule a recorded day follows; a label appearing for the
@@ -218,6 +221,6 @@ survived is exactly what `--read` and `--export` give you.
 
 ## Exit status
 
-`0` on a clean exit, including `q`, `Ctrl-C`, `SIGTERM`, `SIGHUP` and the
-terminal going away. `1` for something that failed while running, `2` for a
+`0` on a clean exit, including `q`, `Ctrl-C`, `SIGTERM`, the terminal going
+away, and `SIGHUP` where there is a terminal to hang up. `1` for something that failed while running, `2` for a
 command line poptop could not read — which is also when it prints the usage.

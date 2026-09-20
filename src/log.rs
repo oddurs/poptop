@@ -920,6 +920,24 @@ impl Follower {
         }
     }
 
+    /// Which day is being followed, which a midnight may have moved.
+    pub fn date(&self) -> Date {
+        self.date
+    }
+
+    /// Find the file again by name, keeping the place in the recording.
+    ///
+    /// What a hangup means to a follower (0150): the name now points at a
+    /// different file, because `logrotate` moved the one it was reading.
+    /// Reading starts again at the front of whatever is there, and `last` is
+    /// what keeps the samples already handed out from being handed out twice
+    /// — the same machinery a trim to the byte budget needs.
+    pub fn reopen(&mut self) {
+        self.at = 0;
+        self.file = None;
+        self.catching_up = true;
+    }
+
     /// Everything appended since the last call, and anything new to say.
     ///
     /// Empty when nothing has landed — including while an entry is half
@@ -1927,6 +1945,42 @@ mod tests {
             check.held <= entry * 2,
             "a {size}-byte day of {entry}-byte entries was walked holding {} bytes",
             check.held
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rotated_day_file_is_written_again_by_name_without_a_signal() {
+        // The writer's half of 0150. Every append opens the day by name, so a
+        // file moved out from under a running poptop costs nothing: the next
+        // entry creates the name again, and what was moved is whole. This is
+        // why the recorder needs no hangup to carry on, and why the hangup is
+        // free to mean "reopen" to the readers.
+        let dir = scratch("rotate");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        append(&dir, day, &[&sample(1_800_000_000, 11.0)], u64::MAX).unwrap();
+        let path = dir.join(file_name(date));
+        let moved = dir.join(format!("{}.1", file_name(date)));
+        fs::rename(&path, &moved).unwrap();
+
+        append(&dir, day, &[&sample(1_800_000_001, 22.0)], u64::MAX).unwrap();
+        assert!(path.exists(), "the day file was not created again by name");
+        assert_eq!(
+            read_day(&dir, date)
+                .0
+                .iter()
+                .map(|s| s.cpu_total)
+                .collect::<Vec<_>>(),
+            [22.0],
+            "the new file does not hold what was written after the rotation"
+        );
+        let (rotated, notes) = read_blocks(&fs::read(&moved).unwrap(), "poptop-rotated");
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(
+            rotated.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            [11.0],
+            "the rotated file lost what it had"
         );
         let _ = fs::remove_dir_all(&dir);
     }

@@ -73,6 +73,18 @@ have got the least of it: 87 KB a sample is seven gigabytes a day, so a
 512 MB budget used to be spent by mid-morning and nothing was recorded after
 it. It says so once when it starts giving history up.
 
+**A rotation needs no signal.** Every append opens the day file by name, so a
+file moved out from under a running poptop costs nothing: the next entry
+creates the name again and what was moved is whole.
+
+**What `SIGHUP` means depends on the terminal.** On one it is the terminal
+going away — an ssh session dropping — and poptop quits, giving the terminal
+back. Without one it is what `logrotate` means by it: a feed following a day
+(`--export DATE --follow`) finds the file again by name and carries on from
+the sample it last wrote, repeating nothing. A live feed of the machine says
+there is nothing to reopen, because its records go to stdout, which poptop
+does not own. `SIGTERM` always stops.
+
 `--days` shows what each day actually holds, so a trimmed one is visible:
 
 ```console
@@ -183,8 +195,8 @@ consumer reading line by line gets each sample when it happens rather than
 difference between two readings, and there is nothing to difference the
 first against.
 
-It stops when you stop it — `SIGTERM`, `SIGHUP`, `--for 10m`, or the reader
-going away. `poptop --export=json --follow | head -3` exits 0 like any other
+It stops when you stop it — `SIGTERM`, `--for 10m`, or the reader going away
+(`SIGHUP` is above: off a terminal it means reopen, not quit). `poptop --export=json --follow | head -3` exits 0 like any other
 piped output, and so does a feed whose consumer crashed.
 
 **The header rule.** Under `--follow` the line format writes its header block

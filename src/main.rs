@@ -682,14 +682,33 @@ impl Records {
     }
 }
 
-/// A request to stop: SIGTERM from a service manager or `kill`, SIGHUP from
-/// the terminal going away.
-fn stop_flag() -> io::Result<Arc<AtomicBool>> {
+/// The two things a signal can mean to a feed: stop, and start again.
+///
+/// SIGTERM is always a request to stop. SIGHUP depends on whether there is a
+/// terminal, because the same signal means two opposite things (0150):
+///
+/// - **On a terminal** it is the terminal going away — an ssh session
+///   dropping — and the only sensible answer is to quit, which is what the
+///   monitor does.
+/// - **Without one** it is what `logrotate` and every daemon under it means by
+///   it: "I have moved your file, open it again". A recorder that exited on
+///   that would be a recorder that dies at 03:00 on the night the rotation
+///   runs, which is the one night somebody wanted it.
+///
+/// Told apart by the terminal and not by a flag, because nobody types
+/// `--i-am-a-daemon`, and the kernel already knows.
+fn signals() -> io::Result<(Arc<AtomicBool>, Arc<AtomicBool>)> {
+    use std::io::IsTerminal as _;
     let stop = Arc::new(AtomicBool::new(false));
-    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
-        signal_hook::flag::register(sig, stop.clone())?;
-    }
-    Ok(stop)
+    let reopen = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, stop.clone())?;
+    let hangup = if io::stdin().is_terminal() || io::stdout().is_terminal() {
+        stop.clone()
+    } else {
+        reopen.clone()
+    };
+    signal_hook::flag::register(signal_hook::consts::SIGHUP, hangup)?;
+    Ok((stop, reopen))
 }
 
 fn feed(
@@ -706,7 +725,7 @@ fn feed(
     // feed's first line arrives one interval in and not at once.
     collector.sample(needs)?;
 
-    let stop = stop_flag()?;
+    let (stop, reopen) = signals()?;
     let start = Instant::now();
     // A fixed cadence, for the reason the interactive loop keeps one: timing
     // the next sample from the end of the last adds the cost of collecting to
@@ -720,6 +739,11 @@ fn feed(
             if stop.load(Ordering::Relaxed) || past(start, until, Instant::now()) {
                 return Ok(());
             }
+            // Answered here rather than after the wait: a `log-interval` can
+            // be an hour, and an answer an hour after the question is not one.
+            if reopen.swap(false, Ordering::Relaxed) {
+                said_nothing_to_reopen();
+            }
             std::thread::sleep(left.min(STOP_CHECK));
         }
         let now = Instant::now();
@@ -730,6 +754,9 @@ fn feed(
         // after a laptop sleeps for an hour, `next += interval` would spend
         // that hour writing eighteen thousand records as fast as it could.
         next = now + interval;
+        if reopen.swap(false, Ordering::Relaxed) {
+            said_nothing_to_reopen();
+        }
 
         // One stream for the line format, so the header block is written
         // once — at the top, where a reader that has been there since the
@@ -764,7 +791,7 @@ fn follow_day(
     /// that a feed left running all week is not a background load.
     const POLL: Duration = Duration::from_millis(250);
 
-    let stop = stop_flag()?;
+    let (stop, reopen) = signals()?;
     let start = Instant::now();
     // Rolls over at midnight only when the day being followed is the live one:
     // somebody following `2026-09-08` asked for that day, and a day that is
@@ -772,6 +799,17 @@ fn follow_day(
     let live = log::date_of(std::time::SystemTime::now()) == Some(date);
     let mut following = log::Follower::open(dir, date, live);
     loop {
+        // What `logrotate` means by a hangup: the file under this name is a
+        // different one now. The follower finds it again by name and carries
+        // on from the sample it last handed out, so a rotation costs no
+        // records and repeats none.
+        if reopen.swap(false, Ordering::Relaxed) {
+            following.reopen();
+            flush(&[config::Warning(format!(
+                "SIGHUP: reopening {}",
+                log::file_name(following.date())
+            ))]);
+        }
         let (samples, notes) = following.poll()?;
         // Straight to stderr, where the warnings from every other path go, and
         // not into the feed: a consumer parsing records must not have to parse
@@ -789,6 +827,20 @@ fn follow_day(
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// What a hangup means to a feed of the machine: nothing it can act on.
+///
+/// The records go to stdout, which belongs to whoever redirected it, and
+/// poptop cannot reopen a file it did not open. Said rather than ignored: a
+/// rotation that moved the file this feed is writing into is something the
+/// operator has just done, and silence would leave them believing it worked.
+fn said_nothing_to_reopen() {
+    flush(&[config::Warning(
+        "SIGHUP: nothing to reopen — a live feed writes to stdout, which poptop does not \
+         own. Restart it against the new file, or follow a day instead"
+            .into(),
+    )]);
 }
 
 /// Whether `until` has gone by, counted from `start`.
