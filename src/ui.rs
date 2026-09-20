@@ -3077,6 +3077,24 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App) {
         user: show_user,
         cid: show_cid,
     };
+    // What the reader asked not to see, before the width ladder runs: the
+    // room a hidden column would have taken goes to the command rather than
+    // to whatever the ladder would have dropped next.
+    for hidden in &app.hidden_columns {
+        let flag = match hidden {
+            crate::app::Column::Bars => &mut columns.bars,
+            crate::app::Column::Rss => &mut columns.rss,
+            crate::app::Column::State => &mut columns.state,
+            crate::app::Column::Thr => &mut columns.thr,
+            crate::app::Column::Io => &mut columns.io,
+            crate::app::Column::Mem => &mut columns.mem,
+            crate::app::Column::Hist => &mut columns.spark,
+            crate::app::Column::Pid => &mut columns.pid,
+            crate::app::Column::User => &mut columns.user,
+            crate::app::Column::Cid => &mut columns.cid,
+        };
+        *flag = false;
+    }
     // One column reserved at the left for the selection mark (0114), so the
     // table is laid out one narrower than the panel.
     let table_w = area.width.saturating_sub(MARK_W);

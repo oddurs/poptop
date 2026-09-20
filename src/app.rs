@@ -55,6 +55,13 @@ pub enum Sort {
 }
 
 impl Sort {
+    /// The name a config file writes, the inverse of [`Sort::label`].
+    pub fn parse(name: &str) -> Option<Sort> {
+        [Sort::Cpu, Sort::Mem, Sort::Disk, Sort::Pid, Sort::Name]
+            .into_iter()
+            .find(|s| s.label().eq_ignore_ascii_case(name))
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Sort::Cpu => "CPU",
@@ -187,6 +194,13 @@ impl View {
         }
     }
 
+    /// The name a config file writes, the inverse of [`View::label`].
+    pub fn parse(name: &str) -> Option<View> {
+        [View::Generic, View::Memory, View::Disk]
+            .into_iter()
+            .find(|v| v.label().eq_ignore_ascii_case(name))
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             View::Generic => "generic",
@@ -291,6 +305,27 @@ impl Grouping {
         }
     }
 
+    /// The name a config file writes: `off`, `name`, `user`, `container`.
+    pub fn parse(name: &str) -> Option<Grouping> {
+        Some(match name {
+            "off" | "none" => Grouping::Off,
+            "name" => Grouping::Name,
+            "user" => Grouping::User,
+            "container" => Grouping::Container,
+            _ => return None,
+        })
+    }
+
+    /// The name [`Grouping::parse`] takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Grouping::Off => "off",
+            Grouping::Name => "name",
+            Grouping::User => "user",
+            Grouping::Container => "container",
+        }
+    }
+
     /// What to call it in the panel.
     pub fn label(self) -> &'static str {
         match self {
@@ -299,6 +334,62 @@ impl Grouping {
             Grouping::User => "grouped by user",
             Grouping::Container => "grouped by container",
         }
+    }
+}
+
+/// A column of the process table that a reader may not want.
+///
+/// Not every column: the command is what a row *is*, and the CPU figure is
+/// what the table is sorted by and drawn for. These are the ones that can go
+/// without leaving a row that cannot be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Column {
+    Bars,
+    Rss,
+    State,
+    Thr,
+    Io,
+    Mem,
+    Hist,
+    Pid,
+    User,
+    Cid,
+}
+
+impl Column {
+    /// Every column a config file can hide, in the order the table draws them.
+    pub const ALL: [Column; 10] = [
+        Column::Bars,
+        Column::Rss,
+        Column::State,
+        Column::Thr,
+        Column::Io,
+        Column::Mem,
+        Column::Hist,
+        Column::Pid,
+        Column::User,
+        Column::Cid,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Column::Bars => "bars",
+            Column::Rss => "rss",
+            Column::State => "state",
+            Column::Thr => "thr",
+            Column::Io => "io",
+            Column::Mem => "mem",
+            Column::Hist => "hist",
+            Column::Pid => "pid",
+            Column::User => "user",
+            Column::Cid => "cid",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Column> {
+        Column::ALL
+            .into_iter()
+            .find(|c| c.name().eq_ignore_ascii_case(name))
     }
 }
 
@@ -404,6 +495,10 @@ pub struct App {
     /// makes the same two choices. Grouping destroys parentage by construction,
     /// so a grouped tree would be a tree of things that are not processes.
     pub group: Grouping,
+    /// Columns the reader asked not to see. The table drops them before it
+    /// decides what else it has room for, so the width they took goes to the
+    /// command rather than to the next column along.
+    pub hidden_columns: Vec<Column>,
     /// Show the selected process's own history in place of the machine's.
     ///
     /// The buffer already holds every retained sample's whole process table, so
@@ -525,6 +620,7 @@ impl App {
             over_budget: 0,
             baseline_over: false,
             zoom_idx: 0,
+            hidden_columns: Vec::new(),
             glyphs: GlyphSet::default(),
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,
@@ -895,6 +991,18 @@ impl App {
     /// Samples per display slot.
     pub fn zoom(&self) -> usize {
         ZOOM_LEVELS[self.zoom_idx]
+    }
+
+    /// Start zoomed to `samples` per slot, for the config file's `zoom`.
+    /// A level that is not one of [`ZOOM_LEVELS`] is refused by the setting.
+    pub fn set_zoom(&mut self, samples: usize) -> bool {
+        match ZOOM_LEVELS.iter().position(|z| *z == samples) {
+            Some(i) => {
+                self.zoom_idx = i;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Zoom out: more time on screen, coarser slots.
