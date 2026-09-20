@@ -16,8 +16,15 @@ process that wrote them:
 
 ## [Unreleased]
 
-Nothing has been released yet. `0.1.0` is what is in `master`, and this
-section is what it contains — written from the work, not from a plan.
+Nothing since 0.1.0.
+
+## [0.1.0] - 2026-09-19
+
+The first release. Written from the work, not from a plan.
+
+**Store format 15, export schema `0.1.0`.** These are the baseline every
+later version promises to read; `tests/corpus` holds files written by each
+version that changed what a sample holds, and a test reads all of them.
 
 ### The program
 
@@ -60,10 +67,10 @@ A figure poptop could not read is `—`. A figure it read and which is zero is
 fabricated zero. `N/M need root` is a reason a column is empty, not a
 warning.
 
-### Fixed before the first release
+### Fixed
 
-The ones worth naming, because each was a wrong answer rather than a missing
-one:
+Found and fixed before this release. The ones worth naming, because each was
+a wrong answer rather than a missing one:
 
 - A process whose `comm` is not UTF-8 was invisible on Linux.
 - One unusual mount path blanked every filesystem and NFS figure.
@@ -81,4 +88,23 @@ one:
 - The network header flapped between interfaces and could settle on
   loopback.
 
-[Unreleased]: https://github.com/oddurs/poptop/commits/master
+### Known at release
+
+Open, filed, and disclosed here rather than found by you:
+
+- **A process on its first sample reports `0.0%` CPU** rather than "not yet
+  known" (0134). CPU is a delta and a first sample has nothing to subtract
+  from; the disk columns say `—` in exactly that situation and CPU prints a
+  number. During a fork storm the processes doing the work sort to the
+  bottom. Visible in the screenshot in the README, which is how it was
+  found. The fix is a type change reaching both backends, the sort, the
+  filter and the export schema, so it waits for 0.2.
+- **An empty process table gives no reason** (0124). Grouping by container
+  on a machine with none, or a filter that matches nothing, draws a header
+  and blank lines.
+- **`Esc` quits out of a filtered table** instead of clearing the filter
+  (0125). An applied filter is not on the back-out ladder. `q` and `Ctrl-C`
+  quit from anywhere, as documented.
+
+[Unreleased]: https://github.com/oddurs/poptop/compare/v0.1.0...master
+[0.1.0]: https://github.com/oddurs/poptop/releases/tag/v0.1.0
