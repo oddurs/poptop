@@ -147,6 +147,22 @@ UI sprint, from a critique of the running program: the release build on a Mac, c
 - [x] `0113` Most of the keys can't be discovered from the screen <sup>feature · p2 · ui</sup>
 - [x] `0114` The selected row moves every second and its highlight is faint <sup>feature · p3 · ui</sup>
 
+## r6 — A companion you can read
+
+`##########` 100% · 7 of 7 done
+
+Documentation sprint. There is no landing page and there will not be one: a site is a second thing to maintain and a second place for a claim to go stale, and everyone who needs poptop already has the repository in front of them. So the repository is the documentation — furniture at the root, and practical pages under `docs/` that answer what someone actually asks while the box is slow and while they are configuring it afterwards. The README stops being all of it and becomes the front of it.
+
+### done
+
+- [x] `0117` The site is a second place for a claim to go stale <sup>chore · p1 · docs</sup>
+- [x] `0118` There is nowhere to look up a key, a column or a mark <sup>docs · p1 · docs</sup>
+- [x] `0119` Nothing says what to do when the box is slow <sup>docs · p1 · docs</sup>
+- [x] `0120` Recording, replay and machine-readable output are spread through an essay <sup>docs · p2 · docs</sup>
+- [x] `0121` Configuration and themes have no reference page <sup>docs · p2 · docs</sup>
+- [x] `0122` What poptop can see depends on the platform, and nothing tabulates it <sup>docs · p2 · docs</sup>
+- [x] `0123` The README is 2,312 lines and cannot be the front of anything <sup>docs · p1 · docs</sup>
+
 ## v0.2 — Cheap enough to run
 
 `##########` 100% · 11 of 11 done · due 2026-11-01
@@ -205,13 +221,14 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`#########·` 83% · 5 of 6 done
+`########··` 75% · 6 of 8 done
 
 Good ideas without a date yet.
 
 ### backlog
 
-- [ ] `0103` macOS fault counts are in proc_taskinfo, which poptop already reads <sup>feature · p3 · validation</sup>
+- [ ] `0124` An empty process table says nothing about why it is empty <sup>bug · p2 · ui</sup>
+- [ ] `0125` Esc quits out of a filtered table instead of clearing the filter <sup>bug · p2 · ui</sup>
 
 ### done
 
@@ -220,4 +237,5 @@ Good ideas without a date yet.
 - [x] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
 - [x] `0101` sysinfo hands sysctlbyname a name with no NUL at its end <sup>bug · p2 · review</sup>
 - [x] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
+- [x] `0103` macOS fault counts are in proc_taskinfo, which poptop already reads <sup>feature · p3 · validation</sup>
 
