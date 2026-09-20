@@ -1,0 +1,20 @@
+poptop validation, 2026-09-20 14:54, Linux 6.17.0-1022-azure x86_64
+poptop 0.2.0, window 3s
+
+metric                                       poptop        reference tolerance  verdict   why
+
+cores                                             4                4        0  ok        a count; nothing to round
+memory total, bytes                     16765378560      16765378560        0  ok        the same MemTotal, read by free
+memory available, bytes                 15498432512      15497437184       3%  ok        moves between the two reads
+swap used, bytes                                  0                0 67108864  ok        moves between the two reads; 64 MiB
+uptime, s                                        81               81        5  ok        read seconds apart
+processes                                       175              176        8  ok        5% or 3: processes come and go, and ps and its shell are two of them
+a busy loop, % of a core                   99.85957              100       15  ok        known: it never sleeps, and the machine had a core to spare
+the same loop, against top                 99.85957             99.7       15  ok        top's own interval, the same window
+CPU, whole machine %                       52.66223               52       10  ok        vmstat, user + system, same window
+256 MiB held, bytes                       273952768        273952768       2%  ok        ps rss, a moment later
+256 MiB held, virtual at least                    1                1        0  ok        known: it read 256 MiB into one string
+direct writes, bytes/s                    403932307        402591993      25%  ok        the file's growth over a longer window than poptop's
+loopback received, bytes/s                 60495132         61378225      30%  ok        the interface's own counter, over a window read to the second
+
+every metric agrees

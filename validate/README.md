@@ -20,6 +20,11 @@ runners and keeps the output. It is step 4 of `RELEASING.md`.
 every metric on four machines: an M-series Mac, a Linux arm64 container,
 GitHub's Ubuntu x86_64 and GitHub's macOS arm64.
 
+0.2.0 was checked again on 2026-09-20, on GitHub's Ubuntu x86_64 and macOS
+arm64, and agreed on every metric on both. That release is all screen — it
+changed no collector and no field — so the point of running it was to find out
+whether that was true, rather than to expect a difference.
+
 What each row compares against:
 
 | metric | Linux | macOS |
