@@ -175,9 +175,12 @@ panel (`d`); sorting including by whatever is constrained (`S`); the query
 filter; per-process disk throughput; clock-ceiling reporting; NUMA nodes;
 cgroup v2 utilisation and pressure; NFS; processes that lived and died between
 two samples; configurable intervals; history across restarts (`store`) and a
-daily log addressable by date (`log`, `--read`, `--days`); a report over a
-period (`--report`); machine-readable output with its schema (`--export`,
-`--schema`); signals behind an opt-in (`signals`); themes with colour-vision
+daily log addressable by date (`log`, `--read`, `--days`), synced entry by
+entry, keeping the most recent `log-bytes` rather than the first of them and
+checkable from a script (`--verify`); a report over a period (`--report`);
+machine-readable output with its schema (`--export`, `--schema`), as a live
+feed or a tail of a day being written (`--follow`) and narrowed to named
+fields (`--fields`); signals behind an opt-in (`signals`); themes with colour-vision
 validation; and `--once`.
 
 Not there yet, and each for a stated reason rather than a shrug:
