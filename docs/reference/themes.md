@@ -39,7 +39,10 @@ chrome     = darkgray   # or an ANSI name
 | `text` | ordinary text |
 | `text_dim` | text that is deliberately quiet |
 | `selection_bg` | the selected row's background |
+| `selection_fg` | the selected row's text. Inherits `text` |
 | `live` | the `LIVE` marker and the selection's mark |
+| `border` | panel borders. Inherits `chrome` |
+| `gap` | the seam where sampling stopped and started again. Inherits `chrome` |
 
 A value that will not parse warns, naming the token and the line, and that
 token alone falls back.
@@ -75,3 +78,26 @@ Every meaning poptop carries in colour is also carried by something else — a
 bar's length, a dashed rule, a mark in the margin — so `mono` loses nothing
 but speed of reading. The reasoning is in
 [docs/design/colour.md](../design/colour.md).
+
+## Trying a colour
+
+`R` reads the theme file again, and a theme file that changes on disk is
+picked up on the next sample — one `stat` a second, beside the several
+hundred reads a sample already makes. Edit, save, and the colours change
+under the running monitor.
+
+A file that no longer parses keeps the colours already on screen: the
+half-applied theme of a file mid-edit is worse than the one you had. The
+footer says which file was read and whether any line was ignored. A
+built-in has no file to read, and says so rather than appearing to do
+nothing.
+
+## Why there is no third series colour
+
+The graphs alternate `series_cpu` and `series_mem` rather than giving each
+series its own hue. There is no sixth hue here: the palette avoids green
+for colour-vision reasons, and what is left is warning-orange or too close
+to `ok`. Alternating guarantees the thing that matters — two graphs
+touching each other never share a colour — and `--check-theme` measures
+every pair that carries meaning. A third series hue would have to survive
+that check first.

@@ -52,6 +52,8 @@ pub enum Action {
     Filter,
     SignalTerm,
     SignalKill,
+    /// Read the theme file again, for trying a colour without restarting.
+    ReloadTheme,
 }
 
 /// One action: the name a config file uses, and the keys it has by default.
@@ -93,6 +95,7 @@ pub const ACTIONS: &[Bound] = &[
     b(Action::Cgroups, "cgroups", "C"),
     b(Action::KernelThreads, "kernel-threads", "K"),
     b(Action::IoColumns, "io-columns", "i"),
+    b(Action::ReloadTheme, "reload-theme", "R"),
     b(Action::Help, "help", "?"),
 ];
 

@@ -495,6 +495,12 @@ pub struct App {
     /// makes the same two choices. Grouping destroys parentage by construction,
     /// so a grouped tree would be a tree of things that are not processes.
     pub group: Grouping,
+    /// The theme's name and where it was read from, so `R` and the file
+    /// watcher can read it again. `None` for a built-in, which cannot change
+    /// under the program.
+    pub theme_file: Option<(String, std::time::SystemTime)>,
+    /// What to say about the last reload, in the footer's note line.
+    pub theme_note: Option<String>,
     /// Columns the reader asked not to see. The table drops them before it
     /// decides what else it has room for, so the width they took goes to the
     /// command rather than to the next column along.
@@ -621,6 +627,8 @@ impl App {
             baseline_over: false,
             zoom_idx: 0,
             hidden_columns: Vec::new(),
+            theme_file: None,
+            theme_note: None,
             glyphs: GlyphSet::default(),
             theme: Theme::default(),
             interval: DEFAULT_INTERVAL,

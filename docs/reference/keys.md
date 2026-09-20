@@ -26,6 +26,7 @@ wrong here, the build fails.
 | `C` | cgroups in place of processes |
 | `K` | kernel threads |
 | `i` | the disk IO columns |
+| `R` | read the theme file again, for trying a colour |
 | `?` | this list |
 
 `k` and `j` also move the selection, and `h` and `l` also scrub.
@@ -110,4 +111,5 @@ leaving a full-screen program.
 | `cgroups` | `C` |
 | `kernel-threads` | `K` |
 | `io-columns` | `i` |
+| `reload-theme` | `R` |
 | `help` | `?` |

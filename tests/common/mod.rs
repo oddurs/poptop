@@ -49,6 +49,13 @@ impl Home {
         Run::of(args, self.cmd(args).output().expect("cannot start poptop"))
     }
 
+    /// A user theme file, as `~/.config/poptop/themes/NAME.theme`.
+    pub fn write_theme(&self, name: &str, text: &str) {
+        let dir = self.config().join("poptop").join("themes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.theme")), text).unwrap();
+    }
+
     pub fn write_config(&self, text: &str) {
         let dir = self.config().join("poptop");
         std::fs::create_dir_all(&dir).unwrap();

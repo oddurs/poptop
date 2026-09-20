@@ -84,6 +84,8 @@ struct Tui {
     /// Its settings before poptop touched them.
     before: Termios,
     seen: Arc<Mutex<Vec<u8>>>,
+    /// Kept so the home outlives the child, and so a test can write into it
+    /// while poptop is running.
     _home: Home,
 }
 
@@ -396,7 +398,7 @@ fn a_panic_gives_the_terminal_back() {
     // that matters — the terminal came back — is asserted above.
     let entered = rfind(&out, ENTER_ALT).expect("never entered the alternate screen");
     let left = find(&out[entered..], LEAVE_ALT).map(|i| i + entered);
-    if !left.is_some_and(|left| left < message) {
+    if left.is_none_or(|left| left >= message) {
         eprintln!(
             "note: the capture reads the panic message before the restore — \
              entered at {entered}, left at {left:?}, message at {message}, \
@@ -580,4 +582,22 @@ fn hang_up(signal_first: bool) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn a_theme_file_changed_while_it_runs_is_picked_up() {
+    // Edit, save, and the colours change under the running monitor: one stat
+    // a sample is what pays for it.
+    let home = Home::new();
+    home.write_theme("mine", "ok = #010203\n");
+    let mut t = Tui::start_in(home, &["--theme=mine", "--color=true"], &[]);
+    // The colour it started with is on screen: `ok` is drawn as an SGR
+    // foreground of exactly that RGB.
+    t.wait_for(b"38;2;1;2;3", "the theme's first colour");
+
+    // A second colour, written while it runs.
+    t._home.write_theme("mine", "ok = #0a0b0c\n");
+    t.wait_for(b"38;2;10;11;12", "the theme's second colour");
+    t.keys(b"q");
+    t.exits(Some(0), "q");
 }

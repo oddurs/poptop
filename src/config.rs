@@ -1155,6 +1155,20 @@ fn origin_of(file: &Option<(&str, &str)>) -> String {
 /// A missing file is not an error — the overwhelmingly common case is not
 /// having one — and neither is an unreadable one, which is worth a word rather
 /// than a refusal to start.
+/// A user theme's file and when it was last written, for reloading it.
+///
+/// `None` for a built-in, which has no file, and for a name whose file
+/// cannot be stat'd — both mean "nothing here to watch".
+pub fn theme_file(name: &str) -> Option<(String, std::time::SystemTime)> {
+    if Palette::parse(name).is_some() {
+        return None;
+    }
+    let dir = path().and_then(|p| p.parent().map(|d| d.join("themes")))?;
+    let path = dir.join(format!("{name}.theme"));
+    let at = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    Some((name.to_string(), at))
+}
+
 /// Read a named theme from `~/.config/poptop/themes/NAME.theme`.
 ///
 /// Beside the config file rather than inside it: a theme is a document people

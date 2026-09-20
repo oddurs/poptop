@@ -233,7 +233,18 @@ pub struct Theme {
     // light and a dark terminal — which an ANSI slot cannot promise, since the
     // user's theme chooses it.
     pub selection_bg: Color,
+    /// The selected row's text. Inherits [`Theme::text`], which is what it
+    /// was before it could be named: a background alone leaves the terminal's
+    /// own foreground, which is invisible on half of them.
+    pub selection_fg: Color,
     pub live: Color,
+    /// Panel borders. Inherits [`Theme::chrome`], which draws them today, so
+    /// a theme that says nothing looks as it did.
+    pub border: Color,
+    /// The mark where samples stop and start again — a machine asleep, a
+    /// monitor restarted. Inherits [`Theme::chrome`]: it is chrome until
+    /// somebody wants a gap to stand out, which is the point of naming it.
+    pub gap: Color,
 
     /// Where "getting busy" and "in trouble" begin, as percentages.
     ///
@@ -267,6 +278,18 @@ impl Theme {
     /// between — which is the clearest statement that meaning never rests on
     /// colour here.
     pub fn new(palette: Palette, tier: Tier) -> Self {
+        let mut theme = Self::base(palette, tier);
+        // The three tokens that were another token's colour until a theme
+        // could name them. Inheriting here rather than in seven constructors
+        // is what makes "a theme file written for the ten renders as it did"
+        // true by construction.
+        theme.selection_fg = theme.text;
+        theme.border = theme.chrome;
+        theme.gap = theme.chrome;
+        theme
+    }
+
+    fn base(palette: Palette, tier: Tier) -> Self {
         match (palette, tier) {
             (_, Tier::Mono) => Self::mono(),
             (Palette::Safe, Tier::Ansi16) => Self::safe_ansi16(),
@@ -297,6 +320,10 @@ impl Theme {
             text_dim: Color::Gray,
             selection_bg: Color::DarkGray,
             live: Color::Cyan,
+            // Filled by `Theme::new`, which is where the inheritance lives.
+            selection_fg: Color::Reset,
+            border: Color::Reset,
+            gap: Color::Reset,
         }
     }
 
@@ -327,6 +354,10 @@ impl Theme {
             text_dim: Color::Indexed(244),
             selection_bg: Color::Indexed(237),
             live: Color::Indexed(80),
+            // Filled by `Theme::new`, which is where the inheritance lives.
+            selection_fg: Color::Reset,
+            border: Color::Reset,
+            gap: Color::Reset,
         }
     }
 
@@ -360,6 +391,10 @@ impl Theme {
             text_dim: Color::Rgb(0x80, 0x80, 0x80),
             selection_bg: Color::Rgb(0x3a, 0x3a, 0x3a),
             live: Color::Rgb(0x5c, 0xcf, 0xe6),
+            // Filled by `Theme::new`, which is where the inheritance lives.
+            selection_fg: Color::Reset,
+            border: Color::Reset,
+            gap: Color::Reset,
         }
     }
 
@@ -380,6 +415,10 @@ impl Theme {
             text_dim: Color::Reset,
             selection_bg: Color::Reset,
             live: Color::Reset,
+            // Filled by `Theme::new`, which is where the inheritance lives.
+            selection_fg: Color::Reset,
+            border: Color::Reset,
+            gap: Color::Reset,
         }
     }
 
@@ -402,6 +441,10 @@ impl Theme {
             text_dim: Color::Gray,
             selection_bg: Color::DarkGray,
             live: Color::Green,
+            // Filled by `Theme::new`, which is where the inheritance lives.
+            selection_fg: Color::Reset,
+            border: Color::Reset,
+            gap: Color::Reset,
         }
     }
 
@@ -427,6 +470,10 @@ impl Theme {
             text_dim: Color::Indexed(244),
             selection_bg: Color::Indexed(237),
             live: Color::Indexed(114),
+            // Filled by `Theme::new`, which is where the inheritance lives.
+            selection_fg: Color::Reset,
+            border: Color::Reset,
+            gap: Color::Reset,
         }
     }
 
@@ -451,6 +498,10 @@ impl Theme {
             text_dim: Color::Rgb(0x80, 0x80, 0x80),
             selection_bg: Color::Rgb(0x3a, 0x3a, 0x3a),
             live: Color::Rgb(0x77, 0xca, 0x9b),
+            // Filled by `Theme::new`, which is where the inheritance lives.
+            selection_fg: Color::Reset,
+            border: Color::Reset,
+            gap: Color::Reset,
         }
     }
 
@@ -542,7 +593,7 @@ impl Theme {
             // Foreground as well as background. A background alone inherits
             // the terminal's default foreground, which on a light theme is
             // dark — rendering the selected row dark-on-dark and invisible.
-            base.bg(self.selection_bg).fg(self.text)
+            base.bg(self.selection_bg).fg(self.selection_fg)
         } else {
             base.add_modifier(Modifier::REVERSED)
         }
@@ -576,6 +627,24 @@ impl Theme {
     /// The most recessive thing on screen. Chrome should be findable when
     /// looked for and invisible when not — it competes with the data for
     /// attention otherwise, and the data is the point.
+    /// Panel borders. `chrome` until a theme names `border`.
+    pub fn border_style(&self) -> Style {
+        if self.tier.has_color() {
+            Style::default().fg(self.border)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+    }
+
+    /// The seam where sampling stopped. `chrome` until a theme names `gap`.
+    pub fn gap_style(&self) -> Style {
+        if self.tier.has_color() {
+            Style::default().fg(self.gap)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+    }
+
     pub fn chrome_style(&self) -> Style {
         if self.tier.has_color() {
             Style::default().fg(self.chrome)
@@ -630,6 +699,49 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_new_tokens_inherit_what_they_used_to_share() {
+        // A theme file written for the ten tokens renders exactly as it did:
+        // the selected row's text was `text`, and borders and gaps were
+        // `chrome`, before either could be named.
+        for palette in [Palette::Safe, Palette::Classic] {
+            for tier in [Tier::Ansi16, Tier::Ansi256, Tier::TrueColor, Tier::Mono] {
+                let t = Theme::new(palette, tier);
+                assert_eq!(t.selection_fg, t.text, "{palette:?} {tier:?}");
+                assert_eq!(t.border, t.chrome, "{palette:?} {tier:?}");
+                assert_eq!(t.gap, t.chrome, "{palette:?} {tier:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_new_token_can_be_named_on_its_own() {
+        let (t, skipped) = Theme::new(Palette::Safe, Tier::TrueColor).with_overrides(&[
+            (Token::SelectionFg, Color::Rgb(1, 2, 3)),
+            (Token::Border, Color::Rgb(4, 5, 6)),
+            (Token::Gap, Color::Rgb(7, 8, 9)),
+        ]);
+        assert!(skipped.is_empty());
+        assert_eq!(t.selection_fg, Color::Rgb(1, 2, 3));
+        assert_eq!(t.border, Color::Rgb(4, 5, 6));
+        assert_eq!(t.gap, Color::Rgb(7, 8, 9));
+        // And the tokens they inherit from are untouched.
+        assert_eq!(t.text, Theme::new(Palette::Safe, Tier::TrueColor).text);
+        assert_eq!(t.chrome, Theme::new(Palette::Safe, Tier::TrueColor).chrome);
+        // Each is drawn with its own style.
+        assert_eq!(t.border_style().fg, Some(Color::Rgb(4, 5, 6)));
+        assert_eq!(t.gap_style().fg, Some(Color::Rgb(7, 8, 9)));
+        assert_eq!(t.selection_style().fg, Some(Color::Rgb(1, 2, 3)));
+    }
+
+    #[test]
+    fn every_token_has_a_name_that_parses_back() {
+        for token in Token::ALL {
+            assert_eq!(Token::parse(token.name()), Some(token), "{token:?}");
+        }
+        assert_eq!(Token::ALL.len(), 13);
+    }
 
     #[test]
     fn a_colour_is_written_one_of_exactly_three_ways() {
@@ -1229,12 +1341,19 @@ pub enum Token {
     Text,
     TextDim,
     SelectionBg,
+    /// The selected row's text, over [`Token::SelectionBg`].
+    SelectionFg,
     Live,
+    /// Panel borders, which are [`Token::Chrome`] unless a theme says
+    /// otherwise.
+    Border,
+    /// The seam where sampling stopped and started again.
+    Gap,
 }
 
 impl Token {
     /// Every token, in the order a theme file should list them.
-    pub const ALL: [Token; 10] = [
+    pub const ALL: [Token; 13] = [
         Token::Ok,
         Token::Warn,
         Token::Critical,
@@ -1244,7 +1363,10 @@ impl Token {
         Token::Text,
         Token::TextDim,
         Token::SelectionBg,
+        Token::SelectionFg,
         Token::Live,
+        Token::Border,
+        Token::Gap,
     ];
 
     pub fn name(self) -> &'static str {
@@ -1258,7 +1380,10 @@ impl Token {
             Token::Text => "text",
             Token::TextDim => "text_dim",
             Token::SelectionBg => "selection_bg",
+            Token::SelectionFg => "selection_fg",
             Token::Live => "live",
+            Token::Border => "border",
+            Token::Gap => "gap",
         }
     }
 
@@ -1277,7 +1402,10 @@ impl Token {
             Token::Text => theme.text,
             Token::TextDim => theme.text_dim,
             Token::SelectionBg => theme.selection_bg,
+            Token::SelectionFg => theme.selection_fg,
             Token::Live => theme.live,
+            Token::Border => theme.border,
+            Token::Gap => theme.gap,
         }
     }
 
@@ -1292,6 +1420,9 @@ impl Token {
             Token::Text => theme.text = c,
             Token::TextDim => theme.text_dim = c,
             Token::SelectionBg => theme.selection_bg = c,
+            Token::SelectionFg => theme.selection_fg = c,
+            Token::Border => theme.border = c,
+            Token::Gap => theme.gap = c,
             Token::Live => theme.live = c,
         }
     }
