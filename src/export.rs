@@ -354,8 +354,16 @@ impl Lines {
     /// rather than once a sample — a hundred and forty-four copies of it at
     /// the default logging interval, and a reader building a column map from
     /// the header would have to decide which copy it meant.
-    pub fn add(&mut self, s: &Sample) {
-        s.emit("sample", self);
+    /// `want` narrows it to the fields asked for; the header block then names
+    /// exactly the columns the rows carry, as it always did.
+    pub fn add(&mut self, s: &Sample, want: Option<&Fields>) {
+        match want {
+            Some(want) => {
+                let mut only = Only::new(self, want);
+                s.emit("sample", &mut only);
+            }
+            None => s.emit("sample", self),
+        }
         while let Some(f) = self.stack.pop() {
             self.emit_frame(f);
         }
@@ -437,19 +445,22 @@ impl Visit for Lines {
 }
 
 /// One sample, in whichever format was asked for.
-pub fn sample_json(s: &Sample) -> String {
+pub fn sample_json(s: &Sample, want: Option<&Fields>) -> String {
     let mut j = Json::default();
-    s.emit("sample", &mut j);
+    match want {
+        Some(want) => s.emit("sample", &mut Only::new(&mut j, want)),
+        None => s.emit("sample", &mut j),
+    }
     let mut out = j.finish();
     out.push('\n');
     out
 }
 
 /// Many samples as one stream, with one header block for all of them.
-pub fn lines_of(samples: &[Sample]) -> String {
+pub fn lines_of(samples: &[Sample], want: Option<&Fields>) -> String {
     let mut l = Lines::default();
     for s in samples {
-        l.add(s);
+        l.add(s, want);
     }
     l.finish()
 }
@@ -519,15 +530,15 @@ mod tests {
         // computed on. A consumer that cannot tell "nobody said" from "none
         // happened" will average one into the other.
         let s = fixture();
-        let json = sample_json(&s);
+        let json = sample_json(&s, None);
         assert!(json.contains("\"steal\":null"), "{json}");
         assert!(json.contains("\"iowait\":1.5"), "{json}");
         // …and a real zero stays a zero.
         let mut zeroed = fixture();
         zeroed.steal = Some(0.0);
-        assert!(sample_json(&zeroed).contains("\"steal\":0"));
+        assert!(sample_json(&zeroed, None).contains("\"steal\":0"));
 
-        let lines = lines_of(std::slice::from_ref(&s));
+        let lines = lines_of(std::slice::from_ref(&s), None);
         let cpu_row = lines
             .lines()
             .find(|l| l.starts_with("sample\t"))
@@ -545,7 +556,7 @@ mod tests {
 
     #[test]
     fn the_json_is_json() {
-        let out = sample_json(&fixture());
+        let out = sample_json(&fixture(), None);
         // Balanced, quoted, and with the separator inside a name escaped
         // rather than raw.
         // A document, not a dangling key-value pair.
@@ -570,7 +581,7 @@ mod tests {
     fn the_line_format_says_what_its_columns_are() {
         // A positional format that does not name its positions is atop's, and
         // its documentation is a man page somebody has to keep in step.
-        let out = lines_of(&[fixture()]);
+        let out = lines_of(&[fixture()], None);
         let procs: Vec<&str> = out
             .lines()
             .filter(|l| l.starts_with("sample.procs\t"))
@@ -612,7 +623,7 @@ mod tests {
                 ..ProcSample::default()
             })
             .collect();
-        let out = lines_of(std::slice::from_ref(&s));
+        let out = lines_of(std::slice::from_ref(&s), None);
 
         let rows: Vec<&str> = out
             .lines()
@@ -660,7 +671,7 @@ mod tests {
                 ..ProcSample::default()
             })
             .collect();
-        let out = lines_of(std::slice::from_ref(&s));
+        let out = lines_of(std::slice::from_ref(&s), None);
 
         let widths: std::collections::HashSet<usize> = out
             .lines()
@@ -683,7 +694,7 @@ mod tests {
         assert_eq!(io, ["0", "2"], "{out}");
 
         // JSON keeps it as a null, because JSON has room to.
-        assert_eq!(sample_json(&s).matches("\"io\":null").count(), 2);
+        assert_eq!(sample_json(&s, None).matches("\"io\":null").count(), 2);
     }
 
     #[test]
@@ -693,7 +704,7 @@ mod tests {
         // logging interval, and a reader building a column map has to decide
         // which copy it meant.
         let day: Vec<Sample> = (0..5).map(|_| fixture()).collect();
-        let out = lines_of(&day);
+        let out = lines_of(&day, None);
         assert_eq!(
             out.lines().filter(|l| l.starts_with("#sample\t")).count(),
             1,
@@ -717,7 +728,7 @@ mod tests {
         let mut s = fixture();
         s.cpu_total = 51.7083;
         s.iowait = Some(0.1);
-        let json = sample_json(&s);
+        let json = sample_json(&s, None);
         // The exact token, with a delimiter after it: `contains` on a prefix
         // passes happily against `51.70830154418945`, which is the artefact
         // this exists to catch.
@@ -753,7 +764,7 @@ mod tests {
             io: Some(crate::sample::IoRates { read: 1, write: 2 }),
             ..ProcSample::default()
         });
-        let out = lines_of(std::slice::from_ref(&s));
+        let out = lines_of(std::slice::from_ref(&s), None);
         let mut headers = std::collections::HashMap::new();
         for l in out.lines() {
             if let Some(h) = l.strip_prefix('#') {
@@ -785,5 +796,424 @@ mod tests {
         assert!(s.contains("\"unit\": \"bytes\""), "{s}");
         assert!(!s.contains("\"unit\": \"unknown\""), "a field has no unit");
         assert_eq!(s.matches('{').count(), s.matches('}').count());
+    }
+}
+
+// ── a narrower feed ───────────────────────────────────────────────────────
+// 0149. `--export` writes every field of every record, which is what "every
+// metric by name" means and which is hundreds of kilobytes a sample at four
+// hundred processes. A dashboard reading four numbers a second pays for the
+// whole process table each time, and piping it through `jq` only means poptop
+// built it first.
+
+/// The fields a feed was asked for, as dotted paths into the schema.
+///
+/// `cpu_total`, `mem.used`, `procs.name`. A list is transparent: `procs.name`
+/// is that field of every process, because the alternative — naming an index —
+/// is a question nobody asks of a process table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fields(Vec<String>);
+
+impl Fields {
+    /// Parse a comma-separated list, checked against the schema.
+    ///
+    /// Checked, and refused with the closest thing the schema does have: a
+    /// filter that silently dropped a name the caller spelled wrong would
+    /// produce a feed missing exactly the figure they were watching for, and
+    /// nothing in it would say so.
+    pub fn parse(spec: &str) -> Result<Fields, String> {
+        let known = paths();
+        let mut want = Vec::new();
+        for name in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            // `sample.cpu_total` is how the line format labels it, and it is
+            // the spelling somebody copies out of the output; `cpu_total` is
+            // what the flag documents. Both mean the field.
+            let name = name.strip_prefix("sample.").unwrap_or(name);
+            if !known.iter().any(|k| k == name) {
+                return Err(match closest(name, &known) {
+                    Some(near) => format!("no field `{name}` — did you mean `{near}`?"),
+                    None => format!("no field `{name}`. `poptop --schema` lists them"),
+                });
+            }
+            if !want.iter().any(|w| w == name) {
+                want.push(name.to_string());
+            }
+        }
+        if want.is_empty() {
+            return Err("--fields needs at least one field name".into());
+        }
+        // Always the time. A record that does not say when it was taken is not
+        // a sample of anything, and a consumer that asked for `cpu_total`
+        // meant the series and not the number.
+        if !want.iter().any(|w| w == "at") {
+            want.insert(0, "at".to_string());
+        }
+        Ok(Fields(want))
+    }
+
+    /// Whether a scalar at this path was asked for: the path itself, or
+    /// anything under a record that was.
+    fn wants(&self, path: &str) -> bool {
+        self.0.iter().any(|w| {
+            w == path
+                || path
+                    .strip_prefix(w.as_str())
+                    .is_some_and(|r| r.starts_with('.'))
+        })
+    }
+
+    /// Whether anything under this record or list was asked for.
+    fn into(&self, path: &str) -> bool {
+        self.wants(path)
+            || self
+                .0
+                .iter()
+                .any(|w| w.strip_prefix(path).is_some_and(|r| r.starts_with('.')))
+    }
+}
+
+/// Every dotted path the schema has, records included.
+fn paths() -> Vec<String> {
+    let schemas = crate::sample::schemas();
+    let mut out = Vec::new();
+    walk("", "Sample", &schemas, &mut out, 0);
+    out
+}
+
+fn walk(
+    prefix: &str,
+    record: &str,
+    schemas: &[(&'static str, Vec<crate::persist::Field>)],
+    out: &mut Vec<String>,
+    depth: usize,
+) {
+    // The schema is a tree of records that can, in principle, refer to one
+    // another: a bound rather than a visited set, because the depth of the
+    // real one is four and a cycle would be a bug in the declaration.
+    if depth > 8 {
+        return;
+    }
+    let Some((_, fields)) = schemas.iter().find(|(n, _)| *n == record) else {
+        return;
+    };
+    for f in fields {
+        let path = format!("{prefix}{}", f.name);
+        out.push(path.clone());
+        if let Some(rec) = record_of(&f.ty) {
+            walk(&format!("{path}."), rec, schemas, out, depth + 1);
+        }
+    }
+}
+
+/// The record a type is, or holds: `Option<Vec<DiskStat>>` is `DiskStat`.
+fn record_of(t: &Ty) -> Option<&str> {
+    match t {
+        Ty::Rec(name) => Some(name),
+        Ty::Opt(inner) | Ty::List(inner) | Ty::Arr(inner, _) => record_of(inner),
+        _ => None,
+    }
+}
+
+/// The known path nearest a misspelling, if anything is near enough.
+///
+/// Edit distance, with a bound of a third of the name: "did you mean" is only
+/// useful while it is usually right, and a suggestion drawn from across the
+/// schema is worse than none.
+fn closest<'a>(name: &str, known: &'a [String]) -> Option<&'a str> {
+    let bound = (name.len() / 3).max(1);
+    known
+        .iter()
+        .map(|k| (distance(name, k), k))
+        .filter(|(d, _)| *d <= bound)
+        .min_by_key(|(d, k)| (*d, k.len()))
+        .map(|(_, k)| k.as_str())
+}
+
+/// Levenshtein distance, two rows at a time.
+fn distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut row = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            row[j + 1] = (prev[j] + usize::from(ca != cb))
+                .min(prev[j + 1] + 1)
+                .min(row[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut row);
+    }
+    prev[b.len()]
+}
+
+/// A [`Visit`] that passes on only the fields that were asked for.
+///
+/// Between the sample and the writer, rather than inside each writer: both
+/// formats then narrow the same way, and neither had to learn what a field
+/// name is.
+pub struct Only<'a> {
+    to: &'a mut dyn Visit,
+    want: &'a Fields,
+    /// One per open container: the logical path it contributes to, and whether
+    /// its children are list elements.
+    ///
+    /// A list is transparent: an element's name is its index, and a path
+    /// through it would be `procs.17.name` — a different path for every
+    /// process, which is not a thing anyone can ask for.
+    stack: Vec<Level>,
+    /// How deep inside a subtree nobody asked for. Everything is dropped while
+    /// this is above zero, including the `close` that ends it.
+    skipping: usize,
+}
+
+struct Level {
+    path: String,
+    list: bool,
+}
+
+impl<'a> Only<'a> {
+    pub fn new(to: &'a mut dyn Visit, want: &'a Fields) -> Only<'a> {
+        Only {
+            to,
+            want,
+            stack: Vec::new(),
+            skipping: 0,
+        }
+    }
+
+    /// The logical path of a field named `name` at this depth.
+    fn path(&self, name: &str) -> String {
+        match self.stack.last() {
+            // An element of a list: the field belongs to the list's own path.
+            Some(f) if f.list => f.path.clone(),
+            Some(f) if f.path.is_empty() => name.to_string(),
+            Some(f) => format!("{}.{name}", f.path),
+            None => name.to_string(),
+        }
+    }
+
+    fn scalar(&mut self, name: &str, write: impl FnOnce(&mut dyn Visit, &str)) {
+        if self.skipping > 0 {
+            return;
+        }
+        let path = self.path(name);
+        if self.want.wants(&path) {
+            write(self.to, name);
+        }
+    }
+}
+
+impl Visit for Only<'_> {
+    fn num(&mut self, name: &str, v: f64) {
+        self.scalar(name, |to, n| to.num(n, v));
+    }
+    fn int(&mut self, name: &str, v: i128) {
+        self.scalar(name, |to, n| to.int(n, v));
+    }
+    fn text(&mut self, name: &str, v: &str) {
+        self.scalar(name, |to, n| to.text(n, v));
+    }
+    fn flag(&mut self, name: &str, v: bool) {
+        self.scalar(name, |to, n| to.flag(n, v));
+    }
+    fn absent(&mut self, name: &str) {
+        // Absence passes the filter exactly as a value does. A narrow feed
+        // that turned a figure nobody reported into a missing column would
+        // undo the one rule this format is built on.
+        self.scalar(name, |to, n| to.absent(n));
+    }
+    fn absent_nested(&mut self, name: &str) {
+        if self.skipping > 0 {
+            return;
+        }
+        let path = self.path(name);
+        if self.want.into(&path) {
+            self.to.absent_nested(name);
+        }
+    }
+    fn open(&mut self, name: &str, list: bool) {
+        if self.skipping > 0 {
+            self.skipping += 1;
+            return;
+        }
+        // The root record contributes nothing: the flag's names are
+        // `cpu_total`, not `sample.cpu_total`.
+        let path = match self.stack.last() {
+            None => String::new(),
+            Some(f) if f.list => f.path.clone(),
+            Some(f) if f.path.is_empty() => name.to_string(),
+            Some(f) => format!("{}.{name}", f.path),
+        };
+        if !path.is_empty() && !self.want.into(&path) {
+            self.skipping = 1;
+            return;
+        }
+        self.stack.push(Level { path, list });
+        self.to.open(name, list);
+    }
+    fn close(&mut self) {
+        if self.skipping > 0 {
+            self.skipping -= 1;
+            return;
+        }
+        self.stack.pop();
+        self.to.close();
+    }
+}
+
+#[cfg(test)]
+mod narrow_tests {
+    use super::*;
+    use crate::sample::{MemStat, ProcSample};
+    use std::sync::Arc;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn sample() -> Sample {
+        let mut s = Sample::unknown();
+        s.at = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        s.cpu_total = 12.5;
+        // Absent on purpose: the pair every format here keeps apart.
+        s.iowait = None;
+        s.mem = MemStat {
+            total: 16 << 30,
+            used: 8 << 30,
+            available: 8 << 30,
+            ..MemStat::default()
+        };
+        s.procs = ["rustc", "node"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| ProcSample {
+                pid: 100 + i as i32,
+                name: Arc::from(name),
+                rss: 1 << 20,
+                cpu: 5.0,
+                ..ProcSample::default()
+            })
+            .collect();
+        s
+    }
+
+    #[test]
+    fn a_named_subset_is_emitted_in_schema_order() {
+        // Schema order, not the order they were asked for: the format's order
+        // is the schema's everywhere else, and a consumer building a column
+        // map from the header would otherwise get a different map per caller.
+        let want = Fields::parse("procs.name,cpu_total,mem.used").unwrap();
+        let json = sample_json(&sample(), Some(&want));
+        assert_eq!(
+            json.trim_end(),
+            "{\"at\":1800000000,\"cpu_total\":12.5,\"mem\":{\"used\":8589934592},\
+             \"procs\":[{\"name\":\"rustc\"},{\"name\":\"node\"}]}"
+        );
+
+        let mut lines = Lines::default();
+        lines.add(&sample(), Some(&want));
+        let text = lines.finish();
+        assert!(text.contains("#sample\tat\tcpu_total\n"), "{text}");
+        assert!(text.contains("#sample.mem\tused\n"), "{text}");
+        // A list stays a table of its own, one row an element, with the index
+        // that joins it back to its neighbours.
+        assert_eq!(
+            text.lines()
+                .filter(|l| l.starts_with("sample.procs\t"))
+                .count(),
+            2,
+            "{text}"
+        );
+        assert!(!text.contains("rss"), "a field nobody asked for: {text}");
+    }
+
+    #[test]
+    fn the_time_is_always_there() {
+        // A record that does not say when it was taken is not a sample of
+        // anything, and somebody asking for `cpu_total` meant the series.
+        for spec in ["cpu_total", "procs.name", "at,cpu_total"] {
+            let json = sample_json(&sample(), Some(&Fields::parse(spec).unwrap()));
+            assert!(json.starts_with("{\"at\":"), "`{spec}` gave {json}");
+            assert_eq!(json.matches("\"at\":").count(), 1, "`{spec}` gave {json}");
+        }
+    }
+
+    #[test]
+    fn absence_survives_the_filter() {
+        // The one rule this format is built on. A filter that turned a figure
+        // nobody reported into a missing column would undo it, and the caller
+        // would read "poptop did not ask" as "the kernel does not publish".
+        let want = Fields::parse("iowait,cpu_total").unwrap();
+        let json = sample_json(&sample(), Some(&want));
+        assert!(json.contains("\"iowait\":null"), "{json}");
+
+        let mut lines = Lines::default();
+        lines.add(&sample(), Some(&want));
+        let text = lines.finish();
+        let row = text
+            .lines()
+            .find(|l| l.starts_with("sample\t"))
+            .expect("no sample row");
+        assert_eq!(
+            row.split(SEP).count(),
+            text.lines()
+                .find(|l| l.starts_with("#sample\t"))
+                .unwrap()
+                .split(SEP)
+                .count(),
+            "the row and its header disagree: {text}"
+        );
+        assert!(row.contains(ABSENT), "{row}");
+    }
+
+    #[test]
+    fn a_whole_record_can_be_asked_for() {
+        let json = sample_json(&sample(), Some(&Fields::parse("mem").unwrap()));
+        assert!(json.contains("\"total\":17179869184"), "{json}");
+        assert!(json.contains("\"used\":8589934592"), "{json}");
+        assert!(!json.contains("cpu_total"), "{json}");
+    }
+
+    #[test]
+    fn an_unknown_field_is_refused_with_the_closest_the_schema_has() {
+        // Silently dropping it would produce a feed missing exactly the figure
+        // the caller was watching for, with nothing in it saying so.
+        for (spec, want) in [
+            ("cpu_totl", "did you mean `cpu_total`"),
+            ("mem.usedd", "did you mean `mem.used`"),
+            ("procs.nme", "did you mean `procs.name`"),
+        ] {
+            let e = Fields::parse(spec).expect_err("accepted a name the schema does not have");
+            assert!(e.contains(want), "`{spec}` said: {e}");
+        }
+        // Nothing near enough: the schema itself, rather than a wild guess.
+        let e = Fields::parse("temperature").expect_err("accepted a field poptop has no idea of");
+        assert!(e.contains("--schema"), "{e}");
+        assert!(Fields::parse(" , ").is_err(), "an empty list was accepted");
+        // The spelling the line format prints is the spelling that works.
+        assert_eq!(
+            Fields::parse("sample.cpu_total").unwrap(),
+            Fields::parse("cpu_total").unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "a measurement, not an assertion"]
+    fn measure_a_narrow_feed() {
+        // What a dashboard reading four numbers saves by not being handed a
+        // process table. `cargo test --release -- --ignored --nocapture
+        // measure_a_narrow_feed`.
+        let s = crate::store::tests_support::big_sample(5.0, 400);
+        let want = Fields::parse("cpu_total,mem.used,load").unwrap();
+        let (mut whole, mut narrow) = (std::time::Duration::MAX, std::time::Duration::MAX);
+        let (mut wb, mut nb) = (0, 0);
+        for _ in 0..7 {
+            let t = std::time::Instant::now();
+            wb = sample_json(&s, None).len();
+            whole = whole.min(t.elapsed());
+            let t = std::time::Instant::now();
+            nb = sample_json(&s, Some(&want)).len();
+            narrow = narrow.min(t.elapsed());
+        }
+        eprintln!(
+            "400 processes: whole {wb} bytes in {whole:?}, narrowed {nb} bytes in {narrow:?}"
+        );
     }
 }

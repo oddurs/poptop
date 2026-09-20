@@ -197,6 +197,9 @@ the first run, or use `--export=json`, whose records name every field.
 
 It does not write the log — `--log=on` does that, and a feed is a reader.
 
+Add `--fields` to narrow it — `--fields cpu_total,mem.used` — which is the
+difference between four numbers and a whole process table every interval.
+
 ### Following the log itself
 
 With a date, `--follow` tails that day's file instead of sampling:

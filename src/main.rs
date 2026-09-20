@@ -63,7 +63,7 @@ USAGE:
                     and spacing, and every stretch that could not be read, with
                     the reason. Exit 1 if anything was skipped, so cron can ask.
                     Today unless a date is given.
-    poptop --export=json|line [DATE] [--follow [--for SPAN]]
+    poptop --export=json|line [DATE] [--fields LIST] [--follow [--for SPAN]]
                     every metric, by name, for a script. With a date, the whole
                     of that recorded day rather than the machine now. --follow
                     keeps going: without a date a record an interval, flushed
@@ -72,7 +72,10 @@ USAGE:
                     is writing. Either ends when it is stopped, when the reader
                     goes away, or after --for SPAN. Under --follow the line
                     format writes its header block once, at the top of the
-                    stream.
+                    stream. --fields narrows it to named fields, as
+                    `--fields cpu_total,mem.used,procs.name`: dotted paths into
+                    the schema, checked against it, with the time always
+                    included.
     poptop --schema   what --export reports: every record, field, type and unit
     poptop --report [DATE]
                     summarise a recorded day: peak and sustained, and what was
@@ -430,6 +433,8 @@ enum Command {
         day: Option<log::Date>,
         follow: bool,
         until: Option<Duration>,
+        /// The fields asked for, or every field.
+        fields: Option<export::Fields>,
     },
     Days,
     /// Walk a day file and say what is in it. Today when none is named.
@@ -484,6 +489,7 @@ fn command(args: &[String]) -> Result<Command, Usage> {
             // `config::resolve` because they say what this command does and
             // not what poptop is: `--follow` means nothing to the TUI.
             let (mut day, mut follow, mut until) = (None, false, None);
+            let mut fields = None;
             while let Some(word) = rest.next() {
                 let (word, inline) = match word.split_once('=') {
                     Some((w, v)) if w.starts_with("--") => (w, Some(v)),
@@ -491,6 +497,15 @@ fn command(args: &[String]) -> Result<Command, Usage> {
                 };
                 match word {
                     "--follow" => follow = true,
+                    "--fields" => {
+                        let Some(spec) = inline.filter(|v| !v.is_empty()).or_else(|| rest.next())
+                        else {
+                            return Err(Usage(
+                                "--fields needs a list, as `cpu_total,mem.used,procs.name`".into(),
+                            ));
+                        };
+                        fields = Some(export::Fields::parse(spec).map_err(Usage)?);
+                    }
                     "--for" => {
                         let Some(span) = inline.filter(|v| !v.is_empty()).or_else(|| rest.next())
                         else {
@@ -504,7 +519,8 @@ fn command(args: &[String]) -> Result<Command, Usage> {
                     _ if day.is_none() && !word.starts_with("--") => day = Some(date(word)?),
                     _ => {
                         return Err(Usage(format!(
-                            "--export does not take `{word}` — a date, --follow, or --for SPAN"
+                            "--export does not take `{word}` — a date, --fields, \
+                             --follow, or --for SPAN"
                         )));
                     }
                 }
@@ -522,6 +538,7 @@ fn command(args: &[String]) -> Result<Command, Usage> {
                 day,
                 follow,
                 until,
+                fields,
             }
         }
         "--read" => {
@@ -624,6 +641,8 @@ fn fail(warnings: &[config::Warning], why: impl std::fmt::Display, code: i32) ->
 /// day file's, so they are one format and not two.
 struct Records {
     json: bool,
+    /// The fields asked for, or every field.
+    fields: Option<export::Fields>,
     /// The line format's state, and so the header block it has written. One
     /// writer for the whole stream, which is what makes the header appear
     /// once.
@@ -632,9 +651,10 @@ struct Records {
 }
 
 impl Records {
-    fn new(json: bool) -> Records {
+    fn new(json: bool, fields: Option<export::Fields>) -> Records {
         Records {
             json,
+            fields,
             lines: export::Lines::default(),
             out: io::stdout(),
         }
@@ -648,9 +668,9 @@ impl Records {
     fn write(&mut self, s: &sample::Sample) -> io::Result<bool> {
         use std::io::Write as _;
         let record = if self.json {
-            export::sample_json(s)
+            export::sample_json(s, self.fields.as_ref())
         } else {
-            self.lines.add(s);
+            self.lines.add(s, self.fields.as_ref());
             self.lines.take()
         };
         let mut out = self.out.lock();
@@ -964,8 +984,9 @@ fn main() -> io::Result<()> {
             day,
             follow: true,
             until,
+            fields,
         } => {
-            let mut records = Records::new(json);
+            let mut records = Records::new(json, fields);
             if let Some(date) = day {
                 let dir = log::dir().unwrap_or_else(|| fail(&warnings, NO_STATE_DIR, 2));
                 flush(&warnings);
@@ -979,6 +1000,7 @@ fn main() -> io::Result<()> {
             json,
             day,
             follow: false,
+            fields,
             ..
         } => {
             // A day, if one was named; otherwise the machine now. Reading
@@ -1017,10 +1039,10 @@ fn main() -> io::Result<()> {
             // whole day rather than once a sample.
             if json {
                 for s in &samples {
-                    out!("{}", export::sample_json(s));
+                    out!("{}", export::sample_json(s, fields.as_ref()));
                 }
             } else {
-                out!("{}", export::lines_of(&samples));
+                out!("{}", export::lines_of(&samples, fields.as_ref()));
             }
             return Ok(());
         }
@@ -2625,6 +2647,7 @@ mod tests {
                     day: None,
                     follow: false,
                     until: None,
+                    fields: None,
                 },
             ),
             (
@@ -2634,6 +2657,7 @@ mod tests {
                     day: None,
                     follow: false,
                     until: None,
+                    fields: None,
                 },
             ),
             (
@@ -2643,6 +2667,7 @@ mod tests {
                     day: date("2026-09-08"),
                     follow: false,
                     until: None,
+                    fields: None,
                 },
             ),
             (
@@ -2652,6 +2677,7 @@ mod tests {
                     day: date("2026-09-08"),
                     follow: false,
                     until: None,
+                    fields: None,
                 },
             ),
             (
@@ -2661,6 +2687,7 @@ mod tests {
                     day: None,
                     follow: true,
                     until: None,
+                    fields: None,
                 },
             ),
             (
@@ -2670,6 +2697,7 @@ mod tests {
                     day: date("2026-09-08"),
                     follow: true,
                     until: None,
+                    fields: None,
                 },
             ),
             (
@@ -2679,6 +2707,7 @@ mod tests {
                     day: None,
                     follow: true,
                     until: Some(Duration::from_secs(30)),
+                    fields: None,
                 },
             ),
             (
@@ -2688,6 +2717,7 @@ mod tests {
                     day: None,
                     follow: true,
                     until: Some(Duration::from_secs(300)),
+                    fields: None,
                 },
             ),
             ("--days", Command::Days),
