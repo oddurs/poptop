@@ -67,13 +67,21 @@ string itself.
 - **The sorted column wears a caret in its own header**, and a click on a
   header sorts by it. The sort was named in the panel title and shown nowhere
   near the sorting.
-- **Smoothing.** `--smooth=5s`, or the View menu. The ordering is over the
-  average too: a row whose number twitches is mildly annoying; a row that swaps
-  places with its neighbour while you are reading it is what makes a table
-  unreadable.
+- **Smoothing.** `--smooth=5s`, or the View menu. Two problems with two
+  answers, because they are not the same problem. The *figure* is a weighted
+  average ending at the moment on screen — the newest sample about a third of
+  it, the oldest about a tenth — so a spike moves the number on the second it
+  starts and fades over the seconds after, agreeing with the graph under it.
+  The *order* is the same average taken on a beat, so between beats the table
+  cannot change its mind about what goes above what. A row whose number
+  twitches is mildly annoying; a row that swaps places with its neighbour while
+  you are reading it is what makes a table unreadable, and only the second one
+  is worth holding still.
 - **Density.** `--density=compact|comfortable|spacious` — the margin either
-  side of the content, the gap between columns, and whether panels are
-  separated by a blank row.
+  side of the content, the air in the header, and whether the table and the
+  graphs are separated by a blank row. Comfort is still the first thing a small
+  terminal surrenders: the margin goes where the command column needs it, and
+  below that width the blank row is what tells the three apart.
 - **The mouse.** Click a tab, a column header or a row; drag the timeline to
   scrub; the wheel moves time over the graph and the selection over the table.
   One layout serves both the drawing and the hit-testing, so a click cannot
