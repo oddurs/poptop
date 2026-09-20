@@ -34,7 +34,13 @@ error.
 
 | Key / flag | Values | Default | What it does |
 |---|---|---|---|
-| `glyphs` | `braille`, `block`, `ascii` | `braille` | How the timeline is drawn. Falls back to `ascii` on a Linux console automatically. |
+| `graph` | `braille`, `block`, `ascii`, `line` | `braille` | How the timeline is drawn. `line` traces the samples instead of filling under them. Falls back to `ascii` on a Linux console automatically. |
+| `glyphs` | as `graph` | — | The older name for `graph`, from when the sets differed only in alphabet. Still read, so existing config files and `--help` examples keep working. |
+| `scale` | `zero`, `fit` | `zero` | Where the vertical axis starts. `fit` crops it to the data, which shows small movement and costs the comparison between one graph and the next. |
+| `density` | `compact`, `comfortable`, `spacious` | `comfortable` | How much air the layout takes: the margin either side of the content, the gap between columns, and whether panels are separated by a blank row. |
+| `mouse` | `on`, `off` | `on` | Whether poptop takes the mouse. While it has it, dragging selects time on the timeline rather than text — hold Shift for the terminal's own selection. |
+| `surface` | `auto`, `off` | `auto` | Whether the interface paints its own grounds. `auto` asks the terminal for its background first and builds the layers from it; `off` leaves every ground to the terminal. |
+| `smooth` | span | `0s` | How long each of the table's figures is averaged over. Off by default: the figures are the sample's own. |
 | `color` | `auto`, `mono`, `16`, `256`, `true` | `auto` | Colour tier. `NO_COLOR` forces `mono`. |
 | `theme` | `safe`, `classic`, or a file name | `safe` | See [themes](themes.md). |
 | `warn` | percentage | `50` | Where "getting busy" begins. |

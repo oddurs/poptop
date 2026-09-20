@@ -51,6 +51,12 @@ fn once_prints_a_sample_and_every_setting_is_accepted_on_the_command_line() {
     home.run(&[
         "--once",
         "--glyphs=ascii",
+        "--graph=line",
+        "--scale=fit",
+        "--density=compact",
+        "--surface=off",
+        "--mouse=off",
+        "--smooth=2s",
         "--color=mono",
         "--interval=200ms",
         "--window=1m",
@@ -72,6 +78,12 @@ fn a_setting_at_a_value_it_does_not_take_is_exit_2_naming_it() {
     let home = Home::new();
     for flag in [
         "--glyphs=crayon",
+        "--graph=crayon",
+        "--scale=sideways",
+        "--density=airy",
+        "--surface=maybe",
+        "--mouse=maybe",
+        "--smooth=later",
         "--color=loud",
         "--interval=soon",
         "--window=forever",

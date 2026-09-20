@@ -22,10 +22,12 @@ wrong here, the build fails.
 | `g` | fold processes by name, then by user, then by container |
 | `d` | the selected process's own history in place of the machine's |
 | `y` | the selected process's threads |
-| `v` | the next view: memory, then disk |
+| `v` | the next tab: memory, then disk |
 | `C` | cgroups in place of processes |
 | `K` | kernel threads |
-| `i` | the disk IO columns |
+| `Tab` | the next tab, Shift-Tab the previous, 1-9 one by number |
+| `Enter` | the inspector on the selected process |
+| `F10` | the menu bar, which names every command there is |
 | `?` | this list |
 
 `k` and `j` also move the selection, and `h` and `l` also scrub.

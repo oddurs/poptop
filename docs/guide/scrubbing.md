@@ -77,7 +77,7 @@ flattened against 100.
 
 All of it. `/`, `s`, `S`, `g`, `t`, `d`, `v`, `i`, `y` all answer about the
 sample under the cursor. You can open a filter on a moment four minutes ago
-and the count in the panel title is that moment's count.
+and the count in the panel rule is that moment's count.
 
 The one exception is signals: `x` and `X` do nothing while scrubbing. That
 process table is history, and the pid in it may belong to something else

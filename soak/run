@@ -1,0 +1,112 @@
+#!/bin/sh
+# Leave poptop running for a day and watch what happens to it.
+#
+#   soak/run POPTOP_BINARY OUT_DIR [HOURS]            default 24
+#
+# Starts the monitor on a terminal (script(1)) at a 200ms interval, logging,
+# in an empty home, with a process churn generator beside it, and every
+# minute records its resident memory, open descriptors, CPU time and the
+# size of its log. Partway through it does what real use does to a monitor:
+#
+#   at 1/12 of the run   the wall clock steps back five minutes, where
+#                        libfaketime is loaded (Linux: see soak/README.md)
+#   at 1/8 of the run    the process is stopped for three minutes and
+#                        resumed, as a laptop's sleep and wake look to it
+#
+# and it runs across at least one local midnight. At the end it quits with
+# `q`, so the store is written, and soak/analyse checks the results.
+set -eu
+
+bin=${1:?usage: soak/run POPTOP_BINARY OUT_DIR [HOURS]}
+out=${2:?usage: soak/run POPTOP_BINARY OUT_DIR [HOURS]}
+hours=${3:-24}
+os=$(uname -s)
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+home=$out/home
+mkdir -p "$home"
+# Its own home, so the log and the store it writes are these and not yours.
+export HOME="$home" XDG_STATE_HOME="$home/state" XDG_CONFIG_HOME="$home/config"
+export TERM=${TERM:-xterm-256color}
+secs=$(awk -v h="$hours" 'BEGIN { printf "%d", h * 3600 }')
+step_at=$((secs / 12))
+stop_at=$((secs / 8))
+log_every=${SOAK_LOG_INTERVAL:-10s}
+
+# Churn: short-lived processes, a few a second, the load poptop's exit
+# capture and name interning exist for.
+(while :; do for _ in 1 2 3 4 5; do /bin/sh -c 'exit 0'; done; sleep 1; done) &
+churn=$!
+
+# The terminal's input: a pipe that types `q` when told to. A pipe, not a
+# fifo, because macOS implements a fifo as a socket and script(1) refuses it.
+keys() { while [ ! -e "$out/quit" ]; do sleep 1; done; printf q; sleep 5; }
+
+# The clock step: libfaketime, preloaded into poptop alone, so this script's
+# own `date` and `ps` keep telling the truth. Only the wall clock moves; the
+# monotonic clock, which schedules the samples, does not, as with a real
+# step from NTP or a person setting the time.
+pre=
+if [ -n "${SOAK_FAKETIME_LIB:-}" ]; then
+    export FAKETIME_TIMESTAMP_FILE="$out/faketime" FAKETIME_NO_CACHE=1 FAKETIME_DONT_FAKE_MONOTONIC=1
+    echo "+0" >"$FAKETIME_TIMESTAMP_FILE"
+    pre="env LD_PRELOAD=$SOAK_FAKETIME_LIB"
+fi
+
+if [ "$os" = Linux ]; then
+    keys | script -qec "$pre $bin --interval=200ms --log=on --log-interval=$log_every --store=on" /dev/null \
+        >/dev/null 2>"$out/stderr" &
+else
+    keys | script -q /dev/null "$bin" --interval=200ms --log=on --log-interval="$log_every" --store=on \
+        >/dev/null 2>"$out/stderr" &
+fi
+term=$!
+sleep 3
+pid=$(pgrep -n -f "$bin --interval=200ms")
+echo "poptop $pid, $hours hours, log every $log_every, $(uname -srm)" >"$out/summary"
+date +%s >"$out/started"
+
+fds() {
+    if [ -d /proc/$1/fd ]; then ls /proc/$1/fd | wc -l; else lsof -p "$1" 2>/dev/null | tail -n +2 | wc -l; fi
+}
+cputime() {
+    # Seconds of CPU, from ps's [[dd-]hh:]mm:ss.
+    ps -o time= -p "$1" | awk -F '[-:.]' '{
+        n = NF; s = $n + 0; if ($0 ~ /\./) { s = $(n - 1) + $n / 100; n-- }
+        m = (n >= 2) ? $(n - 1) : 0; h = (n >= 3) ? $(n - 2) : 0; d = (n >= 4) ? $(n - 3) : 0
+        printf "%.2f", ((d * 24 + h) * 60 + m) * 60 + s }'
+}
+
+printf 'elapsed\trss_kb\tfds\tcpu_s\tlog_bytes\n' >"$out/metrics.tsv"
+start=$(date +%s)
+stepped=no
+stopped=no
+while :; do
+    now=$(date +%s)
+    e=$((now - start))
+    [ "$e" -ge "$secs" ] && break
+    kill -0 "$pid" 2>/dev/null || { echo "poptop exited at ${e}s" >>"$out/summary"; break; }
+    if [ "$stepped" = no ] && [ "$e" -ge "$step_at" ] && [ -n "${FAKETIME_TIMESTAMP_FILE:-}" ]; then
+        echo "-300" >"$FAKETIME_TIMESTAMP_FILE"
+        echo "clock stepped back 300s at ${e}s ($(date))" >>"$out/summary"
+        stepped=yes
+    fi
+    if [ "$stopped" = no ] && [ "$e" -ge "$stop_at" ]; then
+        kill -STOP "$pid"
+        echo "stopped at ${e}s ($(date)) for 180s" >>"$out/summary"
+        sleep 180
+        kill -CONT "$pid"
+        stopped=yes
+    fi
+    logb=$(du -sk "$home/state/poptop/log" 2>/dev/null | cut -f1)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$e" "$(ps -o rss= -p "$pid" | tr -d ' ')" "$(fds "$pid" | tr -d ' ')" \
+        "$(cputime "$pid")" "$((${logb:-0} * 1024))" >>"$out/metrics.tsv"
+    sleep 60
+done
+
+touch "$out/quit"
+sleep 8
+kill -0 "$pid" 2>/dev/null && echo "poptop did not quit on q" >>"$out/summary"
+kill "$churn" 2>/dev/null || true
+date +%s >"$out/ended"
+echo "done: $out"

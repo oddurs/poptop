@@ -12,47 +12,64 @@ scrub backwards and ask what was eating the box forty seconds ago. It starts
 with an empty buffer and fills it as it runs: no daemon, no config, no logfiles,
 nothing that had to be running before you noticed the problem.
 
-![poptop watching three compilers, a checksum and two compressors on a ten-core Linux box](docs/media/poptop.svg)
+![poptop watching twelve compressors and a checksum on a ten-core workstation, scrubbed back forty seconds](docs/media/poptop.svg)
 
 A real frame, rendered from a terminal capture by
 [`tools/screenshot.py`](tools/screenshot.py) — not a drawing, and not
-retouched: a ten-core Linux box building this crate in a loop, scrubbed back
-forty seconds to a busy moment. `PAUSED −40s` and the `▐` on the timeline are
-the cursor; sampling carried on behind it. `10 rustc (g folds them)` is
-poptop noticing that one program is crowding the table, and `218 tasks came
-and went` is the processes that lived and died entirely between two samples.
-`████+` is a process past one core.
+retouched: a ten-core workstation with 801 processes on it, running a dozen
+compressors and a checksum, scrubbed back forty seconds to a busy moment.
+`PAUSED −40s` and the `▲` under the graphs are the cursor; sampling carried on
+behind it. `30 fish (g folds them)` is poptop noticing that one program is
+crowding the table. `████+` is a process past one core.
+
+The bar names every command; the strip under the header belongs to the table
+and says which resource, how the rows are arranged, and which rows they are;
+the graphs sit under the table because they are how it got there.
 
 <details>
 <summary>A paused frame, as text — the timeline scrubbed back eighteen seconds</summary>
 
 ```
- poptop — PAUSED  -18s · warn 50 · crit 80
-CPU  89.2%   WAIT  26.7%   RUN 1/4   BLOCKED 0   MEM  37.5% █████▒▒░░░░░
+ File  Edit  View  Go  Process  Help                                 F10 menu
+ PAUSED  -18s CPU  89.2%  │  MEM  50.0% ██████▒▒░░░░   SWP  50.0%
   4 cores ▇▄▁█
-── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
- 100 ⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣦⠀⣴⠀⢰⡄⢠⡆⠤⣦⠤⣴⠤⢰⡄⢠⡆⠀⣆⠀⣴⠀⣰⡀⢠⡆⢀⣆⠤⣴⠤⣰⡀⢰⡆⢀⣆⠀⣶⠀⣰⡀⢰⡆⢀⣆⠤⣶⠤⣰⡀⢰⡆⢀⣆⠀⣶
- CPU ⣿⡇⣾⣇⢸⣿⢰⣿⡀⣿⡇⣾⣇⢸⣷⢰⣿⠀⣿⡆⣾⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣷⢸⣿⢀⣿⡆⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣸⣧⢸⣿⢀⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿⡄⣿⡇⣼⣧⢸⣿⢠⣿
-   0 ⣿⣇⣿⣿⣾⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣿⣿⣿⣸⣿⣿⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣾⣿⣇⣿⣷⣿⣿⣸⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿⣧⣿⣧⣿⣿⣼⣿⣼⣿
- 100 ⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤⠀⠤
-WAIT ⣤⣶⣦⣤⣄⣀⠤⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣄⣀⡀⠀⠤⠀⠤⠀⣀⣠⣤⣴⣶⣤⣤⣀⡀⠀⠤⠀⠤⠀⢀⣀⣤⣤⣶⣦⣤⣄⣀⠀⠤⠀⠤⠀⢀⣀⣤⣤⣶⣦⣤⣄⣀⠀⠤⠀⠤⠀⠤⣀⣠⣤⣴
-   0 ⣿⣿⣿⣿⣿⣿⣷⣤⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⣀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣄⣀⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣀⣀⣤⣾⣿⣿⣿⣿
-                                              CPU 89.2%  WAIT 26.7% ▐
-2m25s shown, 1s/slot — ←/→ scrub, +/- zoom
-── processes (4) · all root — sort: CPU ! io: panel too narrow ───────────────
-   CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
-   88.4 ███▌    512.0M ▏    S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣠⣾     824 postgres
-   12.5 ▌        32.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    1190 nginx
-    4.2 ▏       148.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀    2077 node
-    0.1          12.0M      S     1 ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀       1 systemd
+ CPU   Memory   Disk    sort CPU · avg 5s            All processes · 4 · root
+── processes (4) · all root ! io: panel too narrow ───────────────────────────
+ 4 shown · CPU 105.2% · MEM 704.0M (4%) · 4 threads
+ ▾CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
+  40.7 █▋      512.0M ▏    S     1 ⠀⣿⣇⣸⣿⣀⣿⣇⣸⣿     824 postgres
+   5.8 ▎        32.0M      S     1 ⠀⣀⣀⣀⣀⣀⣀⣀⣀⣀    1190 nginx
+   1.9 ▏       148.0M      S     1 ⠀⣀⣀⣀⣀⣀⣀⣀⣀⣀    2077 node
+   0.1          12.0M      S     1 ⠀⣀⣀⣀⣀⣀⣀⣀⣀⣀       1 systemd
 
-q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select · ? more
+
+
+── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
+  100 ⣀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⣀⠀⠀⠀⠀⠀⠀⣀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶
+  CPU ⣀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⣀⠀⠀⠀⠀⠀⠀⣀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+      ⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+    0 ⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+  100 ⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀
+  MEM ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤
+    0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+past  2m23s shown, 1s/slot                                          ▲      now
+q quit · F10 menu · ←/→ scrub · b jump · +/- zoom · Space live · ? more
 ```
+
+Top to bottom: the menu bar, which names every command there is and the key
+that also runs it; the machine; the table's own strip — which resource the
+columns are about, what was done to the rows, and which rows are in the list;
+the table; and the graphs it came from.
+
+The strip sits on the table because it belongs to it, and the graphs sit under
+the table because they are how it got here. The panel rule between them says
+only what the table cannot show: rows withheld, a measurement given up, tasks
+that lived and died between two samples.
 
 The gutter names each graph and anchors its scale; the dashed lines are the
 warn and critical thresholds, drawn so the boundary is readable without relying
-on colour. Bars absorb the rule where they cross it. The `▐` marks which sample
-the cursor is on, down to which half of a braille cell.
+on colour. Bars absorb the rule where they cross it. The `▲` under the graphs
+marks which sample the cursor is on, down to which half of a cell.
 
 </details>
 
