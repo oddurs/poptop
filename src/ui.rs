@@ -101,8 +101,11 @@ pub fn timeline_height(total: u16, header: u16) -> u16 {
 pub fn timeline_rows_range(total_height: u16) -> std::ops::Range<u16> {
     // The menu bar sits above the header, so every panel is one row lower than
     // the constants alone would say.
-    let top = chrome_height(total_height) + HEADER_H;
-    top..top + timeline_height(total_height, HEADER_H)
+    // Anchored to the bottom, where the graphs are: the help line below them,
+    // and whatever the gap and the table took above.
+    let h = timeline_height(total_height, HEADER_H);
+    let top = total_height.saturating_sub(1 + h);
+    top..top + h
 }
 
 /// Where each panel sits in the frame.
@@ -120,6 +123,29 @@ pub struct Panels {
     pub help: Rect,
 }
 
+/// The screen, top to bottom: the bar, the machine, the table's own strip, the
+/// table, the graphs, the keys.
+///
+/// The order is an argument about what each band is about, and who it belongs
+/// to.
+///
+/// The strip is above the table because it is the table's: the tabs choose
+/// which resource the *columns* describe, the settings say how the *rows* are
+/// ordered and folded, and the scope says which rows are there at all. Above
+/// the header it was navigation for the screen; here it is a toolbar for the
+/// panel underneath it, and a reader looking at a row can find every control
+/// that shaped it on the line directly above.
+///
+/// The graphs are at the bottom because they are the past and the table is the
+/// present. Reading down the screen now goes: this machine, this table, how it
+/// got here — and the timeline's caption, which says how much time is on
+/// screen and which sample the cursor is on, lands beside the key hints that
+/// scrub it rather than eight rows above them.
+///
+/// It cost no rows. The strip and the panel rule were already two lines above
+/// the table; they have swapped contents rather than multiplied — the rule
+/// gave up the settings it was naming and kept what only it says, which is
+/// what the table cannot show.
 pub fn panels(app: &App, area: Rect) -> Panels {
     // Measured rather than assumed, so the node row is a row the layout knows
     // about instead of one drawn over the timeline.
@@ -127,27 +153,27 @@ pub fn panels(app: &App, area: Rect) -> Panels {
     let gap = app.density.panel_gap(area.height);
     let c = Layout::vertical([
         Constraint::Length(MENU_H),
-        Constraint::Length(tabs_height(area.height)),
         Constraint::Length(header),
-        Constraint::Length(timeline_height(area.height.saturating_sub(gap), header)),
-        // A blank row between the graph and the table, where the terminal is
-        // tall enough to give one up. Vertical space is the scarcest thing
-        // here, which is why this is the last comfort granted and the first
-        // withdrawn.
-        Constraint::Length(gap),
+        Constraint::Length(tabs_height(area.height)),
         // Whatever remains. `timeline_height` has already reserved the table's
         // share, and a `Min` here would outrank the timeline's `Length` and
         // silently shrink it below the height that function reports.
         Constraint::Min(1),
+        // A blank row between the table and the graph, where the terminal is
+        // tall enough to give one up. Vertical space is the scarcest thing
+        // here, which is why this is the last comfort granted and the first
+        // withdrawn.
+        Constraint::Length(gap),
+        Constraint::Length(timeline_height(area.height.saturating_sub(gap), header)),
         Constraint::Length(1), // help
     ])
     .split(area);
     Panels {
         menu: c[0],
-        tabs: c[1],
-        header: c[2],
-        timeline: c[3],
-        table: c[5],
+        header: c[1],
+        tabs: c[2],
+        table: c[3],
+        timeline: c[5],
         help: c[6],
     }
 }
@@ -183,7 +209,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.show_cgroups {
         draw_cgroups(f, p.table, app);
     } else {
-        draw_procs(f, p.table, app, p.timeline);
+        draw_procs(f, p.table, app, p.timeline, p.tabs.height > 0);
     }
     draw_help(f, p.help, app);
     // Centred on the frame, not on the table: it is a modal about one row, and
@@ -207,8 +233,23 @@ pub fn draw(f: &mut Frame, app: &App) {
 /// up on a short terminal — and named once, because the last time a row was
 /// added at the top, twenty tests that had written `MENU_H` to mean "the offset
 /// to the header" all had to be found and changed.
+///
+/// The two rows are no longer adjacent: the bar is above the header and the
+/// strip below it, on the table it belongs to. This is still the number the
+/// timeline has to subtract, which is what it is for — where they sit is a
+/// question for [`panels`].
 pub fn chrome_height(total: u16) -> u16 {
     MENU_H + tabs_height(total)
+}
+
+/// The row the tab strip is drawn on, for a frame this app would fill.
+///
+/// Derived from [`panels`] so a test cannot count it out by hand and be one
+/// row wrong — which is how this file lost an afternoon the last time a band
+/// moved.
+#[cfg(test)]
+pub fn tabs_y(app: &App, area: Rect) -> u16 {
+    panels(app, area).tabs.y
 }
 
 /// Height of the tab strip, which is one row or none.
@@ -226,11 +267,20 @@ pub fn tabs_height(total: u16) -> u16 {
 #[cfg(test)]
 pub const TABS_H: u16 = 1;
 
-/// The resource being examined, and the ones that are not.
+/// The table's own strip: which resource, how the rows are arranged, and which
+/// rows they are.
 ///
-/// Marked with an underline rather than colour alone. Five meaning-bearing hues
-/// are already spent, and a navigation strip that is invisible at the mono tier
-/// fails on exactly the terminals a monitor is most likely to be opened in.
+/// One row, three jobs, left to right in the order a reader asks them. The
+/// tabs say what the columns are about. The settings say what was done to the
+/// rows — the ordering, the folding, the averaging — which used to be clauses
+/// in the panel rule underneath and are a line closer to the table here, on
+/// the row that also offers the tabs that change them. The scope says which
+/// rows are in the list at all, and never disappears.
+///
+/// The tabs are marked with an underline rather than colour alone. Five
+/// meaning-bearing hues are already spent, and a navigation strip that is
+/// invisible at the mono tier fails on exactly the terminals a monitor is most
+/// likely to be opened in.
 fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
     let area = content(app, area);
     let mut spans = Vec::new();
@@ -265,10 +315,85 @@ fn draw_tabs(f: &mut Frame, area: Rect, app: &App) {
         vec![Span::styled(scope, app.theme.dim_style())]
     };
     let tail_w: usize = tail.iter().map(|s| s.content.chars().count()).sum();
-    let pad = (area.width as usize).saturating_sub(used + tail_w + 1);
+    // The settings take what is left between the two, and only what is left:
+    // the tabs are the navigation and the scope is the one line that may never
+    // vanish, so this is the part of the row that gives way.
+    let settings = settings_text(app, (area.width as usize).saturating_sub(used + tail_w + 4));
+    let settings_w = settings.chars().count();
+    if settings_w > 0 {
+        spans.push(Span::styled(settings.clone(), app.theme.dim_style()));
+    }
+    let pad = (area.width as usize).saturating_sub(used + settings_w + tail_w + 1);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.extend(tail);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// What has been done to the rows: the ordering, the folding, the averaging.
+///
+/// These were clauses in the panel rule under this one, ranked among the
+/// omissions and the events. They are a different kind of statement: an
+/// omission is something the reader needs to be told, and a setting is
+/// something they did — so it belongs beside the keys that undo it, and the
+/// rule below is left to say only what the table cannot show.
+///
+/// Returned in pieces so the two places that say them can each give way in
+/// their own units: the strip drops from the end of the list, and the rule —
+/// which says them only when there is no strip — hands them to `fit_title`
+/// with ranks of their own.
+///
+/// Empty where there is nothing to say. The sort is always something, so the
+/// first is never empty; the fold and the average are off by default.
+pub fn settings_parts(app: &App) -> [String; 3] {
+    // What the rows stand for, when a row is not one process. Named, not just
+    // "grouped": the rows say what they fold only if you already know which
+    // key is in force, and `g` has four states rather than two.
+    let fold = match (app.tree, app.group) {
+        (true, _) => "tree".to_string(),
+        (_, g) if g != crate::app::Grouping::Off => g.label().replace("grouped by ", "by "),
+        _ => String::new(),
+    };
+    // Said, because otherwise the table and the timeline disagree in silence.
+    // A row reading 12.3% under a graph showing a spike to 40 is two panels
+    // contradicting each other, and nothing else says one of them is an
+    // average.
+    let avg = if app.smoothing().is_on() {
+        format!("avg {}", fmt_smooth(app.smooth, app.interval))
+    } else {
+        String::new()
+    };
+    [format!("sort {}", app.sort.label()), fold, avg]
+}
+
+/// The settings as one clause for the strip, in whatever room is left.
+///
+/// A ladder, given up from the least important end, and it may reach nothing:
+/// the sorted column wears a caret in its own header (0206), so the ordering
+/// is named on screen whether or not this is. That is what makes it safe for
+/// this to be the part of the strip that gives way.
+///
+/// The kernel toggle is not here. That one hides rows, and how many were
+/// hidden is a fact the panel rule states as an omission — which is where a
+/// reader who has forgotten the setting will find it.
+pub fn settings_text(app: &App, width: usize) -> String {
+    let [sort, fold, avg] = settings_parts(app);
+    let join = |parts: &[&str]| -> String {
+        let kept: Vec<&str> = parts.iter().copied().filter(|p| !p.is_empty()).collect();
+        if kept.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", kept.join(" · "))
+        }
+    };
+    [
+        join(&[&sort, &fold, &avg]),
+        join(&[&sort, &fold]),
+        join(&[&sort]),
+        String::new(),
+    ]
+    .into_iter()
+    .find(|r| r.chars().count() <= width)
+    .unwrap_or_default()
 }
 
 /// What is being listed, and what has narrowed it.
@@ -4186,7 +4311,12 @@ fn fmt_smooth(samples: usize, interval: Duration) -> String {
     }
 }
 
-fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
+/// `strip` is whether the tab strip is on screen. When it is not — a terminal
+/// too short to spend a row on it — the settings it names come back here, at
+/// the rank the sort clause used to have. A setting that is stated nowhere is
+/// a table whose ordering has no visible reason, and the row this panel would
+/// save by staying quiet is not worth that.
+fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool) {
     // Dropped on a panel too narrow to carry them, like every other element
     // here. Collection is untouched: the columns are a rendering decision and
     // the ratchet is a history one, so widening the window brings them back
@@ -4809,9 +4939,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             n => format!(" · all {u} but {n} unknown"),
         });
 
-    // Ranked, and given up from the least important end, because at eighty
-    // columns not all of it fits and a clipped title reads as a message called
-    // `io: panel too narr`. The ranks are the argument:
+    // What the table cannot show, ranked and given up from the least important
+    // end — because at eighty columns not all of it fits, and a clipped title
+    // reads as a message called `io: panel too narr`.
+    //
+    // Everything here is an omission or an event: something withheld, stopped,
+    // missing or over. What the *reader* did to the table — the sort, the
+    // folding, the averaging — is on the strip above, where the tabs that
+    // change it are. The two kinds of statement were mixed in this one line
+    // and read as one string of facts, so a reason a column was empty sat
+    // behind an identical `·` as a preference somebody had set.
+    //
+    // The ranks are the argument:
     //
     //   0  the count            — the panel's subject
     //  10  `all <user>`         — this one *replaces a column*; without it the
@@ -4824,19 +4963,18 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     //                             to exist at all
     //  28  the thread note      — the message the `y` key looks broken without:
     //                             an expanded process with no rows under it
-    //  30  the io status        — the message the `i` key looks broken without
-    //  40  the sort column      — not otherwise stated anywhere
-    //  50  `tree`               — visible in the rows themselves
+    //  30  the io status        — the message the disk columns look broken
+    //                             without
+    //  36  `history flat`       — why the history column is not there
+    //  45  the constraint       — advice, and the only clause here the reader
+    //                             can act on
     //  58  OOM kills            — an event, and the answer to "what happened
     //                             to my process"
     //  60  churn                — a nicety
-    //  70  the history axis     — a nicety, and the ladder it was already at
-    //                             the bottom of
     //
     // Display order and drop order are separate: the list below reads left to
     // right as it appears on screen, and the rank beside each says when it
-    // goes. The sort clause reads better before the io status and is given up
-    // first of the two.
+    // goes.
     //
     // Each clause carries its own style, because they are not all the same kind
     // of statement. `N/M need root` is a warning — a reason a column is empty,
@@ -4881,6 +5019,27 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
 
     let (io_text, io_is_warning) = io_status(show_io, app, collected);
     let plain = app.theme.title_style();
+    // An em dash before the first of them and a `·` before the rest, so they
+    // read as one clause about the table rather than as three more facts —
+    // and so the first one still reads correctly when the other two are gone.
+    let settings = if strip {
+        [String::new(), String::new(), String::new()]
+    } else {
+        let [sort, fold, avg] = settings_parts(app);
+        [
+            format!(" — {sort}"),
+            if fold.is_empty() {
+                fold
+            } else {
+                format!(" · {fold}")
+            },
+            if avg.is_empty() {
+                avg
+            } else {
+                format!(" · {avg}")
+            },
+        ]
+    };
     let parts = [
         (0u8, format!(" processes ({})", shown_procs), plain),
         (5, absent, plain),
@@ -4894,19 +5053,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         // the byte budget, or the disk.
         (23, logging, app.theme.warning_style()),
         (28, threads, plain),
-        // Said, because otherwise the table and the timeline disagree in silence.
-        // A row reading 12.3% directly under a graph showing a spike to 40 is
-        // two panels contradicting each other, and the reader has no way to
-        // know one of them is an average.
-        (
-            34,
-            if sm.is_on() {
-                format!(" · avg {}", fmt_smooth(app.smooth, app.interval))
-            } else {
-                String::new()
-            },
-            plain,
-        ),
+        // Only when the strip above the table is not there to say them. See
+        // the note on this function. One clause each, at three ranks, so a
+        // narrow rule gives up the averaging before the folding and the
+        // folding before the ordering — the same order the strip drops them
+        // in, reached through the machinery this line already has.
+        (40, settings[0].clone(), plain),
+        (48, settings[1].clone(), plain),
+        (52, settings[2].clone(), plain),
         // Why the history column is missing, when that is the reason: said,
         // because a column that comes and goes unexplained reads as a bug.
         // Under the averaging note, which is about a figure on every row
@@ -4920,34 +5074,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             },
             plain,
         ),
-        (
-            40,
-            // Both named, because `s` now cycles within the view and the two
-            // can no longer disagree — so saying one without the other leaves
-            // the reader guessing which columns the ordering is over.
-            match app.view {
-                crate::app::View::Cpu => format!(" — sort: {}", app.sort.label()),
-                v => format!(" — {} view, sort: {}", v.label(), app.sort.label()),
-            },
-            plain,
-        ),
         // Just under the sort it is about, and above the modes: a suggestion a
         // narrow terminal drops is one nobody can act on, but it is still
         // advice rather than a fact about the data.
         (45, constraint, plain),
         (46, crowd, plain),
-        (
-            50,
-            match (app.tree, app.group) {
-                (true, _) => " · tree".into(),
-                // Named, not just "grouped": the rows say what they fold only
-                // if you already know which key is in force, and `g` now has
-                // three states rather than two.
-                (_, g) if g != crate::app::Grouping::Off => format!(" · {}", g.label()),
-                _ => String::new(),
-            },
-            plain,
-        ),
         (60, churn, plain),
         // Ranked with the churn it sits beside, one above: a process that was
         // killed is a stronger fact than one that merely came and went, and it

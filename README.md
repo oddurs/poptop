@@ -12,35 +12,29 @@ scrub backwards and ask what was eating the box forty seconds ago. It starts
 with an empty buffer and fills it as it runs: no daemon, no config, no logfiles,
 nothing that had to be running before you noticed the problem.
 
-![poptop watching three compilers, a checksum and two compressors on a ten-core Linux box](docs/media/poptop.svg)
+![poptop watching a busy ten-core workstation, scrubbed back twenty-five seconds](docs/media/poptop.svg)
 
 A real frame, rendered from a terminal capture by
 [`tools/screenshot.py`](tools/screenshot.py) — not a drawing, and not
-retouched: a ten-core Linux box building this crate in a loop, scrubbed back
-forty seconds to a busy moment. `PAUSED −40s` and the `▐` on the timeline are
-the cursor; sampling carried on behind it. `10 rustc (g folds them)` is
-poptop noticing that one program is crowding the table, and `218 tasks came
-and went` is the processes that lived and died entirely between two samples.
-`████+` is a process past one core.
+retouched: a ten-core workstation with 758 processes on it, scrubbed back
+twenty-five seconds to a busy moment. `PAUSED −25s` and the `▲` under the
+graphs are the cursor; sampling carried on behind it. `30 fish (g folds them)`
+is poptop noticing that one program is crowding the table. `████+` is a
+process past one core.
+
+The bar names every command; the strip under the header belongs to the table
+and says which resource, how the rows are arranged, and which rows they are;
+the graphs sit under the table because they are how it got there.
 
 <details>
 <summary>A paused frame, as text — the timeline scrubbed back eighteen seconds</summary>
 
 ```
  File  Edit  View  Go  Process  Help                                 F10 menu
- CPU   Memory   Disk                                 All processes · 4 · root
  PAUSED  -18s CPU  89.2%  │  MEM  50.0% ██████▒▒░░░░   SWP  50.0%
   4 cores ▇▄▁█
-── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
-  100 ⣀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⣀⠀⠀⠀⠀⠀⠀⣀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶
-  CPU ⣀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⣀⠀⠀⠀⠀⠀⠀⣀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
-      ⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
-    0 ⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
-  100 ⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀
-  MEM ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤
-    0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
-past  2m23s shown, 1s/slot                                          ▲      now
-── processes (4) · all root · avg 5s — sort: CPU ! io: panel too narrow ──────
+ CPU   Memory   Disk    sort CPU · avg 5s            All processes · 4 · root
+── processes (4) · all root ! io: panel too narrow ───────────────────────────
  4 shown · CPU 105.2% · MEM 704.0M (4%) · 4 threads
  ▾CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
   40.7 █▋      512.0M ▏    S     1 ⠀⣿⣇⣸⣿⣀⣿⣇⣸⣿     824 postgres
@@ -50,12 +44,27 @@ past  2m23s shown, 1s/slot                                          ▲      now
 
 
 
+── timeline — 4m59s of 9m59s buffered ────────────────────────────────────────
+  100 ⣀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⣀⠀⠀⠀⠀⠀⠀⣀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶
+  CPU ⣀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⣀⠀⠀⠀⠀⠀⠀⣀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⣀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⣀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+      ⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+    0 ⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+  100 ⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀⠀⠀⠀⠀⠀⠤⠀
+  MEM ⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤
+    0 ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿
+past  2m23s shown, 1s/slot                                          ▲      now
 q quit · F10 menu · ←/→ scrub · b jump · +/- zoom · Space live · ? more
 ```
 
-The bar along the top names every command there is; `F10` opens it and each
-item states the key that also runs it. Under it, the tab strip says which
-resource the table is describing and what has narrowed the list.
+Top to bottom: the menu bar, which names every command there is and the key
+that also runs it; the machine; the table's own strip — which resource the
+columns are about, what was done to the rows, and which rows are in the list;
+the table; and the graphs it came from.
+
+The strip sits on the table because it belongs to it, and the graphs sit under
+the table because they are how it got here. The panel rule between them says
+only what the table cannot show: rows withheld, a measurement given up, tasks
+that lived and died between two samples.
 
 The gutter names each graph and anchors its scale; the dashed lines are the
 warn and critical thresholds, drawn so the boundary is readable without relying

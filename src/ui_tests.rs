@@ -9129,7 +9129,10 @@ fn the_title_counts_processes_even_when_a_row_stands_for_six() {
         grouped.contains("processes (7)"),
         "grouping made the panel understate what is running: {grouped:?}"
     );
-    assert!(grouped.contains("grouped"), "{grouped:?}");
+    // What the rows stand for is named on the strip, beside the key that
+    // changes it.
+    let strip = rows(&app, 130, 16)[strip_y(&app, 130, 16) as usize].clone();
+    assert!(strip.contains("by name"), "{strip:?}");
 }
 
 #[test]
@@ -9896,8 +9899,11 @@ fn the_detail_title_gives_up_clauses_rather_than_being_cut() {
     app.detail = true;
 
     for w in 40..=140u16 {
+        // The last rule on screen: the graphs are under the table now, so the
+        // first one is the process panel's.
         let title = rows(&app, w, 24)
             .into_iter()
+            .rev()
             .find(|l| l.starts_with("── "))
             .unwrap_or_else(|| panic!("no title at {w}"));
         let text = title.trim_end_matches(['─', ' ']);
@@ -9927,15 +9933,18 @@ fn pressing_detail_with_nothing_selected_says_what_to_do() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     assert!(app.selected.is_none(), "the fixture selected something");
 
-    let before = rows(&app, 110, 24)
-        .into_iter()
-        .find(|l| l.starts_with("── "))
-        .unwrap();
+    // The graphs' own rule, which is the last on screen now that they are at
+    // the bottom.
+    let rule = |app: &App| {
+        rows(app, 110, 24)
+            .into_iter()
+            .rev()
+            .find(|l| l.starts_with("── "))
+            .unwrap()
+    };
+    let before = rule(&app);
     app.detail = true;
-    let after = rows(&app, 110, 24)
-        .into_iter()
-        .find(|l| l.starts_with("── "))
-        .unwrap();
+    let after = rule(&app);
     assert_ne!(before, after, "pressing the key changed nothing at all");
     assert!(
         after.contains("pick a process"),
@@ -11327,22 +11336,35 @@ fn the_panel_names_the_view_when_it_is_not_the_default() {
     use crate::app::View;
     let mut app = App::new(600);
     app.push(sample(10.0));
-    let generic = rows(&app, 140, 10).join("\n");
-    assert!(generic.contains("sort: CPU"));
-    // Not "does the word appear" — the key hints carry `v view`. The default
-    // view is the one that needs no announcing, so it is the *clause* that must
-    // be absent.
+    // The strip names both: the tab is the view, and the settings beside it
+    // are what was done to the rows. The panel rule below says neither any
+    // more — it is for what the table cannot show, and a preference somebody
+    // set is not an omission.
+    let strip = |app: &App| rows(app, 140, 26)[strip_y(app, 140, 26) as usize].clone();
+    let generic = strip(&app);
+    assert!(generic.contains("sort CPU"), "{generic:?}");
     assert!(
-        !generic.contains("CPU view"),
-        "the default view is named for no reason:\n{generic}"
+        generic.contains("CPU") && generic.contains("Memory") && generic.contains("Disk"),
+        "the strip does not offer the other tabs: {generic:?}"
+    );
+    let rule = |app: &App| {
+        rows(app, 140, 26)
+            .into_iter()
+            .find(|l| l.contains("processes ("))
+            .expect("no rule")
+    };
+    assert!(
+        !rule(&app).contains("sort"),
+        "the rule repeats what the strip above it says: {:?}",
+        rule(&app)
     );
 
     app.view = View::Memory;
     app.sort = app.view.default_sort_for(true);
-    let mem = rows(&app, 140, 10).join("\n");
+    let mem = strip(&app);
     assert!(
-        mem.contains("Memory view, sort: MEM"),
-        "the panel does not say which columns the ordering is over:\n{mem}"
+        mem.contains("sort MEM"),
+        "the strip does not say which columns the ordering is over: {mem:?}"
     );
 }
 
@@ -12427,20 +12449,35 @@ fn header_rows(app: &App, w: u16, h: u16) -> Vec<String> {
         .collect()
 }
 
-/// The rows above the header on a frame with room for everything.
+/// The rows above the header, which is the menu bar and nothing else.
 ///
 /// A constant because every test that uses it renders a tall frame, and
-/// threading the height through forty call sites to re-derive a two would be
-/// noise. `the_test_constant_matches_the_real_chrome` is what stops it drifting.
-const CHROME: u16 = ui::MENU_H + ui::TABS_H;
+/// threading the height through forty call sites to re-derive a one would be
+/// noise. `the_test_constant_matches_the_real_chrome` is what stops it
+/// drifting — and it caught this when the tab strip moved down to the table.
+const CHROME: u16 = ui::MENU_H;
+
+/// The row the tab strip is on, asked of the layout rather than counted.
+fn strip_y(app: &App, w: u16, h: u16) -> u16 {
+    ui::tabs_y(app, ratatui::layout::Rect::new(0, 0, w, h))
+}
 
 #[test]
 fn the_test_constant_matches_the_real_chrome() {
+    let mut app = App::new(60);
+    app.push(sample(10.0));
     for h in [24, 30, 40, 60] {
+        let p = ui::panels(&app, ratatui::layout::Rect::new(0, 0, 100, h));
+        assert_eq!(
+            p.header.y, CHROME,
+            "at {h} rows the header is not where the tests assume"
+        );
+        // The bar and the strip together, which is what the timeline subtracts
+        // however they are arranged.
         assert_eq!(
             ui::chrome_height(h),
-            CHROME,
-            "at {h} rows the chrome is not what the tests assume"
+            ui::MENU_H + ui::TABS_H,
+            "at {h} rows the chrome is not a bar and a strip"
         );
     }
     // And it really does give way on a short frame, or it would not be the
@@ -12540,7 +12577,7 @@ fn the_way_in_sits_at_the_far_end_of_the_bar() {
     for w in [80u16, 100, 140] {
         let drawn = rows(&app, w, 24);
         let bar = drawn[0].trim_end();
-        let tabs = drawn[1].trim_end();
+        let tabs = drawn[strip_y(&app, w, 24) as usize].trim_end();
         assert!(
             bar.ends_with("F10 menu"),
             "the way in is not at the end of the bar at w={w}: {bar:?}"
@@ -12548,7 +12585,7 @@ fn the_way_in_sits_at_the_far_end_of_the_bar() {
         assert_eq!(
             bar.chars().count(),
             tabs.chars().count(),
-            "the bar and the strip below it do not share a right edge at w={w}"
+            "the bar and the table's strip do not share a right edge at w={w}"
         );
     }
 
@@ -13323,7 +13360,7 @@ fn the_resource_on_screen_is_named_without_pressing_anything() {
     // Monitor spends its most valuable strip of screen on exactly this.
     let mut app = App::new(600);
     app.push(sample(10.0));
-    let strip = rows(&app, 100, 26)[ui::MENU_H as usize].clone();
+    let strip = rows(&app, 100, 26)[strip_y(&app, 100, 26) as usize].clone();
     for v in crate::app::View::ALL {
         assert!(
             strip.contains(v.label()),
@@ -13339,6 +13376,154 @@ fn the_resource_on_screen_is_named_without_pressing_anything() {
     );
 }
 
+// ── the bands of the screen ─────────────────────────────────────────────────
+
+#[test]
+fn the_strip_sits_on_the_table_it_governs() {
+    // The strip was above the header, where it read as navigation for the
+    // screen. Everything on it is about the table: the tabs choose the
+    // columns, the settings say what was done to the rows, the scope says
+    // which rows there are — so it sits on the table, and a reader looking at
+    // a row finds every control that shaped it on the line directly above.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for (w, h) in [(80u16, 24u16), (100, 40), (140, 30)] {
+        let p = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h));
+        assert_eq!(p.menu.y, 0, "the bar is not at the top at {w}x{h}");
+        assert_eq!(
+            p.header.y,
+            p.menu.y + p.menu.height,
+            "the machine is not under the bar at {w}x{h}"
+        );
+        assert_eq!(
+            p.tabs.y,
+            p.header.y + p.header.height,
+            "the strip is not under the machine at {w}x{h}"
+        );
+        assert_eq!(
+            p.table.y,
+            p.tabs.y + p.tabs.height,
+            "the strip is not on the table at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn the_graphs_are_under_the_table_and_the_keys_under_them() {
+    // Reading down the screen: this machine, this table, how it got here. The
+    // graphs are the past and the table is the present, and the timeline's
+    // caption — how much time is on screen, which sample the cursor is on —
+    // lands beside the key hints that scrub it rather than eight rows above
+    // them.
+    let mut app = App::new(600);
+    for i in (0..60).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    for (w, h) in [(80u16, 24u16), (100, 40), (140, 30), (60, 20)] {
+        let p = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h));
+        assert!(
+            p.timeline.y >= p.table.y + p.table.height,
+            "the graphs are not under the table at {w}x{h}: {p:?}",
+            p = (p.table, p.timeline)
+        );
+        assert_eq!(p.help.y, h - 1, "the keys are not the last row at {w}x{h}");
+        assert!(
+            p.timeline.y + p.timeline.height <= p.help.y,
+            "the graphs run into the keys at {w}x{h}"
+        );
+        // And the panel the tests locate by arithmetic is the panel drawn.
+        assert_eq!(
+            ui::timeline_rows_range(h),
+            p.timeline.y..p.timeline.y + p.timeline.height,
+            "the test's idea of the graph panel is not where it is at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn the_settings_give_way_before_the_tabs_and_the_scope() {
+    // Three things share one row and they are not equal. The tabs are the
+    // navigation — a strip that stops offering the other tabs is not a strip.
+    // The scope may never vanish: a table that does not say it is filtered
+    // lies about the machine silently. The settings are the part that gives
+    // way, and they can give way to nothing, because the sorted column wears
+    // a caret in its own header whatever this row has room for.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.tree = true;
+    for w in 30..=200u16 {
+        let line = rows(&app, w, 30)[strip_y(&app, w, 30) as usize].clone();
+        assert!(
+            line.chars().count() <= w as usize,
+            "the strip overflowed at {w}: {line:?}"
+        );
+        assert!(
+            crate::app::View::ALL
+                .iter()
+                .all(|v| line.contains(v.label())),
+            "a tab went to make room at {w}: {line:?}"
+        );
+        // Never nothing: whichever rung of the scope survives, the count is
+        // in it, and the count is what may not disappear.
+        let after_tabs = line.rsplit("Disk").next().unwrap_or_default();
+        assert!(
+            after_tabs.contains('4'),
+            "the scope vanished at {w}: {line:?}"
+        );
+        // And nothing is ever cut in half: what is drawn is one of the rungs.
+        if let Some(at) = line.find("sort") {
+            let settings = &line[at..];
+            assert!(
+                settings.starts_with("sort CPU"),
+                "the settings were cut at {w}: {line:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_terminal_too_short_for_the_strip_says_the_settings_in_the_rule() {
+    // The strip is the first row given up on a short terminal. What it was
+    // saying does not go with it: a table whose ordering and folding have no
+    // stated reason is one the reader cannot check, so the panel rule takes
+    // the clauses back at ranks of its own.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.tree = true;
+
+    let tall = 30u16;
+    let short = 16u16;
+    assert_eq!(ui::tabs_height(short), 0, "the fixture has a strip");
+    assert_eq!(ui::tabs_height(tall), 1, "the fixture has no strip");
+
+    let rule = |h: u16| {
+        rows(&app, 140, h)
+            .into_iter()
+            .find(|l| l.contains("processes ("))
+            .expect("no rule")
+    };
+    assert!(
+        !rule(tall).contains("sort"),
+        "the rule repeats the strip above it: {:?}",
+        rule(tall)
+    );
+    for want in ["sort CPU", "tree"] {
+        assert!(
+            rule(short).contains(want),
+            "`{want}` is stated nowhere on a short terminal: {:?}",
+            rule(short)
+        );
+    }
+}
+
 #[test]
 fn the_current_tab_is_marked_without_relying_on_colour() {
     // Five meaning-bearing hues are already spent, and a navigation strip that
@@ -13348,17 +13533,18 @@ fn the_current_tab_is_marked_without_relying_on_colour() {
     app.push(sample(10.0));
     app.theme = Theme::new(Palette::Safe, Tier::Mono);
     let marked = |app: &App| {
+        let y = strip_y(app, 100, 26);
         let mut term = Terminal::new(TestBackend::new(100, 26)).unwrap();
         term.draw(|f| ui::draw(f, app)).unwrap();
         let buf = term.backend().buffer();
         (0..100u16)
             .filter(|&x| {
-                buf[(x, ui::MENU_H)]
+                buf[(x, y)]
                     .modifier
                     .contains(ratatui::style::Modifier::UNDERLINED)
-                    && buf[(x, ui::MENU_H)].symbol() != " "
+                    && buf[(x, y)].symbol() != " "
             })
-            .map(|x| buf[(x, ui::MENU_H)].symbol().to_string())
+            .map(|x| buf[(x, y)].symbol().to_string())
             .collect::<String>()
     };
     for v in crate::app::View::ALL {
@@ -13405,7 +13591,8 @@ fn the_tabs_are_reachable_by_key_by_menu_and_by_mouse() {
     for (i, v) in crate::app::View::ALL.into_iter().enumerate() {
         app.view = crate::app::View::Cpu;
         let at = crate::ui::tab_column(i) + v.label().chars().count() / 2 + 2;
-        click(&mut app, at as u16, ui::MENU_H, 100, 26);
+        let y = strip_y(&app, 100, 26);
+        click(&mut app, at as u16, y, 100, 26);
         assert_eq!(
             app.view,
             v,
@@ -13538,7 +13725,11 @@ fn a_filtered_table_cannot_be_read_as_the_whole_machine() {
         .collect();
     app.push(s);
 
-    let strip = |app: &App, w: u16| rows(app, w, 26)[ui::MENU_H as usize].trim().to_string();
+    let strip = |app: &App, w: u16| {
+        rows(app, w, 26)[strip_y(app, w, 26) as usize]
+            .trim()
+            .to_string()
+    };
 
     let all = strip(&app, 120);
     assert!(
@@ -13780,10 +13971,10 @@ fn the_caret_does_not_push_a_header_off_its_column() {
 }
 
 #[test]
-fn the_panel_title_and_the_header_cannot_disagree_about_the_sort() {
+fn the_strip_and_the_header_cannot_disagree_about_the_sort() {
     // Both name it, and they are built from different code. `s` cycles, and the
-    // caret has to follow — a table that says `sort: MEM` in its title with the
-    // caret over CPU% is two sources of truth, one of them wrong.
+    // caret has to follow — a strip that says `sort MEM` over a caret on CPU%
+    // is two sources of truth, one of them wrong.
     let mut app = App::new(600);
     let mut s = sample(10.0);
     s.procs = (0..3)
@@ -13794,12 +13985,12 @@ fn the_panel_title_and_the_header_cannot_disagree_about_the_sort() {
 
     for _ in 0..6 {
         press(&mut app, KeyCode::Char('s'));
-        let table = table_rows(&app, 150, 26);
-        let title = table.iter().find(|l| l.contains("processes")).unwrap();
-        let head = table.iter().find(|l| l.contains("COMMAND")).unwrap();
+        let frame = rows(&app, 150, 26);
+        let strip = &frame[strip_y(&app, 150, 26) as usize];
+        let head = frame.iter().find(|l| l.contains("COMMAND")).unwrap();
         assert!(
-            title.contains(&format!("sort: {}", app.sort.label())),
-            "the title does not name the sort: {title:?}"
+            strip.contains(&format!("sort {}", app.sort.label())),
+            "the strip does not name the sort: {strip:?}"
         );
         assert_eq!(
             head.matches('▾').count(),
@@ -14150,7 +14341,7 @@ fn the_filter_is_typed_where_it_is_shown() {
         press(&mut app, KeyCode::Char(c));
     }
     let frame = rows(&app, 120, 26);
-    let strip = &frame[ui::MENU_H as usize];
+    let strip = &frame[strip_y(&app, 100, 26) as usize];
     assert!(
         strip.contains("filter: postgres"),
         "the field is not on the scope line: {strip:?}"
@@ -15093,20 +15284,14 @@ fn the_table_says_that_its_figures_are_averaged() {
     // contradicting each other, with no way to know one is an average.
     let mut app = App::new(600);
     a_jittery_pair(&mut app, 9);
-    let title = table_rows(&app, 150, 26)
-        .into_iter()
-        .find(|l| l.contains("processes"))
-        .unwrap();
-    assert!(
-        title.contains("avg 5s"),
-        "the table does not say so: {title:?}"
-    );
+    // On the strip directly above the table, with the sort and the folding:
+    // it is a setting somebody chose, not something the table cannot show.
+    let strip = |app: &App| rows(app, 150, 26)[strip_y(app, 150, 26) as usize].clone();
+    let on = strip(&app);
+    assert!(on.contains("avg 5s"), "the table does not say so: {on:?}");
 
     app.smooth = 1;
-    let off = table_rows(&app, 150, 26)
-        .into_iter()
-        .find(|l| l.contains("processes"))
-        .unwrap();
+    let off = strip(&app);
     assert!(
         !off.contains("avg"),
         "it claims to be averaging with smoothing off: {off:?}"
@@ -15942,6 +16127,57 @@ fn readme_fixture() -> App {
 #[ignore = "prints the README's sample frame; run with --ignored --nocapture"]
 fn print_readme_frame() {
     for l in rows(&readme_fixture(), 78, 24) {
+        println!("{}", l.trim_end());
+    }
+}
+
+#[test]
+#[ignore = "prints the frame at a size; run with --ignored --nocapture"]
+fn print_frame_sizes() {
+    for (w, h) in [(80u16, 24u16), (60, 20), (100, 40), (46, 16), (120, 30)] {
+        println!("── {w}x{h} {}", "─".repeat(60));
+        for l in rows(&readme_fixture(), w, h) {
+            println!("|{}|", l.trim_end());
+        }
+    }
+}
+
+#[test]
+#[ignore = "prints the first-run guide's frame; run with --ignored --nocapture"]
+fn print_guide_frame() {
+    let mut app = App::new(600);
+    for i in (0..8).rev() {
+        let mut s = sample_at(99.5, i);
+        s.procs = vec![
+            ProcSample {
+                cpu: 30.3,
+                rss: 166 << 20,
+                threads: Some(12),
+                ..proc_named(96543, "node", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 25.5,
+                rss: 172 << 20,
+                threads: Some(45),
+                ..proc_named(96556, "Google Chrome", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 20.7,
+                rss: 437 << 20,
+                threads: Some(1),
+                ..proc_named(28117, "poptop", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 16.9,
+                rss: 13 << 20,
+                threads: Some(12),
+                ..proc_named(86077, "rsst", 0.0, 0)
+            },
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for l in rows(&app, 100, 24) {
         println!("{}", l.trim_end());
     }
 }
