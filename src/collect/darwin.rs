@@ -70,6 +70,14 @@ pub struct SysinfoCollector {
     /// [`Kinfo::probe`] recognises, in which case sysinfo's answer is used and
     /// the third of the table it cannot see has no identity — as before.
     kinfo: Option<Kinfo>,
+    /// pid -> (start time, minor faults, faults served from disk), cumulative
+    /// as `proc_taskinfo` reports them, so the next sample can report rates.
+    /// Keyed on the start time like `names`: a recycled pid must not inherit
+    /// the dead process's counters and read as a storm of faults.
+    faults: HashMap<i32, (Option<u64>, u32, u32)>,
+    /// When those counters were read, so a difference can be divided by
+    /// something. Same reason as `net_at`.
+    faults_at: Option<std::time::Instant>,
     /// pid -> (start time, command line). Keyed like `names`, and for the same
     /// reason.
     ///
@@ -96,6 +104,8 @@ impl SysinfoCollector {
             net_at: None,
             link_names: HashMap::new(),
             kinfo: Kinfo::probe(),
+            faults: HashMap::new(),
+            faults_at: None,
             cmds: HashMap::new(),
             tick: 0,
         })
@@ -216,8 +226,18 @@ impl Collector for SysinfoCollector {
             users,
             names,
             cmds,
+            faults,
+            faults_at,
             ..
         } = self;
+
+        // The window the fault counters are differenced over. Read here rather
+        // than per process: one instant for every process in the sample, as
+        // the `/proc` backend's `elapsed_secs` is.
+        let fault_now = std::time::Instant::now();
+        let fault_secs = faults_at
+            .replace(fault_now)
+            .map_or(0.0, |t| fault_now.duration_since(t).as_secs_f64());
 
         // Whose processes we can actually see the IO of.
         //
@@ -258,6 +278,32 @@ impl Collector for SysinfoCollector {
                 let name = cached(names, id, started, || {
                     Arc::from(p.name().to_string_lossy().as_ref())
                 });
+                // Minor faults are every fault less the ones that went to
+                // disk: `pti_faults` counts them all, and `pti_pageins` is the
+                // subset the `/proc` backend calls major.
+                let (minor, major) = match task {
+                    Some(t) => {
+                        let now = (t.faults.saturating_sub(t.pageins), t.pageins);
+                        let before = faults
+                            .insert(id, (started, now.0, now.1))
+                            .filter(|(was, _, _)| *was == started && started.is_some());
+                        // Zero for a first sighting, as the `/proc` backend
+                        // does: a rate needs two readings, and its whole life
+                        // divided by one interval is not this interval's.
+                        let rate = |now: u32, before: Option<u32>| match before
+                            .filter(|_| fault_secs > 0.0)
+                        {
+                            Some(b) => (f64::from(now.saturating_sub(b)) / fault_secs) as u32,
+                            None => 0,
+                        };
+                        (
+                            Some(rate(now.0, before.map(|(_, m, _)| m))),
+                            Some(rate(now.1, before.map(|(_, _, p)| p))),
+                        )
+                    }
+                    // Not ours to read. An em dash, as everywhere else.
+                    None => (None, None),
+                };
                 ProcSample {
                     pid: id,
                     // sysinfo reports no parent for processes this user does not
@@ -294,8 +340,13 @@ impl Collector for SysinfoCollector {
                     // diff here.
                     // macOS has no cgroups, so no container id to read.
                     container: None,
-                    minflt: None,
-                    majflt: None,
+                    // From the same `proc_taskinfo` as the thread count, as
+                    // rates over the interval — the columns are rates, and a
+                    // lifetime total rendered there would read as one (0103).
+                    // A process this user may not read has no counters, and
+                    // says so, as it does in every other column.
+                    minflt: minor,
+                    majflt: major,
                     // From the same `proc_taskinfo` as the thread count.
                     // It was `None` here, on a note that sysinfo publishes no
                     // virtual size, until checking poptop against `ps` found
@@ -329,6 +380,7 @@ impl Collector for SysinfoCollector {
             procs.iter().map(|p: &ProcSample| p.pid).collect();
         self.cmds.retain(|pid, _| live.contains(pid));
         self.names.retain(|pid, _| live.contains(pid));
+        self.faults.retain(|pid, _| live.contains(pid));
 
         let load = System::load_average();
 
@@ -490,6 +542,85 @@ fn cached<T: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Our own process's lifetime fault count, as `top` reports it.
+    fn top_faults(pid: i32) -> u64 {
+        let out = std::process::Command::new("top")
+            .args(["-l", "1", "-stats", "pid,faults", "-pid", &pid.to_string()])
+            .output()
+            .expect("top");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let row = text
+            .lines()
+            .rev()
+            .find(|l| l.trim_start().starts_with(&pid.to_string()))
+            .unwrap_or_else(|| panic!("no row for {pid} in top:\n{text}"));
+        row.split_whitespace()
+            .nth(1)
+            .and_then(|n| n.trim_end_matches('+').parse().ok())
+            .unwrap_or_else(|| panic!("no fault count in {row:?}"))
+    }
+
+    #[test]
+    fn the_fault_columns_are_rates_and_agree_with_top() {
+        // 0103. Both columns were em dashes on macOS, on a note that sysinfo
+        // publishes no fault counts — true of sysinfo, and beside the point:
+        // `proc_taskinfo`, already read for every process we own, carries
+        // them. Held against `top`, which counts the same faults.
+        let me = std::process::id() as i32;
+        let mut c = SysinfoCollector::new().unwrap();
+        // The first sample only primes the counters: a rate needs two.
+        let first = c.collect(Needs::default()).unwrap();
+        assert_eq!(
+            first.procs.iter().find(|p| p.pid == me).unwrap().minflt,
+            Some(0),
+            "a first sighting reported a lifetime total as an interval's rate"
+        );
+
+        // The window starts where poptop's does — at the first sample — so
+        // the rate it reports and the count `top` takes cover the same time.
+        let start = std::time::Instant::now();
+        let before = top_faults(me);
+        // Touch sixty-four mebibytes, a page at a time. Apple Silicon pages
+        // are sixteen kibibytes, so that is four thousand faults — well clear
+        // of the hundred or so a quiet process takes — and the step is the
+        // smaller page, so it holds on an Intel Mac too.
+        let mut pages = vec![0u8; 64 << 20];
+        for i in (0..pages.len()).step_by(4096) {
+            pages[i] = 1;
+        }
+        std::hint::black_box(&pages);
+        let s = c.collect(Needs::default()).unwrap();
+        let window = start.elapsed().as_secs_f64();
+        let after = top_faults(me);
+
+        let row = s.procs.iter().find(|p| p.pid == me).unwrap();
+        let minor = row.minflt.expect("no fault rate for our own process");
+        assert!(
+            row.majflt.is_some(),
+            "no major fault rate for our own process"
+        );
+        // The rate over the window against what top counted across it. Both
+        // ends of the band are wide: `top` is sampled twice around poptop's
+        // own window rather than exactly over it.
+        let counted = (after - before) as f64;
+        let ours = f64::from(minor) * window;
+        assert!(
+            counted > 3_000.0,
+            "top saw only {counted} faults from touching 64MiB"
+        );
+        assert!(
+            (counted / 5.0..counted * 5.0).contains(&ours),
+            "poptop says {ours:.0} faults over {window:.2}s where top counted {counted:.0}"
+        );
+
+        // A process this user cannot read has no counters, and says so.
+        let theirs = s.procs.iter().find(|p| p.threads.is_none());
+        if let Some(p) = theirs {
+            assert_eq!(p.minflt, None, "a fault rate for a process we cannot read");
+            assert_eq!(p.majflt, None);
+        }
+    }
 
     #[test]
     fn a_sleeping_process_is_not_reported_as_running() {

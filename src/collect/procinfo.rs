@@ -309,6 +309,13 @@ const _: () = assert!(OFF_THREADNUM + 4 <= TASKINFO_SIZE as usize);
 /// process that has been asleep for a week.
 const OFF_NUMRUNNING: usize = 88;
 const _: () = assert!(OFF_NUMRUNNING + 4 <= TASKINFO_SIZE as usize);
+/// `pti_faults`, every fault the task has taken, and `pti_pageins`, the ones
+/// that went to disk. Both cumulative over its life, and both already in the
+/// buffer read for the thread count — the fault columns were em dashes on
+/// macOS on a note that sysinfo publishes no such figure (0103).
+const OFF_FAULTS: usize = 52;
+const OFF_PAGEINS: usize = 56;
+const _: () = assert!(OFF_PAGEINS + 4 <= OFF_THREADNUM);
 
 /// What `proc_taskinfo` says about one process.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -320,6 +327,10 @@ pub struct Task {
     pub vsize: u64,
     /// Threads runnable at the moment of the call. See [`OFF_NUMRUNNING`].
     pub running: u32,
+    /// Faults taken over the task's life, and the subset served from disk.
+    /// Rates are the caller's to derive, as they are for the `/proc` backend.
+    pub faults: u32,
+    pub pageins: u32,
 }
 
 /// How many threads a process has and how much address space it maps, or
@@ -362,13 +373,21 @@ pub fn task(pid: i32) -> Option<Task> {
     let v = i32::from_ne_bytes(buf[OFF_THREADNUM..OFF_THREADNUM + 4].try_into().ok()?);
     let vsize = u64::from_ne_bytes(buf[OFF_VIRTUAL..OFF_VIRTUAL + 8].try_into().ok()?);
     let running = i32::from_ne_bytes(buf[OFF_NUMRUNNING..OFF_NUMRUNNING + 4].try_into().ok()?);
+    let faults = i32::from_ne_bytes(buf[OFF_FAULTS..OFF_FAULTS + 4].try_into().ok()?);
+    let pageins = i32::from_ne_bytes(buf[OFF_PAGEINS..OFF_PAGEINS + 4].try_into().ok()?);
     // A live task always has at least one thread. Zero or negative means the
     // offset is not pointing at a thread count.
-    (v > 0 && (0..=v).contains(&running)).then_some(Task {
-        threads: v as u32,
-        vsize,
-        running: running as u32,
-    })
+    // A live task always has at least one thread, cannot have more runnable
+    // than it has, and cannot have taken a negative number of faults. Any of
+    // those means the offsets are not pointing at the fields they name.
+    (v > 0 && (0..=v).contains(&running) && faults >= 0 && (0..=faults).contains(&pageins))
+        .then_some(Task {
+            threads: v as u32,
+            vsize,
+            running: running as u32,
+            faults: faults as u32,
+            pageins: pageins as u32,
+        })
 }
 
 /// Ask for what is already known rather than going to the filesystem to find
