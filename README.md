@@ -12,15 +12,15 @@ scrub backwards and ask what was eating the box forty seconds ago. It starts
 with an empty buffer and fills it as it runs: no daemon, no config, no logfiles,
 nothing that had to be running before you noticed the problem.
 
-![poptop watching a busy ten-core workstation, scrubbed back twenty-five seconds](docs/media/poptop.svg)
+![poptop watching twelve compressors and a checksum on a ten-core workstation, scrubbed back forty seconds](docs/media/poptop.svg)
 
 A real frame, rendered from a terminal capture by
 [`tools/screenshot.py`](tools/screenshot.py) — not a drawing, and not
-retouched: a ten-core workstation with 758 processes on it, scrubbed back
-twenty-five seconds to a busy moment. `PAUSED −25s` and the `▲` under the
-graphs are the cursor; sampling carried on behind it. `30 fish (g folds them)`
-is poptop noticing that one program is crowding the table. `████+` is a
-process past one core.
+retouched: a ten-core workstation with 801 processes on it, running a dozen
+compressors and a checksum, scrubbed back forty seconds to a busy moment.
+`PAUSED −40s` and the `▲` under the graphs are the cursor; sampling carried on
+behind it. `30 fish (g folds them)` is poptop noticing that one program is
+crowding the table. `████+` is a process past one core.
 
 The bar names every command; the strip under the header belongs to the table
 and says which resource, how the rows are arranged, and which rows they are;
