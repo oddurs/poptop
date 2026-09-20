@@ -237,7 +237,7 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`########··` 75% · 6 of 8 done
+`#######···` 67% · 6 of 9 done
 
 Good ideas without a date yet.
 
@@ -245,6 +245,7 @@ Good ideas without a date yet.
 
 - [ ] `0124` An empty process table says nothing about why it is empty <sup>bug · p2 · ui</sup>
 - [ ] `0125` Esc quits out of a filtered table instead of clearing the filter <sup>bug · p2 · ui</sup>
+- [ ] `0134` A process on its first sample reports 0.0% CPU, which is a fabricated zero <sup>bug · p2 · data</sup>
 
 ### done
 
