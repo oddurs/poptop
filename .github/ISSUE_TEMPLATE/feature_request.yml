@@ -1,0 +1,30 @@
+name: Something is missing
+description: A question about a machine that poptop cannot answer
+labels: [feature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The useful shape for this is a question you had about a real machine,
+        rather than a feature by name. poptop's design arguments are written
+        down in [docs/design/](../../tree/master/docs/design) and
+        [docs/roadmaps/](../../tree/master/docs/roadmaps) — several obvious
+        ideas were tried and rejected there, with reasons.
+  - type: textarea
+    id: question
+    attributes:
+      label: The question you could not answer
+      placeholder: |
+        Which container was stalled on IO at the moment of the spike — the
+        header said the machine was, and the table could not say which cgroup.
+    validations: { required: true }
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: The other tool, or the shell pipeline, that answers it now.
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it might look like in poptop
+      description: Optional. A column, a key, a panel, a flag.

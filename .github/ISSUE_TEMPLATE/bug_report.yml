@@ -1,0 +1,51 @@
+name: Something is wrong
+description: A number that is wrong, a crash, a column that will not appear
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A figure poptop draws is a claim about the machine. If one of them is
+        wrong, that is the most useful thing you can report — please say what
+        the machine was really doing, and how you know.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What poptop showed, and what was true instead.
+      placeholder: |
+        The MEM figure read 84% while `vm_stat` and Activity Monitor both said 61%.
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to see it again
+      description: The command line, the keys pressed, the size of the terminal.
+      placeholder: |
+        1. poptop --interval=200ms
+        2. press `v` twice
+        3. the PSS column is blank on every row
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`poptop --version`, or the commit you built."
+    validations: { required: true }
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: "OS and version, architecture, and the terminal you ran it in."
+      placeholder: "macOS 15.1, arm64, Ghostty 1.0 — or Debian 12, x86_64, tmux 3.3a inside ssh"
+    validations: { required: true }
+  - type: textarea
+    id: sample
+    attributes:
+      label: What poptop says about the machine
+      description: >
+        The output of `poptop --once`, which is one plain-text sample and takes
+        a second. If the report is about a process table, `poptop --export=json`
+        carries every metric by name. Both are from your machine: read them
+        before pasting.
+      render: text

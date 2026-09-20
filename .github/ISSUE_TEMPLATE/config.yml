@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to use poptop
+    url: https://github.com/oddurs/poptop/tree/master/docs
+    about: The guide and the reference — keys, columns, recording, configuration.
+  - name: Why poptop works this way
+    url: https://github.com/oddurs/poptop/tree/master/docs/design
+    about: The design arguments, including ideas that were tried and rejected.
