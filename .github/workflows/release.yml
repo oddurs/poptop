@@ -83,8 +83,28 @@ jobs:
           path: dist/poptop-${{ matrix.target }}
           if-no-files-found: error
 
+  # The line in the README, run against the tag that is about to become a
+  # release. It is the most important command in the repository and it was
+  # wrong at 0.1.0: `cargo install --git <repo>` searches the whole repository,
+  # finds `fuzz/` as a second package with binaries, and refuses to guess.
+  # Nothing tested it, because nothing here installs poptop the way a reader
+  # does. This runs before `publish`, so a broken install line stops a release
+  # rather than shipping in one.
+  install:
+    needs: version
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+      - name: the README's install line
+        run: |
+          cargo install --git "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --tag "$GITHUB_REF_NAME" poptop --locked
+          poptop --version
+          poptop --once | head -3
+
   publish:
-    needs: build
+    needs: [build, install]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

@@ -62,7 +62,18 @@ cursor, not an interpolation. Sampling continues while you are scrubbing.
 ## Install
 
 ```sh
-cargo install --git https://github.com/oddurs/poptop
+cargo install --git https://github.com/oddurs/poptop poptop
+```
+
+The package name is not optional: `fuzz/` is a second crate with binaries of
+its own, and cargo searches the whole repository.
+
+Or take a built binary from [the latest
+release](https://github.com/oddurs/poptop/releases/latest) — x86-64 and arm64
+for both platforms, with a `SHA256SUMS` beside them:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
 ```
 
 Or from a checkout:
@@ -73,9 +84,7 @@ cargo build --release
 ```
 
 Needs Rust 1.88 or newer — the floor is set by ratatui and time, not by
-poptop, and [CI holds it there](.github/workflows/ci.yml). Tagged versions
-also publish built binaries for x86-64 and arm64 on both platforms, with
-checksums.
+poptop, and [CI holds it there](.github/workflows/ci.yml).
 
 Linux and macOS, and nothing else. No daemon, no config file, no
 privileges — it reads what the kernel already publishes, and
