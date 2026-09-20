@@ -57,7 +57,7 @@ USAGE:
     poptop --once     print one plain-text sample and exit
     poptop --read DATE
                     open a recorded day (YYYY-MM-DD) instead of live
-    poptop --days     list the recorded days and their sizes
+    poptop --days     list the recorded days, their sizes and what they hold
     poptop --export=json|line [DATE] [--follow [--for SPAN]]
                     every metric, by name, for a script. With a date, the whole
                     of that recorded day rather than the machine now. --follow
@@ -1002,7 +1002,19 @@ fn main() -> io::Result<()> {
                 let size = std::fs::metadata(dir.join(log::file_name(d)))
                     .map(|m| m.len())
                     .unwrap_or(0);
-                outln!("{d}  {}", ui::fmt_bytes(size));
+                // What the day holds, not only what it costs. A day whose
+                // morning was dropped to stay inside `log-bytes` is a day
+                // that starts at 14:20, and a listing that said only its size
+                // would send somebody looking for 09:00 into a file that
+                // cannot have it.
+                match log::first_at(&dir, d) {
+                    Some(at) => outln!(
+                        "{d}  {}  from {}",
+                        ui::fmt_bytes(size),
+                        log::clock_string(at)
+                    ),
+                    None => outln!("{d}  {}", ui::fmt_bytes(size)),
+                }
             }
             return Ok(());
         }
@@ -1471,9 +1483,10 @@ fn once(
     // exact inversion of the rule this feature is built on.
     if let Some(cfg) = logging {
         match log::append(&cfg.dir, s.at, &[&s], cfg.bytes) {
-            Ok(true) => {}
-            Ok(false) => warnings.push(config::Warning(
-                "today's log is at its size limit and was not written to".into(),
+            Ok(log::Appended::Wrote) => {}
+            Ok(log::Appended::Trimmed(said)) => warnings.push(config::Warning(said)),
+            Ok(log::Appended::Full) => warnings.push(config::Warning(
+                "log-bytes will not hold one entry, so nothing was written".into(),
             )),
             Err(e) => warnings.push(config::Warning(format!("could not write the log: {e}"))),
         }
@@ -1893,9 +1906,14 @@ fn run(
                 // the reader needs at 10:00; a message they see when they quit
                 // is one they see after it stopped mattering.
                 let said = match log::append(&cfg.dir, at, &[&s], cfg.bytes) {
-                    Ok(true) => None,
-                    Ok(false) => Some(
-                        "the log is at its size limit and is no longer being written to"
+                    Ok(log::Appended::Wrote) => None,
+                    // Said while it is true, as the old "no longer being
+                    // written to" was: the log is still being written, and
+                    // what the reader needs to know is that history is now
+                    // being given up at the other end.
+                    Ok(log::Appended::Trimmed(said)) => Some(said),
+                    Ok(log::Appended::Full) => Some(
+                        "log-bytes will not hold one entry, so the log is not being written"
                             .to_string(),
                     ),
                     Err(e) => Some(format!("could not write the log: {e}")),

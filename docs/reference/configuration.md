@@ -79,7 +79,7 @@ for every terminal that later reads the file.
 | `log` | `on`, `off` | `off` | Write a daily log that outlives the process. |
 | `log-interval` | span | `10m` | How often a sample reaches the log. Not the sample interval. |
 | `log-days` | number | `7` | Days of log kept. |
-| `log-bytes` | size | `512M` | Bytes of log kept across every day. |
+| `log-bytes` | size | `512M` | Bytes of log kept across every day. At the budget the oldest history is dropped, not the newest refused. |
 | `signals` | `on`, `off` | `off` | Whether `x` and `X` may signal. See [signals](../guide/signals.md). |
 | `view` | `generic`, `memory`, `disk` | `generic` | The view to start in, which `v` cycles. |
 | `sort` | `cpu`, `mem`, `disk`, `pid`, `name` | `cpu` | The column to sort by, which `s` cycles. A sort the starting view cannot show warns and falls back to that view's own. |

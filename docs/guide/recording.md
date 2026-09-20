@@ -65,6 +65,22 @@ running and works if it was not.
 whole process table and a busy machine's day is much larger than a quiet
 one's. `--log-days` is the one you reason about.
 
+**poptop keeps the most recent `log-bytes` of history, not the oldest.** At
+the budget it drops days that are over, oldest first, and then the oldest
+entries of the day being written — it does not stop recording. The reader
+who set `--log-interval=1s` to catch something is the one who would otherwise
+have got the least of it: 87 KB a sample is seven gigabytes a day, so a
+512 MB budget used to be spent by mid-morning and nothing was recorded after
+it. It says so once when it starts giving history up.
+
+`--days` shows what each day actually holds, so a trimmed one is visible:
+
+```console
+$ poptop --days
+2026-09-20  512.0M  from 14:20
+2026-09-19  61.4M  from 00:00
+```
+
 A typical daemon line:
 
 ```console

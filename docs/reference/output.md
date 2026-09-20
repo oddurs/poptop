@@ -128,12 +128,15 @@ name a date.
 
 ```console
 $ poptop --days
-2026-09-19  1.0M
+2026-09-19  1.0M  from 00:00
 
 $ poptop --read 2026-09-19
 ```
 
-`--days` lists what has been recorded and what it costs. `--read` opens a
+`--days` lists what has been recorded, what it costs, and when each day's
+earliest surviving sample was taken — a day whose morning was dropped to stay
+inside `log-bytes` starts later than midnight, and the size alone would not
+say so. `--read` opens a
 day in the interactive view: the same keys, the same panels, scrubbing
 through a recorded day instead of the live buffer.
 
