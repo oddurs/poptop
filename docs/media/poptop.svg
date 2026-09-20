@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="924" height="556" viewBox="0 0 924 556" font-family="DejaVu Sans Mono,Menlo,SFMono-Regular,ui-monospace,Consolas,Liberation Mono,monospace" font-size="15">
+<title>poptop</title>
+<rect width="100%" height="100%" rx="6" fill="#151515"/>
+<text x="12.0" y="26.0" fill="#5ccfe6" font-weight="bold" textLength="54.0" lengthAdjust="spacing" xml:space="preserve"> LIVE </text>
+<text x="66.0" y="26.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">CPU </text>
+<text x="102.0" y="26.0" fill="#ff6666" font-weight="bold" textLength="54.0" lengthAdjust="spacing" xml:space="preserve"> 84.4%</text>
+<text x="174.0" y="26.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">WAIT </text>
+<text x="219.0" y="26.0" fill="#5ccfe6" font-weight="bold" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  0.3%</text>
+<text x="291.0" y="26.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">RUN </text>
+<text x="327.0" y="26.0" fill="#ff6666" font-weight="bold" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">50/10</text>
+<text x="390.0" y="26.0" fill="#808080" textLength="72.0" lengthAdjust="spacing" xml:space="preserve">BLOCKED </text>
+<text x="462.0" y="26.0" fill="#ff6666" font-weight="bold" textLength="9.0" lengthAdjust="spacing" xml:space="preserve">1</text>
+<text x="471.0" y="26.0" fill="#505050" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">  │  </text>
+<text x="516.0" y="26.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">vda </text>
+<text x="552.0" y="26.0" fill="#ffd580" font-weight="bold" textLength="54.0" lengthAdjust="spacing" xml:space="preserve"> 62.2%</text>
+<text x="606.0" y="26.0" fill="#808080" textLength="54.0" lengthAdjust="spacing" xml:space="preserve"> 0.0ms</text>
+<text x="678.0" y="26.0" fill="#808080" textLength="27.0" lengthAdjust="spacing" xml:space="preserve">/w </text>
+<text x="705.0" y="26.0" fill="#ff6666" font-weight="bold" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">96.6% full</text>
+<text x="12.0" y="45.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve"> 10 cores </text>
+<text x="102.0" y="45.0" fill="#ff6666" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">████</text>
+<text x="147.0" y="45.0" fill="#ff6666" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">████</text>
+<text x="192.0" y="45.0" fill="#ff6666" textLength="9.0" lengthAdjust="spacing" xml:space="preserve">█</text>
+<text x="201.0" y="45.0" fill="#5ccfe6" textLength="9.0" lengthAdjust="spacing" xml:space="preserve">▁</text>
+<text x="12.0" y="64.0" fill="#505050" textLength="18.0" lengthAdjust="spacing" xml:space="preserve">──</text>
+<text x="30.0" y="64.0" fill="#808080" textLength="297.0" lengthAdjust="spacing" xml:space="preserve"> timeline — 9s of 10m00s buffered</text>
+<text x="336.0" y="64.0" fill="#505050" textLength="576.0" lengthAdjust="spacing" xml:space="preserve">────────────────────────────────────────────────────────────────</text>
+<text x="12.0" y="83.0" fill="#808080" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  100 </text>
+<text x="66.0" y="83.0" fill="#7a7ae6" textLength="846.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣠⣤⣤⣠</text>
+<text x="12.0" y="102.0" fill="#808080" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  CPU </text>
+<text x="66.0" y="102.0" fill="#7a7ae6" textLength="846.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿</text>
+<text x="66.0" y="121.0" fill="#7a7ae6" textLength="846.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿</text>
+<text x="12.0" y="140.0" fill="#808080" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">    0 </text>
+<text x="66.0" y="140.0" fill="#7a7ae6" textLength="162.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀</text>
+<text x="228.0" y="140.0" fill="#808080" textLength="468.0" lengthAdjust="spacing" xml:space="preserve">no history before 01:42:23 — it fills from the right</text>
+<text x="696.0" y="140.0" fill="#7a7ae6" textLength="216.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿</text>
+<text x="12.0" y="159.0" fill="#808080" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">   10 </text>
+<text x="66.0" y="159.0" fill="#b48ead" textLength="846.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀</text>
+<text x="12.0" y="178.0" fill="#808080" textLength="54.0" lengthAdjust="spacing" xml:space="preserve"> WAIT </text>
+<text x="66.0" y="178.0" fill="#b48ead" textLength="846.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀</text>
+<text x="12.0" y="197.0" fill="#808080" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">    0 </text>
+<text x="66.0" y="197.0" fill="#b48ead" textLength="846.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀</text>
+<text x="12.0" y="216.0" fill="#808080" textLength="900.0" lengthAdjust="spacing" xml:space="preserve">past                                      9s shown, 1s/slot                                      now</text>
+<text x="12.0" y="235.0" fill="#505050" textLength="18.0" lengthAdjust="spacing" xml:space="preserve">──</text>
+<text x="30.0" y="235.0" fill="#808080" textLength="801.0" lengthAdjust="spacing" xml:space="preserve"> processes (51) · all root — sort: CPU · 30 rustc (g folds them) · 47 tasks came and went</text>
+<text x="840.0" y="235.0" fill="#505050" textLength="72.0" lengthAdjust="spacing" xml:space="preserve">────────</text>
+<text x="21.0" y="254.0" fill="#808080" font-weight="bold" textLength="891.0" lengthAdjust="spacing" xml:space="preserve">  CPU%            RSS      S   THR    DISK R    DISK W HIST ≤400%     PID COMMAND                  </text>
+<text x="21.0" y="273.0" fill="#ff6666" textLength="54.0" lengthAdjust="spacing" xml:space="preserve"> 124.6</text>
+<text x="84.0" y="273.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">████+</text>
+<text x="129.0" y="273.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   163.7M </text>
+<text x="219.0" y="273.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<text x="255.0" y="273.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> S    11 </text>
+<text x="336.0" y="273.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="426.0" y="273.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="516.0" y="273.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⢰⣧⣤⣤⣄</text>
+<text x="606.0" y="273.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    1726 xz -1 -c /tmp/big        </text>
+<text x="12.0" y="292.0" fill="#5ccfe6" font-weight="bold" textLength="9.0" lengthAdjust="spacing" xml:space="preserve">▶</text>
+<rect x="21.0" y="278.0" width="54.0" height="19.0" fill="#3a3a3a"/>
+<text x="21.0" y="292.0" fill="#5ccfe6" font-weight="bold" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  23.1</text>
+<rect x="75.0" y="278.0" width="9.0" height="19.0" fill="#3a3a3a"/>
+<rect x="84.0" y="278.0" width="45.0" height="19.0" fill="#3a3a3a"/>
+<text x="84.0" y="292.0" fill="#808080" font-weight="bold" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▉    </text>
+<rect x="129.0" y="278.0" width="90.0" height="19.0" fill="#3a3a3a"/>
+<text x="129.0" y="292.0" fill="#cccccc" font-weight="bold" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   153.1M </text>
+<rect x="219.0" y="278.0" width="36.0" height="19.0" fill="#3a3a3a"/>
+<text x="219.0" y="292.0" fill="#808080" font-weight="bold" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<rect x="255.0" y="278.0" width="81.0" height="19.0" fill="#3a3a3a"/>
+<text x="255.0" y="292.0" fill="#cccccc" font-weight="bold" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> S     4 </text>
+<rect x="336.0" y="278.0" width="81.0" height="19.0" fill="#3a3a3a"/>
+<text x="336.0" y="292.0" fill="#808080" font-weight="bold" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<rect x="417.0" y="278.0" width="9.0" height="19.0" fill="#3a3a3a"/>
+<rect x="426.0" y="278.0" width="81.0" height="19.0" fill="#3a3a3a"/>
+<text x="426.0" y="292.0" fill="#808080" font-weight="bold" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<rect x="507.0" y="278.0" width="9.0" height="19.0" fill="#3a3a3a"/>
+<rect x="516.0" y="278.0" width="90.0" height="19.0" fill="#3a3a3a"/>
+<text x="516.0" y="292.0" fill="#808080" font-weight="bold" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀</text>
+<rect x="606.0" y="278.0" width="306.0" height="19.0" fill="#3a3a3a"/>
+<text x="606.0" y="292.0" fill="#cccccc" font-weight="bold" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2920 rustc --crat…i,artifacts…</text>
+<text x="21.0" y="311.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  19.0</text>
+<text x="84.0" y="311.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▊    </text>
+<text x="129.0" y="311.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   196.2M </text>
+<text x="219.0" y="311.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<text x="255.0" y="311.0" fill="#d8d8d8" textLength="171.0" lengthAdjust="spacing" xml:space="preserve"> S     4    1.5M/s </text>
+<text x="426.0" y="311.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="516.0" y="311.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀</text>
+<text x="606.0" y="311.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2284 rustc --crat…future-inco…</text>
+<text x="21.0" y="330.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  18.2</text>
+<text x="84.0" y="330.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▊    </text>
+<text x="129.0" y="330.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   188.0M </text>
+<text x="219.0" y="330.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<text x="255.0" y="330.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> S     4 </text>
+<text x="336.0" y="330.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="426.0" y="330.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="516.0" y="330.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀</text>
+<text x="606.0" y="330.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2665 rustc --crat…ture-incomp…</text>
+<text x="21.0" y="349.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  18.2</text>
+<text x="84.0" y="349.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▊    </text>
+<text x="129.0" y="349.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   109.7M </text>
+<text x="255.0" y="349.0" fill="#d8d8d8" textLength="261.0" lengthAdjust="spacing" xml:space="preserve"> S     4   62.7K/s   13.2K/s </text>
+<text x="516.0" y="349.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀</text>
+<text x="606.0" y="349.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2926 rustc --crat…ture-incomp…</text>
+<text x="21.0" y="368.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  15.7</text>
+<text x="84.0" y="368.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▋    </text>
+<text x="129.0" y="368.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">    48.7M </text>
+<text x="255.0" y="368.0" fill="#d8d8d8" textLength="261.0" lengthAdjust="spacing" xml:space="preserve"> S    13    2.8M/s    5.8M/s </text>
+<text x="516.0" y="368.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀</text>
+<text x="606.0" y="368.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    1721 cargo build …ests --quiet</text>
+<text x="21.0" y="387.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  15.7</text>
+<text x="84.0" y="387.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▋    </text>
+<text x="129.0" y="387.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   173.9M </text>
+<text x="219.0" y="387.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<text x="255.0" y="387.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> S     4 </text>
+<text x="336.0" y="387.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="426.0" y="387.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="516.0" y="387.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⣀⣀⣀⣀</text>
+<text x="606.0" y="387.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2304 rustc --crat…rtifacts,fu…</text>
+<text x="21.0" y="406.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  14.9</text>
+<text x="84.0" y="406.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▋    </text>
+<text x="129.0" y="406.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">     2.2M </text>
+<text x="255.0" y="406.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> R     1 </text>
+<text x="336.0" y="406.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="417.0" y="406.0" fill="#d8d8d8" textLength="99.0" lengthAdjust="spacing" xml:space="preserve">    9.1M/s </text>
+<text x="516.0" y="406.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀</text>
+<text x="606.0" y="406.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2255 dd if=/tmp/b… status=none</text>
+<text x="21.0" y="425.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  14.0</text>
+<text x="84.0" y="425.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▌    </text>
+<text x="129.0" y="425.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   136.7M </text>
+<text x="219.0" y="425.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<text x="255.0" y="425.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> S     4 </text>
+<text x="336.0" y="425.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="417.0" y="425.0" fill="#d8d8d8" textLength="99.0" lengthAdjust="spacing" xml:space="preserve">   16.5K/s </text>
+<text x="516.0" y="425.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀</text>
+<text x="606.0" y="425.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2699 rustc --crat…re-incompat…</text>
+<text x="21.0" y="444.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  13.2</text>
+<text x="84.0" y="444.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▌    </text>
+<text x="129.0" y="444.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">    48.3M </text>
+<text x="255.0" y="444.0" fill="#d8d8d8" textLength="261.0" lengthAdjust="spacing" xml:space="preserve"> S    13    2.7M/s    9.6M/s </text>
+<text x="516.0" y="444.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀</text>
+<text x="606.0" y="444.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    1719 cargo build …ests --quiet</text>
+<text x="21.0" y="463.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  13.2</text>
+<text x="84.0" y="463.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▌    </text>
+<text x="129.0" y="463.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   137.4M </text>
+<text x="219.0" y="463.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<text x="255.0" y="463.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> S     4 </text>
+<text x="336.0" y="463.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="426.0" y="463.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="516.0" y="463.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀</text>
+<text x="606.0" y="463.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2864 rustc --crat…i,artifacts…</text>
+<text x="21.0" y="482.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  12.4</text>
+<text x="84.0" y="482.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▌    </text>
+<text x="129.0" y="482.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">   137.4M </text>
+<text x="219.0" y="482.0" fill="#808080" textLength="36.0" lengthAdjust="spacing" xml:space="preserve">▏   </text>
+<text x="255.0" y="482.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> S     4 </text>
+<text x="336.0" y="482.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="426.0" y="482.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="516.0" y="482.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀</text>
+<text x="606.0" y="482.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    2953 rustc --crat…i,artifacts…</text>
+<text x="21.0" y="501.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  11.6</text>
+<text x="84.0" y="501.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▌    </text>
+<text x="129.0" y="501.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">    48.0M </text>
+<text x="255.0" y="501.0" fill="#d8d8d8" textLength="261.0" lengthAdjust="spacing" xml:space="preserve"> S    13  941.0K/s   13.3M/s </text>
+<text x="516.0" y="501.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀</text>
+<text x="606.0" y="501.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    1720 cargo build …ests --quiet</text>
+<text x="21.0" y="520.0" fill="#5ccfe6" textLength="54.0" lengthAdjust="spacing" xml:space="preserve">  11.6</text>
+<text x="84.0" y="520.0" fill="#808080" textLength="45.0" lengthAdjust="spacing" xml:space="preserve">▌    </text>
+<text x="129.0" y="520.0" fill="#d8d8d8" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">     1.5M </text>
+<text x="255.0" y="520.0" fill="#d8d8d8" textLength="81.0" lengthAdjust="spacing" xml:space="preserve"> R     1 </text>
+<text x="336.0" y="520.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="426.0" y="520.0" fill="#808080" textLength="81.0" lengthAdjust="spacing" xml:space="preserve">        0</text>
+<text x="516.0" y="520.0" fill="#808080" textLength="90.0" lengthAdjust="spacing" xml:space="preserve">⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀</text>
+<text x="606.0" y="520.0" fill="#d8d8d8" textLength="306.0" lengthAdjust="spacing" xml:space="preserve">    1728 gzip -1 -c /tmp/big      </text>
+<text x="12.0" y="539.0" fill="#808080" textLength="837.0" lengthAdjust="spacing" xml:space="preserve">q quit · ←/→ scrub · b jump · +/- zoom · Space live · ↑/↓ select · s sort · / filter · ? more</text>
+</svg>

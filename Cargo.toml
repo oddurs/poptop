@@ -2,9 +2,37 @@
 name = "poptop"
 version = "0.1.0"
 edition = "2024"
+# Not a guess: 1.85 is the floor for edition 2024, but ratatui, sysinfo and
+# time all require 1.88, so that is what a build actually needs. `cargo +1.88
+# test` passes; `cargo +1.85 check` fails in the dependency graph before it
+# reaches this crate. CI holds it to this.
+rust-version = "1.88"
 license = "GPL-3.0-or-later"
-description = "A system monitor you can rewind"
+description = "A system monitor you can rewind: scrub back through every sample it has taken, including the whole process table"
 readme = "README.md"
+repository = "https://github.com/oddurs/poptop"
+homepage = "https://github.com/oddurs/poptop"
+documentation = "https://github.com/oddurs/poptop/tree/master/docs"
+keywords = ["monitoring", "tui", "process", "observability", "top"]
+categories = ["command-line-utilities", "development-tools::profiling"]
+# What a published crate needs, and nothing else. `docs/` stays: it is what
+# `documentation` points at, it is 288K of markdown, and two unit tests read
+# it with `include_str!`. `tests/` goes: 15M of it is a captured Linux
+# `/proc` and `/sys` tree, which is how this repository tests a backend it
+# cannot run on the developer's machine — a fact about the repository, not
+# something a published crate should carry.
+exclude = [
+    "/cairn",
+    "/cairn.toml",
+    "/tests",
+    "/validate",
+    "/tools",
+    "/fuzz",
+    "/.githooks",
+    "/.github",
+    "/ROADMAP.md",
+    "/RELEASING.md",
+]
 
 [dependencies]
 # `use-dev-tty`: crossterm's other input source, which reads the terminal with

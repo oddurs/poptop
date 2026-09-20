@@ -1,0 +1,44 @@
+# Four direct dependencies and a handful of actions, and nothing that
+# notices when one of them publishes a fix. Weekly and grouped, because the
+# failure mode of this file is a stream of single-line pull requests that
+# nobody reads and everybody merges.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      # One pull request for the lockfile's own churn. A patch bump of a
+      # transitive crate is not a decision.
+      patch:
+        update-types: [patch]
+    commit-message:
+      prefix: "chore(deps)"
+    labels: [deps]
+
+  # The fuzz targets are their own crate with their own lockfile.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+    labels: [deps]
+
+  # CI pins actions by major version, which is the convention and means the
+  # behaviour can change without a commit here. This is what notices.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+    labels: [ci]

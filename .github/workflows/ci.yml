@@ -66,6 +66,29 @@ jobs:
           cargo run --release -- --once | head -1
           cargo run --release -- --help | head -1
 
+  # The oldest toolchain `rust-version` claims to build on. A README that
+  # states an MSRV nothing checks is a promise that expires the first time
+  # somebody uses a newer standard-library method, and the person who finds
+  # out is on the old compiler.
+  #
+  # Linux only: the macOS backend is a different dependency set, but the
+  # floor is set by ratatui and time, which both builds share.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: read rust-version from Cargo.toml
+        id: msrv
+        run: sed -n 's/^rust-version = "\(.*\)"$/msrv=\1/p' Cargo.toml >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.msrv }}
+      - uses: Swatinem/rust-cache@v2
+      # `--all-targets`, not `test`: this asks whether the crate compiles on
+      # the oldest supported compiler. Whether it behaves is the stable job's
+      # question, and asking it twice buys nothing for the runtime.
+      - run: cargo build --all-targets
+
   # The whole suite under AddressSanitizer. All of poptop's `unsafe` is calls
   # into libc declared by hand, which Miri cannot execute; ASan intercepts
   # those same calls and checks every buffer handed across. Linux only: on
