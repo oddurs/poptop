@@ -1,0 +1,17 @@
+poptop 200, 6 hours, log every 10s, Linux 7.0.14-orbstack-00380-ga7e0a2dc9535 aarch64
+clock stepped back 300s at 1801s (Sun Sep 20 23:33:09 XXX 2026)
+stopped at 2701s (Sun Sep 20 23:48:09 XXX 2026) for 180s
+
+ok      memory: 16 MiB when warm, at most 16 MiB after: grew 0 MiB of a 16 MiB bound
+ok      descriptors: between 7 and 8 after warm-up (bound: a spread of 2)
+        cpu: 3.10% of one core, averaged over the run
+poptop: 2026-09-20 spans 2 boots: a process is identified by pid and start time, and start time only means anything within one boot, so a history line may join two unrelated programs across the restart
+        log: 2114 samples in 2 day files
+ok      log, no sample twice: 0 repeated
+ok      log, no sample out of order after the reader sorted it: 0 backwards:
+ok      log, the stepped-over period is recorded twice: 59 samples in the 300s the clock was stepped back over, of 45 expected for two passes
+ok      log, gaps only where it was stopped: 1 gaps longer than 2.5 intervals: 186s (made: 1 stop, 1 step)
+ok      log, each sample in its own day's file: 2 day files, first and last of each checked
+        midnight: 10.2s between the last sample of a day and the first of the next
+
+every check passed
