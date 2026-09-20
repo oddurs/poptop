@@ -2,8 +2,9 @@
 id: 123
 title: The README is 2,312 lines and cannot be the front of anything
 type: docs
-status: backlog
+status: done
 milestone: r6
+assignee: Oddur Sigurdsson
 labels:
 - docs
 created: 2026-09-19
@@ -28,3 +29,19 @@ The README becomes a front page: what it is, what it looks like, how to install 
 - [ ] README fits on a screen or two, with a rendered frame and links
 - [ ] Every essay section survives under `docs/design/`, with nothing lost
 - [ ] `docs/README.md` is an index of everything
+
+## How it was resolved
+
+The README is 177 lines: what poptop is, the rendered frame, install, the
+shape of the command line, the three things it does that a conventional
+monitor does not, a table of links into `docs/`, contributing, roadmap,
+status, attribution, licence.
+
+The 2,100 lines of essay moved to `docs/design/` intact — twelve files,
+split on the section boundaries, with heading levels promoted and nothing
+rewritten: prior art, the keys and the questions they answer, reading the
+screen, configuration, recording and output, what it measures and what it
+will not, colour, the graphs, what it costs to watch, how it works, notes
+from reading the others, tests.
+
+`docs/README.md` indexes all three kinds of page and says what each is for.

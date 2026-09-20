@@ -31,6 +31,8 @@ mod tree;
 mod ui;
 
 #[cfg(test)]
+mod docs_tests;
+#[cfg(test)]
 mod ui_tests;
 
 use app::App;
