@@ -345,10 +345,27 @@ broken.
 It bounds the **writing**, not only the keeping. Today's file is never pruned —
 it is the history of the session that is running, and deleting it would take the
 thing you are looking at — so a rule that only decided what to keep would watch
-`log-interval = 1s` fill a disk in a day and do nothing about it. Once the logs
-reach the budget poptop stops appending, and says so **on the panel while it is
-true**, not only in the lines it prints when you quit: a disk that filled at
-10:00 is something you need to know at 10:00.
+`log-interval = 1s` fill a disk in a day and do nothing about it.
+
+At the budget poptop **makes room rather than stopping**: the rule a reader can
+state is that poptop keeps the most recent `log-bytes` of history, not the
+oldest. Days that are over go first, oldest first, because a day that is over is
+older than every entry of the day in progress; only when nothing else is left
+does the day being written give up its own morning, by whole entries from the
+front. Stopping instead would drop exactly the samples nearest whatever the
+reader is waiting for — and the reader who set a one-second interval to catch
+something would be the one who got the least of it.
+
+It says so **on the panel while it is true**, not only in the lines it prints
+when you quit: history being given up at 10:00 is something you need to know at
+10:00. The one case where nothing is written is a budget that will not hold a
+single entry, and then nothing is deleted for it either.
+
+A trim rewrites the entries it keeps beside the file and renames over it, so a
+reader that opens the day mid-trim gets the old file whole or the new one, and
+`--days` prints the clock time of each day's earliest surviving sample — a
+listing that said only how large a file is would not say which part of the day
+is in it.
 
 One budget, one meaning. `log-bytes` is what poptop's logs may occupy in total —
 the write cap and the retention rule are the same number weighed the same way,

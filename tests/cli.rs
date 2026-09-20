@@ -557,3 +557,60 @@ fn every_flag_in_the_help_is_run_by_a_test_here() {
         "flags in --help with no test: {missing:?}"
     );
 }
+
+/// The byte budget, end to end: poptop keeps the most recent `log-bytes` of
+/// history rather than the first of it, and `--days` says what is left.
+#[test]
+fn at_the_byte_budget_the_log_keeps_the_newest_and_says_what_it_holds() {
+    let home = Home::new();
+    log_a_sample(&home);
+    let day = logged_day(&home);
+    let one = std::fs::metadata(
+        home.state()
+            .join("poptop")
+            .join("log")
+            .join(format!("poptop-{}", day.replace('-', ""))),
+    )
+    .unwrap()
+    .len();
+
+    // Room for two entries, and four samples logged into it.
+    let cap = format!("--log-bytes={}", one * 2);
+    let mut said = Vec::new();
+    for _ in 0..3 {
+        let r = home.run(&["--once", "--log=on", "--interval=200ms", &cap]);
+        assert_eq!(r.code, Some(0), "{}", r.err);
+        said.push(r.err);
+    }
+    let size = std::fs::metadata(
+        home.state()
+            .join("poptop")
+            .join("log")
+            .join(format!("poptop-{}", day.replace('-', ""))),
+    )
+    .unwrap()
+    .len();
+    assert!(
+        size <= one * 2,
+        "the log grew past log-bytes: {size} > {}",
+        one * 2
+    );
+    assert!(
+        said.iter().any(|e| e.contains("log-bytes")),
+        "history was given up silently: {said:?}"
+    );
+
+    // Still a readable day, and one that says where it now starts.
+    let export = home.run(&["--export=json", &day]).ok();
+    assert!(
+        (1..=2).contains(&export.out.lines().count()),
+        "{} records in a two-entry budget",
+        export.out.lines().count()
+    );
+    let listed = home.run(&["--days"]).ok();
+    assert!(
+        listed.out.contains(" from "),
+        "--days does not say what the day holds: {}",
+        listed.out
+    );
+}

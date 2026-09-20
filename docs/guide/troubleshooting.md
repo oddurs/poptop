@@ -137,7 +137,10 @@ $ poptop --window=2m --interval=2s
 ```
 
 `--log-bytes` bounds the log on disk (default `512M`), and `--log-days`
-(default `7`) is the one to reason about.
+(default `7`) is the one to reason about. At the budget poptop keeps the most
+recent `log-bytes` and drops the oldest, so a log that has been running a long
+time at a short interval holds the recent history rather than the first few
+hours of it; `poptop --days` shows what each day still starts at.
 
 ## Colours are wrong, or unreadable
 

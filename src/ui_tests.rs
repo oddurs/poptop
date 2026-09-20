@@ -642,30 +642,31 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
 }
 
 #[test]
-fn a_log_that_stopped_says_so_on_the_panel_and_not_only_at_exit() {
-    // A disk that filled at 10:00 is something the reader needs at 10:00. A
-    // message they see when they quit is one they see after it stopped
+fn a_log_giving_up_history_says_so_on_the_panel_and_not_only_at_exit() {
+    // History being given up at 10:00 is something the reader needs at 10:00.
+    // A message they see when they quit is one they see after it stopped
     // mattering — and the claim in the README is that poptop says so, once.
     let mut app = App::new(600);
     app.push(sample(10.0));
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     let quiet = rows(&app, 160, 30);
     assert!(
-        !quiet.iter().any(|r| r.contains("size limit")),
+        !quiet.iter().any(|r| r.contains("log-bytes")),
         "a healthy log announced itself"
     );
 
-    app.log_note = Some("the log is at its size limit and is no longer being written to".into());
+    app.log_note =
+        Some("the log reached log-bytes: the oldest entries of today were dropped".into());
     let said = rows(&app, 160, 30);
     assert!(
-        said.iter().any(|r| r.contains("size limit")),
+        said.iter().any(|r| r.contains("log-bytes")),
         "the log stopped and the panel said nothing:\n{}",
         said.join("\n")
     );
 
     // And it goes when the reason does.
     app.log_note = None;
-    assert!(!rows(&app, 160, 30).iter().any(|r| r.contains("size limit")));
+    assert!(!rows(&app, 160, 30).iter().any(|r| r.contains("log-bytes")));
 }
 
 #[test]

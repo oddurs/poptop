@@ -434,9 +434,9 @@ const LEN: usize = 4;
 /// the restart store's, which writes only on a clean exit — because a log
 /// nobody asked for must not become a background writer, and a log somebody
 /// did ask for is useless if the crash takes it.
-pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::Result<bool> {
+pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::Result<Appended> {
     if samples.is_empty() {
-        return Ok(true);
+        return Ok(Appended::Wrote);
     }
     let date = date_of(at).ok_or_else(|| io::Error::other("no local date for this sample"))?;
     fs::create_dir_all(dir)?;
@@ -451,10 +451,19 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     // was two different limits wearing one name — a single day reaching the
     // budget would have made the next prune delete every other day at once.
     let path = dir.join(file_name(date));
-    if total_bytes(dir) >= cap {
-        return Ok(false);
-    }
     let framed = frame(samples).ok_or_else(|| io::Error::other("block too large"))?;
+    let need = framed.len() as u64;
+    // Room is made rather than the writing stopped. A log that stops at the
+    // budget drops the samples nearest whatever the reader is waiting for,
+    // and the reader who set a one-second interval to catch something is the
+    // one who gets the least of it. See `make_room`.
+    let mut trimmed = None;
+    if total_bytes(dir) + need > cap {
+        match make_room(dir, need, cap, date)? {
+            Some(said) => trimmed = Some(said),
+            None => return Ok(Appended::Full),
+        }
+    }
     let mut f = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -477,7 +486,175 @@ pub fn append(dir: &Path, at: SystemTime, samples: &[&Sample], cap: u64) -> io::
     // `F_FULLFSYNC` does, at roughly ten times the cost. What poptop promises
     // is that the entry has reached the disk it was told to reach.
     f.sync_data()?;
-    Ok(true)
+    Ok(match trimmed {
+        Some(said) => Appended::Trimmed(said),
+        None => Appended::Wrote,
+    })
+}
+
+/// What an [`append`] did.
+#[derive(Debug, PartialEq)]
+pub enum Appended {
+    Wrote,
+    /// Written, having dropped the oldest history to stay inside the byte
+    /// budget. The sentence is for the reader, once.
+    Trimmed(String),
+    /// Nothing written: `log-bytes` will not hold a single entry, so there is
+    /// no history to keep the newest of.
+    Full,
+}
+
+/// Free enough of the byte budget for one more entry, oldest history first.
+///
+/// **poptop keeps the most recent `log-bytes` of history, not the oldest.**
+/// That is the whole rule, and it is the one a reader can state. What it
+/// replaces: the budget used to stop the writing, and today's file is never
+/// pruned, so a long session at a short interval reached the budget and then
+/// logged nothing for the rest of the day — 87 KB a sample at one second is
+/// seven gigabytes a day against a 512 MB default, so under two hours of
+/// recording followed by a footnote.
+///
+/// Oldest first means whole days before parts of one: a day that is over is
+/// history somebody may still want, but it is older than every entry of the
+/// day in progress. Only when nothing else is left does the day being written
+/// give up its own morning.
+///
+/// `None` when no room can be made — a budget smaller than one entry.
+fn make_room(dir: &Path, need: u64, cap: u64, today: Date) -> io::Result<Option<String>> {
+    // Before anything is deleted: an entry larger than the whole budget will
+    // not fit however much is given up for it, and a log that dropped a day
+    // to make room it still would not have would be the worst of both.
+    if need > cap {
+        return Ok(None);
+    }
+    // A temporary file left by a trim that was interrupted. It is poptop's,
+    // it is not a day, and nothing counts it against the budget, so it would
+    // otherwise sit on the disk forever.
+    for e in fs::read_dir(dir)?.flatten() {
+        if e.file_name().to_str().is_some_and(|n| n.ends_with(TRIM)) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+    let mut days_dropped: Vec<Date> = Vec::new();
+    let mut cut = 0u64;
+    loop {
+        let total = total_bytes(dir);
+        if total + need <= cap {
+            break;
+        }
+        // Oldest first. `days` is newest first, which is the order `--days`
+        // wants and the opposite of this one.
+        let Some(oldest) = days(dir).pop() else {
+            // Nothing recorded and still no room: the budget is smaller than
+            // one entry, and no amount of deleting will change that.
+            return Ok(None);
+        };
+        if oldest != today {
+            fs::remove_file(dir.join(file_name(oldest)))?;
+            days_dropped.push(oldest);
+            continue;
+        }
+        // The day being written. Enough for this entry, and then some: a trim
+        // rewrites what it keeps, so freeing exactly one entry at a time would
+        // copy the whole file on every append. An eighth of the budget at a
+        // time is the bargain — an eighth of the history given up at once, and
+        // seven bytes copied for every byte appended once the budget is full.
+        //
+        // Measured at 1.2ms a megabyte kept (25.8ms to free an eighth of a
+        // 25 MB day; `measure_trimming_a_day`). At the 512 MB default that is
+        // about half a second, paid once per eighth of the budget written —
+        // every twelve minutes at a one-second interval, and never at all at
+        // the ten-minute default, where seven days of logs come to a fifth of
+        // the budget.
+        let want = (total + need - cap).max(need).max(cap / 8);
+        let freed = trim(&dir.join(file_name(oldest)), want)?;
+        if freed == 0 {
+            // One entry, and it is larger than the budget.
+            return Ok(None);
+        }
+        cut += freed;
+    }
+    Ok(match (days_dropped.as_slice(), cut) {
+        ([], 0) => None,
+        ([], _) => Some(
+            "the log reached log-bytes: the oldest entries of today were dropped to make room"
+                .to_string(),
+        ),
+        (dropped, 0) => Some(format!(
+            "the log reached log-bytes: {} was dropped to make room",
+            named(dropped)
+        )),
+        (dropped, _) => Some(format!(
+            "the log reached log-bytes: {} and the oldest entries of today were dropped to \
+             make room",
+            named(dropped)
+        )),
+    })
+}
+
+/// The days a message names, as a person would write them.
+fn named(days: &[Date]) -> String {
+    match days {
+        [one] => format!("the log for {one}"),
+        many => format!("the logs for {} days", many.len()),
+    }
+}
+
+/// What a trim in progress is called, beside the day it is trimming.
+const TRIM: &str = ".trim";
+
+/// Drop whole entries from the front of a day file until at least `free`
+/// bytes are gone, and say how many went.
+///
+/// By lengths rather than by decoding: four bytes an entry to find the
+/// boundary, and the bytes after it are copied without being understood. A
+/// length that will not do — zero, or one running past the end — stops the
+/// scan, so a day a crash tore is never cut in the middle of an entry that
+/// the reader could still make something of.
+///
+/// The tail is written beside the file and renamed over it, so a reader that
+/// opens the day during a trim gets the old file whole or the new one, never
+/// a half-copied one.
+fn trim(path: &Path, free: u64) -> io::Result<u64> {
+    use std::io::{Read as _, Seek as _};
+    let mut f = fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let mut cut = 0u64;
+    let mut head = [0u8; LEN];
+    while cut < free {
+        f.seek(io::SeekFrom::Start(cut))?;
+        if f.read_exact(&mut head).is_err() {
+            break;
+        }
+        let entry = LEN as u64 + u32::from_le_bytes(head) as u64;
+        if entry == LEN as u64 || cut + entry > len {
+            break;
+        }
+        cut += entry;
+    }
+    if cut == 0 {
+        return Ok(0);
+    }
+    if cut >= len {
+        // Everything in it is older than the entry about to be written, which
+        // is what a budget this small asks for.
+        fs::File::create(path)?.sync_data()?;
+        return Ok(len);
+    }
+    let tmp = path.with_file_name(format!(
+        "{}{TRIM}",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    f.seek(io::SeekFrom::Start(cut))?;
+    let mut out = fs::File::create(&tmp)?;
+    io::copy(&mut f, &mut out)?;
+    // On the disk before the rename, for the reason every entry is: what the
+    // rename publishes must be there after a power cut, or the trim would be
+    // a way to lose a day that the plain append is careful not to be.
+    out.sync_data()?;
+    drop(out);
+    fs::rename(&tmp, path)?;
+    Ok(cut)
 }
 
 /// One entry as it goes into a day's file: a length, a store block, and a
@@ -702,6 +879,25 @@ pub struct Follower {
     /// Notes already given out, so a day written across an upgrade says its
     /// one sentence once rather than at every poll.
     said: Vec<String>,
+    /// When the newest sample handed out was taken.
+    ///
+    /// Only for the case below: a file that has become shorter has been
+    /// trimmed to the byte budget, and an offset into it now means something
+    /// else, so reading resumes from the start. What has already been given
+    /// out must not be given out again, and the samples are what say so —
+    /// the bytes have moved.
+    last: Option<SystemTime>,
+    /// Whether this drain is re-reading a file that was trimmed underneath it.
+    catching_up: bool,
+    /// Which file the offset belongs to: the device and inode it was taken
+    /// against.
+    ///
+    /// A trim writes the kept tail beside the day and renames it over, so the
+    /// path stays and the file behind it is a new one. Length alone does not
+    /// notice — a trim that dropped one entry and an append that added one
+    /// leave the file exactly as long as it was, with entirely different bytes
+    /// at the offset.
+    file: Option<(u64, u64)>,
 }
 
 impl Follower {
@@ -718,6 +914,9 @@ impl Follower {
             at: 0,
             roll,
             said: Vec::new(),
+            last: None,
+            catching_up: false,
+            file: None,
         }
     }
 
@@ -775,26 +974,36 @@ impl Follower {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
             Err(e) => return Err(e),
         };
-        let len = f.metadata()?.len();
-        if len < self.at {
-            // Shorter than it was: the file was replaced, not appended to.
-            // Read from the start rather than from an offset into a different
-            // file, and say so, because what was there before is gone.
+        let meta = f.metadata()?;
+        let len = meta.len();
+        let mut notes = Vec::new();
+        let file = {
+            use std::os::unix::fs::MetadataExt as _;
+            (meta.dev(), meta.ino())
+        };
+        let replaced = self.file.is_some_and(|had| had != file);
+        self.file = Some(file);
+        if len < self.at || replaced {
+            // Shorter than it was. The byte budget trimmed its oldest entries
+            // — or something else replaced it — and an offset into the file it
+            // was is an offset into the middle of an entry of the file it now
+            // is. Reading starts again from the front, and `last` is what
+            // keeps the entries that survived the trim from being handed out
+            // a second time.
             self.at = 0;
-            return Ok((
-                Vec::new(),
-                vec![format!("{name}: replaced while it was being followed")],
+            self.catching_up = true;
+            notes.push(format!(
+                "{name}: trimmed while it was being followed; reading on from where it left off"
             ));
         }
         if len == self.at {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), notes));
         }
         f.seek(io::SeekFrom::Start(self.at))?;
         let mut bytes = Vec::new();
         f.take(len - self.at).read_to_end(&mut bytes)?;
 
         let mut out = Vec::new();
-        let mut notes = Vec::new();
         let mut at = 0usize;
         loop {
             // The half-written entry, before anything else looks at it: a
@@ -848,6 +1057,12 @@ impl Follower {
         // interleave their entries, and a consumer reading a feed is entitled
         // to a series that moves forwards.
         out.sort_by_key(|s| s.at);
+        if std::mem::take(&mut self.catching_up) {
+            out.retain(|s| self.last.is_none_or(|l| s.at > l));
+        }
+        if let Some(newest) = out.last().map(|s| s.at) {
+            self.last = Some(newest);
+        }
         Ok((out, notes))
     }
 }
@@ -1017,6 +1232,27 @@ fn next_block(bytes: &[u8], bad: usize) -> Option<usize> {
         look = at + 1;
     }
     None
+}
+
+/// When the earliest sample a day still holds was taken.
+///
+/// "Still holds", because a day at the byte budget has had its morning
+/// dropped, and a listing that said only how large the file is would not say
+/// which part of the day is in it. One entry is read for this, not the file:
+/// the answer is in the first block.
+pub fn first_at(dir: &Path, date: Date) -> Option<SystemTime> {
+    use std::io::Read as _;
+    let mut f = fs::File::open(dir.join(file_name(date))).ok()?;
+    let mut head = [0u8; LEN];
+    f.read_exact(&mut head).ok()?;
+    let len = u32::from_le_bytes(head) as usize;
+    let mut bytes = vec![0u8; LEN + len];
+    bytes[..LEN].copy_from_slice(&head);
+    f.read_exact(&mut bytes[LEN..]).ok()?;
+    match step(&bytes, 0) {
+        Step::Read { samples, .. } => samples.first().map(|s| s.at),
+        _ => None,
+    }
 }
 
 /// The dates a log directory holds, newest first.
@@ -1489,33 +1725,200 @@ mod tests {
     }
 
     #[test]
-    fn the_byte_bound_stops_the_writing_and_not_only_the_keeping() {
-        // Today's file is never pruned — it is the running session's history —
-        // so a bound that only decides what to *keep* watches a short interval
-        // fill the disk in a single day and does nothing about it.
+    fn a_follower_of_a_day_that_is_trimmed_underneath_it_repeats_nothing() {
+        // The two halves of this milestone meeting each other. A trim rewrites
+        // the file, so a follower's byte offset now points into the middle of
+        // some other entry; reading starts again from the front, and the
+        // samples already handed out must not be handed out twice.
+        let dir = scratch("follow-trim");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        append(&dir, day, &[&sample(1_800_000_000, 11.0)], 1 << 30).unwrap();
+        let one = fs::metadata(dir.join(file_name(date))).unwrap().len();
+        append(&dir, day, &[&sample(1_800_000_001, 22.0)], 1 << 30).unwrap();
+
+        let mut f = Follower::open(&dir, date, false);
+        assert_eq!(
+            f.poll()
+                .unwrap()
+                .0
+                .iter()
+                .map(|s| s.cpu_total)
+                .collect::<Vec<_>>(),
+            [11.0, 22.0]
+        );
+
+        // Two entries of budget: this one pushes the first out.
+        let said = append(&dir, day, &[&sample(1_800_000_002, 33.0)], one * 2).unwrap();
+        assert!(matches!(said, Appended::Trimmed(_)), "{said:?}");
+        let (after, notes) = f.poll().unwrap();
+        assert_eq!(
+            after.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            [33.0],
+            "a trim made the follower repeat what it had already given out"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("trimmed")),
+            "the trim was silent: {notes:?}"
+        );
+        // And it carries on from there.
+        append(&dir, day, &[&sample(1_800_000_003, 44.0)], one * 2).unwrap();
+        assert_eq!(
+            f.poll()
+                .unwrap()
+                .0
+                .iter()
+                .map(|s| s.cpu_total)
+                .collect::<Vec<_>>(),
+            [44.0]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn at_the_byte_bound_the_newest_samples_are_kept_and_the_oldest_are_dropped() {
+        // The rule, in one line: poptop keeps the most recent `log-bytes` of
+        // history, not the oldest. Today's file is never pruned — it is the
+        // running session's history — so a bound that only decided what to
+        // keep would watch a short interval fill the disk, and a bound that
+        // stopped the writing would drop exactly the samples nearest whatever
+        // the reader is waiting for.
         let dir = scratch("cap");
         let day = at(1_800_000_000);
         let date = date_of(day).unwrap();
-        assert!(append(&dir, day, &[&sample(1_800_000_000, 11.0)], 1 << 30).unwrap());
-        let size = fs::metadata(dir.join(file_name(date))).unwrap().len();
+        assert_eq!(
+            append(&dir, day, &[&sample(1_800_000_000, 11.0)], 1 << 30).unwrap(),
+            Appended::Wrote
+        );
+        let one = fs::metadata(dir.join(file_name(date))).unwrap().len();
 
+        // Room for three entries. The fourth and fifth push the first two out.
+        let cap = one * 3;
+        let mut said = Vec::new();
+        for i in 1..5u64 {
+            match append(
+                &dir,
+                day,
+                &[&sample(1_800_000_000 + i, 11.0 * (i + 1) as f32)],
+                cap,
+            )
+            .unwrap()
+            {
+                Appended::Wrote => {}
+                Appended::Trimmed(s) => said.push(s),
+                Appended::Full => panic!("the log stopped instead of making room"),
+            }
+        }
         assert!(
-            !append(&dir, day, &[&sample(1_800_000_001, 22.0)], size).unwrap(),
-            "the day was at its limit and was written to anyway"
+            fs::metadata(dir.join(file_name(date))).unwrap().len() <= cap,
+            "the day grew past the budget"
+        );
+        let (back, notes) = read_day(&dir, date);
+        assert!(
+            notes.is_empty(),
+            "a trimmed day does not read cleanly: {notes:?}"
         );
         assert_eq!(
-            fs::metadata(dir.join(file_name(date))).unwrap().len(),
-            size,
-            "a refused append still grew the file"
+            back.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            [33.0, 44.0, 55.0],
+            "the wrong end of the day was dropped"
         );
-        // What was already written is still readable, and is what it was.
-        let (back, _) = read_day(&dir, date);
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].cpu_total, 11.0);
+        assert!(
+            said.iter().any(|s| s.contains("log-bytes")),
+            "history was given up silently: {said:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 
-        // And it starts again once there is room.
-        assert!(append(&dir, day, &[&sample(1_800_000_002, 33.0)], size + 1).unwrap());
-        assert_eq!(read_day(&dir, date).0.len(), 2);
+    #[test]
+    fn days_that_are_over_are_dropped_before_the_day_being_written() {
+        // Oldest first means whole days before parts of one. A day that is
+        // over is history somebody may still want, and it is all older than
+        // every entry of the day in progress.
+        let dir = scratch("cap-days");
+        let old = at(1_800_000_000);
+        let today = at(1_800_000_000 + 24 * 3600);
+        append(&dir, old, &[&sample(1_800_000_000, 11.0)], 1 << 30).unwrap();
+        append(
+            &dir,
+            today,
+            &[&sample(1_800_000_000 + 24 * 3600, 22.0)],
+            1 << 30,
+        )
+        .unwrap();
+        let cap = total_bytes(&dir);
+
+        let said = append(
+            &dir,
+            today,
+            &[&sample(1_800_000_001 + 24 * 3600, 33.0)],
+            cap,
+        )
+        .unwrap();
+        assert!(
+            matches!(&said, Appended::Trimmed(s) if s.contains(&date_of(old).unwrap().to_string())),
+            "the older day was not the one dropped: {said:?}"
+        );
+        assert_eq!(days(&dir), [date_of(today).unwrap()], "the wrong file went");
+        assert_eq!(
+            read_day(&dir, date_of(today).unwrap())
+                .0
+                .iter()
+                .map(|s| s.cpu_total)
+                .collect::<Vec<_>>(),
+            [22.0, 33.0],
+            "the day being written lost entries while an older day was still there"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_budget_that_will_not_hold_one_entry_writes_nothing_and_says_so() {
+        // The one case left where an append does not happen. Nothing is
+        // dropped for it either: there is no history to keep the newest of,
+        // and a log that deleted a day to make room it still would not have
+        // would be the worst of both.
+        let dir = scratch("cap-tiny");
+        let day = at(1_800_000_000);
+        append(&dir, day, &[&sample(1_800_000_000, 11.0)], 1 << 30).unwrap();
+        let before = fs::read(dir.join(file_name(date_of(day).unwrap()))).unwrap();
+
+        assert_eq!(
+            append(&dir, day, &[&sample(1_800_000_001, 22.0)], 16).unwrap(),
+            Appended::Full
+        );
+        assert_eq!(
+            fs::read(dir.join(file_name(date_of(day).unwrap()))).unwrap(),
+            before,
+            "a refused append changed the file"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_trim_leaves_no_temporary_file_behind() {
+        // The tail is written beside the day and renamed over it. One left
+        // there by a trim that was interrupted is poptop's, is not a day, and
+        // is counted against no budget, so the next trim removes it.
+        let dir = scratch("cap-tmp");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        append(&dir, day, &[&sample(1_800_000_000, 11.0)], 1 << 30).unwrap();
+        let one = fs::metadata(dir.join(file_name(date))).unwrap().len();
+        let stale = dir.join(format!("{}.trim", file_name(date)));
+        fs::write(&stale, b"left by a crash").unwrap();
+
+        for i in 1..4u64 {
+            append(&dir, day, &[&sample(1_800_000_000 + i, 22.0)], one * 2).unwrap();
+        }
+        assert!(!stale.exists(), "a stale trim file was left on the disk");
+        assert!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .all(|e| date_in_name(&e.file_name().to_string_lossy()).is_some()),
+            "something that is not a day file is in the log directory"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1911,6 +2314,37 @@ mod tests {
     /// against 7.9ms when it went in, about four gigabytes a second.
     #[test]
     #[ignore = "measurement"]
+    fn measure_trimming_a_day() {
+        // What making room costs, against the budget it is defending. A trim
+        // rewrites the part of the file it keeps, so the figure that matters
+        // is per megabyte kept — the bytes dropped cost nothing.
+        let dir = scratch("trim-cost");
+        fs::create_dir_all(&dir).unwrap();
+        let s = crate::store::tests_support::big_sample(5.0, 400);
+        let mut day = Vec::new();
+        for _ in 0..600 {
+            day.extend(frame(&[&s]).unwrap());
+        }
+        let path = dir.join("poptop-20260920");
+        let mut best = std::time::Duration::MAX;
+        let mut kept = 0u64;
+        for _ in 0..5 {
+            fs::write(&path, &day).unwrap();
+            let t = std::time::Instant::now();
+            let freed = trim(&path, day.len() as u64 / 8).unwrap();
+            best = best.min(t.elapsed());
+            kept = day.len() as u64 - freed;
+        }
+        eprintln!(
+            "{} MB day, an eighth freed, {} MB kept: {best:?}",
+            day.len() >> 20,
+            kept >> 20
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "a measurement, not an assertion"]
     fn measure_reading_a_day() {
         let s = crate::store::tests_support::big_sample(5.0, 400);
         let mut day = Vec::new();
