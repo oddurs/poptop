@@ -140,6 +140,49 @@ say so. `--read` opens a
 day in the interactive view: the same keys, the same panels, scrubbing
 through a recorded day instead of the live buffer.
 
+## `--verify`: is this day file intact, and what is in it
+
+```console
+$ poptop --verify 2026-09-19
+poptop-20260919  61.4M
+entries 144 whole, 144 samples
+period  00:02:11 to 23:57:09, every 10m
+bytes   64392101 of 64392101 in whole entries
+intact
+```
+
+The same walk the reader makes, reported rather than repaired: every entry
+is read and dropped, so verifying a day costs one entry of memory and not a
+day of it.
+
+Exit **0** when every byte of the file was an entry this build could read and
+**1** when anything was skipped, so `poptop --verify && …` is a question cron
+can ask. Damage is named for what happened, with where it starts and how much
+of the file it covers:
+
+```console
+$ poptop --verify
+poptop-20260920  9.2M
+entries 21 whole, 21 samples
+period  09:12:04 to 12:42:04, every 10m
+bytes   9613204 of 9700000 in whole entries
+damage  at 9613204: an entry cut short (86796 bytes)
+damaged: one stretch could not be read
+```
+
+- **an entry cut short** — a write that did not finish, which is what a power
+  cut leaves behind.
+- **an entry from a different version** — framed like an entry, and this
+  build cannot decode it.
+- **empty bytes** — a sparse region, or a file the filesystem extended and
+  never filled. Named separately because counting it as a version mismatch
+  sends somebody chasing an upgrade that never happened.
+- **a fragment at the end** — too few bytes left to be an entry.
+
+The entries either side of any damage are still read, by `--verify` and by
+everything else: the reasons add up to the file, and what `--verify` says
+survived is exactly what `--read` and `--export` give you.
+
 ## Exit status
 
 `0` on a clean exit, including `q`, `Ctrl-C`, `SIGTERM`, `SIGHUP` and the

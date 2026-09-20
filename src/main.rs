@@ -58,6 +58,11 @@ USAGE:
     poptop --read DATE
                     open a recorded day (YYYY-MM-DD) instead of live
     poptop --days     list the recorded days, their sizes and what they hold
+    poptop --verify [DATE]
+                    walk a day file and say what is in it: entries, the period
+                    and spacing, and every stretch that could not be read, with
+                    the reason. Exit 1 if anything was skipped, so cron can ask.
+                    Today unless a date is given.
     poptop --export=json|line [DATE] [--follow [--for SPAN]]
                     every metric, by name, for a script. With a date, the whole
                     of that recorded day rather than the machine now. --follow
@@ -427,6 +432,8 @@ enum Command {
         until: Option<Duration>,
     },
     Days,
+    /// Walk a day file and say what is in it. Today when none is named.
+    Verify(Option<log::Date>),
     Bench,
     Help,
     Version,
@@ -536,6 +543,7 @@ fn command(args: &[String]) -> Result<Command, Usage> {
         "--keys" => Command::Keys,
         "--write-config" => Command::WriteConfig,
         "--days" => Command::Days,
+        "--verify" => Command::Verify(rest.next().map(date).transpose()?),
         "--once" => Command::Once,
         "--bench" => Command::Bench,
         "--help" | "-h" => Command::Help,
@@ -988,6 +996,65 @@ fn main() -> io::Result<()> {
                 }
             } else {
                 out!("{}", export::lines_of(&samples));
+            }
+            return Ok(());
+        }
+        Command::Verify(day) => {
+            flush(&warnings);
+            let dir = log::dir().unwrap_or_else(|| fail(&[], NO_STATE_DIR, 2));
+            let date = match day.or_else(|| log::date_of(std::time::SystemTime::now())) {
+                Some(date) => date,
+                None => fail(&[], "no local date for today", 1),
+            };
+            let check = match log::verify(&dir, date) {
+                Ok(check) => check,
+                // Said the way every other command says it, rather than as
+                // the raw errno: a day nobody recorded is the commonest
+                // answer this command has, not a filesystem fault.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => fail(
+                    &[],
+                    format!("nothing recorded on {date}. `poptop --days` lists what there is"),
+                    1,
+                ),
+                Err(e) => fail(&[], format!("{}: {e}", log::file_name(date)), 1),
+            };
+            // Exit 1 when anything was skipped, so `poptop --verify && …` is
+            // a question a cron job can ask. Everything is on stdout: it is
+            // the answer, not a warning about it.
+            let intact = check.intact();
+            outln!("{}  {}", log::file_name(date), ui::fmt_bytes(check.size));
+            outln!("entries {} whole, {} samples", check.entries, check.samples);
+            if let (Some(first), Some(last)) = (check.first, check.last) {
+                let every = match check.spacing {
+                    Some(d) => format!(", every {}", ui::fmt_lag(d)),
+                    None => String::new(),
+                };
+                outln!(
+                    "period  {} to {}{every}",
+                    log::clock_string(first),
+                    log::clock_string(last)
+                );
+            }
+            outln!("bytes   {} of {} in whole entries", check.read, check.size);
+            for note in &check.said {
+                outln!("note    {note}");
+            }
+            for d in &check.damage {
+                outln!("damage  at {}: {} ({} bytes)", d.at, d.what, d.bytes);
+            }
+            outln!(
+                "{}",
+                if intact {
+                    "intact".to_string()
+                } else {
+                    match check.damage.len() {
+                        1 => "damaged: one stretch could not be read".to_string(),
+                        n => format!("damaged: {n} stretches could not be read"),
+                    }
+                }
+            );
+            if !intact {
+                exit(1);
             }
             return Ok(());
         }
