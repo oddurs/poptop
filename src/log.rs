@@ -1234,6 +1234,259 @@ fn next_block(bytes: &[u8], bad: usize) -> Option<usize> {
     None
 }
 
+/// What a day file turned out to contain, entry by entry.
+///
+/// 0147: everything the reader learned to survive — a torn entry, a stranger's
+/// bytes, a block from a version this build cannot parse — was invisible
+/// unless you opened the day in a terminal. This is the same walk, reported
+/// rather than repaired.
+#[derive(Debug, Default, PartialEq)]
+pub struct Check {
+    /// The file's size, and how much of it whole entries account for. The
+    /// difference is the damage.
+    pub size: u64,
+    pub read: u64,
+    pub entries: u64,
+    pub samples: u64,
+    pub first: Option<SystemTime>,
+    pub last: Option<SystemTime>,
+    /// The median gap between samples, as [`spacing`] computes it.
+    pub spacing: Option<std::time::Duration>,
+    pub damage: Vec<Damage>,
+    /// What decoding had to say — a version's fields this build does not know.
+    pub said: Vec<String>,
+    /// The most bytes of the file this walk held at once.
+    ///
+    /// The property the command rests on, measured rather than asserted about:
+    /// a day is walked an entry at a time, so this stays at one entry however
+    /// large the day is. Resident memory would have been the obvious thing to
+    /// measure and is the wrong one — an allocator's slack, a test harness and
+    /// a sanitizer's redzones all move it, and none of them are poptop holding
+    /// a day.
+    pub held: u64,
+}
+
+impl Check {
+    /// Whether every byte of the file was an entry this build could read.
+    pub fn intact(&self) -> bool {
+        self.damage.is_empty()
+    }
+}
+
+/// One stretch of a day file that is not a readable entry.
+#[derive(Debug, PartialEq)]
+pub struct Damage {
+    pub at: u64,
+    pub bytes: u64,
+    pub what: Damaged,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Damaged {
+    /// A write that did not finish: a length naming more bytes than are
+    /// there, or bytes that neither decode nor end where another entry
+    /// starts.
+    CutShort,
+    /// Framed like an entry and will not decode: another version wrote it.
+    Foreign,
+    /// A length of zero — a sparse region, or a file the filesystem extended
+    /// and never filled.
+    Zeroes,
+    /// Bytes after the last entry that are too few to be one.
+    Trailing,
+}
+
+impl std::fmt::Display for Damaged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Damaged::CutShort => "an entry cut short",
+            Damaged::Foreign => "an entry from a different version",
+            Damaged::Zeroes => "empty bytes",
+            Damaged::Trailing => "a fragment at the end",
+        })
+    }
+}
+
+/// How far past an entry [`verify`] reads so that `step` can tell a fragment
+/// from another version's entry: enough for the next entry's length and magic.
+const LOOKAHEAD: usize = LEN + store::MAGIC.len();
+
+/// How much of the file a resync looks at in one go.
+const RESYNC_WINDOW: usize = 256 << 10;
+
+/// How much of a candidate entry is read to decide whether it opens a store.
+///
+/// `starts_store` reads the magic, the version and the schema block, which is
+/// about 1.5 KB. Forty times that is read and no more, so resyncing after
+/// damage does not pull an entry into memory to look at its first line.
+const PROBE: usize = 64 << 10;
+
+/// Walk a day file and say what is in it, without holding the day.
+///
+/// One entry at a time: an entry's bytes, its samples' times, and then both
+/// are dropped. What is kept is the count, the span, the gaps and a line per
+/// stretch of damage — a day of a hundred and forty-four entries costs about
+/// as much as one of a hundred and forty-four thousand.
+///
+/// The decisions are [`read_blocks`]'s, made by the same `step`, so a file
+/// this reports as intact is one the reader reads whole and a stretch it
+/// names as lost is the stretch the reader skips.
+pub fn verify(dir: &Path, date: Date) -> io::Result<Check> {
+    use std::io::{Read as _, Seek as _};
+    let path = dir.join(file_name(date));
+    let mut f = fs::File::open(&path)?;
+    let size = f.metadata()?.len();
+    let mut check = Check {
+        size,
+        ..Check::default()
+    };
+    let mut gaps: Vec<std::time::Duration> = Vec::new();
+    let mut buf = Vec::new();
+    let mut at = 0u64;
+    while at < size {
+        let left = size - at;
+        if left < LEN as u64 {
+            check.damage.push(Damage {
+                at,
+                bytes: left,
+                what: Damaged::Trailing,
+            });
+            break;
+        }
+        // The entry, its length, and a few bytes of whatever follows it.
+        let len = {
+            let mut head = [0u8; LEN];
+            f.seek(io::SeekFrom::Start(at))?;
+            f.read_exact(&mut head)?;
+            u32::from_le_bytes(head) as u64
+        };
+        let want = (LEN as u64 + len + LOOKAHEAD as u64).min(left) as usize;
+        buf.clear();
+        buf.resize(want, 0);
+        f.seek(io::SeekFrom::Start(at))?;
+        f.read_exact(&mut buf)?;
+        check.held = check.held.max(buf.capacity() as u64);
+
+        match step(&buf, 0) {
+            Step::Read { to, samples, said } => {
+                // The same check the whole-file reader makes: an entry that
+                // decoded only because the entry after it supplied the bytes
+                // it was missing. Its samples are somebody else's last fields.
+                if let Some(inner) = next_block(&buf, 0).filter(|n| *n < to) {
+                    check.damage.push(Damage {
+                        at,
+                        bytes: inner as u64,
+                        what: Damaged::CutShort,
+                    });
+                    at += inner as u64;
+                    continue;
+                }
+                note_once(&mut check.said, said);
+                check.entries += 1;
+                check.samples += samples.len() as u64;
+                check.read += to as u64;
+                for s in &samples {
+                    if let Some(last) = check.last
+                        && let Ok(gap) = s.at.duration_since(last)
+                        && !gap.is_zero()
+                    {
+                        gaps.push(gap);
+                    }
+                    check.first.get_or_insert(s.at);
+                    check.last = Some(s.at);
+                }
+                at += to as u64;
+            }
+            Step::Foreign { to, said } => {
+                note_once(&mut check.said, said);
+                check.damage.push(Damage {
+                    at,
+                    bytes: to as u64,
+                    what: Damaged::Foreign,
+                });
+                at += to as u64;
+            }
+            step => {
+                let what = match step {
+                    Step::Zeroes => Damaged::Zeroes,
+                    _ => Damaged::CutShort,
+                };
+                // Where the next entry starts, which is where the reader
+                // would resume. Everything between is the stretch that is
+                // lost.
+                check.held = check.held.max(RESYNC_WINDOW as u64);
+                let next = resync(&mut f, at, size)?.unwrap_or(size);
+                check.damage.push(Damage {
+                    at,
+                    bytes: next - at,
+                    what,
+                });
+                at = next;
+            }
+        }
+    }
+    gaps.sort_unstable();
+    check.spacing = (!gaps.is_empty()).then(|| gaps[(gaps.len() - 1) / 2]);
+    Ok(check)
+}
+
+/// The first whole entry that starts after the damage at `bad`, found by the
+/// magic, as [`next_block`] finds it in memory.
+///
+/// A window at a time, overlapping by the magic's length so a candidate on a
+/// boundary is not missed, and each candidate settled by reading its own head
+/// rather than by having the whole entry in the window: an entry is as large
+/// as a process table, and a scan that had to hold one to recognise it would
+/// be a scan that could not be given a bound.
+fn resync(f: &mut fs::File, bad: u64, size: u64) -> io::Result<Option<u64>> {
+    use std::io::{Read as _, Seek as _};
+    const WINDOW: usize = RESYNC_WINDOW;
+    let magic = store::MAGIC;
+    let mut window = vec![0u8; WINDOW];
+    let mut from = bad + 1 + LEN as u64;
+    while from + magic.len() as u64 <= size {
+        let n = (size - from).min(WINDOW as u64) as usize;
+        f.seek(io::SeekFrom::Start(from))?;
+        f.read_exact(&mut window[..n])?;
+        let mut look = 0usize;
+        while let Some(found) = window[look..n]
+            .windows(magic.len())
+            .position(|w| w == magic.as_slice())
+        {
+            let magic_at = from + (look + found) as u64;
+            let start = magic_at - LEN as u64;
+            if opens_an_entry(f, start, size)? {
+                return Ok(Some(start));
+            }
+            look += found + 1;
+        }
+        if n < WINDOW {
+            break;
+        }
+        from += (WINDOW - magic.len()) as u64;
+    }
+    Ok(None)
+}
+
+/// Whether a whole entry starts at `at`, as [`starts_block`] decides it in
+/// memory: a length that fits in the file, and a store behind it.
+fn opens_an_entry(f: &mut fs::File, at: u64, size: u64) -> io::Result<bool> {
+    use std::io::{Read as _, Seek as _};
+    if at + LEN as u64 > size {
+        return Ok(false);
+    }
+    let mut head = [0u8; LEN];
+    f.seek(io::SeekFrom::Start(at))?;
+    f.read_exact(&mut head)?;
+    let len = u32::from_le_bytes(head) as u64;
+    if len == 0 || at + LEN as u64 + len > size {
+        return Ok(false);
+    }
+    let mut probe = vec![0u8; len.min(PROBE as u64) as usize];
+    f.read_exact(&mut probe)?;
+    Ok(store::starts_store(&probe))
+}
+
 /// When the earliest sample a day still holds was taken.
 ///
 /// "Still holds", because a day at the byte budget has had its morning
@@ -1517,6 +1770,165 @@ mod tests {
         // SAFETY: as above.
         unsafe { raise(9) };
         unreachable!("SIGKILL did not end the process");
+    }
+
+    #[test]
+    fn a_whole_day_verifies_as_intact_and_says_what_is_in_it() {
+        let dir = scratch("verify");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        for i in 0..3u64 {
+            append(
+                &dir,
+                day,
+                &[&sample(1_800_000_000 + i * 10, 11.0)],
+                u64::MAX,
+            )
+            .unwrap();
+        }
+        let check = verify(&dir, date).unwrap();
+        assert!(check.intact(), "{:?}", check.damage);
+        assert_eq!((check.entries, check.samples), (3, 3));
+        assert_eq!(check.first, Some(at(1_800_000_000)));
+        assert_eq!(check.last, Some(at(1_800_000_020)));
+        assert_eq!(check.spacing, Some(std::time::Duration::from_secs(10)));
+        assert_eq!(
+            check.read, check.size,
+            "a file with nothing wrong in it was not all accounted for"
+        );
+        assert!(check.said.is_empty(), "{:?}", check.said);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_kind_of_damage_is_reported_as_that_kind() {
+        // The four r1 taught the reader to survive, each named for what
+        // happened: calling a truncated write "a different version" sends
+        // somebody chasing an upgrade that never happened, and that is the
+        // whole reason this command reports a reason at all.
+        let dir = scratch("verify-damage");
+        fs::create_dir_all(&dir).unwrap();
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        let path = dir.join(file_name(date));
+        let whole = frame(&[&sample(1_800_000_000, 11.0)]).unwrap();
+        let after = frame(&[&sample(1_800_000_010, 22.0)]).unwrap();
+        // Framed like an entry, and not one this build can decode.
+        let foreign = {
+            let mut f = (16u32).to_le_bytes().to_vec();
+            f.extend_from_slice(store::MAGIC);
+            f.extend_from_slice(&[0xff; 6]);
+            f
+        };
+
+        for (what, bytes, kind) in [
+            (
+                "a write cut short",
+                [&whole[..], &after[..after.len() / 2]].concat(),
+                Damaged::CutShort,
+            ),
+            (
+                "a run of zeroes",
+                [&whole[..], &[0u8; 64][..], &after[..]].concat(),
+                Damaged::Zeroes,
+            ),
+            (
+                "another version's entry",
+                [&whole[..], &foreign[..], &after[..]].concat(),
+                Damaged::Foreign,
+            ),
+            (
+                "a fragment too short to be a length",
+                [&whole[..], &[1u8, 2][..]].concat(),
+                Damaged::Trailing,
+            ),
+        ] {
+            fs::write(&path, &bytes).unwrap();
+            let check = verify(&dir, date).unwrap();
+            assert!(!check.intact(), "{what} verified as intact");
+            assert_eq!(
+                check.damage.iter().map(|d| d.what).collect::<Vec<_>>(),
+                [kind],
+                "{what} was reported as something else"
+            );
+            // The entries either side of it are still read, and the damage is
+            // exactly the bytes between them.
+            assert!(check.entries >= 1, "{what} cost the entry before it");
+            assert_eq!(
+                check.read + check.damage.iter().map(|d| d.bytes).sum::<u64>(),
+                check.size,
+                "{what}: the bytes do not add up to the file"
+            );
+            // And the reader agrees about what survived.
+            assert_eq!(
+                check.samples as usize,
+                read_day(&dir, date).0.len(),
+                "{what}: verify and the reader disagree"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_entry_that_borrowed_the_next_one_s_bytes_is_reported_as_cut_short() {
+        // The case the checksum went in for: a fragment whose missing bytes
+        // the next torn write happened to supply, which decodes and passes
+        // for whole. The reader takes it back; so does this.
+        let dir = scratch("verify-borrowed");
+        fs::create_dir_all(&dir).unwrap();
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        let path = dir.join(file_name(date));
+        let one = frame(&[&sample(1_800_000_000, 11.0)]).unwrap();
+        let two = frame(&[&sample(1_800_000_010, 22.0)]).unwrap();
+        // A length claiming the whole of what follows it, with a real entry
+        // starting inside that span.
+        let mut bytes = (one.len() as u32 + two.len() as u32).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&one[LEN..]);
+        bytes.extend_from_slice(&two);
+        fs::write(&path, &bytes).unwrap();
+
+        let check = verify(&dir, date).unwrap();
+        assert_eq!(
+            check.damage.iter().map(|d| d.what).collect::<Vec<_>>(),
+            [Damaged::CutShort]
+        );
+        assert_eq!(check.entries, 1, "the entry inside the claim was not read");
+        assert_eq!(check.samples as usize, read_day(&dir, date).0.len());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verifying_a_day_does_not_hold_it() {
+        // The point of walking the file rather than reading it: a day of four
+        // hundred processes a sample must not cost what the day costs. The
+        // walk reports the most it held at once, so this is a fact about the
+        // code and not about an allocator's slack — resident memory moves
+        // under a sanitizer and under whatever else the test binary has been
+        // doing, and neither is poptop holding a day.
+        let dir = scratch("verify-memory");
+        fs::create_dir_all(&dir).unwrap();
+        let date = date_of(at(1_800_000_000)).unwrap();
+        let s = crate::store::tests_support::big_sample(5.0, 400);
+        let entry = frame(&[&s]).unwrap().len() as u64;
+        let mut day = Vec::new();
+        for _ in 0..200 {
+            day.extend(frame(&[&s]).unwrap());
+        }
+        let size = day.len() as u64;
+        fs::write(dir.join(file_name(date)), &day).unwrap();
+        drop(day);
+
+        let check = verify(&dir, date).unwrap();
+        assert_eq!(check.entries, 200);
+        assert!(check.intact());
+        assert_eq!(check.size, size);
+        assert!(
+            check.held <= entry * 2,
+            "a {size}-byte day of {entry}-byte entries was walked holding {} bytes",
+            check.held
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

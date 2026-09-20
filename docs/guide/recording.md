@@ -214,6 +214,22 @@ damage. A day an earlier crash tore reads the way `--export DATE` reads it,
 with the same line on stderr. Following today moves to tomorrow's file when
 the writer starts one; following a day that is over stays there.
 
+## Is a day file intact?
+
+```console
+$ poptop --verify 2026-09-19
+poptop-20260919  61.4M
+entries 144 whole, 144 samples
+period  00:02:11 to 23:57:09, every 10m
+bytes   64392101 of 64392101 in whole entries
+intact
+```
+
+Exit 0 when it is, exit 1 when anything was skipped, with a line per stretch
+saying what happened and where — so a cron job can ask, and so can you
+without opening a terminal-sized day. Full output in
+[output](../reference/output.md).
+
 ## What the log does about bad days
 
 The log is append-only and self-describing, and it is read defensively
