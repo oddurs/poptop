@@ -23,7 +23,7 @@ jobs:
             name: ubuntu-arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get install -y strace
       - run: cargo build --release
@@ -31,7 +31,7 @@ jobs:
       - run: uname -a > "fixture/${{ matrix.name }}/uname"
       # A tarball, because an artifact upload drops empty directories.
       - run: tar -C fixture -czf "${{ matrix.name }}.tar.gz" "${{ matrix.name }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.tar.gz

@@ -17,7 +17,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release
       - name: validate/run
@@ -26,7 +26,7 @@ jobs:
         run: |
           set -o pipefail
           validate/run target/release/poptop | tee "validate-${{ matrix.os }}.txt"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: validate-${{ matrix.os }}
