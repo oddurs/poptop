@@ -1,6 +1,6 @@
 [package]
 name = "poptop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # Not a guess: 1.85 is the floor for edition 2024, but ratatui, sysinfo and
 # time all require 1.88, so that is what a build actually needs. `cargo +1.88

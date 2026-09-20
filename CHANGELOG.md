@@ -16,7 +16,149 @@ process that wrote them:
 
 ## [Unreleased]
 
-Nothing since 0.1.0.
+Nothing yet.
+
+## [0.2.0] - 2026-09-20
+
+Activity Monitor's shape, in a terminal — over a timeline Activity Monitor
+does not have.
+
+**Store format 15, unchanged.** A 0.1.0 store and a 0.1.0 day log are read by
+this version. Nothing this release adds is recorded; it is all screen.
+
+**Export schema: compatible.** `--schema` reports the package version, so it
+now reads `0.2.0`, and that one line is the whole diff against the 0.1.0
+golden — every record, field, type and unit is the same. A parser written
+against 0.1.0 reads this without a change, unless it pinned the version
+string itself.
+
+### The screen
+
+- **A menu bar.** `F10`, or `Alt` and a title's underlined letter: File, Edit,
+  View, Go, Process, Help. poptop has around thirty single-key bindings, which
+  is fine once you know them and impenetrable before, and the footer fits six.
+  Every item names the key that also runs it, and a test walks every one and
+  checks that hint against what the key actually does — so the menu cannot
+  drift into advertising a key that has come to mean something else.
+- **Tabs, on the table they describe.** CPU, memory and disk are named sets of
+  columns with the sort that belongs to each, on a strip directly above the
+  table: `Tab`, `1`–`3`, `v`, or a click. The disk figures used to vanish on a
+  narrow terminal with nothing on screen to bring them back; the disk tab is
+  what brings them back, and `i` is gone along with the question it answered.
+- **A scope line that cannot disappear.** What the list is and what has
+  narrowed it — `nginx · 3 of 748 · root`. This was a clause in the panel
+  title, which is a ladder that drops clauses from the least important end, so
+  on exactly the terminals where the table is hardest to read the sentence
+  saying *which* processes these were went first. A table that does not say it
+  has been filtered lies about the machine, and does it silently.
+- **The filter is a field, not a mode.** `/` types into the scope line, where
+  the result of it is stated, rather than into a box at the other end of the
+  screen. `Esc` puts back what was there before.
+- **The graphs moved under the table.** The table is the present and the
+  timeline is the past, so the screen reads down: this machine, this table, how
+  it got here. The timeline's caption — how much time is on screen, which
+  sample the cursor is on — now lands beside the keys that scrub it.
+- **An inspector.** `⏎` on a process: what it is, what it has been doing, and
+  peaks taken from the retained buffer rather than from this instant.
+- **An action bar on the selection**, which states a refusal before the attempt
+  rather than after it.
+- **A summary strip** over the rows on screen, saying what *they* add up to —
+  which is not what the machine adds up to, once anything has narrowed them.
+- **The sorted column wears a caret in its own header**, and a click on a
+  header sorts by it. The sort was named in the panel title and shown nowhere
+  near the sorting.
+- **Smoothing.** `--smooth=5s`, or the View menu. The ordering is over the
+  average too: a row whose number twitches is mildly annoying; a row that swaps
+  places with its neighbour while you are reading it is what makes a table
+  unreadable.
+- **Density.** `--density=compact|comfortable|spacious` — the margin either
+  side of the content, the gap between columns, and whether panels are
+  separated by a blank row.
+- **The mouse.** Click a tab, a column header or a row; drag the timeline to
+  scrub; the wheel moves time over the graph and the selection over the table.
+  One layout serves both the drawing and the hit-testing, so a click cannot
+  land on something other than what is under the pointer. `--mouse=off` gives
+  the terminal its own selection back.
+- **Line graphs, and an axis that can fit its data.** `--graph=line` traces the
+  samples instead of filling under them; `--scale=fit` crops the axis to the
+  data, which shows small movement and costs the comparison between one graph
+  and the next.
+- **Surfaces.** The interface paints its own grounds, in four measured layers,
+  built from the terminal's own background where the terminal will say what
+  that is. `--surface=off` leaves every ground alone.
+
+### Settings
+
+- **A config file, and `--config` to see it.** Every setting poptop has, what
+  it is set to, and which line of which file set it — so a value that is not
+  what you expected says where it came from rather than leaving you to guess
+  between a flag, a file and a default. `--write-config` writes the current
+  state back out as a file you can edit, with a line of prose per setting.
+- **Every key is an action, and a config file can move it.** `key.quit = q, Q`.
+  The keys poptop has always had are the defaults; the boxes are not bindable,
+  because a map that could rebind Backspace inside the filter is one that could
+  stop you typing. Bindings carry what the action carries, so `tab-memory` is a
+  key for the memory tab and `page-up` is "select ten up" rather than a special
+  case in the handler.
+- **Start as you left off.** `view`, `sort`, `zoom`, `tree`, `group`,
+  `kernel-threads` — each taking the values its key cycles through. Two
+  combinations that cannot both hold (a tree with grouping, a sort the tab
+  cannot show) warn and fall back rather than refusing to start.
+- **`hide-columns`** drops columns before the width ladder runs, so the room
+  goes to the command rather than to whatever the ladder would have dropped.
+- **A theme you can edit while it runs.** `R` reads the theme file again, for
+  trying a colour without restarting, and three more tokens — the selection's
+  foreground, panel borders, and the seam where sampling stopped.
+
+### Fixed
+
+- **A narrow table dropped digits instead of columns.** Every column is a fixed
+  width, and ratatui squeezes a set that does not fit rather than dropping any
+  — so a right-aligned figure lost its *leading* digits and `100.9` rendered as
+  `.9`. A wrong number is the one thing this table must never show. The ladder
+  now drops columns, `RSS`, the state letter and the pid included, until what
+  is left fits (0105).
+- **The tree opened on a page of question marks on macOS**, where `launchd` is
+  a root the kernel will not describe and is the parent of everything. A branch
+  is ordered by what the whole branch adds up to now, so the root holding the
+  work comes first (0107).
+- **The header followed a different network interface every second**, and
+  counted loopback. It follows one real interface chosen over a window, and
+  labels which way the bytes are going (0108).
+- **The history column was the same flat picture in every row** on a quiet
+  machine, spending ten columns to repeat the `CPU%` beside it while the
+  command was elided for want of room. It is drawn when some row's history
+  moves, and says `history flat` when that is why it is missing (0110).
+- **The selected row was a dark background and bold**, faint on most themes
+  among rows that reorder every second. It has a ground of its own, which
+  reverses where there is no colour to paint with (0114).
+- **A poptop whose terminal went away span at 100% forever** (0115).
+- **The sparkline and the timeline were drawn over different spans**, side by
+  side, with nothing saying so. One clock for both pictures.
+- **`sysinfo` was raised past the stated compiler floor** by a dependency bump
+  that edited the root manifest while updating only the fuzz lockfile. Held at
+  the version `rust-version = "1.88"` can build, and `./check` now builds
+  `--locked` first, which is the shape of that bug.
+
+### Known at release
+
+Open, filed, and disclosed here rather than found by you:
+
+- **A process on its first sample reports `0.0%` CPU** rather than "not yet
+  known" (0134). CPU is a delta and a first sample has nothing to subtract
+  from; the disk columns say `—` in exactly that situation and CPU prints a
+  number. During a fork storm the processes doing the work sort to the bottom.
+  The fix is a type change reaching both backends, the sort, the filter and the
+  export schema, so it waits.
+- **An empty process table gives no reason** (0124). Grouping by container on a
+  machine with none, or a filter that matches nothing, draws a header and blank
+  lines.
+- **`Esc` quits out of a filtered table** instead of clearing the filter
+  (0125). An applied filter is not on the back-out ladder, though `Esc` does
+  undo one while it is being typed. `q` and `Ctrl-C` quit from anywhere, as
+  documented.
+- **The actions group bump (#140) is unmerged**, needing a token scope this
+  release was not cut with.
 
 ## [0.1.0] - 2026-09-19
 
@@ -106,5 +248,6 @@ Open, filed, and disclosed here rather than found by you:
   (0125). An applied filter is not on the back-out ladder. `q` and `Ctrl-C`
   quit from anywhere, as documented.
 
-[Unreleased]: https://github.com/oddurs/poptop/compare/v0.1.0...master
+[Unreleased]: https://github.com/oddurs/poptop/compare/v0.2.0...master
+[0.2.0]: https://github.com/oddurs/poptop/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/oddurs/poptop/releases/tag/v0.1.0
