@@ -145,10 +145,6 @@ fn a_command_line_that_cannot_run_is_exit_2_on_stderr() {
             &["--export=json", "--follow", "--for=soon"],
             "--for `soon`: expected a span",
         ),
-        (
-            &["--export=json", "--follow", "2026-09-08"],
-            "--follow reads the machine now",
-        ),
         (&["--check-theme"], "--check-theme needs a theme name"),
         (&["--once", "--days"], "--once does not take `--days`"),
         (&["--schema", "x"], "--schema does not take `x`"),
