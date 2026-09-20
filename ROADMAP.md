@@ -346,13 +346,12 @@ Activity Monitor is the best-designed process monitor there is, and almost none
 
 ## r8 — The table earns its width
 
-`··········` 0% · 0 of 12 done
+`#·········` 8% · 1 of 12 done
 
 UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 
 ### backlog
 
-- [ ] `0216` The sorted column does not descend <sup>bug · p0 · ui</sup>
 - [ ] `0217` The action bar names a process by its first word <sup>bug · p2 · ui</sup>
 - [ ] `0218` One glyph means both "not collected" and "no change" <sup>bug · p2 · ui</sup>
 - [ ] `0219` A folded row puts a count in the PID column <sup>bug · p3 · ui</sup>
@@ -364,6 +363,10 @@ UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 - [ ] `0225` Eliding the middle removes the part of a command that identifies it <sup>feature · p1 · ui</sup>
 - [ ] `0226` The memory tab is the CPU tab with fewer columns where the platform cannot fill it <sup>feature · p2 · ui</sup>
 - [ ] `0227` The table is a spreadsheet, and poptop's one advantage barely reaches it <sup>feature · p2 · ui</sup>
+
+### done
+
+- [x] `0216` The sorted column does not descend <sup>bug · p0 · ui</sup>
 
 ## v0.2 — Cheap enough to run
 

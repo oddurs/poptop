@@ -100,18 +100,31 @@ impl Sort {
             // not among the idle — its zeros were never measured. Ahead of the
             // figures rather than folded into them, so it holds whether the
             // figure compared is the raw one or the average.
-            // `settled_*`, not the figures the row is showing: the ordering
-            // is the half of smoothing that has to hold still, and it holds
-            // still by being taken at a beat. The number beside it goes on
-            // describing the moment. See `Smoothing`.
+            // The figure the row is *showing*, not a second reading of it.
+            //
+            // These sorted on a settled average for a few hours: the figure
+            // ended at the cursor and the ordering on a beat, so the table
+            // held still while the numbers stayed live. It put a column marked
+            // `▾CPU%` on screen reading 13.4, 5.8, 3.5, 4.2, 3.9, 3.0, 6.6 —
+            // sorted by a quantity that was not the one printed (0216).
+            //
+            // A table is monotonic in the column it says it is sorted by. That
+            // contract outranks the calm: a reader who can see the sort is
+            // wrong has no way left to tell which of the two numbers behind it
+            // to believe, and the calm was bought with the trust that made the
+            // ordering worth having.
+            //
+            // The calm now comes from the average itself, which is what a
+            // longer `--smooth` lengthens. Two processes genuinely taking
+            // turns will trade rows, and that is them taking turns.
             Sort::Cpu => a
                 .unmeasured()
                 .cmp(&b.unmeasured())
-                .then(sm.settled_cpu(b).total_cmp(&sm.settled_cpu(a))),
+                .then(sm.cpu(b).total_cmp(&sm.cpu(a))),
             Sort::Mem => a
                 .unmeasured()
                 .cmp(&b.unmeasured())
-                .then(sm.settled_rss(b).cmp(&sm.settled_rss(a))),
+                .then(sm.rss(b).cmp(&sm.rss(a))),
             // Unreadable sorts last, not as zero. A process whose IO could not
             // be read is not an idle one, and putting it among the idle ones
             // would be the fabricated zero this codebase refuses everywhere
@@ -1994,74 +2007,46 @@ impl App {
         if window <= 1 {
             return Smoothing::default();
         }
-        // Two windows over one pass. Both are weighted the same way and both
-        // are the span the reader asked for; they differ only in where they
-        // end, which is the whole of the separation this type exists to make:
+        // One window, ending at the cursor — live or scrubbed, the figures
+        // describe the moment on screen and agree with the graph beside them.
         //
-        //   `cpu`         ends at the cursor. It is what the reader reads, so
-        //                 it describes the moment on screen and agrees with
-        //                 the graph beside it.
-        //   `settled_cpu` ends on a beat. It is what the rows are *ordered*
-        //                 by, so between beats the table cannot change its
-        //                 mind about what goes above what.
-        //
-        // One of these used to do both jobs and could not. Ending everything
-        // on a beat made the figures stale — a spike showed as nothing while
-        // it ran and as a number nobody had once it was over — and ending
-        // everything at the cursor makes two processes taking turns swap rows
-        // every second, which is what makes a table unreadable.
+        // It was briefly two: this one, and a second ending on a beat that the
+        // ordering was done over, so the rows held still while the numbers
+        // stayed live. That is a real thing to want and this was the wrong way
+        // to buy it, because it put two readings of one quantity on screen at
+        // once — a column headed `▾CPU%` that did not descend (0216). What
+        // calms the order is the averaging itself, and how much of it there is
+        // is already a setting.
         let at = self.table_index().unwrap_or(0);
-        // While scrubbing there is no beat: the reader is asking about one
-        // moment, and an order quantised away from it would answer a
-        // different question from the figures beside it.
-        let beat = if self.history.is_live() {
-            at - (at % window)
-        } else {
-            at
-        };
-
         let first = (at + 1).saturating_sub(window);
-        let settled_first = (beat + 1).saturating_sub(window);
-        let from = first.min(settled_first);
+        let len = at + 1 - first;
 
-        // Weighted towards the end of the window, not a flat mean over it.
+        // Weighted towards now, not a flat mean over the window.
         //
         // A flat mean has two edges and both are visible. It answers late — a
         // spike is a fifth of the figure on the second it starts — and it
-        // answers *again* when the spike falls off the far end, a whole window
-        // later, as a step down to a number nothing caused. The reader sees a
-        // change with no event under it.
+        // answers *again* when the spike falls off the far end of the window,
+        // a whole window later, as a step down to a number nothing caused. The
+        // reader sees a change with no event under it.
         //
         // A weight that halves with age has neither edge. The newest sample is
-        // about a third of the figure, so a spike moves it at once and
+        // about a third of the figure, so a spike moves the number at once and
         // visibly; the oldest is about a tenth, so its leaving moves it by
         // almost nothing. The same span, spent on a curve instead of a wall:
         // "the last five seconds, mostly the last two".
         //
-        // Half-life is half the window, which is the only choice that does not
-        // need a setting of its own: it keeps the span the reader asked for as
-        // the span that matters, and puts the weight where the question is.
+        // Half-life is half the window, which is the only choice here that
+        // does not need a setting of its own: it keeps the span the reader
+        // asked for as the span that matters, and puts the weight where the
+        // question is.
         let half_life = (window as f32 / 2.0).max(0.5);
-        let weight = |end: usize, first: usize, i: usize| -> f32 {
-            if i < first || i > end {
-                return 0.0;
-            }
-            0.5_f32.powf((end - i) as f32 / half_life)
-        };
-
         let mut sums: HashMap<(i32, Option<u64>), Weighted> = HashMap::new();
-        for (n, s) in self.history.iter().enumerate().skip(from) {
-            if n > at {
-                break;
-            }
-            let w = weight(at, first, n);
-            let sw = weight(beat, settled_first, n);
-            if w == 0.0 && sw == 0.0 {
-                continue;
-            }
+        for (i, s) in self.history.iter().skip(first).take(len).enumerate() {
+            // Age in samples, counted back from the newest in the window.
+            let age = (len - 1 - i) as f32;
+            let w = 0.5_f32.powf(age / half_life);
             for p in s.procs.iter().chain(s.exited.as_deref().unwrap_or(&[])) {
-                let e = sums.entry((p.pid, p.started)).or_default();
-                e.add(p, w, sw);
+                sums.entry((p.pid, p.started)).or_default().add(p, w);
             }
         }
         Smoothing {
@@ -2220,32 +2205,22 @@ pub struct Smoothing {
     by_key: HashMap<(i32, Option<u64>), Averaged>,
 }
 
-/// One process's running totals while [`App::smoothing`] folds the window.
-///
-/// Two weighted sums over one pass: the live window and the settled one. A
-/// pair of tuples did this and clippy was right that nobody could read it.
+/// One process's running total while [`App::smoothing`] folds the window.
 #[derive(Clone, Copy, Default)]
 struct Weighted {
     cpu: f32,
     rss: f64,
     weight: f32,
-    settled_cpu: f32,
-    settled_rss: f64,
-    settled_weight: f32,
 }
 
 impl Weighted {
-    fn add(&mut self, p: &ProcSample, w: f32, settled: f32) {
+    fn add(&mut self, p: &ProcSample, w: f32) {
         self.cpu += p.cpu * w;
         self.rss += p.rss as f64 * f64::from(w);
         self.weight += w;
-        self.settled_cpu += p.cpu * settled;
-        self.settled_rss += p.rss as f64 * f64::from(settled);
-        self.settled_weight += settled;
     }
 
-    /// The averages, or `None` for a process that collected no weight at all —
-    /// one seen only outside both windows, which has nothing to say here.
+    /// The averages, or `None` for a process that collected no weight at all.
     ///
     /// Divided by the weight this process actually collected, not by the
     /// window's. A process that was not running for three of the five samples
@@ -2255,25 +2230,9 @@ impl Weighted {
         if self.weight <= 0.0 {
             return None;
         }
-        let cpu = self.cpu / self.weight;
-        let rss = (self.rss / f64::from(self.weight)) as u64;
-        // A process that exists now but did not at the beat has no settled
-        // figure, and ordering it by the live one is the only answer that is
-        // about it.
-        let settled = self.settled_weight > 0.0;
         Some(Averaged {
-            cpu,
-            rss,
-            settled_cpu: if settled {
-                self.settled_cpu / self.settled_weight
-            } else {
-                cpu
-            },
-            settled_rss: if settled {
-                (self.settled_rss / f64::from(self.settled_weight)) as u64
-            } else {
-                rss
-            },
+            cpu: self.cpu / self.weight,
+            rss: (self.rss / f64::from(self.weight)) as u64,
         })
     }
 }
@@ -2282,10 +2241,6 @@ impl Weighted {
 struct Averaged {
     cpu: f32,
     rss: u64,
-    /// The same figures, over a window that ends on a beat rather than on the
-    /// newest sample. What the *ordering* is done on. See [`Smoothing`].
-    settled_cpu: f32,
-    settled_rss: u64,
 }
 
 impl Smoothing {
@@ -2301,22 +2256,6 @@ impl Smoothing {
         self.by_key
             .get(&(p.pid, p.started))
             .map_or(p.rss, |a| a.rss)
-    }
-
-    /// What to *sort* by: the same average over a window that ends on a beat.
-    ///
-    /// Between one beat and the next this does not move, so neither does the
-    /// order, while `cpu` above goes on describing the moment on screen.
-    pub fn settled_cpu(&self, p: &ProcSample) -> f32 {
-        self.by_key
-            .get(&(p.pid, p.started))
-            .map_or(p.cpu, |a| a.settled_cpu)
-    }
-
-    pub fn settled_rss(&self, p: &ProcSample) -> u64 {
-        self.by_key
-            .get(&(p.pid, p.started))
-            .map_or(p.rss, |a| a.settled_rss)
     }
 
     /// Whether anything is being averaged, for the panel to say so.

@@ -15259,9 +15259,58 @@ fn the_rows_stop_swapping_places_under_your_eye() {
 }
 
 #[test]
-fn the_figure_is_live_while_the_order_is_calm() {
-    // The two halves of smoothing, which used to be one window and could not
-    // be both. Ending everything on a beat bought calm with staleness: a
+fn the_column_the_table_says_it_is_sorted_by_descends() {
+    // 0216. Smoothing was split so the figure could end at the cursor while
+    // the ordering ended on a beat — live numbers, calm rows. It put a column
+    // marked `▾CPU%` on screen reading 13.4, 5.8, 3.5, 4.2, 3.9, 3.0, 6.6.
+    //
+    // A table is monotonic in the column it says it is sorted by. Asked of the
+    // rows as drawn, not of the comparator: the bug was that two readings of
+    // one quantity were both on screen, and a comparator tested against its
+    // own key cannot see that.
+    let mut app = App::new(600);
+    for n in (0..40).rev() {
+        let mut s = sample_at(55.0, n as u64);
+        // Six processes whose CPU wanders — ordinary jitter, no pair
+        // contrived to trade places.
+        s.procs = (0..6)
+            .map(|i| {
+                let phase = (n + i * 3) % 7;
+                ProcSample {
+                    cpu: 5.0 + i as f32 * 2.0 + phase as f32 * 1.5,
+                    started: Some(i as u64 + 1),
+                    threads: Some(1),
+                    ..proc_named(100 + i, &format!("p{i}"), 0.0, 1 << 20)
+                }
+            })
+            .collect();
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for smooth in [1usize, 3, 5, 9] {
+        app.smooth = smooth;
+        for _ in 0..8 {
+            let sm = app.smoothing();
+            let shown: Vec<f32> = app
+                .visible_rows()
+                .iter()
+                .filter(|r| !r.is_thread())
+                .map(|r| sm.cpu(&r.proc))
+                .collect();
+            assert!(
+                shown.windows(2).all(|w| w[1] <= w[0] + 0.05),
+                "the sorted column does not descend at smooth={smooth}: {shown:?}"
+            );
+            app.history.scrub(-1);
+        }
+        app.history.goto_live();
+    }
+}
+
+#[test]
+fn the_figure_follows_a_spike_while_it_runs() {
+    // Ending the window on a beat bought calm with staleness: a
     // process that ran at 90% for three seconds showed `5.0` for every one of
     // them, because the block being averaged had closed before the spike
     // began — and then showed `56.0` for five seconds after it was over, a
@@ -15491,18 +15540,18 @@ fn the_figure_on_the_row_is_the_one_the_ordering_used() {
 }
 
 #[test]
-fn the_order_holds_still_between_boundaries_and_moves_on_them() {
-    // Averaging alone only makes reordering less frequent — measured on a real
-    // machine at fifteen frames in fifteen. The calm comes from the key the
-    // rows are *ordered* by ending on a beat, so between one beat and the next
-    // nothing in the table can change its mind about what goes above what.
-    // Same measurement with this: three in fifteen.
+fn averaging_is_what_calms_the_order() {
+    // The claim that replaced `the_order_holds_still_between_boundaries_and_moves_on_them`.
     //
-    // Only the ordering. The figures on the rows end at the cursor and go on
-    // moving — see `the_figure_is_live_while_the_order_is_calm`, which is the
-    // other half and the reason this is no longer one window doing both.
-    let mut app = App::new(600);
-    app.smooth = 5;
+    // That test pinned a second average taken on a beat, which the ordering
+    // was done over so the rows could hold still while the figures stayed
+    // live. It bought calm with a column that did not descend (0216), so it
+    // is gone, and what is left has to carry the weight: the averaging itself
+    // is what stops rows trading places, and how much of it there is is a
+    // setting the reader already has.
+    //
+    // Measured against the same table with smoothing off, which is the only
+    // comparison that says the averaging is doing anything.
     let order = |app: &App| -> Vec<i32> {
         app.visible_rows()
             .iter()
@@ -15510,38 +15559,46 @@ fn the_order_holds_still_between_boundaries_and_moves_on_them() {
             .map(|r| r.proc.pid)
             .collect()
     };
-    // A pair that trades places every sample, so any un-quantised ordering
-    // changes on every push.
-    let mut seen = Vec::new();
-    for i in 0..15 {
-        let mut s = sample_at(50.0, (15 - i) as u64);
-        s.procs = vec![
-            ProcSample {
-                cpu: if i % 2 == 0 { 90.0 } else { 10.0 },
-                started: Some(1),
-                ..proc_named(101, "a", 0.0, 1 << 20)
-            },
-            ProcSample {
-                cpu: if i % 2 == 0 { 10.0 } else { 90.0 },
-                started: Some(2),
-                ..proc_named(102, "b", 0.0, 1 << 20)
-            },
-        ];
-        app.push(s);
-        seen.push(order(&app));
-    }
-    let flips = seen.windows(2).filter(|w| w[0] != w[1]).count();
-    assert!(
-        flips <= 15 / 5,
-        "the order changed {flips} times in fifteen samples, which is not calm"
-    );
+    let flips = |smooth: usize| {
+        let mut app = App::new(600);
+        app.smooth = smooth;
+        let mut seen = Vec::new();
+        for i in 0..15 {
+            let mut s = sample_at(50.0, (15 - i) as u64);
+            // Two processes a long way apart in the mean, one of them noisy
+            // enough to cross the other on a single sample. Real jitter, not
+            // a pair contrived to alternate.
+            s.procs = vec![
+                ProcSample {
+                    cpu: if i % 3 == 0 { 70.0 } else { 20.0 },
+                    started: Some(1),
+                    ..proc_named(101, "noisy", 0.0, 1 << 20)
+                },
+                ProcSample {
+                    // Below the noisy one's mean of about 37, and above the
+                    // 20 it sits at between spikes — so the raw figures cross
+                    // on most samples and the averaged ones never do.
+                    cpu: 25.0,
+                    started: Some(2),
+                    ..proc_named(102, "level", 0.0, 1 << 20)
+                },
+            ];
+            app.push(s);
+            seen.push(order(&app));
+        }
+        seen.windows(2).filter(|w| w[0] != w[1]).count()
+    };
 
-    // And it is not frozen: a process that takes over does eventually get to
-    // the top, within a window.
-    app.smooth = 1;
-    let live = order(&app);
-    app.smooth = 5;
-    assert!(!live.is_empty() && !order(&app).is_empty());
+    let raw = flips(1);
+    let averaged = flips(5);
+    assert!(
+        raw > 4,
+        "the fixture does not reorder without smoothing: {raw}"
+    );
+    assert!(
+        averaged * 2 <= raw,
+        "averaging did not calm the order: {averaged} flips against {raw} raw"
+    );
 }
 
 #[test]

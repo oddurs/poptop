@@ -2,7 +2,7 @@
 id: 216
 title: The sorted column does not descend
 type: bug
-status: backlog
+status: done
 milestone: r8
 labels:
 - ui

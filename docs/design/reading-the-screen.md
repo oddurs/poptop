@@ -191,44 +191,40 @@ columns you still get all four of the figures above. `--once` reports the same
 three, because a script that reads only cpu and memory reads a stalled machine
 as an idle one.
 
-## Why the figures move and the rows do not
+## Why the figures move, and what stops the rows dancing
 
 A process table read at one sample a second is mostly noise. A row's CPU swings
 from 3 to 40 and back, and — far worse for reading it — rows swap places while
 your eye is on them. Activity Monitor answers both by refreshing every five
-seconds. poptop keeps every second and answers them separately, because they
-are different problems with different right answers.
+seconds. poptop keeps every second and averages instead.
 
-**The figure is live.** `--smooth=5s` averages each row over the last five
-seconds, ending at the moment on screen, weighted towards it: the newest sample
-is about a third of the figure, the oldest about a tenth. A spike moves the
-number on the second it starts and fades over the seconds after, so the table
-agrees with the graph under it.
+`--smooth=5s` averages each row over the last five seconds, ending at the
+moment on screen, weighted towards it: the newest sample is about a third of
+the figure, the oldest about a tenth. A spike moves the number on the second it
+starts and fades over the seconds after, so the table agrees with the graph
+under it.
 
-That weighting is the whole of it. A flat mean over the same window has two
-edges and both are visible: it answers late, and it answers *again* when the
-spike falls off the far end a whole window later — a step down to a number
-nothing caused, with no event under it. A weight that halves with age has
-neither.
+That weighting is most of it. A flat mean over the same window has two edges
+and both are visible: it answers late, and it answers *again* when the spike
+falls off the far end a whole window later — a step down to a number nothing
+caused, with no event under it. A weight that halves with age has neither.
 
-**The order is settled.** The rows are ordered by the same average taken on a
-beat — one every `smooth` seconds — so between beats the table cannot change
-its mind about what goes above what. Averaging alone does not fix this:
-measured on a real machine it reordered on fifteen frames out of fifteen, and
-on a beat, three.
+The ordering is over the same figure the row is showing. That sounds obvious
+and was briefly not the case: for a few hours the figure ended at the cursor
+and a second average ended on a beat, with the rows ordered by the second one,
+so that between beats the table could not change its mind about what went above
+what. It worked, and it put a column headed `▾CPU%` on screen reading 13.4,
+5.8, 3.5, 4.2, 3.9, 3.0, 6.6.
 
-Ending *both* on a beat is what poptop used to do, and it is the trade that
-looks reasonable and is not. A process that ran at 90% for three seconds showed
-`5.0` for every one of them, because the block being averaged had closed before
-the spike began; then, once it was over, the table read `56.0` for five seconds
-— a figure the process had at no point — under a graph drawing the spike at the
-second it happened. Staleness is the wrong price for calm, because a stale
-figure is not what buys the calm. What has to hold still is the order, and only
-the order.
+A table is monotonic in the column it says it is sorted by. That contract
+outranks the calm, because a reader who can see the sort is wrong has no way
+left to tell which of the two numbers behind it to believe — and the calm was
+bought with exactly the trust that made the ordering worth having. So the
+ordering follows the figure, and the calm comes from the averaging: lengthen
+`--smooth` and the rows settle, because the numbers they are sorted by settle.
 
-While scrubbing there is no beat. The reader is asking about one moment, and an
-order quantised away from it would answer a different question from the figures
-beside it.
+What that gives up is honest. Two processes genuinely taking turns at 90% and
+10% will trade rows every second, because they are taking turns.
 
 The strip above the table says `avg 5s` whenever this is on, because a figure
 that is not the sample's own has to say so.

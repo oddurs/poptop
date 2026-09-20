@@ -19,14 +19,14 @@ available, because the head is the program every one of them shares and the
 tail is whatever the last argument happens to end with:
 
 ```
-claude --dangero…skip-permissions
-claude --resume …97b-a1ebc3ceb02d
+node --experimen…l-modules main.js
+node --inspect=1…-modules serve.js
 poptop --interva…l=60s --store=on
 OrbStack Helper …872c248 -handoff
 ```
 
-Two `claude` processes, and what distinguishes them has been cut out of the
-middle and replaced with the flag fragments that do not. The README's own
+Two `node` processes, and what distinguishes them has been cut out of the
+middle and replaced with flag fragments that do not. The README's own
 argument for showing the command line is that four `node` services sort as four
 identical `node`s; this elision undoes that for exactly those rows.
 
@@ -40,8 +40,8 @@ differently. Keep the program whole, then spend what is left on the arguments
 from the *left*, cutting at an argument boundary:
 
 ```
-claude --dangerously-skip-perm…
-claude --resume 3f2a…
+node --experimental-modules ma…
+node --inspect=127.0.0.1:9229 …
 poptop --interval=1s --window=…
 ```
 

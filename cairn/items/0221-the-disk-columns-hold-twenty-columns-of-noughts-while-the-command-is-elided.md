@@ -19,8 +19,8 @@ that answers *which process this is* — gets thirty-two and loses its middle:
 
 ```
  DISK R    DISK W  ...  COMMAND
-      0         0       claude --dangero…skip-permissions
-      0         0       claude --resume …97b-a1ebc3ceb02d
+      0         0       node --experimen…l-modules main.js
+      0         0       node --inspect=1…-modules serve.js
 ```
 
 The machine was doing four kilobytes a second of disk. The columns are correct
