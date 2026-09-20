@@ -214,6 +214,27 @@ damage. A day an earlier crash tore reads the way `--export DATE` reads it,
 with the same line on stderr. Following today moves to tomorrow's file when
 the writer starts one; following a day that is over stays there.
 
+### What poptop had to assume
+
+A recorded day carries the collector's notes — an exit listener that would
+not register, the IO columns withdrawn after the probe, a page size that had
+to be guessed — with the sample they were said at. `--read` shows them
+against the moment they belong to, and `--report` lists each once with the
+time it was first said:
+
+```console
+$ poptop --report 2026-09-19
+poptop report for 2026-09-19
+period  00:02:11 to 23:57:09, 144 samples every 10m
+cpu     peak 100.0% at 20:32:07 (rustc)
+assumed 00:02:11 no exit listener: taskstats would not register
+```
+
+"A source poptop chose not to read" and "a figure the kernel does not
+publish" are the distinction the whole format exists to keep, and a day that
+could not say which was making claims it had no standing for. A day recorded
+before this existed says nothing rather than saying nothing was assumed.
+
 ## Is a day file intact?
 
 ```console

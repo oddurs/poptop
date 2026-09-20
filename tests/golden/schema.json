@@ -160,7 +160,8 @@
       {"name": "exited", "type": "[ProcSample]", "unit": "none", "optional": true},
       {"name": "cgroups", "type": "[CgroupStat]", "unit": "none", "optional": true},
       {"name": "nodes", "type": "[NodeStat]", "unit": "none", "optional": true},
-      {"name": "nfs", "type": "NfsStat", "unit": "none", "optional": true}
+      {"name": "nfs", "type": "NfsStat", "unit": "none", "optional": true},
+      {"name": "notes", "type": "[string]", "unit": "none", "optional": true}
     ]
   }
 }

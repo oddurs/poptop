@@ -46,6 +46,12 @@ sample.mem	17179869184	14027816960	7532593152	-	5368709120	4326555648	-	...
 A missing figure is `null` in JSON and `-` in the line format — never a
 zero, for the same reason the table draws `—`.
 
+`notes` carries what poptop had to assume at that moment — the collector's
+own sentences, such as `no exit listener: taskstats would not register`. An
+empty list is a moment at which nothing had to be assumed; `null` is a
+recording that does not carry them at all, which is any day written before
+poptop had the field.
+
 With a date, `--export=json 2026-09-08` writes the whole of that recorded
 day instead of the machine now.
 

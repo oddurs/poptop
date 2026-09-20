@@ -70,6 +70,7 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
     Sample {
         at: std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs),
         cpu_total: cpu,
+        notes: None,
         cpu_per_core: vec![cpu, cpu / 2.0, 0.0, 99.0],
         disks: None,
         clock_ceiling: None,
@@ -638,6 +639,48 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
         oldest[0],
         "pushing into a full replay buffer left the view alone, so this test no \
          longer covers why `run` must not do it"
+    );
+}
+
+#[test]
+fn the_panel_says_what_was_assumed_at_the_moment_on_screen() {
+    // 0148. A day opened a week later shows the numbers; what poptop had to
+    // assume about the machine is why some of them are the shape they are.
+    // From the sample under the cursor, not from this session, so a recorded
+    // day carries its own reasons.
+    let mut app = App::new(600);
+    let mut quiet = sample(10.0);
+    quiet.notes = Some(Vec::new());
+    let mut said = sample(20.0);
+    said.notes = Some(vec![
+        "no exit listener: taskstats would not register".into(),
+    ]);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    app.push(quiet);
+    assert!(
+        !rows(&app, 200, 30)
+            .iter()
+            .any(|r| r.contains("exit listener")),
+        "a moment that assumed nothing said something"
+    );
+
+    app.push(said);
+    let screen = rows(&app, 200, 30);
+    assert!(
+        screen.iter().any(|r| r.contains("exit listener")),
+        "the panel said nothing about what was assumed:\n{}",
+        screen.join("\n")
+    );
+
+    // And scrubbing back to the moment before it takes the note with it: it
+    // is a statement about that instant, not a banner about the session.
+    app.history.goto_oldest();
+    assert!(
+        !rows(&app, 200, 30)
+            .iter()
+            .any(|r| r.contains("exit listener")),
+        "the note followed the cursor back to a moment it was not said at"
     );
 }
 

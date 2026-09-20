@@ -1932,6 +1932,39 @@ mod tests {
     }
 
     #[test]
+    fn what_poptop_had_to_assume_is_in_the_day_file_with_its_time() {
+        // 0148. The collector's notes used to be printed once at startup and
+        // then gone, so a day opened a week later showed the numbers without
+        // any of the reasons they are the shape they are.
+        let dir = scratch("notes");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        let mut said = sample(1_800_000_000, 11.0);
+        said.notes = Some(vec![
+            "no exit listener: taskstats would not register".into(),
+            "page size assumed to be 4096".into(),
+        ]);
+        let mut quiet = sample(1_800_000_010, 22.0);
+        quiet.notes = Some(Vec::new());
+        append(&dir, day, &[&said], u64::MAX).unwrap();
+        append(&dir, day, &[&quiet], u64::MAX).unwrap();
+
+        let (back, notes) = read_day(&dir, date);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(
+            back[0].notes.as_deref().map(|n| n.len()),
+            Some(2),
+            "what was assumed did not survive the day file"
+        );
+        assert!(back[0].notes.as_deref().unwrap()[1].contains("page size"));
+        assert_eq!(back[0].at, at(1_800_000_000), "with the wrong time");
+        // Nothing assumed at the next sample is not the same as a recording
+        // that cannot say: empty, not absent.
+        assert_eq!(back[1].notes.as_deref(), Some(&[][..]));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_day_is_followed_as_it_is_written() {
         // Nothing twice, nothing skipped, and in order: the three things a
         // consumer of a feed is entitled to.

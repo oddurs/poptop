@@ -100,6 +100,27 @@ impl Run {
         self
     }
 
+    /// Exit 0 with output, and nothing on stderr but what poptop had to
+    /// assume about *this machine*.
+    ///
+    /// For the commands that sample. A container without `CAP_NET_ADMIN` says
+    /// "exited processes need CAP_NET_ADMIN" and a machine with it says
+    /// nothing, and which of those a test runs on is not something the
+    /// command under test decides.
+    pub fn ok_sampling(self) -> Run {
+        assert_eq!(self.code, Some(0), "`{}` failed:\n{}", self.line, self.err);
+        assert!(!self.out.is_empty(), "`{}` printed nothing", self.line);
+        for line in self.err.lines() {
+            assert!(
+                line.starts_with("poptop: ") && !line.contains("panicked"),
+                "`{}` wrote something that is not a note:\n{}",
+                self.line,
+                self.err
+            );
+        }
+        self
+    }
+
     /// The code given, nothing on stdout, and one `poptop:` line on stderr
     /// that starts with `says`.
     pub fn refused(self, code: i32, says: &str) -> Run {
@@ -142,5 +163,6 @@ pub fn logged_day(home: &Home) -> String {
 
 /// Write one sample to today's log, the way cron would.
 pub fn log_a_sample(home: &Home) {
-    home.run(&["--once", "--log=on", "--interval=200ms"]).ok();
+    home.run(&["--once", "--log=on", "--interval=200ms"])
+        .ok_sampling();
 }
