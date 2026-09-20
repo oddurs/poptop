@@ -54,13 +54,9 @@ The foundation for atop parity: a model that can carry two hundred metrics
 
 ## v1.2 — Logs and feeds you can build on
 
-`#########·` 88% · 7 of 8 done · due 2027-06-01
+`##########` 100% · 8 of 8 done · due 2027-06-01
 
 The recording half of poptop, hardened and opened up. Today a day log is appended with a length, a block and a checksum, flushed but never synced; retention counts days and bytes across the directory and stops writing when the budget is reached; and every feed is one-shot — `--export` prints a sample or a recorded day and exits. Nothing can follow poptop as it runs, nothing can tail a day as it is written, a day file cannot be checked without reading it into a monitor, and what poptop itself had to assume about the machine is printed once at startup and then lost. This milestone is about a log that survives the machine losing power and says what it contains, and feeds another program can subscribe to.
-
-### backlog
-
-- [ ] `0150` SIGHUP means quit, where every other logger reopens <sup>bug · p3</sup>
 
 ### done
 
@@ -71,6 +67,7 @@ The recording half of poptop, hardened and opened up. Today a day log is appende
 - [x] `0147` A day file can only be checked by opening it in a monitor <sup>feature · p2</sup>
 - [x] `0148` A recorded day cannot say what poptop had to assume <sup>feature · p2</sup>
 - [x] `0149` A feed carries every metric or none <sup>feature · p3</sup>
+- [x] `0150` SIGHUP means quit, where every other logger reopens <sup>bug · p3</sup>
 
 ## v2.1 — Everything the kernel says
 

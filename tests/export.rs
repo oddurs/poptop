@@ -517,6 +517,13 @@ fn the_line_format_reads_back_to_what_the_json_says() {
 // read it as a consumer does: from the pipe, while it runs, and stopped the
 // three ways it can be stopped.
 
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+const SIGTERM: i32 = 15;
+const SIGHUP: i32 = 1;
+
 /// Lines from a running feed, one at a time, with a bound on the wait.
 ///
 /// A thread and a channel rather than a blocking read, so a feed that stops
@@ -556,23 +563,16 @@ impl Feed {
         }
     }
 
-    /// The next line that is a row rather than a `#` header.
-    fn row(&mut self) -> String {
-        loop {
-            let l = self.line();
-            if !l.starts_with('#') {
-                return l;
-            }
-        }
-    }
-
-    fn signal(&self, sig: &str) {
-        let ok = std::process::Command::new("kill")
-            .args([sig, &self.child.id().to_string()])
-            .status()
-            .expect("cannot run kill")
-            .success();
-        assert!(ok, "kill {sig} failed");
+    /// Send a signal to the feed.
+    ///
+    /// The call rather than `kill(1)`: the binary is not in every container a
+    /// test runs in, and a test that fails because an image is slim is a test
+    /// nobody trusts.
+    fn signal(&self, sig: i32) {
+        // SAFETY: a signal to our own child, which has not been waited on, so
+        // its pid is still its own.
+        let sent = unsafe { kill(self.child.id() as i32, sig) };
+        assert_eq!(sent, 0, "could not signal the feed");
     }
 
     /// Wait for it to end, and say how.
@@ -609,7 +609,7 @@ fn a_live_feed_writes_a_record_an_interval_until_it_is_signalled() {
         (0.15..0.45).contains(&each),
         "200ms samples arrived {each:.3}s apart: {at:?}"
     );
-    feed.signal("-TERM");
+    feed.signal(SIGTERM);
     let s = feed.ends();
     assert_eq!(s.code(), Some(0), "SIGTERM did not end the feed cleanly");
 }
@@ -679,14 +679,62 @@ fn a_feed_stops_itself_after_for() {
 }
 
 #[test]
-fn a_feed_stops_on_hangup_too() {
-    // The terminal going away, which for a feed redirected to a file is the
-    // shell that started it exiting.
+fn a_hangup_without_a_terminal_reopens_rather_than_stopping() {
+    // 0150. SIGHUP means two opposite things: on a terminal it is the
+    // terminal going away, and off one it is what `logrotate` means by it —
+    // "I have moved your file, open it again". A recorder that exited on the
+    // second would die at 03:00 on the night the rotation runs.
     let home = Home::new();
-    let mut feed = Feed::start(&home, &["--export=line", "--follow", "--interval=200ms"]);
-    feed.row();
-    feed.signal("-HUP");
-    assert_eq!(feed.ends().code(), Some(0), "SIGHUP did not end it cleanly");
+    log_a_sample(&home);
+    let day = logged_day(&home);
+    let path = home
+        .state()
+        .join("poptop")
+        .join("log")
+        .join(format!("poptop-{}", day.replace('-', "")));
+    let mut feed = Feed::start(&home, &["--export=json", &day, "--follow"]);
+    let first = record_at(&feed.line());
+
+    // The rotation: the file this follower is reading is moved away, and a
+    // new one appears under the same name.
+    std::fs::rename(&path, path.with_extension("1")).unwrap();
+    feed.signal(SIGHUP);
+    log_a_sample(&home);
+
+    let next = record_at(&feed.line());
+    assert!(
+        next > first,
+        "the follower repeated a sample across the rotation: {next} after {first}"
+    );
+    assert!(
+        feed.child.try_wait().unwrap().is_none(),
+        "a hangup off a terminal stopped the feed instead of reopening"
+    );
+    // And SIGTERM still ends it.
+    feed.signal(SIGTERM);
+    assert_eq!(feed.ends().code(), Some(0));
+}
+
+#[test]
+fn a_hangup_tells_a_live_feed_there_is_nothing_to_reopen() {
+    // The other half: a feed of the machine writes to stdout, which poptop
+    // does not own and cannot reopen. It carries on, and says so once rather
+    // than leaving the operator to wonder what their rotation did.
+    let home = Home::new();
+    let mut feed = Feed::start(&home, &["--export=json", "--follow", "--interval=200ms"]);
+    feed.line();
+    feed.signal(SIGHUP);
+    let after = record_at(&feed.line());
+    assert!(after > 0.0);
+    assert!(
+        feed.child.try_wait().unwrap().is_none(),
+        "a hangup stopped a live feed"
+    );
+    feed.signal(SIGTERM);
+    assert_eq!(feed.ends().code(), Some(0));
+    let mut err = String::new();
+    std::io::Read::read_to_string(feed.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+    assert!(err.contains("nothing to reopen"), "it said: {err:?}");
 }
 
 #[test]
@@ -713,7 +761,7 @@ fn a_day_is_followed_from_one_process_while_another_writes_it() {
             "a follower repeated or reordered a sample: {at:?}"
         );
     }
-    feed.signal("-TERM");
+    feed.signal(SIGTERM);
     assert_eq!(
         feed.ends().code(),
         Some(0),
