@@ -352,7 +352,7 @@ poptop cannot show you those processes. What it can do is stop implying they did
 not happen:
 
 ```text
-── processes (312) — sort: CPU · 47 tasks came and went ────────────────────
+── processes (312) · 47 tasks came and went ─────────────────────────────────
 ```
 
 `/proc/stat` publishes how many tasks the kernel has created since boot, so the

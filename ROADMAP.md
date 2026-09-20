@@ -86,6 +86,81 @@ What makes atop something a fleet depends on rather than something you run:
 - [x] `0076` Nothing can be done to a process, only watched <sup>feature · p3</sup>
 - [x] `0077` The comparison table will be wrong the moment this lands <sup>docs · p2</sup>
 
+## v5.0 — It explains
+
+`··········` 0% · 0 of 7 done · due 2028-01-01
+
+poptop can show you any instant and it makes you do the joining. The buffer
+
+### backlog
+
+- [ ] `0139` The timeline fills, where it should draw a line <sup>bug · p0</sup>
+- [ ] `0140` Nothing says why the worst moment was the worst <sup>feature · p0</sup>
+- [ ] `0141` Two moments cannot be compared <sup>feature · p1</sup>
+- [ ] `0142` Nothing knows what normal looks like for this machine <sup>feature · p1</sup>
+- [ ] `0143` A finding cannot leave the terminal it was found in <sup>feature · p2</sup>
+- [ ] `0149` The layout is three fixed stacks, not a dashboard <sup>feature · p0</sup>
+- [ ] `0150` Nothing can be zoomed into <sup>feature · p0</sup>
+
+## v5.1 — It knows why
+
+`··········` 0% · 0 of 2 done · due 2028-04-01
+
+The layer under the one above. poptop can name the process; it cannot say what
+
+### backlog
+
+- [ ] `0144` A blocked process is a dead end <sup>feature · p1</sup>
+- [ ] `0145` Why a process is hot needs a different tool <sup>feature · p2</sup>
+
+## v5.2 — It is navigable
+
+`··········` 0% · 0 of 3 done · due 2028-07-01
+
+Six hundred samples are retained and the only ways through them are one arrow
+
+### backlog
+
+- [ ] `0146` The buffer can be addressed but not searched <sup>feature · p1</sup>
+- [ ] `0147` One machine at a time <sup>feature · p2</sup>
+- [ ] `0148` The first run teaches nothing <sup>feature · p3</sup>
+
+## v6.0 — It recognises
+
+`··········` 0% · 0 of 4 done · due 2028-10-01
+
+Every monitor treats each moment as new. A machine is not new — it has a rhythm.
+
+### backlog
+
+- [ ] `0154` The machine has a rhythm and poptop cannot see it <sup>feature · p0</sup>
+- [ ] `0155` There is no way to say "find me another one like this" <sup>feature · p1</sup>
+- [ ] `0156` poptop does not know what the machine is for <sup>feature · p1</sup>
+- [ ] `0162` Waiting has no profile <sup>feature · p2</sup>
+
+## v6.1 — It decides
+
+`··········` 0% · 0 of 3 done · due 2029-01-01
+
+The last step of the ladder. v5.0 explains what happened; this turns the
+
+### backlog
+
+- [ ] `0157` Nothing says what you would get back <sup>feature · p1</sup>
+- [ ] `0158` Nothing says what happens next <sup>feature · p2</sup>
+- [ ] `0159` There is no one-sentence answer <sup>feature · p0</sup>
+
+## v7.0 — One language under everything
+
+`··········` 0% · 0 of 2 done · due 2029-06-01
+
+The architectural claim, and the one that decides whether poptop is a good tool
+
+### backlog
+
+- [ ] `0160` Five features grew five query dialects <sup>feature · p0</sup>
+- [ ] `0161` Nothing can be watched for <sup>feature · p1</sup>
+
 ## r1 — Read nothing on trust
 
 `##########` 100% · 5 of 5 done
@@ -195,6 +270,59 @@ Presentation sprint. The documentation is now a companion to the program, and
 - [x] `0131` Nothing watches the dependencies or the actions CI runs <sup>chore · p3 · repo</sup>
 - [x] `0132` The colour work is the part nobody can see without running it <sup>docs · p2 · repo</sup>
 - [x] `0133` The repository has a two-line .gitignore and no .editorconfig <sup>chore · p3 · repo</sup>
+
+## v3.5 — Graphs that spend every row on something that varies
+
+`··········` 0% · 0 of 7 done
+
+A graph is best when three things are true of it, in this order:
+
+### backlog
+
+- [ ] `0190` A graph pinned to zero wastes the panel on a high flat series <sup>bug · p0</sup>
+- [ ] `0191` Zooming out hides volatility behind the peak <sup>feature · p1</sup>
+- [ ] `0192` A character cell is eight levels and a pixel is one <sup>feature · p2</sup>
+- [ ] `0193` The graph knows what caused the spike and does not say <sup>feature · p1</sup>
+- [ ] `0194` One graph for fourteen cores <sup>feature · p2</sup>
+- [ ] `0195` A range can be looked at but not selected <sup>feature · p2</sup>
+- [ ] `0196` Two panels cannot be compared because each picked its own scale <sup>feature · p1</sup>
+
+## v3.6 — A terminal program that works like a program
+
+`#######···` 67% · 2 of 3 done
+
+poptop had around thirty single-key bindings and no way to find out about any of
+
+### backlog
+
+- [ ] `0200` A command palette for the things with no key <sup>feature · p2</sup>
+
+### done
+
+- [x] `0198` Thirty keys and no way to discover any of them <sup>feature · p0</sup>
+- [x] `0199` The mouse is reported and ignored <sup>feature · p1</sup>
+
+## v4.0 — Activity Monitor's shape, in a terminal
+
+`##########` 100% · 13 of 13 done
+
+Activity Monitor is the best-designed process monitor there is, and almost none
+
+### done
+
+- [x] `0202` The resource you are looking at is invisible <sup>feature · p0</sup>
+- [x] `0203` A filtered list can be mistaken for the machine <sup>bug · p1</sup>
+- [x] `0204` A summary strip with the same shape on every tab <sup>feature · p1</sup>
+- [x] `0205` Columns belong to the question, not to the user <sup>feature · p2</sup>
+- [x] `0206` The sort is not shown where the sorting is <sup>feature · p2</sup>
+- [x] `0207` There is no way to ask about one process <sup>feature · p1</sup>
+- [x] `0208` Search is a mode and should be a field <sup>feature · p2</sup>
+- [x] `0209` The actions on a process are a key you have to know <sup>feature · p2</sup>
+- [x] `0210` Energy is a tab poptop cannot fill <sup>feature · p3</sup>
+- [x] `0211` The table should look like a table <sup>feature · p3</sup>
+- [x] `0212` Nothing says what the rows on screen cost <sup>feature · p1</sup>
+- [x] `0213` A table you cannot read because it will not hold still <sup>feature · p1</sup>
+- [x] `0214` The layout is tight and you cannot say otherwise <sup>feature · p2</sup>
 
 ## v0.2 — Cheap enough to run
 

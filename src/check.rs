@@ -32,12 +32,15 @@ pub const MIN_CONTRAST: f64 = 3.0;
 /// that the quiet end stays visible.
 pub const MIN_RECESSIVE: f64 = 1.5;
 
-/// The panel background poptop draws over.
+/// The background to assume at a tier that paints none.
 ///
-/// A constant rather than a reading of the terminal: poptop never sets a
-/// background, so the real one belongs to the user's terminal theme and cannot
-/// be known. This is a dark surface typical of the terminals poptop is designed
-/// against, and a figure measured against a stated assumption beats no figure.
+/// Below 256 colours poptop leaves the ground to the terminal, so the real one
+/// belongs to the user's theme and cannot be known. This is a dark surface
+/// typical of the terminals poptop is designed against, and a figure measured
+/// against a stated assumption beats no figure.
+///
+/// Above that tier this is not used: poptop paints its own surfaces, and they
+/// are measured rather than assumed. That is the point of painting them.
 pub const SURFACE: [u8; 3] = [0x1a, 0x1a, 0x19];
 
 /// The tokens that carry meaning, and so must be told apart from each other.
@@ -208,22 +211,54 @@ impl Report {
             }
         }
 
-        // Both backgrounds, because a colour is drawn over both and clearing
-        // one says nothing about the other. The first 256-colour palette
-        // cleared ΔE comfortably while sitting at 2.03:1 on the selected row.
+        // Every ground a colour is actually drawn on, because clearing one says
+        // nothing about the others. The first 256-colour palette cleared ΔE
+        // comfortably while sitting at 2.03:1 on the selected row.
+        //
+        // The surfaces are read from the theme rather than assumed, at any tier
+        // that paints them. A theme that introduced a background nobody had
+        // measured text against would be the same failure as the selected row,
+        // one layer along — and adding three of them at once is exactly when
+        // that happens.
+        // The surfaces are derived from the terminal's background at startup,
+        // and `--check-theme` has no terminal to ask. So it derives them from
+        // the documented base instead: the report then says what the layers
+        // would be on a typical dark terminal, which is a stated assumption
+        // rather than a silent gap. Reporting only the base would certify a
+        // palette against one of the five grounds it is actually drawn on.
+        let theme = &theme.with_surfaces(Some(SURFACE));
         let selected = cvd::to_rgb(theme.selection_bg);
+        let base = SURFACE;
+        let mut grounds: Vec<(&'static str, [u8; 3], bool)> = vec![("surface", base, true)];
+        if theme.tier.paints_surfaces() {
+            for (name, c) in [
+                ("panel", theme.panel),
+                ("raised", theme.raised),
+                ("stripe", theme.stripe),
+            ] {
+                if let Some(rgb) = cvd::to_rgb(c) {
+                    grounds.push((name, rgb, true));
+                }
+            }
+        }
+        if let Some(bg) = selected {
+            grounds.push(("selected row", bg, false));
+        }
+
         let mut legibility = Vec::new();
         for &(name, rgb, floor, over_selection) in &drawn {
-            legibility.push(Legibility {
-                token: name,
-                background: "surface",
-                ratio: cvd::contrast(rgb, SURFACE),
-                floor,
-            });
-            if let Some(bg) = selected.filter(|_| over_selection) {
+            for &(bg_name, bg, always) in &grounds {
+                // Chrome never crosses a selected row: the table has had no
+                // side borders since the panel became a full-width content
+                // line. Measuring it there reports a real-looking 1.37:1 for a
+                // combination that never appears, and a check that fails on
+                // things that cannot happen trains people to ignore it.
+                if !always && !over_selection {
+                    continue;
+                }
                 legibility.push(Legibility {
                     token: name,
-                    background: "selected row",
+                    background: bg_name,
                     ratio: cvd::contrast(rgb, bg),
                     floor,
                 });
@@ -426,9 +461,43 @@ mod tests {
         // the number is the point.
         let report = Report::of("safe", &themed(&[]));
         assert_eq!(report.pairs.len(), 10, "five meaning colours is ten pairs");
-        // Nine drawn tokens against two backgrounds, less chrome, which is
-        // never drawn over a selected row.
-        assert_eq!(report.legibility.len(), 17);
+        // Every drawn token against every ground it appears on. Counted from
+        // the same lists the report is built from rather than written down: the
+        // number moved from 17 to 44 when poptop started painting its own
+        // surfaces, and a hardcoded total would have been updated to match
+        // whatever came out rather than checking anything.
+        let grounds = report
+            .legibility
+            .iter()
+            .map(|l| l.background)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            grounds.contains("surface")
+                && grounds.contains("panel")
+                && grounds.contains("raised")
+                && grounds.contains("stripe")
+                && grounds.contains("selected row"),
+            "a ground poptop paints is unmeasured: {grounds:?}"
+        );
+        for (token, _, over_selection) in DRAWN {
+            let want = if over_selection {
+                grounds.len()
+            } else {
+                grounds.len() - 1
+            };
+            let got = report
+                .legibility
+                .iter()
+                .filter(|l| l.token == token.name())
+                .count();
+            assert_eq!(
+                got,
+                want,
+                "{} was not measured on every ground",
+                token.name()
+            );
+        }
+        let rows = report.legibility.len();
         // Counted in the rendered text, not just in the data. Asserting that
         // token names appear is satisfied by the contrast rows alone, so a
         // report that printed only its failures still passed.
@@ -440,7 +509,7 @@ mod tests {
         );
         assert_eq!(
             text.lines().filter(|l| l.contains(" on ")).count(),
-            17,
+            rows,
             "not every background was printed:\n{text}"
         );
         for token in ["ok", "warn", "critical", "series_cpu", "series_mem"] {
@@ -612,9 +681,28 @@ mod tests {
             .iter()
             .filter(|l| l.token == "chrome")
             .collect();
-        assert_eq!(chrome.len(), 1, "chrome is not drawn over a selected row");
-        assert_eq!(chrome[0].floor, MIN_RECESSIVE);
-        assert!(chrome[0].ratio < MIN_CONTRAST, "chrome is not recessive");
-        assert!(chrome[0].passes(), "chrome is too faint to find");
+        // On every ground poptop paints, and on none it does not: the table has
+        // had no side borders since the panel became a full-width content line,
+        // so chrome never crosses a selected row. Measuring it there reports a
+        // real-looking 1.37:1 for a combination that never appears, and a check
+        // that fails on things that cannot happen trains people to ignore it.
+        assert!(
+            !chrome.iter().any(|l| l.background == "selected row"),
+            "chrome was measured over a selected row it never crosses"
+        );
+        assert!(!chrome.is_empty(), "chrome was not measured at all");
+        for line in &chrome {
+            assert_eq!(line.floor, MIN_RECESSIVE);
+            assert!(
+                line.ratio < MIN_CONTRAST,
+                "chrome is not recessive on {}",
+                line.background
+            );
+            assert!(
+                line.passes(),
+                "chrome is too faint to find on {}",
+                line.background
+            );
+        }
     }
 }

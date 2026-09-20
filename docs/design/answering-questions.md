@@ -289,7 +289,8 @@ rather than by pushing the command off the edge.
 **Sort and view cannot disagree.** `s` cycles within the columns the current
 view shows, and switching views brings the sort with it when it has to. atop
 allows sorting by a column the view does not show, which is an ordering with no
-visible reason for it. The panel names both — `memory view, sort: MEM`.
+visible reason for it. The strip above the table names both — the tab it is
+on, and `sort MEM` beside it.
 
 **Two axes, not four.** Tree, grouping, thread expansion and views looked like
 four exclusive modes on four keys, which is where interfaces go wrong. They are:

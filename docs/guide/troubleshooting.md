@@ -18,7 +18,7 @@ A row of `—` is a process poptop is not allowed to read — on macOS that is
 most of the system daemons, including pid 1. The row stays in the table so
 the tree is not orphaned.
 
-## In the panel title
+## In the panel rule
 
 **`! io: 183/732 need root`**
 : 183 of those processes belong to other users. `/proc/<pid>/io` needs

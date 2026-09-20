@@ -12,7 +12,7 @@
 //! cannot come to disagree about what a value means, and a setting added for
 //! one gets the other for free.
 
-use crate::glyphs::GlyphSet;
+use crate::glyphs::{Axis, GlyphSet};
 use crate::sample::{ProcSample, Sample};
 use crate::theme::{Palette, Theme, Tier, Token};
 use ratatui::style::Color;
@@ -24,6 +24,13 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub glyphs: GlyphSet,
+    pub axis: Axis,
+    /// How much air the layout is given.
+    pub density: crate::ui::Density,
+    /// Whether to take the mouse. Off gives terminal text selection back.
+    pub mouse: bool,
+    /// Whether to derive panel surfaces from the terminal's own background.
+    pub surfaces: bool,
     pub tier: Tier,
     /// The theme asked for: a built-in, or a file in `~/.config/poptop/themes`.
     /// Whether it resolves is settled in [`resolve`], which is where the
@@ -67,6 +74,8 @@ pub struct Settings {
     pub critical: f32,
     /// Time between samples.
     pub interval: Duration,
+    /// How long the table's figures are averaged over. Zero is off.
+    pub smooth: Duration,
     /// How much history to retain, in time rather than samples. Sample count
     /// is a fact about the buffer; the span is what the user actually wants.
     pub window: Duration,
@@ -117,6 +126,13 @@ pub struct Settings {
 /// atop's logging default, and for the same reason: a day of ten-minute
 /// snapshots is what an incident review reads, and it is 144 samples rather
 /// than 86,400.
+/// How long the table's figures are averaged over by default.
+///
+/// Five seconds, which is Activity Monitor's own refresh period. Long enough
+/// that a row stops twitching, short enough that a process starting is on
+/// screen before you have finished reading the row above it.
+pub const DEFAULT_SMOOTH: Duration = Duration::from_secs(5);
+
 pub const DEFAULT_LOG_INTERVAL: Duration = Duration::from_secs(600);
 /// Days of log kept, unless asked otherwise.
 ///
@@ -134,12 +150,16 @@ impl Settings {
     pub fn detect() -> Self {
         Self {
             glyphs: default_glyphs(),
+            axis: Axis::default(),
+            density: crate::ui::Density::default(),
+            mouse: true,
+            surfaces: true,
             tier: Tier::detect(),
             theme: Palette::default().name().to_string(),
             theme_origin: None,
             origins: Vec::new(),
             keys: crate::keys::Keymap::default(),
-            view: crate::app::View::Generic,
+            view: crate::app::View::Cpu,
             sort: crate::app::Sort::Cpu,
             zoom: crate::app::ZOOM_LEVELS[0],
             tree: false,
@@ -152,6 +172,7 @@ impl Settings {
             warn: Theme::DEFAULT_WARN_PCT,
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
+            smooth: DEFAULT_SMOOTH,
             window: DEFAULT_WINDOW,
             store: false,
             log: false,
@@ -193,7 +214,11 @@ impl Settings {
     /// the test.
     fn fixed() -> Self {
         Self {
-            glyphs: GlyphSet::Braille,
+            glyphs: GlyphSet::default(),
+            axis: Axis::default(),
+            density: crate::ui::Density::default(),
+            mouse: true,
+            surfaces: true,
             tier: Tier::TrueColor,
             theme: Palette::Safe.name().to_string(),
             theme_origin: None,
@@ -204,6 +229,7 @@ impl Settings {
             warn: Theme::DEFAULT_WARN_PCT,
             critical: Theme::DEFAULT_CRITICAL_PCT,
             interval: crate::app::DEFAULT_INTERVAL,
+            smooth: DEFAULT_SMOOTH,
             window: DEFAULT_WINDOW,
             store: false,
             log: false,
@@ -211,7 +237,7 @@ impl Settings {
             log_days: DEFAULT_LOG_DAYS,
             log_bytes: DEFAULT_LOG_BYTES,
             signals: false,
-            view: crate::app::View::Generic,
+            view: crate::app::View::Cpu,
             sort: crate::app::Sort::Cpu,
             zoom: crate::app::ZOOM_LEVELS[0],
             tree: false,
@@ -248,8 +274,16 @@ const MIN_WINDOW: Duration = Duration::from_secs(10);
 /// needs. See [`Settings::history_len`].
 const MAX_SAMPLES: usize = 24 * 60 * 60 + 1;
 
-/// Braille unless we are on a real Linux console, whose font has no braille
-/// glyphs. btop makes the same check (`btop.cpp:815`).
+/// The set poptop draws with when nothing has asked for one.
+///
+/// [`GlyphSet::default`] everywhere except a real Linux console, whose font has
+/// neither braille nor the block elements. btop makes the same check
+/// (`btop.cpp:815`).
+///
+/// Deferring to `GlyphSet::default` rather than naming a set here is the whole
+/// point: this function *is* the default as far as the running program is
+/// concerned, and when it named one itself, changing the derived default
+/// changed nothing a user could see.
 fn default_glyphs() -> GlyphSet {
     default_glyphs_for(std::env::var("TERM").ok().as_deref())
 }
@@ -258,7 +292,7 @@ fn default_glyphs() -> GlyphSet {
 fn default_glyphs_for(term: Option<&str>) -> GlyphSet {
     match term {
         Some("linux") => GlyphSet::Ascii,
-        _ => GlyphSet::Braille,
+        _ => GlyphSet::default(),
     }
 }
 
@@ -415,14 +449,102 @@ pub struct Setting {
 
 /// Every setting, named once.
 pub const KEYS: &[Setting] = &[
+    // How the graphs are drawn. `graph` is the name; `glyphs` is what it was
+    // called when the sets differed only in alphabet, and it is kept because
+    // it is in the README, in `--help` and in people's config files.
     Setting {
-        name: "glyphs",
+        name: "graph",
         apply: |s, v| {
-            s.glyphs = GlyphSet::parse(v).ok_or("braille, block or ascii")?;
+            s.glyphs = GlyphSet::parse(v).ok_or(GlyphSet::NAMES)?;
             Ok(())
         },
         show: |s| s.glyphs.name().to_string(),
-        note: "How the timeline is drawn: braille, block or ascii.",
+        note: "How the timeline is drawn: braille, block, ascii or line.",
+    },
+    // Written out under its current name only: two lines setting the same
+    // field would round-trip as a file that says everything twice.
+    Setting {
+        name: "glyphs",
+        apply: |s, v| {
+            s.glyphs = GlyphSet::parse(v).ok_or(GlyphSet::NAMES)?;
+            Ok(())
+        },
+        show: |s| s.glyphs.name().to_string(),
+        note: "The older name for `graph`. Still read; not written.",
+    },
+    // Where the axis starts. Separate from the character set, because it is a
+    // different decision: the set is what the graph is drawn with, this is
+    // what the rows mean.
+    Setting {
+        name: "scale",
+        apply: |s, v| {
+            s.axis = Axis::parse(v).ok_or(Axis::NAMES)?;
+            Ok(())
+        },
+        show: |s| s.axis.name().to_string(),
+        note: "Where the vertical axis starts: zero or fit.",
+    },
+    Setting {
+        name: "density",
+        apply: |s, v| {
+            s.density = crate::ui::Density::parse(v).ok_or(crate::ui::Density::NAMES)?;
+            Ok(())
+        },
+        show: |s| s.density.label().to_lowercase(),
+        note: "How much air the layout takes: compact, comfortable or spacious.",
+    },
+    Setting {
+        name: "mouse",
+        apply: |s, v| {
+            s.mouse = match v {
+                "on" | "true" | "yes" => true,
+                "off" | "false" | "no" => false,
+                _ => return Err("on or off"),
+            };
+            Ok(())
+        },
+        show: |s| on_off(s.mouse).to_string(),
+        note: "Whether poptop takes the mouse. Off gives text selection back.",
+    },
+    Setting {
+        name: "surface",
+        apply: |s, v| {
+            s.surfaces = match v {
+                "auto" | "on" | "true" | "yes" => true,
+                "off" | "none" | "false" | "no" => false,
+                _ => return Err("auto or off"),
+            };
+            Ok(())
+        },
+        show: |s| {
+            if s.surfaces {
+                "auto".into()
+            } else {
+                "off".into()
+            }
+        },
+        note: "Whether the interface paints its own grounds: auto or off.",
+    },
+    // A span, not a sample count: the sample interval is itself a setting, and
+    // "five seconds" means the same thing at either end of it while "five
+    // samples" does not.
+    Setting {
+        name: "smooth",
+        apply: |s, v| {
+            s.smooth = match v {
+                "off" | "none" | "0" => Duration::ZERO,
+                _ => duration(v)?,
+            };
+            Ok(())
+        },
+        show: |s| {
+            if s.smooth.is_zero() {
+                "off".into()
+            } else {
+                fmt_span(s.smooth)
+            }
+        },
+        note: "How long the table's figures are averaged over. `off` for none.",
     },
     Setting {
         name: "color",
@@ -558,11 +680,14 @@ pub const KEYS: &[Setting] = &[
     Setting {
         name: "view",
         apply: |s, v| {
-            s.view = crate::app::View::parse(v).ok_or("generic, memory or disk")?;
+            s.view = crate::app::View::parse(v).ok_or("cpu, memory or disk")?;
             Ok(())
         },
-        show: |s| s.view.label().to_string(),
-        note: "The view to start in: generic, memory or disk.",
+        // Lower case, because that is the form the file is read in. `label`
+        // is capitalised: it names a tab on a navigation strip, where these
+        // are proper nouns rather than words in a sentence.
+        show: |s| s.view.label().to_lowercase(),
+        note: "The tab to start on: cpu, memory or disk.",
     },
     Setting {
         name: "sort",
@@ -1483,7 +1608,11 @@ mod tests {
     #[test]
     fn a_wrong_value_says_what_was_expected() {
         let (s, w) = apply("glyphs = crayon\n");
-        assert_eq!(s.glyphs, GlyphSet::Braille, "a rejected value was applied");
+        assert_eq!(
+            s.glyphs,
+            GlyphSet::default(),
+            "a rejected value was applied"
+        );
         assert_eq!(w.len(), 1);
         assert!(
             w[0].contains("crayon") && w[0].contains("braille"),
@@ -1522,11 +1651,11 @@ mod tests {
         let bad = apply_one("glyphs", "crayon");
         assert_eq!(
             bad.as_flag(),
-            "--glyphs=crayon: expected braille, block or ascii"
+            "--glyphs=crayon: expected block, braille, line or ascii"
         );
         assert_eq!(
             bad.to_string(),
-            "`glyphs`: expected braille, block or ascii, found `crayon`"
+            "`glyphs`: expected block, braille, line or ascii, found `crayon`"
         );
     }
 
@@ -1537,14 +1666,32 @@ mod tests {
 
     #[test]
     fn a_linux_console_gets_ascii() {
-        // A real console has no braille glyphs. This moved out of `main` with
-        // the rest of the defaults and arrived here untested.
+        // A real console has neither braille nor the block elements. This moved
+        // out of `main` with the rest of the defaults and arrived here untested.
         assert_eq!(default_glyphs_for(Some("linux")), GlyphSet::Ascii);
-        assert_eq!(
-            default_glyphs_for(Some("xterm-256color")),
-            GlyphSet::Braille
-        );
-        assert_eq!(default_glyphs_for(None), GlyphSet::Braille);
+    }
+
+    #[test]
+    fn the_default_a_terminal_gets_is_the_declared_default() {
+        // The one that got away. `GlyphSet::default()` said `Block`, a test
+        // asserted it, the whole suite passed — and every terminal still drew
+        // braille, because this is the function the running program asks and it
+        // named a set of its own. A default declared in one place and decided in
+        // another is not a default; it is two.
+        //
+        // Asserted against `GlyphSet::default()` rather than against `Block`, so
+        // the next change to the default needs one edit rather than a hunt.
+        for term in ["xterm-256color", "screen", "alacritty", "xterm-kitty", ""] {
+            assert_eq!(
+                default_glyphs_for(Some(term)),
+                GlyphSet::default(),
+                "TERM={term} got a set nobody asked for"
+            );
+        }
+        assert_eq!(default_glyphs_for(None), GlyphSet::default());
+        // And the whole settings path agrees, not just the helper: this is what
+        // `poptop` with no flags and no config file actually runs with.
+        assert_eq!(Settings::fixed().glyphs, GlyphSet::default());
     }
 
     #[test]
@@ -1741,7 +1888,7 @@ mod precedence {
     #[test]
     fn a_starting_state_that_is_not_one_says_what_it_takes() {
         for (line, expected) in [
-            ("view = sideways\n", "generic, memory or disk"),
+            ("view = sideways\n", "cpu, memory or disk"),
             ("sort = colour\n", "cpu, mem, disk, pid or name"),
             ("zoom = 3\n", "1, 2, 4 or 8"),
             ("group = sideways\n", "off, name, user or container"),
@@ -1760,7 +1907,7 @@ mod precedence {
             let w: Vec<String> = w.into_iter().map(|x| x.0).collect();
             assert!(w.iter().any(|w| w.contains(expected)), "{line}: {w:?}");
             // And the setting kept its default rather than half of the line.
-            assert_eq!(s.view, crate::app::View::Generic);
+            assert_eq!(s.view, crate::app::View::Cpu);
             assert!(s.hide_columns.is_empty(), "{line}");
         }
     }
@@ -1777,7 +1924,11 @@ mod precedence {
         // not cost you the tool. A flag was typed for this run, and ignoring
         // it would silently do something other than what was asked.
         let (s, _) = run(Some("glyphs = crayon\n"), false, &[]);
-        assert_eq!(s.glyphs, GlyphSet::Braille, "a rejected value was applied");
+        assert_eq!(
+            s.glyphs,
+            GlyphSet::default(),
+            "a rejected value was applied"
+        );
 
         let args = vec!["--glyphs=crayon".to_string()];
         assert!(
