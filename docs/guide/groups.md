@@ -8,10 +8,10 @@ making them visible, and they answer different questions.
 
 `g` cycles: by name → by user → by container → off.
 
-poptop volunteers it in the panel title when it would tell you something:
+poptop volunteers it in the panel rule when it would tell you something:
 
 ```
-── processes (724) — sort: CPU · 101 git (g folds them) ! io: 181/724 need root ──
+── processes (724) · 101 git (g folds them) ! io: 181/724 need root ──
 ```
 
 101 processes called `git` is a fact about the machine no per-process sort
@@ -20,7 +20,8 @@ will ever surface.
 ### By name
 
 ```
-── processes (730) — sort: CPU · grouped by name ──
+ CPU   Memory   Disk    sort CPU · by name        All processes · 730
+── processes (730) ───────────────────────────────────────────────────
    CPU%            RSS      S   THR HIST ≤100%     PID USER       COMMAND
     0.7         397.1M ▏    —  1212               ×101 oddurs     git
     0.7          43.4M      —     9                 ×7 oddurs     python3
@@ -45,7 +46,8 @@ correctly; where the platform publishes it, use that.
 ### By user and by container
 
 ```
-── processes (564) — sort: CPU · grouped by user ! io: 167/730 need root ──
+ CPU   Memory   Disk    sort CPU · by user        All processes · 730
+── processes (564) ! io: 167/730 need root ───────────────────────────
    CPU%            RSS      S   THR    DISK R    DISK W HIST ≤100%     PID COMMAND
   365.1 ████+     9.7G ██▍   —  5099   24.0M/s  104.0K/s               oddurs
     4.5 ▏        20.4M      —     5         —         —                root
@@ -69,7 +71,8 @@ folded rows has no single parent to hang them from.
 Where `g` answers "how much in total", `t` answers "whose".
 
 ```
-── processes (734) — sort: CPU · tree ──
+ CPU   Memory   Disk    sort CPU · tree           All processes · 734
+── processes (734) ───────────────────────────────────────────────────
    CPU%            RSS      S   THR HIST ≤50%      PID USER       COMMAND
       —              —      ?     —              1 ?          launchd
    15.0 ▋       110.7M      R    11 ⣄⣤⣤⣄      38359 oddurs     ├─ ghostty

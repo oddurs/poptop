@@ -28,10 +28,10 @@ Four things worth knowing about it:
   you would then reason from.
 - **`/ 97.9% full`** is the fullest filesystem, not necessarily root.
 
-## 2. Let the panel title tell you what is actually scarce
+## 2. Let the panel rule tell you what is actually scarce
 
 ```
-── processes (748) — sort: CPU · memory is the constraint (S) ! io: panel too narrow ──
+── processes (748) · memory is the constraint (S) ! io: panel too narrow ──
 ```
 
 `memory is the constraint (S)` is poptop having looked at the machine and
@@ -57,7 +57,7 @@ Or a query, which is the one worth learning:
 ```
 
 ```
-── processes (6) — sort: CPU · 101 git (g folds them) ! io: 181/724 need root ──
+── processes (6) · 101 git (g folds them) ! io: 181/724 need root ──
    CPU%            RSS      S   THR    DISK R    DISK W HIST ≤25%      PID USER       COMMAND
    24.5 █         7.1M      S     2         0         0 ⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿   71595 oddurs     talagentd
    16.7 ▋        14.5M      R    12         0         0 ⠀⠀⠀⠀⠀⠀⠀⠀⣶⣶   86077 oddurs     rsst
@@ -101,7 +101,8 @@ the process going to disk for pages — and `GROW` the change since the last
 sample.
 
 ```
-── processes (737) — memory view, sort: CPU · 102 git (g folds them) ──
+ CPU   Memory   Disk    sort MEM              All processes · 737
+── processes (737) · 102 git (g folds them) ─────────────────────
    CPU%            RSS      S       PSS      VSZ  MAJF/s     GROW HIST ≤50%      PID USER       COMMAND
    24.6 █       110.6M      S         —   416.4G       0   +32.0K ⠀⠀⠀⠀⠀⠀⠀⢠⣠⣤   38359 oddurs     ghostty
    10.0 ▍       407.9M ▏    S         —   420.5G       3   +16.2M ⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀   52641 oddurs     node --experimental-modules main
@@ -116,7 +117,8 @@ does not publish it; on Linux those figures are there.
 terminal.
 
 ```
-── processes (732) — disk view, sort: CPU · 101 git (g folds them) ! io: 183/732 need root ──
+ CPU   Memory   Disk    sort DISK             All processes · 732
+── processes (732) · 101 git (g folds them) ! io: 183/732 need root ──
    CPU%      RSS S     DISK R    DISK W HIST ≤50%      PID USER       COMMAND
    25.2   110.7M S          0         0 ⠀⠀⠀⠀⠀⠀⠀⣄⣤⣤   38359 oddurs     ghostty
 ```
@@ -129,11 +131,11 @@ Those rows show `—`, not `0`.
 
 Forty workers each at 3% is not visible one row at a time. `g` folds
 processes sharing a name into one row — see [groups and
-trees](groups.md) — and the panel title volunteers it when it is worth
+trees](groups.md) — and the panel rule volunteers it when it is worth
 doing:
 
 ```
-── processes (724) — sort: CPU · 101 git (g folds them) ──
+── processes (724) · 101 git (g folds them) ──
 ```
 
 101 `git` processes is a fact about the machine that no per-process sort

@@ -16,45 +16,21 @@
 //! either: it is the reflex for leaving a full-screen program, and poptop
 //! installs no SIGINT handler, so raw mode makes this the only path there is.
 
+use crate::app::View;
+use crate::signal::Signal;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-/// Something a key press asks for.
+/// What a key press asks for.
 ///
-/// One per row of the key list, so anything a reader can see themselves doing
-/// has a name they can bind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action {
-    Quit,
-    Back,
-    Help,
-    ScrubBack,
-    ScrubForward,
-    Jump,
-    ZoomIn,
-    ZoomOut,
-    Pause,
-    Oldest,
-    Live,
-    SelectUp,
-    SelectDown,
-    PageUp,
-    PageDown,
-    SortNext,
-    SortConstraint,
-    ViewNext,
-    Tree,
-    Group,
-    Detail,
-    Threads,
-    Cgroups,
-    KernelThreads,
-    IoColumns,
-    Filter,
-    SignalTerm,
-    SignalKill,
-    /// Read the theme file again, for trying a colour without restarting.
-    ReloadTheme,
-}
+/// [`crate::command::Action`], not a list of its own. The menu bar and the
+/// mouse already perform that one, and two enumerations of the same verbs
+/// drift the moment either grows an option — a menu item that toggled a field
+/// the key handler also toggled was the bug `command.rs` exists to prevent, and
+/// a second `Action` beside it would have been the same bug one level up.
+///
+/// What this module owns is the *binding*: which keys ask for which action,
+/// and what a config file calls each one.
+pub use crate::command::Action;
 
 /// One action: the name a config file uses, and the keys it has by default.
 pub struct Bound {
@@ -70,33 +46,43 @@ pub struct Bound {
 pub const ACTIONS: &[Bound] = &[
     b(Action::Quit, "quit", "q"),
     b(Action::Back, "back", "esc"),
-    b(Action::ScrubBack, "scrub-back", "left, h"),
-    b(Action::ScrubForward, "scrub-forward", "right, l"),
-    b(Action::Jump, "jump", "b"),
+    // The magnitude lives in the binding, not in the handler: a reader who
+    // wants `ctrl-left` to cross ten samples can say so, and Shift still
+    // multiplies whatever a binding asks for by ten.
+    b(Action::Scrub(-1), "scrub-back", "left, h"),
+    b(Action::Scrub(1), "scrub-forward", "right, l"),
+    b(Action::BeginJump, "jump", "b"),
     b(Action::ZoomIn, "zoom-in", "+, ="),
     b(Action::ZoomOut, "zoom-out", "-, _"),
-    b(Action::Pause, "pause", "space"),
-    b(Action::Oldest, "oldest", "home"),
-    b(Action::Live, "live", "end"),
-    b(Action::SelectUp, "select-up", "up, k"),
-    b(Action::SelectDown, "select-down", "down, j"),
-    b(Action::PageUp, "page-up", "pageup"),
-    b(Action::PageDown, "page-down", "pagedown"),
-    b(Action::SortNext, "sort", "s"),
-    b(Action::SortConstraint, "sort-constraint", "S"),
-    b(Action::Filter, "filter", "/"),
-    b(Action::SignalTerm, "signal-term", "x"),
-    b(Action::SignalKill, "signal-kill", "X"),
-    b(Action::Tree, "tree", "t"),
-    b(Action::Group, "group", "g"),
-    b(Action::Detail, "detail", "d"),
-    b(Action::Threads, "threads", "y"),
-    b(Action::ViewNext, "view", "v"),
-    b(Action::Cgroups, "cgroups", "C"),
-    b(Action::KernelThreads, "kernel-threads", "K"),
-    b(Action::IoColumns, "io-columns", "i"),
+    b(Action::ToggleLive, "pause", "space"),
+    b(Action::GotoOldest, "oldest", "home"),
+    b(Action::GotoLive, "live", "end"),
+    b(Action::Select(-1), "select-up", "up, k"),
+    b(Action::Select(1), "select-down", "down, j"),
+    b(Action::Select(-10), "page-up", "pageup"),
+    b(Action::Select(10), "page-down", "pagedown"),
+    b(Action::NextSort, "sort", "s"),
+    b(Action::AcceptSuggestedSort, "sort-constraint", "S"),
+    b(Action::BeginFilter, "filter", "/"),
+    b(Action::Signal(Signal::Term), "signal-term", "x"),
+    b(Action::Signal(Signal::Kill), "signal-kill", "X"),
+    b(Action::ToggleTree, "tree", "t"),
+    b(Action::NextGrouping, "group", "g"),
+    b(Action::ToggleDetail, "detail", "d"),
+    b(Action::ToggleThreads, "threads", "y"),
+    // The tabs. `v` cycles, Tab and Shift-Tab step, and the numbers open one
+    // directly — the same verb four ways, which is what a binding table is
+    // for.
+    b(Action::NextView, "view", "v, tab"),
+    b(Action::PrevView, "view-previous", "backtab"),
+    b(Action::SetView(View::Cpu), "tab-cpu", "1"),
+    b(Action::SetView(View::Memory), "tab-memory", "2"),
+    b(Action::SetView(View::Disk), "tab-disk", "3"),
+    b(Action::ToggleInspect, "inspect", "enter"),
+    b(Action::ToggleCgroups, "cgroups", "C"),
+    b(Action::ToggleKernel, "kernel-threads", "K"),
     b(Action::ReloadTheme, "reload-theme", "R"),
-    b(Action::Help, "help", "?"),
+    b(Action::ShowKeys, "help", "?"),
 ];
 
 const fn b(action: Action, name: &'static str, default: &'static str) -> Bound {
@@ -234,6 +220,9 @@ const NAMED: &[(&str, KeyCode)] = &[
     ("enter", KeyCode::Enter),
     ("space", KeyCode::Char(' ')),
     ("tab", KeyCode::Tab),
+    // Shift-Tab, which terminals report as a code of its own rather than as
+    // Tab with a modifier.
+    ("backtab", KeyCode::BackTab),
     ("backspace", KeyCode::Backspace),
     ("delete", KeyCode::Delete),
     ("insert", KeyCode::Insert),
@@ -318,25 +307,25 @@ mod tests {
         );
         assert_eq!(
             map.action(KeyCode::Char('h'), KeyModifiers::NONE),
-            Some(Action::ScrubBack)
+            Some(Action::Scrub(-1))
         );
         assert_eq!(
             map.action(KeyCode::Left, KeyModifiers::NONE),
-            Some(Action::ScrubBack)
+            Some(Action::Scrub(-1))
         );
         // Shift is the fast scrub, not another binding.
         assert_eq!(
             map.action(KeyCode::Left, KeyModifiers::SHIFT),
-            Some(Action::ScrubBack)
+            Some(Action::Scrub(-1))
         );
         // A capital is its own key: the two signal keys depend on it.
         assert_eq!(
             map.action(KeyCode::Char('x'), KeyModifiers::NONE),
-            Some(Action::SignalTerm)
+            Some(Action::Signal(Signal::Term))
         );
         assert_eq!(
             map.action(KeyCode::Char('X'), KeyModifiers::SHIFT),
-            Some(Action::SignalKill)
+            Some(Action::Signal(Signal::Kill))
         );
         assert_eq!(map.action(KeyCode::Char('z'), KeyModifiers::NONE), None);
         assert!(map.is_default());
@@ -363,7 +352,7 @@ mod tests {
     #[test]
     fn a_key_another_action_holds_is_refused_naming_it() {
         let mut map = Keymap::default();
-        let refused = map.bind(Action::Filter, "t").unwrap_err();
+        let refused = map.bind(Action::BeginFilter, "t").unwrap_err();
         assert_eq!(
             refused,
             Refused::Taken {
@@ -374,11 +363,11 @@ mod tests {
         // And nothing moved: the whole binding is refused, not half of it.
         assert_eq!(
             map.action(KeyCode::Char('t'), KeyModifiers::NONE),
-            Some(Action::Tree)
+            Some(Action::ToggleTree)
         );
         assert_eq!(
             map.action(KeyCode::Char('/'), KeyModifiers::NONE),
-            Some(Action::Filter)
+            Some(Action::BeginFilter)
         );
         assert!(refused.to_string().contains("already `tree`"), "{refused}");
     }

@@ -1,0 +1,245 @@
+//! Every command poptop can perform, named once.
+//!
+//! The keyboard and the menu are two surfaces over the same list. Without a
+//! list they would be two implementations: a menu item that toggled a field the
+//! key handler also toggled would drift the first time either grew a side
+//! effect, and the drift would be invisible until somebody used the other one.
+//!
+//! So a key maps to an [`Action`] and a menu item holds an [`Action`], and
+//! [`Action::apply`] is the only place that changes anything.
+
+use crate::app::{self, App, Grouping};
+use crate::glyphs::{Axis, GlyphSet};
+use crate::signal::Signal;
+
+/// One thing poptop can be asked to do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    Quit,
+    /// Let go of whatever is held — the selection — and quit only when there
+    /// is nothing left to let go of. What `Esc` means everywhere else here.
+    Back,
+    /// The list of every key, which the footer has room for six of.
+    ShowKeys,
+
+    // Time.
+    Scrub(i32),
+    ToggleLive,
+    GotoOldest,
+    GotoLive,
+    ZoomIn,
+    ZoomOut,
+    BeginJump,
+
+    // Selection.
+    Select(i32),
+    /// The row at this index of the visible table. The mouse points at a place
+    /// rather than a direction, and there is no key that means "the ninth row".
+    SelectRow(usize),
+    /// The sample at this index of the buffer, likewise.
+    ScrubTo(usize),
+
+    // The table.
+    NextSort,
+    AcceptSuggestedSort,
+    NextView,
+    PrevView,
+    /// A tab by name, for the strip and the menu — a pointer names a place.
+    SetView(crate::app::View),
+    NextGrouping,
+    ToggleTree,
+    ToggleDetail,
+    /// Open or close the inspector on the selected process.
+    ToggleInspect,
+    ToggleThreads,
+    ToggleCgroups,
+    ToggleKernel,
+    BeginFilter,
+    ClearFilter,
+
+    // Drawing.
+    SetGlyphs(GlyphSet),
+    SetAxis(Axis),
+    SetDensity(crate::ui::Density),
+    /// How long the table's figures are averaged over. `ZERO` is off.
+    ///
+    /// Carried as a span rather than as a sample count, because the interval
+    /// is a setting too and a menu that offered "5 samples" would mean
+    /// something different at every one of them.
+    SetSmooth(std::time::Duration),
+
+    // The process under the cursor.
+    Signal(Signal),
+
+    /// Read the theme file again, for trying a colour without restarting.
+    ReloadTheme,
+}
+
+impl Action {
+    /// Perform it. The only place any of these happen.
+    pub fn apply(self, app: &mut App) {
+        match self {
+            Self::Quit => app.should_quit = true,
+            Self::Back => {
+                if !app.deselect() {
+                    app.should_quit = true;
+                }
+            }
+            Self::ShowKeys => app.show_help = true,
+
+            Self::Scrub(n) => app.history.scrub(n as isize),
+            Self::ToggleLive => {
+                // Pause pins the cursor where it is; resume returns to the live
+                // edge.
+                if app.history.is_live() {
+                    app.history.scrub(-1);
+                } else {
+                    app.history.goto_live();
+                }
+            }
+            Self::GotoOldest => app.history.goto_oldest(),
+            Self::GotoLive => app.history.goto_live(),
+            Self::ZoomIn => app.zoom_in(),
+            Self::ZoomOut => app.zoom_out(),
+            Self::BeginJump => {
+                app.editing_jump = true;
+                app.jump.clear();
+                app.jump_note = None;
+            }
+
+            Self::Select(n) => app.select_delta(n as isize),
+            Self::SelectRow(i) => app.select_row(i),
+            Self::ScrubTo(i) => {
+                // Relative, because that is the only way the cursor moves — and
+                // it is where the "past the newest means live" rule lives.
+                let from = app.history.cursor_index() as isize;
+                app.history.scrub(i as isize - from);
+            }
+
+            Self::NextSort => app.sort = app.sort.next(app.io_collected(), app.view),
+            Self::AcceptSuggestedSort => {
+                if let Some(c) = app.constraint() {
+                    app.sort = c.sort();
+                    // Sorting by a column that is not on screen answers the
+                    // question invisibly: the rows move and nothing says why.
+                    // The reader asked for this by pressing the key, so the
+                    // columns come with it — through the same door as the disk
+                    // tab, so collection starts with them. Setting the flag
+                    // alone showed them empty wherever the probe or the budget
+                    // had stopped collecting.
+                    if c.sort() == app::Sort::Disk {
+                        app.reveal_io();
+                    }
+                }
+            }
+            Self::PrevView | Self::SetView(_) | Self::NextView => {
+                app.view = match self {
+                    Self::PrevView => app.view.prev(),
+                    Self::NextView => app.view.next(),
+                    Self::SetView(v) => v,
+                    _ => unreachable!("guarded by the arm"),
+                };
+                app.insist_for_view();
+                app.adopt_view_sort();
+            }
+            Self::NextGrouping => {
+                app.group = app.group.next();
+                if app.group != Grouping::Off {
+                    app.tree = false;
+                }
+            }
+            Self::ToggleTree => {
+                app.tree = !app.tree;
+                // Grouping destroys parentage by construction, so a grouped
+                // tree would be a tree of things that are not processes.
+                if app.tree {
+                    app.group = Grouping::Off;
+                }
+            }
+            Self::ToggleDetail => app.detail = !app.detail,
+            Self::ToggleInspect => app.inspecting = !app.inspecting,
+            Self::ToggleThreads => app.toggle_threads(),
+            Self::ToggleCgroups => app.toggle_cgroups(),
+            Self::ToggleKernel => app.show_kernel = !app.show_kernel,
+            // The one action whose work is not about `App` alone: it reads a
+            // file. It stays in `main.rs` beside the watcher that does the
+            // same thing when the file changes under us, so the two cannot
+            // read it two different ways.
+            Self::ReloadTheme => reload_theme(app),
+
+            Self::BeginFilter => {
+                // Kept, not cleared. `/` on an existing filter used to throw it
+                // away before a key was pressed, so narrowing a narrowed list
+                // meant retyping the first query.
+                app.filter_before = app.filter.clone();
+                app.editing_filter = true;
+            }
+            Self::ClearFilter => {
+                app.filter.clear();
+                app.editing_filter = false;
+            }
+
+            Self::SetGlyphs(g) => app.glyphs = g,
+            Self::SetAxis(a) => app.axis = a,
+            Self::SetDensity(d) => app.density = d,
+
+            Self::SetSmooth(d) => app.set_smooth(d),
+
+            Self::Signal(s) => app.ask_to_signal(s),
+        }
+    }
+
+    /// Whether this action is currently *on*, for the menu's tick marks.
+    ///
+    /// `None` for an action that does something rather than being in a state.
+    /// A menu that ticked `Zoom in` would be claiming it is a mode.
+    pub fn checked(self, app: &App) -> Option<bool> {
+        Some(match self {
+            Self::ToggleTree => app.tree,
+            Self::ToggleDetail => app.detail,
+            Self::ToggleInspect => app.inspecting,
+            Self::ToggleThreads => app.show_threads,
+            Self::ToggleCgroups => app.show_cgroups,
+            Self::ToggleKernel => app.show_kernel,
+            Self::SetGlyphs(g) => app.glyphs == g,
+            Self::SetAxis(a) => app.axis == a,
+            Self::SetDensity(d) => app.density == d,
+            Self::SetSmooth(d) => app.smooth == app.smooth_samples(d),
+            Self::GotoLive => app.history.is_live(),
+            Self::SetView(v) => app.view == v,
+            _ => return None,
+        })
+    }
+}
+
+/// The key handler, for tests that need to press a key rather than set a flag.
+///
+/// Exposed because the modal boxes are state machines: what `Ctrl-C` does while
+/// the jump box is open, and what an arrow key does to the last jump's answer,
+/// are properties of the handler and cannot be checked by poking the `App`.
+/// Read the theme file again, for a reader trying a colour.
+///
+/// A built-in has no file, and says so rather than appearing to do nothing.
+/// A file that no longer parses keeps the colours that are on screen: the
+/// half-applied theme of a file being edited is worse than the old one.
+pub fn reload_theme(app: &mut App) {
+    let Some((name, _)) = app.theme_file.clone() else {
+        app.theme_note = Some("the theme is built in; there is no file to read".into());
+        return;
+    };
+    let mut warnings = Vec::new();
+    match crate::config::resolve_named_theme(&name, &crate::config::read_theme, &mut warnings) {
+        Ok((palette, overrides)) => {
+            let (theme, _) = crate::theme::Theme::new(palette, app.theme.tier)
+                .with_thresholds(app.theme.warn_pct, app.theme.critical_pct)
+                .with_overrides(&overrides);
+            app.theme = theme;
+            app.theme_file = crate::config::theme_file(&name);
+            app.theme_note = Some(match warnings.len() {
+                0 => format!("read {name}.theme again"),
+                n => format!("read {name}.theme again, with {n} line(s) ignored"),
+            });
+        }
+        Err(why) => app.theme_note = Some(format!("{name}.theme was not read: {why}")),
+    }
+}

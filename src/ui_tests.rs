@@ -214,8 +214,12 @@ fn one_node_costs_no_row_and_two_get_one() {
     // the panel below the header must start a row lower than it does without
     // nodes, and the table must not lose a row to make up for it.
     let node_y = numa_rows.iter().position(|r| r.contains("nodes")).unwrap();
-    assert_eq!(node_y, 2, "the node row landed outside the header");
-    let below = &numa_rows[3];
+    assert_eq!(
+        node_y,
+        CHROME as usize + 2,
+        "the node row landed outside the header"
+    );
+    let below = &numa_rows[node_y + 1];
     assert!(
         !below.contains("nodes"),
         "the node row was drawn twice, or over the timeline: {below}"
@@ -230,20 +234,21 @@ fn one_node_costs_no_row_and_two_get_one() {
     mixed.push(two_node_sample());
     mixed.history.scrub(-1);
     let scrubbed = rows(&mixed, 100, 30);
+    let node_row = CHROME as usize + 2;
     assert_eq!(
         ui::header_height(&mixed),
         3,
         "the header shrank while scrubbing"
     );
     assert!(
-        scrubbed[2].contains("nodes"),
+        scrubbed[node_row].contains("nodes"),
         "the reserved row went blank instead of saying why: {:?}",
-        scrubbed[2]
+        scrubbed[node_row]
     );
     assert!(
-        scrubbed[2].contains("not recorded"),
+        scrubbed[node_row].contains("not recorded"),
         "a sample with no nodes drew somebody else's figures: {:?}",
-        scrubbed[2]
+        scrubbed[node_row]
     );
 
     // And it never lets go. A single sample where `/sys` could not be read
@@ -286,7 +291,7 @@ fn a_nodes_colour_does_not_call_page_cache_lost_memory() {
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer().clone();
-    let row: Vec<_> = (0..100u16).map(|x| buf[(x, 2)].clone()).collect();
+    let row: Vec<_> = (0..100u16).map(|x| buf[(x, CHROME + 2)].clone()).collect();
     let text: String = row.iter().map(|c| c.symbol()).collect();
     assert!(text.contains("n0") && text.contains("n1"), "{text}");
 
@@ -454,7 +459,7 @@ fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
     let mut app = App::new(600);
     app.push(nfs_sample(0));
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let healthy = rows(&app, 160, 30)[0].clone();
+    let healthy = rows(&app, 160, 30)[CHROME as usize].clone();
 
     // The busiest mount, by calls. `/mnt/quiet` made three.
     assert!(
@@ -476,13 +481,13 @@ fn the_header_names_the_mount_and_stays_quiet_about_a_healthy_one() {
     let mut sick = App::new(600);
     sick.push(nfs_sample(96));
     sick.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let bad = rows(&sick, 160, 30)[0].clone();
+    let bad = rows(&sick, 160, 30)[CHROME as usize].clone();
     assert!(bad.contains("8.0% re"), "{bad}");
 
     // And a machine with no NFS at all spends nothing on it.
     let mut plain = App::new(600);
     plain.push(sample(8.0));
-    let none = rows(&plain, 160, 30)[0].clone();
+    let none = rows(&plain, 160, 30)[CHROME as usize].clone();
     assert!(!none.contains("op/s"), "{none}");
 }
 
@@ -513,7 +518,7 @@ fn a_mount_that_stopped_answering_is_not_a_share_of_nothing() {
     });
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let row = rows(&app, 160, 30)[0].clone();
+    let row = rows(&app, 160, 30)[CHROME as usize].clone();
 
     assert!(
         row.contains("/mnt/hung"),
@@ -560,13 +565,13 @@ fn a_running_server_is_named_and_an_absent_one_is_not() {
     let mut s = nfs_sample(0);
     s.nfs.as_mut().unwrap().server_calls = Some(4800);
     app.push(s);
-    let with = rows(&app, 200, 30)[0].clone();
+    let with = rows(&app, 200, 30)[CHROME as usize].clone();
     assert!(with.contains("NFSD 4.8k op/s"), "{with}");
 
     // A machine that mounts NFS but serves none says nothing about serving.
     let mut client = App::new(600);
     client.push(nfs_sample(0));
-    let without = rows(&client, 200, 30)[0].clone();
+    let without = rows(&client, 200, 30)[CHROME as usize].clone();
     assert!(
         !without.contains("NFSD"),
         "a machine with no nfsd threads was reported as a server: {without}"
@@ -604,20 +609,23 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
     // Paused, not live: opening a day and being taken to the present would
     // discard the thing that was asked for.
     assert!(
-        oldest[0].contains("PAUSED"),
+        oldest[CHROME as usize].contains("PAUSED"),
         "a recorded day opened live: {}",
-        oldest[0]
+        oldest[CHROME as usize]
     );
 
     // And the cursor moves through it, showing a different moment.
     app.history.scrub(20);
     let middle = rows(&app, 120, 30);
     assert_ne!(
-        oldest[0], middle[0],
+        oldest[CHROME as usize], middle[CHROME as usize],
         "scrubbing a recorded day changed nothing"
     );
     app.history.goto_oldest();
-    assert_eq!(rows(&app, 120, 30)[0], oldest[0]);
+    assert_eq!(
+        rows(&app, 120, 30)[CHROME as usize],
+        oldest[CHROME as usize]
+    );
 
     // A live sample must not be pushed into it. The buffer is sized to the day
     // exactly, so a push evicts the oldest recorded sample and shifts the
@@ -626,7 +634,7 @@ fn a_recorded_day_scrubs_like_the_live_buffer() {
     // push while replaying; this is the property that makes it have to.
     app.history.push(sample(99.0));
     assert_ne!(
-        rows(&app, 120, 30)[0],
+        rows(&app, 120, 30)[CHROME as usize],
         oldest[0],
         "pushing into a full replay buffer left the view alone, so this test no \
          longer covers why `run` must not do it"
@@ -1265,7 +1273,7 @@ fn paused_state_is_visibly_marked() {
         "paused badge must report real elapsed lag"
     );
     assert!(
-        out.contains('▌') || out.contains('▐'),
+        out.contains(ui::MARK),
         "scrub cursor must be visible without colour"
     );
 }
@@ -1335,6 +1343,37 @@ fn a_filter_that_hides_the_watched_process_does_not_claim_it_stopped() {
 }
 
 #[test]
+#[ignore]
+fn show_sets() {
+    for set in [
+        crate::glyphs::GlyphSet::Block,
+        crate::glyphs::GlyphSet::Line,
+        crate::glyphs::GlyphSet::Braille,
+        crate::glyphs::GlyphSet::Ascii,
+    ] {
+        let mut app = App::new(600);
+        for i in (0..120).rev() {
+            let mut s = sample_at(
+                if i > 70 {
+                    8.0
+                } else {
+                    55.0 + (i as f32 % 19.0)
+                },
+                i,
+            );
+            s.mem.used = (s.mem.total as f64 * 0.81) as u64;
+            app.push(s);
+        }
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        app.glyphs = set;
+        println!("\n=== {set:?} ===");
+        for l in render_lines(&app, 92, 16).iter().skip(2).take(9) {
+            println!("{l}");
+        }
+    }
+}
+
+#[test]
 #[ignore = "visual check: cargo test -- --ignored --nocapture show_frame"]
 fn show_frame() {
     let mut app = App::new(600);
@@ -1376,25 +1415,75 @@ fn show_frame() {
 }
 
 #[test]
-fn cursor_marker_picks_the_correct_half_of_a_cell() {
-    // Braille packs two samples per cell, so the marker has to distinguish
-    // them or scrubbing loses half its precision.
-    let mut app = App::new(60);
-    for i in (0..8).rev() {
+fn the_caption_does_not_chase_the_cursor_across_the_row() {
+    // Reported as the jog wheel "dancing around left right". The caption was
+    // centred in whatever space the marker left beside it, so every keypress
+    // moved the marker, which changed the space, which moved the caption — the
+    // text sliding a column at a time across the row while the reader was
+    // trying to read the graph above it.
+    //
+    // It is allowed to change sides once, when the cursor crosses the midpoint,
+    // because otherwise the marker would eventually land on top of it. What it
+    // must not do is drift.
+    let (w, h) = (100u16, 24u16);
+    let mut app = App::new(600);
+    for i in (0..400).rev() {
         app.push(sample_at(10.0, i));
     }
-    app.glyphs = crate::glyphs::GlyphSet::Braille;
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // Newest is slot 7 (right half of cell 3); one back is slot 6 (left half).
-    app.history.scrub(-1);
+    let caption_at = |app: &App| -> Option<usize> {
+        rows(app, w, h)
+            .iter()
+            .find_map(|r| r.find("shown").map(|b| r[..b].chars().count()))
+    };
+
+    let mut positions = Vec::new();
+    for _ in 0..40 {
+        app.history.scrub(-2);
+        if let Some(at) = caption_at(&app) {
+            positions.push(at);
+        }
+    }
+    assert!(positions.len() > 20, "the caption vanished while scrubbing");
+
+    let distinct: std::collections::BTreeSet<usize> = positions.iter().copied().collect();
     assert!(
-        render(&app, 100, 30).contains('▌'),
-        "odd offset is a left half"
+        distinct.len() <= 2,
+        "the caption took {} different columns while the cursor moved: {distinct:?}",
+        distinct.len()
     );
-    app.history.scrub(-1);
-    assert!(
-        render(&app, 100, 30).contains('▐'),
-        "even offset is a right half"
+}
+
+#[test]
+fn the_cursor_mark_does_not_flip_as_it_moves() {
+    // It used to be a *half* — `▌` for the older sample of a cell, `▐` for the
+    // newer — which is real information and cost more than it was worth: the
+    // mark flipped between the two halves on every keypress, and a cursor that
+    // jitters sideways while you scrub reads as a fault in the program. The
+    // exact lag is in the header, in seconds.
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    // The timeline panel alone: the process table draws `▌` as a micro-bar, and
+    // a frame-wide search finds that instead.
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..12 {
+        app.history.scrub(-1);
+        let r = ui::timeline_rows_range(30);
+        let lines = render_lines(&app, 100, 30);
+        seen.extend(
+            lines[r.start as usize..r.end as usize]
+                .iter()
+                .flat_map(|l| l.chars())
+                .filter(|c| "▌▐▲^".contains(*c)),
+        );
+    }
+    assert_eq!(
+        seen,
+        std::collections::HashSet::from([ui::MARK]),
+        "the cursor drew more than one kind of mark while moving"
     );
 }
 
@@ -1455,11 +1544,31 @@ fn a_spike_survives_aggregation_at_every_zoom_level() {
         while app.zoom() < z {
             app.zoom_out();
         }
-        let out = render(&app, 100, 30);
-        assert!(
-            out.contains('⣿') || out.contains('⡇') || out.contains('⢸'),
-            "spike vanished at zoom {z}"
-        );
+        for set in [
+            crate::glyphs::GlyphSet::Block,
+            crate::glyphs::GlyphSet::Braille,
+            crate::glyphs::GlyphSet::Line,
+            // Not `Ascii`: its glyphs are `_ - |`, ordinary characters that a
+            // command line and a panel rule also use, so no character class can
+            // find it on a rendered frame. It is the fallback for terminals
+            // that cannot draw the others, and it is covered by the unit tests
+            // on `GlyphSet::stroke` instead.
+        ] {
+            app.glyphs = set;
+            // The spike is the peak, so it reaches the ceiling: the top row of
+            // the stack has to carry ink. Asked of the row rather than of a
+            // glyph, because each set spells "full" with a different character.
+            let lines = render_lines(&app, 100, 30);
+            let r = ui::timeline_rows_range(30);
+            let top = graph_rows(&lines[r.start as usize..r.end as usize])
+                .first()
+                .map(|l| l.to_string())
+                .unwrap_or_default();
+            assert!(
+                top.chars().any(is_graph_glyph),
+                "spike vanished at zoom {z} in {set:?}"
+            );
+        }
     }
 }
 
@@ -1484,8 +1593,16 @@ fn timeline_fills_its_panel_with_no_blank_rows() {
     // reclaimed, so a regression leaving the last row blank would have passed.
     let (w, h) = (60u16, 10u16);
     let mut app = App::new(600);
+    // A ramp, not a flat 50%. A line inks a row only where it passes through
+    // it, so a constant series leaves every row but one blank — correctly. A
+    // series that climbs across the window visits them all, which is what makes
+    // "no blank rows" a statement about the panel rather than about the data.
     for i in (0..200).rev() {
-        app.push(sample_at(50.0, i));
+        let mut s = sample_at(i as f32 / 2.0, i);
+        // Memory climbs with it: the panel stacks two series, and a flat second
+        // one would leave its own band blank for the same honest reason.
+        s.mem.used = i.min(100) * s.mem.total / 100;
+        app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
@@ -1787,7 +1904,7 @@ fn mono_tier_still_marks_the_paused_state() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let reversed = (0..buf.area.width).any(|x| {
-        buf[(x, 0)]
+        buf[(x, CHROME)]
             .modifier
             .contains(ratatui::style::Modifier::REVERSED)
     });
@@ -1987,19 +2104,117 @@ fn rule_rows(app: &App, w: u16, h: u16) -> Vec<usize> {
 }
 
 #[test]
+fn the_percent_panels_share_one_axis() {
+    // They were two pictures rather than one. Memory sat at 100 while CPU
+    // crossed 25 and jumped to 100 in a single frame, redrawing every sample
+    // already on screen a quarter as tall — nothing about the past had
+    // changed, only the scale. And side by side the shapes said the opposite
+    // of the figures: CPU at 20% on a ceiling of 25 was drawn taller than
+    // memory at 72% on a ceiling of 100.
+    let mut app = App::new(600);
+    for i in (0..200).rev() {
+        let mut s = sample_at(12.0, i);
+        s.mem.used = (s.mem.total as f64 * 0.78) as u64;
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let tops: Vec<String> = gutter_text(&app, 100, 20)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect();
+    // Every ceiling printed in the gutter is the same number, and it is the
+    // one the higher of the two series asked for.
+    let ceilings: Vec<&String> = tops.iter().filter(|l| l.as_str() == "100").collect();
+    assert_eq!(
+        ceilings.len(),
+        2,
+        "the percent panels are not on one axis:\n{tops:?}"
+    );
+    assert!(
+        !tops.iter().any(|l| l == "25"),
+        "a panel kept a ceiling of its own:\n{tops:?}"
+    );
+
+    // Shared, not fixed: an idle machine still gets an axis it can use rather
+    // than a panel of blank rows, which is the whole reason for the ladder.
+    let mut idle = App::new(600);
+    for i in (0..200).rev() {
+        let mut s = sample_at(3.0, i);
+        s.mem.used = (s.mem.total as f64 * 0.2) as u64;
+        idle.push(s);
+    }
+    idle.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let idle_tops = gutter_text(&idle, 100, 20);
+    assert!(
+        idle_tops.contains("25") && !idle_tops.contains("100"),
+        "an idle machine was given a ceiling it cannot use:\n{idle_tops}"
+    );
+}
+
+#[test]
+fn a_ceiling_rises_at_once_and_falls_only_when_it_settles() {
+    // A byte rate has no natural maximum to pin it to, so its axis follows the
+    // data — and an axis that follows the data exactly redraws every sample on
+    // screen the moment a burst arrives or leaves. The network panel was going
+    // 512K, 4.0M, 512K, 8.0M with the same history drawn at four different
+    // heights.
+    use crate::app::{HeldCeilings, SETTLE};
+    use std::time::Duration;
+    let held = HeldCeilings::default();
+    let t0 = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let at = |s: u64| t0 + Duration::from_secs(s);
+
+    // Rises the instant the data needs it: a clipped graph is not a smaller
+    // graph, it is a wrong one.
+    assert_eq!(held.settle(ui::Unit::Rate, false, 512.0, at(0)), 512.0);
+    assert_eq!(held.settle(ui::Unit::Rate, false, 4096.0, at(1)), 4096.0);
+
+    // And holds while the peak is merely lower, so the lull after a burst is
+    // the same picture as the burst.
+    assert_eq!(held.settle(ui::Unit::Rate, false, 512.0, at(2)), 4096.0);
+    let just_under = SETTLE.as_secs() - 1;
+    assert_eq!(
+        held.settle(ui::Unit::Rate, false, 512.0, at(just_under)),
+        4096.0
+    );
+
+    // Once it has been lower for long enough, that is the new shape of things.
+    assert_eq!(
+        held.settle(ui::Unit::Rate, false, 512.0, at(SETTLE.as_secs() + 1)),
+        512.0
+    );
+
+    // Each unit keeps its own, and a process's panels never inherit the
+    // machine's — they are different subjects, not one scale seen twice.
+    let held = HeldCeilings::default();
+    assert_eq!(held.settle(ui::Unit::Rate, false, 4096.0, at(0)), 4096.0);
+    assert_eq!(held.settle(ui::Unit::Percent, false, 25.0, at(0)), 25.0);
+    assert_eq!(held.settle(ui::Unit::Rate, true, 512.0, at(0)), 512.0);
+
+    // And forgetting starts from what is there now, which is what returning
+    // from a scrub has to do.
+    held.forget();
+    assert_eq!(held.settle(ui::Unit::Rate, false, 512.0, at(1)), 512.0);
+}
+
+#[test]
 fn the_rules_land_on_exactly_the_threshold_rows() {
     // An earlier version asserted only that *some* cell was chrome-coloured —
     // which the panel border satisfies, so it passed with the rule removed
     // entirely. This pins the exact rows, so it cannot.
     //
-    // Both graphs scale to their own peak, so the expectation has to use the
-    // same ceiling the renderer picks: a threshold above the ceiling draws no
-    // rule at all, which is the point of the scaling.
+    // The two percent graphs share a ceiling, so the expectation has to use
+    // the one the renderer picks: a threshold above the ceiling draws no rule
+    // at all, which is the point of the scaling.
     let (w, h) = (100u16, 12u16);
-    // Memory stays low so its ceiling puts both thresholds off its scale and
-    // only the CPU graph contributes rules. At 50% its 50 threshold would sit
-    // exactly on the ceiling *and* under the data, which data correctly
-    // occludes — a real behaviour, but not the one this test is about.
+    // Memory stays low, so the shared ceiling is the one CPU's spike asks for
+    // and both thresholds are on it. Before the ceiling was shared this
+    // fixture put memory on a scale of its own where 50 and 80 were off the
+    // top, and the memory panel contributed no rules at all — which is exactly
+    // the incomparability the sharing fixes: the same threshold drawn on one
+    // panel and not on the one beneath it.
     let (cpu_pct, mem_frac) = (95.0_f32, 0.05_f32);
     let mut app = App::new(600);
     for i in (0..200).rev() {
@@ -2011,19 +2226,29 @@ fn the_rules_land_on_exactly_the_threshold_rows() {
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // Same arithmetic the renderer uses, so the expectation tracks the layout.
-    let graph_rows = (h as usize - 1).saturating_sub(2).max(1);
-    let cpu_rows = (graph_rows * 3 / 5).max(1);
-    let mem_rows = graph_rows - cpu_rows;
-    let cpu_ceiling = crate::glyphs::ceiling_for(cpu_pct);
-    let mem_ceiling = crate::glyphs::ceiling_for(mem_frac * 100.0);
+    // The renderer's own split, asked of it rather than copied. Both numbers
+    // here were hand-written and both had gone stale: the panel is drawn into
+    // the whole area by `rule_rows`, so it is a title, the graph and a caption
+    // rather than the two chrome rows this assumed, and the rows are shared
+    // evenly rather than three-fifths to the first.
+    let graph_rows = h as usize - 2;
+    let split = ui::sections(graph_rows, 2, ui::GUTTER_W);
+    let (cpu_rows, mem_rows) = (split[0], split[1]);
+    // One ceiling for both, because both are percentages of the machine and
+    // two panels that cannot be compared are two pictures rather than one.
+    let shared = crate::glyphs::ceiling_for(cpu_pct.max(mem_frac * 100.0));
+    let (cpu_ceiling, mem_ceiling) = (shared, shared);
 
     let mut expected: Vec<usize> = Vec::new();
     for pct in [app.theme.warn_pct, app.theme.critical_pct] {
-        if let Some((r, _)) = crate::glyphs::rule_position_scaled(pct, cpu_rows, cpu_ceiling) {
+        if let Some((r, _)) =
+            crate::glyphs::rule_position(crate::glyphs::Scale::zero(cpu_ceiling), pct, cpu_rows)
+        {
             expected.push(r);
         }
-        if let Some((r, _)) = crate::glyphs::rule_position_scaled(pct, mem_rows, mem_ceiling) {
+        if let Some((r, _)) =
+            crate::glyphs::rule_position(crate::glyphs::Scale::zero(mem_ceiling), pct, mem_rows)
+        {
             expected.push(cpu_rows + r);
         }
     }
@@ -2076,10 +2301,10 @@ fn the_rule_is_dashed_so_it_cannot_be_read_as_data() {
         .unwrap();
     let buf = term.backend().buffer();
 
-    let rule_y = 1 + crate::glyphs::rule_position_scaled(
+    let rule_y = 1 + crate::glyphs::rule_position(
+        crate::glyphs::Scale::zero(100.0),
         app.theme.critical_pct,
         (((h as usize - 1).saturating_sub(2)).max(1) * 3 / 5).max(1),
-        100.0,
     )
     .unwrap()
     .0 as u16;
@@ -2100,21 +2325,111 @@ fn the_rule_is_dashed_so_it_cannot_be_read_as_data() {
 }
 
 #[test]
+fn a_line_draws_nothing_where_nothing_was_recorded() {
+    // The area fill got this for free: a cell with no sample is level zero and
+    // level zero is a blank glyph. A line does not — joining cell to cell, it
+    // will happily run a flat stroke along the baseline across the whole
+    // unfilled part of the buffer, which says the machine was idle then. It was
+    // not. Nothing was recorded then, and the two are the fact this tool exists
+    // to keep apart.
+    let (w, h) = (100u16, 12u16);
+    let mut app = App::new(600);
+    // Ten samples in a window that holds far more, so most of the panel is
+    // buffer that has not happened yet.
+    for i in (0..10).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for set in [
+        crate::glyphs::GlyphSet::Block,
+        crate::glyphs::GlyphSet::Braille,
+        crate::glyphs::GlyphSet::Line,
+    ] {
+        app.glyphs = set;
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| ui::draw_timeline_for_test(f, f.area(), &app))
+            .unwrap();
+        let buf = term.backend().buffer();
+        // Newest is at the right, so the recorded samples occupy the last few
+        // columns and everything to the left of them is unrecorded.
+        // The dim token is excluded along with the chrome: the empty left of
+        // the panel carries a sentence saying what that space is — `no history
+        // before 08:14` — and a notice explaining the blank is not the
+        // baseline this test exists to catch.
+        let drawn: Vec<u16> = (ui::GUTTER_W as u16..w)
+            .filter(|&x| {
+                (1..h - 1).any(|y| {
+                    let c = &buf[(x, y)];
+                    c.fg != app.theme.chrome
+                        && c.fg != app.theme.text_dim
+                        && c.symbol() != " "
+                        && c.symbol() != "\u{2800}"
+                })
+            })
+            .collect();
+        let first = *drawn.first().expect("nothing drawn at all");
+        assert!(
+            first > w / 2,
+            "{set:?}: the series is drawn from column {first} of {w}, so it is \
+             drawing a baseline across a buffer that holds ten samples"
+        );
+    }
+}
+
+#[test]
 fn data_always_wins_the_cell_over_the_rule() {
     // An earlier version OR'd the rule into the bar glyph, so a cell holding a
     // spike and an idle sample lit a dot at the rule height in the data
     // colour — identical to the idle sample having crossed the threshold.
+    //
+    // Under an area fill this could be stated as "a full graph shows no rule at
+    // all", because the fill reached every cell. A line reaches one row, and
+    // the space under it is exactly where a reference line belongs — so the
+    // claim has to be made cell by cell: on the row a rule crosses, every
+    // column the line passes through is the line's, not the rule's.
     let (w, h) = (100u16, 12u16);
     let mut app = App::new(600);
+    // A flat series, so the row it occupies is known and it occupies all of it.
     for i in (0..200).rev() {
-        let mut s = sample_at(100.0, i);
-        s.mem.used = s.mem.total; // both graphs full, so no cell is empty
-        app.push(s);
+        app.push(sample_at(40.0, i));
     }
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    // The warn threshold sits *inside* the bar, not on its lip. At 40 against a
+    // series of 40 the rule lands on the boundary between the bar's top cell
+    // and the empty one above it, and which of the two it picks is a rounding
+    // question rather than the question this test is asking.
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_thresholds(20.0, 80.0);
+
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw_timeline_for_test(f, f.area(), &app))
+        .unwrap();
+    let buf = term.backend().buffer();
+
+    // The warn threshold is at 20 and the series at 40, so the rule wants a row
+    // the bar has already filled.
+    let rows = ((h as usize - 1).saturating_sub(2)).max(1) * 3 / 5;
+    // The ceiling the renderer picks, not the raw value: `ceiling_for` rounds
+    // the scale up to a readable number, and asking for the rule's row against
+    // a different ceiling puts it on a different row.
+    let ceiling = crate::glyphs::ceiling_for(40.0);
+    let (row, _) =
+        crate::glyphs::rule_position(crate::glyphs::Scale::zero(ceiling), 20.0, rows.max(1))
+            .expect("the warn threshold is on this scale");
+    let y = 1 + row as u16;
+
+    let inked = (ui::GUTTER_W as u16..w).filter(|&x| buf[(x, y)].symbol() != " ");
+    let mut seen = 0;
+    for x in inked {
+        seen += 1;
+        assert_ne!(
+            buf[(x, y)].fg,
+            app.theme.chrome,
+            "the rule took column {x} of the row the series occupies"
+        );
+    }
     assert!(
-        rule_rows(&app, w, h).is_empty(),
-        "rule drew over cells that contain data"
+        seen > 50,
+        "the series did not draw across the row: {seen} cells"
     );
 }
 
@@ -2126,7 +2441,7 @@ fn cursor_column(app: &App, w: u16, h: u16) -> Option<u16> {
     let buf = term.backend().buffer();
     for y in 0..h {
         for x in 0..w {
-            if matches!(buf[(x, y)].symbol(), "▌" | "▐" | "^") {
+            if matches!(buf[(x, y)].symbol(), "▲" | "^") {
                 return Some(x);
             }
         }
@@ -2409,7 +2724,7 @@ fn the_header_reports_the_values_at_the_cursor_not_the_live_ones() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     app.history.scrub(-35); // back into the 90% region
 
-    let header = rows(&app, 100, 24)
+    let header = header_rows(&app, 100, 24)
         .into_iter()
         .find(|l| l.contains("CPU"))
         .expect("no header");
@@ -2457,7 +2772,7 @@ fn the_cursor_row_states_the_scale_and_repeats_no_figure() {
             assert!(text.contains("now"), "the now anchor is gone:\n{text}");
         }
         // …and never a fragment of one, which names nothing at all.
-        for fragment in ["▌ow", "▐ow", "pas▌", "pas▐", " ow ", " as "] {
+        for fragment in ["▲ow", "pas▲", " ow ", " as "] {
             assert!(
                 !text.contains(fragment),
                 "an anchor was written through (scrubbed: {scrubbed}): {fragment:?}\n{text}"
@@ -2483,7 +2798,12 @@ fn the_readout_never_pushes_the_marker_off_its_column() {
             app.history.scrub(-(back as isize));
 
             let gutter = if w as usize >= 30 { 4 } else { 0 };
-            let graph_w = w as usize - gutter;
+            // The drawn width, margin included: the graph rows take the
+            // content margin while the divider above them spans, so the panel's
+            // own width is two columns more than the graph gets.
+            let panel = ratatui::layout::Rect::new(0, 0, w, 12);
+            let m = ui::content(&app, panel).x;
+            let graph_w = ui::content(&app, panel).width as usize - gutter;
             let spc = app.glyphs.samples_per_cell();
             let slots = graph_w * spc;
             let zoom = crate::app::effective_zoom(app.zoom(), n, slots);
@@ -2494,7 +2814,7 @@ fn the_readout_never_pushes_the_marker_off_its_column() {
             }
             let idx = app.history.cursor_index() - dropped;
             let slot = crate::history::slot_of_index(idx, shown, zoom, slots);
-            let expected = gutter as u16 + (slot / spc) as u16;
+            let expected = m + gutter as u16 + (slot / spc) as u16;
 
             assert_eq!(
                 cursor_column(&app, w, 12),
@@ -2573,7 +2893,7 @@ fn zoom_still_works_at_any_scroll_position() {
         assert_eq!(rows.len(), 12);
         // The cursor must remain visible at every zoom level.
         assert!(
-            rows.iter().any(|r| r.contains('▌') || r.contains('▐')),
+            rows.iter().any(|r| r.contains(ui::MARK)),
             "cursor lost at zoom {}",
             app.zoom()
         );
@@ -2602,13 +2922,13 @@ fn the_caption_moves_aside_rather_than_being_written_through() {
         let rows = timeline_rows(&app, 100, 12);
         let row = rows
             .iter()
-            .find(|r| r.contains('▌') || r.contains('▐'))
+            .find(|r| r.contains(ui::MARK))
             .unwrap_or_else(|| panic!("no cursor row at -{back}: {rows:?}"));
         assert!(
             row.contains("/slot"),
             "the caption was written through at -{back}: {row:?}"
         );
-        let marker = row.find(['▌', '▐']).unwrap();
+        let marker = row.find(ui::MARK).unwrap();
         let caption = row.find("shown,").expect("caption missing");
         assert_ne!(marker, caption, "the marker landed inside the caption");
     }
@@ -2621,7 +2941,10 @@ fn graph_colours(app: &App, w: u16, h: u16) -> std::collections::HashSet<String>
     term.draw(|f| ui::draw_timeline_for_test(f, f.area(), app))
         .unwrap();
     let buf = term.backend().buffer();
-    let graph_rows = (h as usize - 1).saturating_sub(2).max(1);
+    // Every row between the title and the axis caption. The old bound stopped
+    // two rows short, which was invisible while an area fill inked a band of
+    // rows and load-bearing once a line inks exactly one.
+    let graph_rows = (h as usize).saturating_sub(2).max(1);
     let mut out = std::collections::HashSet::new();
     for row in 0..graph_rows {
         for x in 4..w {
@@ -2644,7 +2967,10 @@ fn timeline_colour_carries_identity_not_magnitude() {
         let mut app = App::new(600);
         for i in (0..60).rev() {
             let mut s = sample_at(cpu, i);
-            s.mem.used = ((cpu / 100.0 * 16.0) as u64) << 30;
+            // Never zero: an idle machine still holds memory, and a series at a
+            // flat zero draws no ink and so contributes no colour — which would
+            // make this pass for the wrong reason.
+            s.mem.used = ((1.0 + cpu / 100.0 * 15.0) as u64) << 30;
             app.push(s);
         }
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -2699,7 +3025,7 @@ fn status_colour_is_kept_where_it_answers_is_this_bad() {
         };
         // Figures then cores. Taken from `HEADER_H` rather than written down:
         // the header lost a row and every hardcoded index moved with it.
-        (row(0), row(ui::HEADER_H - 1))
+        (row(CHROME), row(CHROME + ui::HEADER_H - 1))
     };
     let (h_idle, c_idle) = styles_at(5.0);
     let (h_busy, c_busy) = styles_at(95.0);
@@ -2765,7 +3091,7 @@ fn status_and_identity_hues_stay_in_their_own_panels() {
                     // `ok` hue by design, so it alone would satisfy a naive
                     // "some status colour appeared" check even with every
                     // figure, meter and table cell stripped of status colour.
-                    if status.contains(&c.fg) && !blank && y >= ui::HEADER_H {
+                    if status.contains(&c.fg) && !blank && y >= CHROME + ui::HEADER_H {
                         status_hues.insert(format!("{:?}", c.fg));
                     }
                 }
@@ -2885,7 +3211,7 @@ fn the_stated_scale_matches_the_colouring_it_describes() {
         let mut term = Terminal::new(TestBackend::new(170, 30)).unwrap();
         term.draw(|f| ui::draw(f, &app)).unwrap();
         let buf = term.backend().buffer();
-        let row: String = (0..170u16).map(|x| buf[(x, 0)].symbol()).collect();
+        let row: String = (0..170u16).map(|x| buf[(x, CHROME)].symbol()).collect();
         assert!(
             row.contains(&format!("warn {warn}")),
             "the header does not print warn {warn}: {row:?}"
@@ -2910,11 +3236,24 @@ fn the_timeline_rules_move_with_the_thresholds() {
     // whatever the thresholds are.
     let mut app = App::new(600);
     for i in (0..120).rev() {
-        app.push(sample_at(2.0, i as u64));
+        let mut s = sample_at(2.0, i as u64);
+        // Memory low too. CPU and memory share an axis, so the fixture's
+        // default half-full memory would set a ceiling of 50 and this test
+        // would be about a scale it never meant to choose.
+        s.mem.used = s.mem.total / 50;
+        app.push(s);
     }
+    // The panel title is drawn with `─` and sits inside the row range, and the
+    // Block set rules with `─` too — so the title alone reads as sixty-four
+    // rules unless it is dropped.
     let graph = |app: &App| {
         let rows = ui::timeline_rows_range(40);
-        render_lines(app, 100, 40)[rows.start as usize..rows.end as usize].join("\n")
+        render_lines(app, 100, 40)[rows.start as usize..rows.end as usize]
+            .iter()
+            .filter(|l| !l.starts_with("──"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     // The glyphs the rule is actually drawn with, asked of the same glyph set
     // that draws it rather than transcribed.
@@ -3030,7 +3369,7 @@ fn a_many_core_machine_summarises_rather_than_clipping() {
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
             let row: String = (0..w)
-                .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+                .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
                 .collect();
             let drawn = row.chars().filter(|c| BAR_GLYPHS.contains(c)).count();
             // Whatever it degrades to, the count itself is always stated.
@@ -3078,7 +3417,7 @@ fn a_host_with_no_per_core_data_says_so() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let row: String = (0..100u16)
-        .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+        .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
         .collect();
     assert!(
         row.contains("not reported"),
@@ -3100,7 +3439,7 @@ fn show_core_overflow() {
             term.draw(|f| ui::draw(f, &app)).unwrap();
             let buf = term.backend().buffer();
             let row: String = (0..w)
-                .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+                .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
                 .collect();
             println!("  {cores:>4} cores, w={w:<4} |{}|", row);
         }
@@ -3118,7 +3457,7 @@ fn growing_the_timeline_never_shrinks_it() {
     // two floors compete below seventeen rows, and the table wins: a nine-row
     // graph on a fourteen-row terminal was bought with a table showing no
     // processes at all, which is not a trade between resolutions.
-    let smallest_that_fits = ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
+    let smallest_that_fits = CHROME + ui::HEADER_H + 1 + ui::PROCS_FLOOR_H + ui::TIMELINE_MIN_H;
     for total in smallest_that_fits..=200u16 {
         assert!(
             ui::timeline_height(total, ui::HEADER_H) >= ui::TIMELINE_MIN_H,
@@ -3281,7 +3620,8 @@ fn a_short_terminal_shows_processes_rather_than_a_taller_graph() {
     // table's floor was two *panel* rows, and a table spends two on chrome
     // before any data.
     for total in 12..=17u16 {
-        let table = total - ui::HEADER_H - 1 - ui::timeline_height(total, ui::HEADER_H);
+        let table =
+            total - ui::MENU_H - ui::HEADER_H - 1 - ui::timeline_height(total, ui::HEADER_H);
         assert!(
             table >= ui::PROCS_FLOOR_H,
             "total={total}: the table got {table} rows, below its floor of {}",
@@ -3300,8 +3640,11 @@ fn the_process_table_always_keeps_some_rows() {
     // Including on terminals too small for the timeline's own floor, where the
     // timeline takes what is left rather than the height it would prefer.
     for total in 6..=80u16 {
-        let left =
-            total.saturating_sub(ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1);
+        // The real function, not `CHROME`: this loop runs down to six rows,
+        // where the tab strip has already given its row up.
+        let left = total.saturating_sub(
+            ui::chrome_height(total) + ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1,
+        );
         assert!(left >= 1, "total={total}: process table got {left} rows");
     }
 }
@@ -3400,7 +3743,7 @@ fn present_at(app: &App, w: u16, h: u16) -> Present {
         // The last header row, whichever that is. Written down as `2` it kept
         // pointing at the timeline the moment the header lost a row.
         core_meters: {
-            let r = row(ui::HEADER_H - 1);
+            let r = row(CHROME + ui::HEADER_H - 1);
             r.contains('▇') || r.contains('▄') || r.contains('▁')
         },
         // Scoped to the timeline's gutter columns. Matching "CPU " anywhere
@@ -3422,12 +3765,7 @@ fn present_at(app: &App, w: u16, h: u16) -> Present {
         graph: timeline.clone().any(|y| {
             (0..w).any(|x| {
                 let s = buf[(x, y.min(h - 1))].symbol();
-                s.starts_with('⠀')
-                    || (s
-                        .chars()
-                        .next()
-                        .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
-                        && s != "⠀")
+                s.starts_with('⠀') || (s.chars().next().is_some_and(is_graph_glyph) && s != "⠀")
             })
         }),
         table_rows: all.contains("postgres") || all.contains("nginx"),
@@ -3568,8 +3906,17 @@ fn the_axis_states_the_ceiling_it_scaled_to() {
             .trim()
             .to_string()
     };
-    assert_eq!(gutter_top(9.0), "10");
-    assert_eq!(gutter_top(22.0), "25");
+    // The ladder itself, away from the panel: one series, one peak.
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(9.0), 10.0);
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(22.0), 25.0);
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(44.0), 50.0);
+    assert_eq!(ui::Unit::Percent.ceiling_for_test(95.0), 100.0);
+
+    // And the panel states whichever rung it landed on. The fixture's memory
+    // sits at half, and the percent panels share one axis, so below fifty it
+    // is memory that sets the rung and the gutter has to say so rather than
+    // print a number the bars were not drawn against.
+    assert_eq!(gutter_top(9.0), "50");
     assert_eq!(gutter_top(44.0), "50");
     assert_eq!(gutter_top(95.0), "100");
 }
@@ -3666,7 +4013,7 @@ fn core_meters_are_countable_in_groups() {
     term.draw(|f| ui::draw(f, &app)).unwrap();
     let buf = term.backend().buffer();
     let row: String = (0..100u16)
-        .map(|x| buf[(x, ui::HEADER_H - 1)].symbol())
+        .map(|x| buf[(x, CHROME + ui::HEADER_H - 1)].symbol())
         .collect();
     let meters = row.trim_end().split_once("cores ").unwrap().1;
     // Fourteen cores in groups of four: three gaps.
@@ -3776,21 +4123,98 @@ fn app_with_shapes() -> App {
 }
 
 /// The sparkline drawn for a named process.
+/// Whether a character is one a graph draws with, in any of the glyph sets.
+///
+/// Tests used to find a graph by asking for the braille range, which made every
+/// one of them a test of braille rather than of the graph — and they all went
+/// blank the day the default became the block elements.
+/// The rows of a rendered frame that carry a series, not chrome.
+///
+/// Panel titles and rules are drawn with `─` too, so character class alone
+/// cannot tell a graph from a border. What separates them is the gutter: an
+/// axis label owns the first `GUTTER_W` columns of every graph row, and chrome
+/// starts at column zero. That is the test.
+pub fn graph_rows(lines: &[String]) -> Vec<&String> {
+    lines
+        .iter()
+        .filter(|l| {
+            l.chars().take(ui::GUTTER_W).all(|c| !is_graph_glyph(c))
+                && l.chars().any(is_graph_glyph)
+        })
+        .collect()
+}
+
+pub fn is_graph_glyph(c: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&c)          // braille
+        || ('\u{2580}'..='\u{259f}').contains(&c)   // block elements
+        || "─│╭╮╰╯".contains(c) // box drawing
+    // Deliberately not the ASCII set (`_ - |`). Those are ordinary characters
+    // in a command line and a panel rule, so counting them as graph ink made
+    // every row-scanning test pick up two extra cells from the text beside it.
+    // The ASCII set is a fallback nothing needs to locate by character class.
+}
+
+/// How much ink a graph string carries, 0..8 a character.
+///
+/// One measure across the sets, so a test can say "this drew almost nothing"
+/// without knowing which alphabet drew it.
+pub fn ink_of(s: &str) -> u32 {
+    s.chars()
+        .map(|c| match c {
+            // Braille: one unit a raised dot.
+            '\u{2800}'..='\u{28ff}' => (c as u32 - 0x2800).count_ones(),
+            // The eighths ramps, horizontal and vertical. `▁`..`█` climb from
+            // the bottom; `▏`..`▉` grow from the left and run the other way.
+            '\u{2581}'..='\u{2588}' => c as u32 - 0x2580,
+            '\u{2589}'..='\u{258f}' => 0x2590 - c as u32,
+            '▀' | '▐' => 4,
+            // Quadrants. Two units a quarter, so they sit on the same scale as
+            // the eighths above.
+            '▖' | '▗' | '▘' | '▝' => 2,
+            '▚' | '▞' => 4,
+            '▙' | '▛' | '▜' | '▟' => 6,
+            // Box drawing carries a stroke, not a quantity: one weight for all
+            // of it, so a line's ink counts its length rather than its height.
+            '─' | '│' | '╭' | '╮' | '╰' | '╯' => 2,
+            _ => 0,
+        })
+        .sum()
+}
+
 fn spark_for(app: &App, name: &str) -> String {
     let mut term = Terminal::new(TestBackend::new(110, 24)).unwrap();
     term.draw(|f| ui::draw(f, app)).unwrap();
     let buf = term.backend().buffer();
-    let row = (0..24u16)
+    let lines: Vec<String> = (0..24u16)
         .map(|y| {
             (0..110u16)
                 .map(|x| buf[(x, y)].symbol())
                 .collect::<String>()
         })
+        .collect();
+    let row = lines
+        .iter()
         .find(|r| r.contains(name))
         .unwrap_or_else(|| panic!("{name} not on screen"));
-    row.chars()
-        .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
-        .collect()
+    // Sliced by column, not filtered by character class. The CPU and memory
+    // columns carry block-element micro-bars, so once the sparkline stopped
+    // being the only braille on the row there was nothing to tell the two
+    // apart, and every count came out wrong by two.
+    //
+    // The column is found from the header rather than assumed: `HIST` moves
+    // when the IO columns are shown, and it shortens to `HIS`, `HI` or `H` when
+    // the ceiling label beside it is long — `H ≤1600%`. The `≤` is the part
+    // that never degrades, so the label is whatever word sits in front of it.
+    let header = lines
+        .iter()
+        .find(|r| r.contains('≤'))
+        .expect("no history column on screen — the frame is too narrow for one");
+    let before = &header[..header.find('≤').expect("just found it")];
+    let at = before[..before.trim_end().len()]
+        .rfind(' ')
+        .map(|b| header[..b + 1].chars().count())
+        .expect("the history column has a label");
+    row.chars().skip(at).take(ui::SPARK_W).collect()
 }
 
 #[test]
@@ -3820,7 +4244,7 @@ fn sparklines_share_one_scale_so_rows_can_be_compared() {
     let ink = |name: &str| {
         spark_for(&app, name)
             .chars()
-            .map(|c| (c as u32 - 0x2800).count_ones())
+            .map(|c| ink_of(&c.to_string()))
             .sum::<u32>()
     };
     assert!(
@@ -3860,10 +4284,7 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
     // The live process started at 222 and has only ever been at 2%. Its
     // sparkline must not show the 90% the previous occupant of that pid had.
     let spark = spark_for(&app, "recycled");
-    let ink: u32 = spark
-        .chars()
-        .map(|c| (c as u32 - 0x2800).count_ones())
-        .sum();
+    let ink: u32 = spark.chars().map(|c| ink_of(&c.to_string())).sum();
     let full: u32 = spark.chars().count() as u32 * 8;
     assert!(
         ink * 3 < full,
@@ -4603,11 +5024,12 @@ fn an_unknown_thread_count_is_a_dash_not_a_one() {
         }];
         app.push(s);
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-        // The row itself, not the screen: `render` joins every cell with no
-        // line breaks, so `.lines()` on it is the whole frame — and the count
-        // below then counted a `36` anywhere on screen, including a clock time
-        // in the timeline that happened to read `17:36`.
-        rows(&app, 200, 40)
+        // The data row, not the frame: `render` joins every cell with no line
+        // breaks, so `.lines()` on it is the whole screen, and the count below
+        // then counted a `36` anywhere on it — a clock time in the timeline
+        // reading `17:36`, say. The summary strip totals the thread count too,
+        // which a frame-wide count finds a second time.
+        data_rows(&app, 200, 40)
             .into_iter()
             .find(|l| l.contains("zzsentinel"))
             .expect("no process row")
@@ -4640,11 +5062,22 @@ fn a_pid_with_no_start_time_gets_no_history_rather_than_the_wrong_one() {
     for i in (0..60).rev() {
         let mut s = sample_at(10.0, i as u64);
         let cpu = if i > 30 { 90.0 } else { 2.0 };
-        s.procs = vec![ProcSample {
-            cpu,
-            started: None,
-            ..proc_named(4242, "unknowable", 0.0, 1 << 20)
-        }];
+        s.procs = vec![
+            ProcSample {
+                cpu,
+                started: None,
+                ..proc_named(4242, "unknowable", 0.0, 1 << 20)
+            },
+            // A process that does have an identity, and a history that moves.
+            // Without one the column is not drawn at all — a table where
+            // nothing moved gives those ten columns back (0110) — and this
+            // test would pass for the wrong reason, never having looked.
+            ProcSample {
+                cpu,
+                started: Some(7),
+                ..proc_named(4243, "knowable", 0.0, 1 << 20)
+            },
+        ];
         app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -4683,7 +5116,7 @@ fn thread_churn_does_not_credit_growth_across_a_pid_with_no_identity() {
 #[test]
 fn a_process_absent_from_a_sample_leaves_a_gap_not_a_zero() {
     // "It was not running" and "it was running and idle" are different facts.
-    use crate::history::series_for;
+    use crate::history::series_in;
     let mut app = App::new(600);
     for i in (0..10).rev() {
         let mut s = sample_at(10.0, i as u64);
@@ -4695,7 +5128,7 @@ fn a_process_absent_from_a_sample_leaves_a_gap_not_a_zero() {
         };
         app.push(s);
     }
-    let series = series_for(&app.history, &[(7, 0)], 10);
+    let series = series_in(&app.history, &[(7, 0)], 0, 10);
     let s = &series[&(7, 0)];
     assert_eq!(s.len(), 10);
     assert!(s[..5].iter().all(Option::is_none), "absence became data");
@@ -4710,7 +5143,7 @@ fn a_process_absent_from_a_sample_leaves_a_gap_not_a_zero() {
 /// moved down into the figures, and a dozen assertions had been reading line 1
 /// by number — every one of them silently repointed at the per-core meters.
 fn figures_line(app: &App, w: u16, h: u16) -> String {
-    render_lines(app, w, h)[0].clone()
+    render_lines(app, w, h)[CHROME as usize].clone()
 }
 
 fn render_lines(app: &App, w: u16, h: u16) -> Vec<String> {
@@ -5235,7 +5668,10 @@ fn churn_is_not_summed_across_a_sleep() {
     adjacent
         .history
         .push(sample_with_at(Some(1_204_331), 0, vec![threaded(1, 0, 1)]));
-    assert!(render(&adjacent, 100, 30).contains("came and went"));
+    // Wider than it was: the title now also says the figures are averaged, and
+    // that clause outranks churn — it changes how every number in the table is
+    // read, where churn is one fact about one interval.
+    assert!(render(&adjacent, 120, 30).contains("came and went"));
 }
 
 #[test]
@@ -5359,8 +5795,15 @@ fn a_group_separator_is_measured_in_columns_not_bytes() {
     // five written out by hand. The two disagreed, and the header dropped
     // figures that fitted while leaving columns unused.
     let (near_cols, near_bytes, far_cols, far_bytes) = ui::separator_widths_for_test();
-    assert_eq!(near_cols, 2);
-    assert_eq!(far_cols, 5, "the group separator is not five columns wide");
+    // The numbers themselves are a design choice and change; what this test is
+    // about is that both are measured in *columns*. The relationship is the
+    // invariant: a group boundary has to be wider than the gap inside a group,
+    // or it is not a boundary.
+    assert!(
+        far_cols > near_cols,
+        "a group boundary is no wider than the gaps inside one"
+    );
+    assert!(near_cols >= 2, "figures are packed against each other");
     assert_ne!(
         far_cols, far_bytes,
         "this proves nothing unless columns and bytes differ"
@@ -5407,9 +5850,12 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     app.tree = true;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // 105, not 104: one column is the selection margin (0114), and this is
-    // calibrated to the command width 104 used to give.
-    let rows: Vec<String> = rows(&app, 105, 24)
+    // Two rows taller than it was: the tab strip took one from the table and
+    // the summary strip another, and this test is about what a *deep tree*
+    // does with nine rows rather than about how many rows there happen to be.
+    // The width stays 104: the selection margin 0114 reserved went back to the
+    // table when the selected row got a ground of its own.
+    let rows: Vec<String> = rows(&app, 104, 26)
         .into_iter()
         .filter(|l| l.contains("Chrome") || l.contains('…'))
         .collect();
@@ -5876,22 +6322,31 @@ fn every_graph_row_starts_at_the_same_column() {
     stalled_history(&mut app, 200);
     let rows = ui::timeline_rows_range(50);
     let lines = render_lines(&app, 64, 50);
-    let graph_rows: Vec<&String> = lines[rows.start as usize..rows.end as usize]
-        .iter()
-        .filter(|l| l.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)))
-        .collect();
+    let graph_rows = graph_rows(&lines[rows.start as usize..rows.end as usize]);
     assert!(graph_rows.len() >= 6, "expected a stack of graphs");
     for line in &graph_rows {
+        // The gutter is a *reservation*, so the test is that nothing crosses
+        // into it — not that every row starts drawing at its edge. A line
+        // leaves the first column blank whenever it does not pass through that
+        // row there, which an area fill never did.
         let first = line
             .char_indices()
-            .find(|(_, c)| ('\u{2800}'..='\u{28ff}').contains(c))
-            .map(|(i, _)| line[..i].chars().count());
-        assert_eq!(
-            first,
-            Some(ui::GUTTER_W),
-            "a graph row began at a different column: {line:?}"
+            .find(|(_, c)| is_graph_glyph(*c))
+            .map(|(i, _)| line[..i].chars().count())
+            .expect("a graph row with no graph on it");
+        assert!(
+            first >= ui::GUTTER_W,
+            "a graph row crossed into the gutter: {line:?}"
         );
     }
+    // And the reservation is not merely wide enough — it is exactly the width
+    // every label needs. `WAIT` is four characters against a three-wide gutter,
+    // and a format width is a minimum, so the overflow was silent.
+    assert_eq!(
+        ui::GUTTER_W,
+        ui::SERIES_NAMES.iter().map(|n| n.len()).max().unwrap() + 1,
+        "the gutter no longer fits the longest series name plus its padding"
+    );
 }
 
 #[test]
@@ -6304,6 +6759,49 @@ fn the_io_columns_drop_rather_than_squeezing_the_table() {
             !out.contains("DISK") || out.contains("512.0M"),
             "at w={w} the IO columns were kept at the cost of the table"
         );
+    }
+}
+
+#[test]
+fn no_width_and_no_view_can_squeeze_a_figure() {
+    // The sibling above, generalised. `min_width_for_io` was this argument
+    // applied to two columns, and the ladder stopped there: below seventy-six
+    // columns CPU% and RSS were being squeezed instead, and on the memory tab
+    // it started at eighty. A right-aligned cell squeezed by two columns keeps
+    // its tail, so `512.0M` renders as `2.0M` — not a narrower figure but a
+    // wrong one, with nothing on screen to say so.
+    use crate::app::View;
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs[0].io = Some(crate::sample::IoRates {
+        read: 2048,
+        write: 4096,
+    });
+    // A figure whose truncation is unmistakable: every suffix of it is also a
+    // plausible memory figure, which is exactly what makes the bug silent.
+    s.procs[0].rss = 512 << 20;
+    s.procs[0].cpu = 137.5;
+    s.procs[0].pss = Some(300 << 20);
+    s.procs[0].vsize = Some(4 << 30);
+    s.procs[0].majflt = Some(7);
+    app.push(s);
+
+    for view in View::ALL {
+        app.view = view;
+        for w in 40..=200u16 {
+            let out = render(&app, w, 30);
+            let row = out
+                .lines()
+                .find(|l| l.contains("512.0M"))
+                .unwrap_or_else(|| {
+                    panic!("{view:?} at w={w} truncated RSS:\n{out}");
+                });
+            assert!(
+                row.contains("137.5"),
+                "{view:?} at w={w} truncated CPU%:\n{out}"
+            );
+        }
     }
 }
 
@@ -6867,7 +7365,10 @@ fn a_column_of_one_repeated_value_gives_its_width_to_the_command() {
     let one = rows(&app, 120, 20);
     let head = one.iter().find(|l| l.contains("PID")).unwrap();
     assert!(!head.contains("USER"), "the column stayed: {head:?}");
-    let title = one.iter().find(|l| l.contains("processes")).unwrap();
+    // From the panel, not the frame: the scope line on the tab strip says
+    // `processes` too and sits above this.
+    let one_table = table_rows(&app, 100, 30);
+    let title = one_table.iter().find(|l| l.contains("processes")).unwrap();
     assert!(
         title.contains("· all root"),
         "what the column said was not said anywhere: {title:?}"
@@ -7089,10 +7590,24 @@ fn question_mark_shows_every_key_and_any_key_puts_it_away() {
 #[test]
 fn the_footer_gives_up_the_least_useful_key_first() {
     // Order is the ladder. `/` is reached for constantly and `K` is the most
-    // niche, so a narrow terminal must lose `K` and keep `/`.
-    let at_100 = ui::fit_hints_for_test(100);
-    assert!(at_100.contains("/ filter"), "{at_100:?}");
-    assert!(!at_100.contains("K kernel"), "{at_100:?}");
+    // niche, so a hint is never dropped while a more niche one is still shown.
+    //
+    // Stated as a relation rather than against a fixed width: the ladder has
+    // gained hints twice — `b jump`, then `F10 menu` — and each time every
+    // width below it moved. A test pinned to a column number passes or fails
+    // for a reason that has nothing to do with the claim.
+    for w in 20..=200u16 {
+        let line = ui::fit_hints_for_test(w);
+        let shown = |h: &str| line.split(" · ").any(|p| p == h);
+        assert!(
+            !shown("K kernel") || shown("/ filter"),
+            "`K kernel` survived a width that dropped `/ filter`: {line:?}"
+        );
+        assert!(
+            !shown("/ filter") || shown("q quit"),
+            "a hint outranked `q quit`: {line:?}"
+        );
+    }
     // `b jump` was added to the ladder above `t tree`, which pushed everything
     // below it ten columns right — so the width at which `K kernel` appears
     // moved with it. The number is measured rather than assumed: a ladder test
@@ -7118,7 +7633,7 @@ fn the_footer_gives_up_the_least_useful_key_first() {
         .iter()
         .position(|h| h.starts_with("b "))
         .unwrap();
-    for niche in ["t tree", "i io", "K kernel", "S constraint"] {
+    for niche in ["t tree", "Tab tabs", "K kernel", "S constraint"] {
         let k = ui::KEY_HINTS.iter().position(|h| *h == niche).unwrap();
         assert!(jump < k, "`b jump` is given up before `{niche}`");
     }
@@ -7323,7 +7838,8 @@ fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     for w in 40..=160u16 {
-        let frame = rows(&app, w, 20);
+        // The panel's own rows: the scope line says `processes` too.
+        let frame = table_rows(&app, w, 20);
         let title = frame.iter().find(|l| l.contains("processes")).unwrap();
         let text = title.trim_end_matches(['─', ' ']);
         // Nothing is ever cut mid-clause.
@@ -7354,11 +7870,16 @@ fn folding_the_user_column_lets_the_io_columns_appear_sooner() {
     // `command_width` learned that the folded column's ten columns are free;
     // this sibling threshold did not, so the disk columns went on refusing to
     // appear until the terminal was ten columns wider than they needed.
+    //
+    // Eleven, not ten: a column that goes takes the space between it and its
+    // neighbour with it. The hand-added version counted the column and forgot
+    // the gap, which is the kind of off-by-one that stops happening once the
+    // threshold is asked of the same list the table is laid out from.
     let with_user = ui::min_width_for_io_for_test(true);
     let without = ui::min_width_for_io_for_test(false);
     assert_eq!(
         with_user - without,
-        10,
+        ui::USER_W + 1,
         "the threshold did not come down by the width of the column"
     );
 
@@ -7590,39 +8111,7 @@ fn the_readme_shows_the_table_this_version_draws() {
     // headers, so anyone comparing the README to a running instance saw a
     // different table.
     let readme = include_str!("../README.md");
-    let mut app = App::new(60);
-    for i in 0..App::CONSTANT_FOR {
-        // Climbing to the README's figures, which the last sample shows: a
-        // machine whose processes never moved draws no history column
-        // (0110), and the README should look like a machine doing something.
-        let k = (i + 1) as f32 / App::CONSTANT_FOR as f32;
-        let mut s = sample(10.0);
-        // The README's own four, so the count in the title matches too.
-        s.procs = vec![
-            ProcSample {
-                cpu: 88.4 * k,
-                rss: 512 << 20,
-                ..proc_named(824, "postgres", 0.0, 0)
-            },
-            ProcSample {
-                cpu: 12.5 * k,
-                rss: 32 << 20,
-                ..proc_named(1190, "nginx", 0.0, 0)
-            },
-            ProcSample {
-                cpu: 4.2 * k,
-                rss: 148 << 20,
-                ..proc_named(2077, "node", 0.0, 0)
-            },
-            ProcSample {
-                cpu: 0.1,
-                rss: 12 << 20,
-                ..proc_named(1, "systemd", 0.0, 0)
-            },
-        ];
-        app.push(s);
-    }
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let app = readme_fixture();
     let drawn = rows(&app, 78, 24);
 
     // The footer too. It is the line most likely to drift, because every key
@@ -7728,7 +8217,7 @@ fn sorting_does_not_move_the_selection_to_a_different_process() {
 
     let mut seen = Vec::new();
     for _ in 0..4 {
-        app.sort = app.sort.next(false, crate::app::View::Generic);
+        app.sort = app.sort.next(false, crate::app::View::Cpu);
         let rows = app.visible_rows();
         let i = app.row_of(&rows).expect("the sort lost the selection");
         assert_eq!(&*rows[i].proc.name, "redis", "the sort moved the selection");
@@ -8271,12 +8760,12 @@ fn the_sort_cycle_skips_disk_when_there_are_no_disk_figures() {
     let mut seen = vec![Sort::Cpu];
     let mut s = Sort::Cpu;
     for _ in 0..6 {
-        s = s.next(false, crate::app::View::Generic);
+        s = s.next(false, crate::app::View::Cpu);
         seen.push(s);
     }
     assert!(!seen.contains(&Sort::Disk), "cycled onto an empty column");
     // …and reaches it when the figures exist.
-    assert_eq!(Sort::Mem.next(true, crate::app::View::Generic), Sort::Disk);
+    assert_eq!(Sort::Mem.next(true, crate::app::View::Cpu), Sort::Disk);
 }
 
 #[test]
@@ -8640,7 +9129,10 @@ fn the_title_counts_processes_even_when_a_row_stands_for_six() {
         grouped.contains("processes (7)"),
         "grouping made the panel understate what is running: {grouped:?}"
     );
-    assert!(grouped.contains("grouped"), "{grouped:?}");
+    // What the rows stand for is named on the strip, beside the key that
+    // changes it.
+    let strip = rows(&app, 130, 16)[strip_y(&app, 130, 16) as usize].clone();
+    assert!(strip.contains("by name"), "{strip:?}");
 }
 
 #[test]
@@ -8792,15 +9284,13 @@ fn a_malformed_query_hides_nothing_and_says_why() {
 
     // Said where the query is typed…
     app.editing_filter = true;
-    // The filter line itself, not the whole frame. The title carries the same
-    // message, so a frame-wide search is satisfied by the title even when the
-    // line where the query is being typed says nothing — and the explanation,
-    // not the echo, because the box already shows what was typed.
+    // The footer, not the whole frame. The panel title carries the same message
+    // and a frame-wide search is satisfied by it even when the row that is
+    // meant to explain the error says nothing. The *field* is on the scope line
+    // now; the footer is what is left, and the explanation belongs there
+    // because the field is already showing what was typed.
     let drawn = rows(&app, 140, 20);
-    let line = drawn
-        .iter()
-        .find(|l| l.starts_with("filter:"))
-        .expect("no filter line");
+    let line = drawn.last().expect("no footer");
     assert!(
         line.contains("no field called"),
         "the error is not shown where the query is typed: {line:?}"
@@ -8880,7 +9370,7 @@ fn a_machine_at_nominal_clock_spends_no_header_space_saying_so() {
         let mut a = App::new(60);
         a.theme = app.theme;
         a.push(s);
-        let header = rows(&a, 160, 20)
+        let header = header_rows(&a, 160, 20)
             .into_iter()
             .find(|l| l.contains("CPU"))
             .expect("no header");
@@ -8905,7 +9395,7 @@ fn the_clock_figure_qualifies_the_cpu_figure_it_sits_beside() {
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let header = rows(&app, 160, 20)
+    let header = header_rows(&app, 160, 20)
         .into_iter()
         .find(|l| l.contains("CPU"))
         .unwrap();
@@ -8925,7 +9415,7 @@ fn the_clock_figure_qualifies_the_cpu_figure_it_sits_beside() {
     // saying the machine is in trouble first. Rank decides what is dropped;
     // group decides where it sits, so the position above proves nothing about
     // the ladder.
-    let narrow = rows(&app, 46, 20)
+    let narrow = header_rows(&app, 46, 20)
         .into_iter()
         .find(|l| l.contains("CPU"))
         .expect("no header at 46 columns");
@@ -9045,14 +9535,35 @@ fn a_key_opens_the_selected_process_history_at_full_width() {
     // line with no braille on it at all, which then reads as "zero columns
     // wide" and fails for the wrong reason.
     let r = ui::timeline_rows_range(24);
-    let graph = detail[r.start as usize..r.end as usize]
+    // Two claims, because "full width" used to be measured in a way that could
+    // not fail. The old count included braille's blank — a character, not a
+    // space — so it returned the width of the panel whether anything was drawn
+    // in it or not, and would have passed against an empty graph.
+    //
+    // What the panel actually promises is the timeline's resolution rather than
+    // the table's: one cell per pair of samples across the whole buffer, where
+    // the row this replaced compressed the same buffer into ten cells.
+    let band = graph_rows(&detail[r.start as usize..r.end as usize]);
+    let columns = band
         .iter()
-        .find(|l| l.contains("CPU"))
-        .expect("no cpu row in the timeline block");
-    let drawn = graph.chars().filter(|c| ('⠀'..='⣿').contains(c)).count();
+        .flat_map(|l| {
+            l.char_indices()
+                .filter(|(_, c)| is_graph_glyph(*c))
+                .map(|(i, _)| l[..i].chars().count())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let buffered = 40 / crate::glyphs::GlyphSet::default().samples_per_cell();
     assert!(
-        drawn > 60,
-        "the history is {drawn} columns wide, not full width"
+        columns.len() > ui::SPARK_W,
+        "the history is {} columns wide — no wider than the table row it \
+         replaced, which showed {} of the same {buffered} the buffer holds",
+        columns.len(),
+        ui::SPARK_W
+    );
+    // And it is a panel, not a row: the series has room to have a shape.
+    assert!(
+        band.len() > 1,
+        "the history is one row tall, so it is still a sparkline"
     );
 }
 
@@ -9221,9 +9732,14 @@ fn the_graph_draws_the_processs_figures_not_the_machines() {
     // the ramp does not — the first version of this assertion compared fill
     // and had it exactly backwards. A ramp is told from a flat line by
     // *variety*: many levels against one.
+    // Counted as distinct *heights*, not distinct characters. Each alphabet
+    // spells a height differently, and one of them — box drawing — spells a
+    // rise and a fall with different glyphs at the same height, so counting
+    // characters would call a flat line varied in one set and not another.
     let levels = |l: &str| {
         l.chars()
-            .filter(|c| ('⠀'..='⣿').contains(c))
+            .filter(|c| is_graph_glyph(*c))
+            .map(|c| ink_of(&c.to_string()))
             .collect::<std::collections::HashSet<_>>()
             .len()
     };
@@ -9383,8 +9899,11 @@ fn the_detail_title_gives_up_clauses_rather_than_being_cut() {
     app.detail = true;
 
     for w in 40..=140u16 {
+        // The last rule on screen: the graphs are under the table now, so the
+        // first one is the process panel's.
         let title = rows(&app, w, 24)
             .into_iter()
+            .rev()
             .find(|l| l.starts_with("── "))
             .unwrap_or_else(|| panic!("no title at {w}"));
         let text = title.trim_end_matches(['─', ' ']);
@@ -9414,15 +9933,18 @@ fn pressing_detail_with_nothing_selected_says_what_to_do() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     assert!(app.selected.is_none(), "the fixture selected something");
 
-    let before = rows(&app, 110, 24)
-        .into_iter()
-        .find(|l| l.starts_with("── "))
-        .unwrap();
+    // The graphs' own rule, which is the last on screen now that they are at
+    // the bottom.
+    let rule = |app: &App| {
+        rows(app, 110, 24)
+            .into_iter()
+            .rev()
+            .find(|l| l.starts_with("── "))
+            .unwrap()
+    };
+    let before = rule(&app);
     app.detail = true;
-    let after = rows(&app, 110, 24)
-        .into_iter()
-        .find(|l| l.starts_with("── "))
-        .unwrap();
+    let after = rule(&app);
     assert_ne!(before, after, "pressing the key changed nothing at all");
     assert!(
         after.contains("pick a process"),
@@ -10698,14 +11220,14 @@ fn the_disk_columns_are_reachable_on_a_narrow_terminal() {
     }];
     app.push(s);
 
-    let narrow = rows(&app, 90, 10).join("\n");
+    let narrow = rows(&app, 88, 10).join("\n");
     assert!(
         !narrow.contains("DISK R"),
         "the fixture is not narrow enough to test this:\n{narrow}"
     );
 
     app.view = View::Disk;
-    let shown = rows(&app, 90, 10).join("\n");
+    let shown = rows(&app, 88, 10).join("\n");
     assert!(
         shown.contains("DISK R") && shown.contains("DISK W"),
         "the disk view did not bring the columns back:\n{shown}"
@@ -10742,17 +11264,71 @@ fn the_sort_and_the_view_cannot_disagree() {
 }
 
 #[test]
+fn a_tab_orders_the_table_by_the_resource_it_is_named_after() {
+    use crate::app::{Sort, View};
+    // The disk tab listed the busiest processes by CPU, each with a pair of
+    // zeroes under DISK R and DISK W — the tab is the question, and the
+    // ordering was answering a different one. `s` cycles within the view when
+    // the reader wants the other half.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    app.push(s);
+    assert_eq!(app.sort, Sort::Cpu, "the fixture did not start on CPU");
+
+    press(&mut app, KeyCode::Char('3'));
+    assert_eq!(app.view, View::Disk);
+    assert_eq!(app.sort, Sort::Disk, "the disk tab kept the CPU ordering");
+
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.sort, Sort::Mem, "the memory tab kept the disk ordering");
+
+    press(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.sort, Sort::Cpu, "the cpu tab kept the memory ordering");
+}
+
+#[test]
+fn the_disk_tab_asks_for_disk_before_the_first_sample_carries_it() {
+    use crate::app::{Sort, View};
+    // The key that opens the tab is the one that starts collecting for it, so
+    // at the moment it is pressed no sample has the figures yet. Reading
+    // `io_collected` there fell back to CPU and stayed there once they
+    // arrived — on exactly the first press, which is the only one that
+    // matters.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = false;
+    app.push(s);
+
+    press(&mut app, KeyCode::Char('3'));
+    assert_eq!(app.view, View::Disk);
+    assert_eq!(
+        app.sort,
+        Sort::Disk,
+        "the disk tab settled for CPU because nothing had been collected yet"
+    );
+}
+
+#[test]
 fn switching_views_brings_an_unreachable_sort_with_it() {
     use crate::app::{Sort, View};
+    // A sort the new view cannot show would be an ordering with no visible
+    // reason for it. Driven through the key rather than by repeating the
+    // rule here, which is a test of itself.
     let mut app = App::new(600);
-    app.view = View::Generic;
-    app.sort = Sort::Disk;
-    // Memory does not show disk, so the sort has to move.
-    app.view = View::Memory;
-    if !app.view.sorts().contains(&app.sort) {
-        app.sort = app.view.default_sort_for(true);
-    }
-    assert_eq!(app.sort, Sort::Mem, "the sort was left pointing at nothing");
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    app.push(s);
+    press(&mut app, KeyCode::Char('3'));
+    assert_eq!(app.sort, Sort::Disk, "the fixture is not set up");
+
+    press(&mut app, KeyCode::Char('2'));
+    assert_eq!(app.view, View::Memory);
+    assert!(
+        app.view.sorts().contains(&app.sort),
+        "the sort was left pointing at nothing: {:?}",
+        app.sort
+    );
 }
 
 #[test]
@@ -10760,22 +11336,35 @@ fn the_panel_names_the_view_when_it_is_not_the_default() {
     use crate::app::View;
     let mut app = App::new(600);
     app.push(sample(10.0));
-    let generic = rows(&app, 140, 10).join("\n");
-    assert!(generic.contains("sort: CPU"));
-    // Not "does the word appear" — the key hints carry `v view`. The default
-    // view is the one that needs no announcing, so it is the *clause* that must
-    // be absent.
+    // The strip names both: the tab is the view, and the settings beside it
+    // are what was done to the rows. The panel rule below says neither any
+    // more — it is for what the table cannot show, and a preference somebody
+    // set is not an omission.
+    let strip = |app: &App| rows(app, 140, 26)[strip_y(app, 140, 26) as usize].clone();
+    let generic = strip(&app);
+    assert!(generic.contains("sort CPU"), "{generic:?}");
     assert!(
-        !generic.contains("generic view"),
-        "the default view is named for no reason:\n{generic}"
+        generic.contains("CPU") && generic.contains("Memory") && generic.contains("Disk"),
+        "the strip does not offer the other tabs: {generic:?}"
+    );
+    let rule = |app: &App| {
+        rows(app, 140, 26)
+            .into_iter()
+            .find(|l| l.contains("processes ("))
+            .expect("no rule")
+    };
+    assert!(
+        !rule(&app).contains("sort"),
+        "the rule repeats what the strip above it says: {:?}",
+        rule(&app)
     );
 
     app.view = View::Memory;
     app.sort = app.view.default_sort_for(true);
-    let mem = rows(&app, 140, 10).join("\n");
+    let mem = strip(&app);
     assert!(
-        mem.contains("memory view, sort: MEM"),
-        "the panel does not say which columns the ordering is over:\n{mem}"
+        mem.contains("sort MEM"),
+        "the strip does not say which columns the ordering is over: {mem:?}"
     );
 }
 
@@ -10809,7 +11398,7 @@ fn every_view_renders_every_kind_of_row() {
     // lockstep, and a view drops entries from all three. A mismatch does not
     // panic — ratatui just misaligns the columns silently — so this walks every
     // view against every row shape the table can produce.
-    for view in [View::Generic, View::Memory, View::Disk] {
+    for view in [View::Cpu, View::Memory, View::Disk] {
         for grouping in [Grouping::Off, Grouping::Name] {
             let mut app = App::new(600);
             app.push(sample_with_threads());
@@ -10923,7 +11512,7 @@ fn the_memory_view_shows_what_a_process_actually_costs() {
         );
     }
     // And the generic view does not carry them.
-    app.view = View::Generic;
+    app.view = View::Cpu;
     let generic = rows(&app, 160, 10).join("\n");
     assert!(
         !generic.contains("MAJF/s"),
@@ -10936,9 +11525,21 @@ fn a_field_the_platform_does_not_publish_is_a_dash_not_a_zero() {
     use crate::app::View;
     // macOS supplies none of these through sysinfo. A zero would say this
     // process takes no major faults and has reserved no address space.
+    //
+    // One process answers and one does not, so the columns are drawn at all:
+    // what is under test here is the cell. The column's own existence is the
+    // sibling below.
     let mut app = App::new(600);
     let mut s = sample(10.0);
-    s.procs = vec![proc_named(4001, "node", 12.0, 64 << 20)];
+    s.procs = vec![
+        ProcSample {
+            pss: Some(300 << 20),
+            vsize: Some(4 << 30),
+            majflt: Some(7),
+            ..proc_named(4002, "chrome", 1.0, 32 << 20)
+        },
+        proc_named(4001, "node", 12.0, 64 << 20),
+    ];
     app.push(s);
     app.view = View::Memory;
     let shown = rows(&app, 160, 10).join("\n");
@@ -10947,8 +11548,66 @@ fn a_field_the_platform_does_not_publish_is_a_dash_not_a_zero() {
         .find(|l| l.contains("node"))
         .expect("no row drawn");
     assert!(
-        row.matches('—').count() >= 3,
+        row.matches('\u{2014}').count() >= 3,
         "an unpublished figure was rendered as a number: {row}"
+    );
+}
+
+#[test]
+fn a_tab_without_disk_columns_says_nothing_about_disk_columns() {
+    // The memory tab announced `! io: panel too narrow` at every width, about
+    // columns it would not have drawn at any of them. A warning naming a
+    // problem the reader cannot have is worse than none: it is the one clause
+    // the panel title goes out of its way to guarantee, so it has to mean
+    // something when it appears.
+    use crate::app::View;
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    app.push(s);
+    assert!(app.show_io, "the fixture is not testing what it claims");
+
+    app.view = View::Memory;
+    let mem = rows(&app, 140, 12).join("\n");
+    assert!(
+        !mem.contains("io:"),
+        "the memory tab reported on columns it does not carry:\n{mem}"
+    );
+
+    // And the tabs that do carry them still say why they are missing.
+    app.view = View::Cpu;
+    let narrow = rows(&app, 70, 12).join("\n");
+    assert!(
+        narrow.contains("io: panel too narrow"),
+        "the cpu tab dropped the columns silently:\n{narrow}"
+    );
+}
+
+#[test]
+fn a_column_nobody_can_fill_is_not_drawn_at_all() {
+    use crate::app::View;
+    // The other half of the rule above, and why the memory tab was worth less
+    // than the tab beside it on a Mac: PSS, VSZ and MAJF/s were twenty-five
+    // columns of em dash, and the RSS figure they crowded out was being
+    // truncated to pay for them. The same argument as `App::one_user`.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(4001, "node", 12.0, 64 << 20)];
+    app.push(s);
+    app.view = View::Memory;
+
+    let shown = rows(&app, 160, 10).join("\n");
+    for gone in ["PSS", "VSZ", "MAJF/s"] {
+        assert!(
+            !shown.contains(gone),
+            "{gone} is a column of nothing and was drawn anyway:\n{shown}"
+        );
+    }
+    // Growth is poptop's own arithmetic over its own samples, so the tab is
+    // never empty of the thing it is for.
+    assert!(
+        shown.contains("GROW"),
+        "the memory tab lost the one column it can always fill:\n{shown}"
     );
 }
 
@@ -10965,7 +11624,7 @@ fn proportional_memory_is_only_read_while_the_view_that_shows_it_is_open() {
     assert!(!app.needs().asked(Source::Pss), "read unasked");
     app.view = View::Memory;
     assert_eq!(app.needs().asked(Source::Pss), supported);
-    app.view = View::Generic;
+    app.view = View::Cpu;
     assert!(
         !app.needs().asked(Source::Pss),
         "the read outlived the view"
@@ -11455,6 +12114,3667 @@ fn an_unresolvable_owner_is_not_folded_into_one_user() {
 }
 
 #[test]
+fn the_reference_lines_never_outnumber_what_they_reference() {
+    // Reported as "it looks like clouds", and it was exactly that: the
+    // threshold rules were drawn every second cell, which is about forty marks
+    // on a hundred-column terminal. That was tuned against an area fill, which
+    // reached most cells and hid them. On an idle machine, where the series
+    // occupies a tenth of the panel and the rest is empty, the same rule
+    // becomes the loudest thing on screen — a reference line that has taken
+    // over the graph it was there to annotate.
+    //
+    // The property is a ratio, not a stride, because the stride is the thing
+    // that was wrong. However wide the panel and however sparse the series,
+    // chrome inside a graph must stay a minority of the ink in it.
+    let (w, h) = (100u16, 14u16);
+    let mut app = App::new(600);
+    // An idle machine with one spike, so the ceiling is 100 and the series
+    // lives near the floor: the shape that leaves the most room for chrome.
+    for i in (0..200).rev() {
+        app.push(sample_at(if i == 150 { 100.0 } else { 4.0 }, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw_timeline_for_test(f, f.area(), &app))
+        .unwrap();
+    let buf = term.backend().buffer();
+
+    // Measured per row, not across the panel. An earlier version summed the
+    // whole graph, and the memory band — a wall of data at this height —
+    // outweighed every dash in the CPU band, so the ratio held at the stride
+    // that caused the complaint. The question is how dense a rule *row* is,
+    // because that is the row a reader sees as texture.
+    let width = w as usize - ui::GUTTER_W;
+    let mut ruled = 0;
+    for y in 1..h - 1 {
+        let chrome = (ui::GUTTER_W as u16..w)
+            .filter(|&x| {
+                let c = &buf[(x, y)];
+                c.fg == app.theme.chrome && c.symbol() != " " && c.symbol() != "\u{2800}"
+            })
+            .count();
+        if chrome == 0 {
+            continue;
+        }
+        ruled += 1;
+        assert!(
+            chrome * 5 <= width,
+            "a rule row is {chrome} marks across {width} columns — texture, not a reference"
+        );
+    }
+    assert!(
+        ruled > 0,
+        "no rules at all, so this would pass with the feature removed"
+    );
+}
+
+#[test]
+fn the_sparkline_and_the_timeline_are_drawn_over_the_same_span() {
+    // They used to be of different spans, side by side, with nothing saying so:
+    // the timeline showed its window, the sparkline squeezed the whole buffer
+    // into ten cells. A spike a quarter of the way along one sat somewhere else
+    // entirely in the other, so neither could be read against the other.
+    //
+    // Tested as a *position*, because that is the claim. The buffer is four
+    // times the window, so under the old behaviour a spike at the start of the
+    // window landed in the last quarter of the sparkline instead of its first
+    // cell.
+    let (w, h) = (110u16, 24u16);
+    let mut app = App::new(2000);
+    let spike_at = 60; // samples back from now
+    for i in (0..800).rev() {
+        let mut s = sample_at(5.0, i as u64);
+        s.procs = vec![ProcSample {
+            cpu: if i == spike_at { 90.0 } else { 1.0 },
+            ..proc_named(7, "ffmpeg", 0.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let r = ui::timeline_rows_range(h);
+    let (start, shown, _) = ui::shown_window(
+        &app,
+        ratatui::layout::Rect::new(0, r.start, w, r.end - r.start),
+    );
+    assert!(
+        shown < app.history.len(),
+        "the window covers the whole buffer, so this cannot tell the two apart"
+    );
+
+    // Where the spike falls in the window, as a fraction of it.
+    let spike_index = app.history.len() - 1 - spike_at;
+    assert!(
+        spike_index >= start && spike_index < start + shown,
+        "the spike is outside the window"
+    );
+    let want = (spike_index - start) as f32 / shown as f32;
+
+    // And where the sparkline actually drew it.
+    let spark = spark_for(&app, "ffmpeg");
+    let cells: Vec<char> = spark.chars().collect();
+    let tallest = cells
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, c)| ink_of(&c.to_string()))
+        .map(|(i, _)| i)
+        .expect("an empty sparkline");
+    let got = tallest as f32 / cells.len() as f32;
+
+    assert!(
+        (got - want).abs() <= 1.0 / cells.len() as f32,
+        "the spike is {:.0}% along the window and {:.0}% along the sparkline: {spark:?}",
+        want * 100.0,
+        got * 100.0
+    );
+}
+
+#[test]
+fn nothing_about_the_data_can_turn_the_bars_into_a_line() {
+    // The graph changing shape on its own was the complaint, twice over: a
+    // memory series drifting into a narrow band would silently stop being bars
+    // and start being a line, which reads as a different tool having drawn it.
+    // Whatever the data does, the default draws bars, and only `scale = fit`
+    // changes that.
+    let shapes = [
+        // A high narrow band — the case fitting exists for.
+        (72.0f32, 85.0f32),
+        // Flat, noisy, wide, and near zero.
+        (50.0, 50.0),
+        (0.0, 100.0),
+        (1.0, 3.0),
+        (95.0, 99.0),
+    ];
+    for (lo, hi) in shapes {
+        let mut app = App::new(600);
+        for i in (0..200).rev() {
+            let f = (i % 7) as f32 / 6.0;
+            let mut s = sample_at(lo + (hi - lo) * f, i);
+            s.mem.used = ((lo + (hi - lo) * f) / 100.0 * 16.0 * 1024.0) as u64 * (1 << 20);
+            app.push(s);
+        }
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        let r = ui::timeline_rows_range(22);
+        let lines = render_lines(&app, 92, 22);
+        let drawn: String = lines[r.start as usize..r.end as usize]
+            .iter()
+            .flat_map(|l| l.chars().skip(ui::GUTTER_W))
+            .collect();
+        for c in "╭╮╰╯│".chars() {
+            assert!(
+                !drawn.contains(c),
+                "a {lo}..{hi} series drew {c:?} — the default turned into a line"
+            );
+        }
+        // Asked of the set rather than assumed: the default has been block and
+        // is braille, and a hardcoded `▁▂▃` finds nothing in either the braille
+        // or the ascii alphabet.
+        let set = crate::glyphs::GlyphSet::default();
+        let marks: String = (1..=set.sub_rows()).map(|k| set.bar(k)).collect();
+        assert!(
+            drawn.chars().any(|c| marks.contains(c)),
+            "a {lo}..{hi} series drew no bars at all"
+        );
+    }
+}
+
+#[test]
+fn scale_fit_stops_a_high_flat_series_being_a_wall() {
+    // A series between 72% and 85% on an axis pinned to zero puts 72 of its 100
+    // points below the signal, and those rows are solid whatever the machine
+    // does. `scale = fit` reclaims them.
+    //
+    // Opt-in, not automatic. Fitting changes the *form* as well as the axis —
+    // bars encode magnitude by area, so a truncated axis has to be drawn as a
+    // line to stay honest — and a graph that silently changes shape because the
+    // data drifted into a band is worse than a wall. Most people want bars, and
+    // bars want zero.
+    let mut app = App::new(600);
+    for i in 0..200 {
+        let mut s = sample_at(50.0, 200 - i);
+        let pct = 78.0 + ((i as f32) * 0.11).sin() * 6.0;
+        s.mem.used = ((pct / 100.0 * 16.0 * 1024.0) as u64) << 20;
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.axis = crate::glyphs::Axis::Fit;
+
+    let r = ui::timeline_rows_range(22);
+    let lines = render_lines(&app, 92, 22);
+    let band: Vec<&String> = lines[r.start as usize..r.end as usize]
+        .iter()
+        .skip_while(|l| !l.contains("MEM"))
+        .take(2)
+        .collect();
+    assert!(!band.is_empty(), "no memory band on screen");
+
+    // Not solid. The specific failure was a row of `█` from edge to edge, and
+    // it is the one thing that must not come back.
+    for line in &band {
+        let ink: String = line.chars().skip(ui::GUTTER_W).collect();
+        let solid = ink.chars().filter(|&c| c == '█').count();
+        assert!(
+            solid * 2 < ink.chars().count(),
+            "the memory band is still a wall: {line:?}"
+        );
+    }
+
+    // And *this band's* axis says where its own bottom is, because a floor that
+    // moved without saying so would be the misleading kind of clever.
+    //
+    // Read from the memory band specifically, not from the frame: an earlier
+    // version asked whether any gutter label was between zero and the floor,
+    // and the CPU panel's own ceiling satisfied it — so the assertion held with
+    // the memory floor labelled `0`.
+    let panel = &lines[r.start as usize..r.end as usize];
+    let gutter = |l: &String| {
+        l.chars()
+            .take(ui::GUTTER_W)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    let mem_row = panel
+        .iter()
+        .position(|l| gutter(l) == "MEM")
+        .expect("no memory band on screen");
+    let floor_row = mem_row
+        + 1
+        + panel[mem_row + 1..]
+            .iter()
+            .position(|l| gutter(l).parse::<f32>().is_ok())
+            .expect("the memory band states no floor at all");
+    let floor: f32 = gutter(&panel[floor_row]).parse().expect("just parsed it");
+    assert!(
+        floor > 0.0,
+        "the memory band is fitted and still labels its floor {floor}"
+    );
+
+    // The rule belongs to the alphabet in force. A fitted panel is drawn as a
+    // line in box characters whatever the set, and `block`'s own rule is `─` —
+    // the box character for a flat stretch of series. Ruling with it would put
+    // a reference line and a run of samples in the same glyph.
+    let mut term = Terminal::new(TestBackend::new(92, 22)).unwrap();
+    term.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = term.backend().buffer();
+    // The whole band, which starts one row above the label: `axis_label` puts
+    // the ceiling on the band's first row and the name on its second.
+    let mut chrome_marks = 0;
+    let blank = app.glyphs.blank().to_string();
+    for y in r.start + mem_row as u16 - 1..=r.start + floor_row as u16 {
+        for x in ui::GUTTER_W as u16..92 {
+            let c = &buf[(x, y)];
+            if c.fg == app.theme.chrome && c.symbol() != " " && c.symbol() != blank {
+                chrome_marks += 1;
+                assert_ne!(
+                    c.symbol(),
+                    "─",
+                    "the rule is spelled like the line the series is drawn with"
+                );
+            }
+        }
+    }
+    assert!(
+        chrome_marks > 0,
+        "no rule was drawn, so this proves nothing about which glyph it uses"
+    );
+}
+
+#[test]
+#[ignore]
+fn show_menu() {
+    let mut app = App::new(600);
+    for i in 0..120 {
+        let mut s = sample_at(((i as f32) * 0.7).sin().abs() * 80.0, 120 - i);
+        s.procs = vec![
+            proc_named(824, "postgres", 88.4, 512 << 20),
+            proc_named(1190, "nginx", 12.5, 32 << 20),
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for (label, open, item) in [("closed", None, 0), ("View open", Some(2), 6)] {
+        app.menu.open = open;
+        app.menu.item = item;
+        println!("\n=== {label} ===");
+        for l in rows(&app, 92, 26) {
+            println!("{}", l.trim_end());
+        }
+    }
+}
+
+/// The table's *data* rows: past the title, the summary strip and the headers.
+///
+/// The strip says `2 shown · CPU 107.0%`, and `shown` contains ` sh` — so a
+/// test looking for a process called `sh` finds the summary and counts a row
+/// that is not one. Every row above the data is chrome, and chrome belongs to
+/// whichever test is about it.
+fn data_rows(app: &App, w: u16, h: u16) -> Vec<String> {
+    let all = rows(app, w, h);
+    let p = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h));
+    let first = (ui::table_header_y(p.table) + 1) as usize;
+    all.into_iter()
+        .skip(first)
+        .take((p.table.y + p.table.height) as usize - first)
+        .collect()
+}
+
+/// The process panel's rows, sliced from the layout rather than searched for.
+///
+/// The scope line says `processes` too, and it sits above — so a frame-wide
+/// search for the panel title now finds the navigation instead. Same hazard as
+/// [`header_rows`], one row along.
+fn table_rows(app: &App, w: u16, h: u16) -> Vec<String> {
+    let all = rows(app, w, h);
+    let p = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h));
+    all.into_iter()
+        .skip(p.table.y as usize)
+        .take(p.table.height as usize)
+        .collect()
+}
+
+/// The header panel's rows, sliced from the layout rather than searched for.
+///
+/// Searching the frame for a line containing "CPU" used to find the header.
+/// The tab strip is named `CPU` too and sits above it, so a frame-wide search
+/// now finds the navigation and reports it as figures — which is a whole class
+/// of test that would silently start asking the wrong question.
+fn header_rows(app: &App, w: u16, h: u16) -> Vec<String> {
+    let all = rows(app, w, h);
+    let p = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h));
+    all.into_iter()
+        .skip(p.header.y as usize)
+        .take(p.header.height as usize)
+        .collect()
+}
+
+/// The rows above the header, which is the menu bar and nothing else.
+///
+/// A constant because every test that uses it renders a tall frame, and
+/// threading the height through forty call sites to re-derive a one would be
+/// noise. `the_test_constant_matches_the_real_chrome` is what stops it
+/// drifting — and it caught this when the tab strip moved down to the table.
+const CHROME: u16 = ui::MENU_H;
+
+/// The row the tab strip is on, asked of the layout rather than counted.
+fn strip_y(app: &App, w: u16, h: u16) -> u16 {
+    ui::tabs_y(app, ratatui::layout::Rect::new(0, 0, w, h))
+}
+
+#[test]
+fn the_test_constant_matches_the_real_chrome() {
+    let mut app = App::new(60);
+    app.push(sample(10.0));
+    for h in [24, 30, 40, 60] {
+        let p = ui::panels(&app, ratatui::layout::Rect::new(0, 0, 100, h));
+        assert_eq!(
+            p.header.y, CHROME,
+            "at {h} rows the header is not where the tests assume"
+        );
+        // The bar and the strip together, which is what the timeline subtracts
+        // however they are arranged.
+        assert_eq!(
+            ui::chrome_height(h),
+            ui::MENU_H + ui::TABS_H,
+            "at {h} rows the chrome is not a bar and a strip"
+        );
+    }
+    // And it really does give way on a short frame, or it would not be the
+    // first row surrendered.
+    assert_eq!(
+        ui::tabs_height(14),
+        0,
+        "the tab strip held its row on a short frame"
+    );
+}
+
+// ── the menu bar ────────────────────────────────────────────────────────────
+
+/// Press a key with no modifiers.
+fn press(app: &mut App, code: KeyCode) {
+    crate::handle_key_with_mods_for_test(app, code, KeyModifiers::NONE);
+}
+
+#[test]
+fn every_menu_item_agrees_with_the_key_beside_it() {
+    // The reason the menu and the keyboard dispatch through one `Action`. A
+    // menu that said `d` beside "Process detail" while `d` did something else
+    // would be teaching the wrong thing, and nothing about a second
+    // implementation would notice: both would work, and they would disagree.
+    for title in crate::menu::bar() {
+        for item in &title.items {
+            let key = item.key();
+            let mut chars = key.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                continue; // `End`, `Space` — named keys, checked below.
+            };
+            if !c.is_ascii() {
+                continue; // `←` is one character and still a named key.
+            }
+            let from_key = crate::action_for(KeyCode::Char(c), KeyModifiers::NONE);
+            assert_eq!(
+                from_key,
+                item.action(),
+                "the menu says {key:?} runs {:?}, the keyboard says it runs {from_key:?}",
+                item.action()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_named_keys_on_the_menu_do_what_it_says() {
+    // The other half: the items whose key is a name rather than a letter.
+    // Spelled out here rather than derived, because the whole point is to check
+    // the spelling.
+    for (name, code) in [
+        ("End", KeyCode::End),
+        ("Home", KeyCode::Home),
+        ("Space", KeyCode::Char(' ')),
+        ("←", KeyCode::Left),
+        ("→", KeyCode::Right),
+        ("↑", KeyCode::Up),
+        ("↓", KeyCode::Down),
+    ] {
+        let want = crate::action_for(code, KeyModifiers::NONE);
+        let found = crate::menu::bar()
+            .into_iter()
+            .flat_map(|t| t.items)
+            .find(|i| i.key() == name)
+            .and_then(|i| i.action());
+        if let Some(found) = found {
+            assert_eq!(Some(found), want, "the menu's {name:?} is not the key's");
+        }
+    }
+}
+
+#[test]
+fn the_bar_is_always_on_screen() {
+    // A menu that appeared only once opened is a menu nobody discovers, which
+    // is the entire reason for having one: poptop has around thirty single-key
+    // bindings and the footer can name six.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let first = rows(&app, 100, 24)[0].clone();
+    for name in ["File", "Edit", "View", "Go", "Process"] {
+        assert!(first.contains(name), "{name} is not on the bar: {first:?}");
+    }
+    assert!(
+        first.contains("F10"),
+        "the bar does not say how to open it: {first:?}"
+    );
+}
+
+#[test]
+fn the_way_in_sits_at_the_far_end_of_the_bar() {
+    // Two spaces after `Process` it read as a sixth menu, and it was the first
+    // thing the eye met going down the left-hand column — ahead of everything
+    // on the row below it. The scope line is at that end of the tab strip for
+    // the same reason, and the two now share a right edge.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for w in [80u16, 100, 140] {
+        let drawn = rows(&app, w, 24);
+        let bar = drawn[0].trim_end();
+        let tabs = drawn[strip_y(&app, w, 24) as usize].trim_end();
+        assert!(
+            bar.ends_with("F10 menu"),
+            "the way in is not at the end of the bar at w={w}: {bar:?}"
+        );
+        assert_eq!(
+            bar.chars().count(),
+            tabs.chars().count(),
+            "the bar and the table's strip do not share a right edge at w={w}"
+        );
+    }
+
+    // And it gives way rather than crowding the titles it belongs to.
+    let cramped = rows(&app, 36, 24)[0].clone();
+    assert!(
+        cramped.contains("File"),
+        "the titles were dropped before the hint: {cramped:?}"
+    );
+    assert!(
+        !cramped.contains("F10"),
+        "the hint crowded the bar it names: {cramped:?}"
+    );
+}
+
+#[test]
+fn the_menu_opens_navigates_and_acts() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    assert!(!app.menu.is_open());
+    press(&mut app, KeyCode::F(10));
+    assert_eq!(app.menu.open, Some(0), "F10 did not open the bar");
+
+    // Right wraps around the titles rather than stopping.
+    let n = crate::menu::bar().len();
+    for _ in 0..n {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.menu.open, Some(0), "the titles do not wrap");
+
+    // Down never lands on a rule: a separator that eats a keypress reads as the
+    // menu having stopped responding.
+    app.menu.open = Some(2); // View, which has rules in it
+    app.menu.item = 0;
+    let view = &crate::menu::bar()[2];
+    for _ in 0..view.items.len() * 2 {
+        press(&mut app, KeyCode::Down);
+        assert!(
+            view.items[app.menu.item].action().is_some(),
+            "the highlight landed on a rule at index {}",
+            app.menu.item
+        );
+    }
+
+    // Enter acts and closes.
+    let before = app.detail;
+    let at = view
+        .items
+        .iter()
+        .position(|i| i.action() == Some(crate::command::Action::ToggleDetail))
+        .expect("no detail item");
+    app.menu.item = at;
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.menu.is_open(), "the menu stayed open after choosing");
+    assert_ne!(app.detail, before, "choosing the item did nothing");
+
+    // Esc closes without acting.
+    press(&mut app, KeyCode::F(10));
+    let before = app.detail;
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.menu.is_open());
+    assert_eq!(app.detail, before, "escaping the menu still acted");
+}
+
+#[test]
+fn the_open_menu_takes_every_key() {
+    // A bar that let unrelated keys through is one you dismiss by reflex while
+    // meaning to scroll — and scrolling under an open menu moves a cursor the
+    // reader cannot see.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    press(&mut app, KeyCode::F(10));
+    let at = app.history.cursor_index();
+    for code in [KeyCode::Char('q'), KeyCode::Char('d'), KeyCode::Char('t')] {
+        press(&mut app, code);
+    }
+    assert!(!app.should_quit, "`q` quit from inside the menu");
+    assert!(
+        !app.detail && !app.tree,
+        "a letter acted while the menu was open"
+    );
+    assert_eq!(
+        app.history.cursor_index(),
+        at,
+        "the cursor moved under the menu"
+    );
+}
+
+#[test]
+fn a_box_on_screen_keeps_the_menu_shut() {
+    // The filter and the jump take every printable key and the signal
+    // confirmation takes every key at all. A menu opening over one of them
+    // would be two modes claiming the keyboard, and the one the reader is
+    // looking at would lose.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for begin in [KeyCode::Char('/'), KeyCode::Char('b')] {
+        app.menu.close();
+        press(&mut app, begin);
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            !app.menu.is_open(),
+            "the menu opened over a box begun with {begin:?}"
+        );
+        press(&mut app, KeyCode::Esc);
+    }
+}
+
+#[test]
+fn alt_opens_the_title_it_names() {
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for (i, t) in crate::menu::bar().iter().enumerate() {
+        app.menu.close();
+        crate::handle_key_with_mods_for_test(
+            &mut app,
+            KeyCode::Char(t.hotkey.to_ascii_lowercase()),
+            KeyModifiers::ALT,
+        );
+        assert_eq!(
+            app.menu.open,
+            Some(i),
+            "alt-{} did not open {}",
+            t.hotkey,
+            t.name
+        );
+    }
+}
+
+#[test]
+fn the_dropdown_is_opaque_and_ticks_what_is_on() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.glyphs = crate::glyphs::GlyphSet::Block;
+    app.menu.open = Some(2); // View
+    let drawn = rows(&app, 100, 26).join("\n");
+    assert!(
+        drawn.contains("Bars (block)"),
+        "the dropdown did not draw:\n{drawn}"
+    );
+    // The set in force is ticked and the others are not.
+    let ticked: Vec<&str> = drawn
+        .lines()
+        .filter(|l| l.contains('•'))
+        .map(|l| l.trim())
+        .collect();
+    assert!(
+        ticked.iter().any(|l| l.contains("Bars (block)")),
+        "the set in force is not ticked: {ticked:?}"
+    );
+    assert!(
+        !ticked.iter().any(|l| l.contains("ASCII")),
+        "a set that is not in force is ticked: {ticked:?}"
+    );
+}
+
+// ── the mouse ───────────────────────────────────────────────────────────────
+
+/// A left click at a point.
+fn click(app: &mut App, x: u16, y: u16, w: u16, h: u16) {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    crate::handle_mouse(
+        app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+        ratatui::layout::Rect::new(0, 0, w, h),
+    );
+}
+
+/// A wheel turn at a point.
+fn wheel(app: &mut App, down: bool, x: u16, y: u16, w: u16, h: u16) {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+    crate::handle_mouse(
+        app,
+        MouseEvent {
+            kind: if down {
+                MouseEventKind::ScrollDown
+            } else {
+                MouseEventKind::ScrollUp
+            },
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+        ratatui::layout::Rect::new(0, 0, w, h),
+    );
+}
+
+#[test]
+fn clicking_the_bar_opens_the_title_under_the_pointer() {
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let titles = crate::menu::bar();
+    for (i, t) in titles.iter().enumerate() {
+        app.menu.close();
+        // The middle of the title's own columns, so the test fails on an
+        // off-by-one rather than landing in the padding either side.
+        let at = crate::menu::title_column(i, &titles) + t.name.chars().count() / 2;
+        click(&mut app, at as u16, 0, 100, 26);
+        assert_eq!(
+            app.menu.open,
+            Some(i),
+            "clicking {} at column {at} opened {:?}",
+            t.name,
+            app.menu.open
+        );
+    }
+    // Clicking the open one closes it, the way a menu bar has always worked.
+    let at = crate::menu::title_column(0, &titles) + 1;
+    app.menu.open = Some(0);
+    click(&mut app, at as u16, 0, 100, 26);
+    assert!(
+        !app.menu.is_open(),
+        "clicking the open title did not close it"
+    );
+}
+
+#[test]
+fn the_averaging_window_is_a_setting_the_menu_can_reach() {
+    // The panel title has said `avg 5s` since smoothing landed, which tells a
+    // reader the figures are averaged and not where to change it. `--smooth`
+    // and the config file were the only answers, and neither is somewhere you
+    // look while the thing is running.
+    use crate::command::Action::SetSmooth;
+    use std::time::Duration;
+    let mut app = App::new(600);
+    for i in (0..40).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    let items = &crate::menu::bar()[2].items;
+    let spans: Vec<Duration> = items
+        .iter()
+        .filter_map(|i| match i.action() {
+            Some(SetSmooth(d)) => Some(d),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        spans.contains(&Duration::ZERO) && spans.contains(&Duration::from_secs(30)),
+        "the View menu does not offer the averaging window: {spans:?}"
+    );
+
+    // Exactly one of them is ticked, and it is the one in force.
+    fn ticked(app: &App) -> usize {
+        crate::menu::bar()[2]
+            .items
+            .iter()
+            .filter(|i| matches!(i.action(), Some(SetSmooth(_))))
+            .filter(|i| crate::menu::checked(i, app) == Some(true))
+            .count()
+    }
+    assert_eq!(
+        ticked(&app),
+        1,
+        "the menu does not say which window is in force"
+    );
+
+    SetSmooth(Duration::from_secs(30)).apply(&mut app);
+    assert_eq!(ticked(&app), 1, "the tick did not follow the choice");
+    let shown = rows(&app, 140, 12).join("\n");
+    assert!(
+        shown.contains("avg 30s"),
+        "the panel still names the old window:\n{shown}"
+    );
+
+    // And off is off rather than a one-sample average called something.
+    SetSmooth(Duration::ZERO).apply(&mut app);
+    assert_eq!(app.smooth, 1, "no averaging is still averaging");
+    let off = rows(&app, 140, 12).join("\n");
+    assert!(
+        !off.contains("avg"),
+        "the panel claims an average that is not being taken:\n{off}"
+    );
+}
+
+#[test]
+fn the_window_means_the_same_span_at_any_interval() {
+    use std::time::Duration;
+    // The buffer is counted in samples and the setting is stated in seconds,
+    // because the interval is a setting too. A menu offering "5 samples" would
+    // mean something different at every one of them.
+    let mut app = App::new(600);
+    for (interval, want) in [(500u64, 10usize), (1000, 5), (2500, 2)] {
+        app.interval = Duration::from_millis(interval);
+        app.set_smooth(Duration::from_secs(5));
+        assert_eq!(
+            app.smooth, want,
+            "five seconds at a {interval}ms interval is not {want} samples"
+        );
+    }
+    // An interval of zero has no notion of a sample count, and one sample is
+    // the floor everywhere else here.
+    app.interval = Duration::ZERO;
+    app.set_smooth(Duration::from_secs(5));
+    assert_eq!(app.smooth, 1);
+}
+
+#[test]
+fn a_dropdown_taller_than_the_screen_scrolls_to_the_highlight() {
+    // It used to be cut off at the bottom, which is worse than it sounds:
+    // `move_item` still walked onto the items nobody could see, so the
+    // highlight left the screen and the menu read as having stopped
+    // responding.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let (w, h) = (100u16, 26u16);
+    let area = ratatui::layout::Rect::new(0, 0, w, h);
+    app.menu.open = Some(2); // View, the tall one
+    let items = &crate::menu::bar()[2].items;
+    let rect = ui::dropdown_rect(&app, area).expect("no dropdown");
+    let shown = rect.height.saturating_sub(2) as usize;
+    assert!(
+        items.len() > shown,
+        "the fixture is not tall enough to test this"
+    );
+
+    for at in 0..items.len() {
+        app.menu.item = at;
+        let offset = ui::dropdown_offset(&app, area);
+        assert!(
+            (offset..offset + shown).contains(&at),
+            "item {at} is off screen at offset {offset}"
+        );
+        // And never scrolled further than it has to be.
+        assert!(offset <= items.len() - shown, "scrolled past the end");
+    }
+
+    // The first item puts the list back at the top, which is what wrapping
+    // round from the last one has to do.
+    app.menu.item = 0;
+    assert_eq!(ui::dropdown_offset(&app, area), 0);
+
+    // There is a mark saying the rest is there, or a reader has no reason to
+    // keep pressing.
+    app.menu.item = 0;
+    let top = rows(&app, w, h);
+    assert!(
+        top.iter().any(|l| l.contains('\u{2193}')),
+        "nothing says the list continues below:\n{}",
+        top.join("\n")
+    );
+    app.menu.item = items.len() - 1;
+    let bottom = rows(&app, w, h);
+    assert!(
+        bottom.iter().any(|l| l.contains('\u{2191}')),
+        "nothing says the list continues above:\n{}",
+        bottom.join("\n")
+    );
+}
+
+#[test]
+fn clicking_a_dropdown_item_runs_it_and_clicking_away_closes() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    let area = ratatui::layout::Rect::new(0, 0, 100, 26);
+    app.menu.open = Some(2); // View
+
+    let rect = ui::dropdown_rect(&app, area).expect("no dropdown");
+    let items = &crate::menu::bar()[2].items;
+    let at = items
+        .iter()
+        .position(|i| i.action() == Some(crate::command::Action::ToggleTree))
+        .expect("no tree item");
+
+    // Scrolled to wherever that item actually is: the View menu is taller
+    // than a twenty-six row terminal, and a click has to land on the row under
+    // the pointer rather than on the row the unscrolled list would have put
+    // there.
+    app.menu.item = at;
+    let offset = ui::dropdown_offset(&app, area);
+    let row = rect.y + 1 + (at - offset) as u16;
+    assert!(row < rect.y + rect.height - 1, "the item is not on screen");
+
+    let before = app.tree;
+    click(&mut app, rect.x + 3, row, 100, 26);
+    assert_ne!(app.tree, before, "clicking the item did nothing");
+    assert!(!app.menu.is_open(), "the menu stayed open after a click");
+
+    // The frame is not an item. Checked against the *first* item, because that
+    // is the one a fall-through lands on: `y - (top + 1)` underflows to zero on
+    // the border row, so a missing bounds check runs item zero silently.
+    // Aimed at whatever the first item happens to be, since the menu grows:
+    // `y - (top + 1)` underflows to zero on the border row, so a missing bounds
+    // check runs item zero silently.
+    app.menu.open = Some(2);
+    let first = items[0].action().expect("the first item is a separator");
+    let before = (app.view, app.glyphs, app.tree, app.detail);
+    click(&mut app, rect.x + 3, rect.y, 100, 26);
+    assert_eq!(
+        (app.view, app.glyphs, app.tree, app.detail),
+        before,
+        "clicking the border ran the first item ({first:?})"
+    );
+
+    // And clicking past the box dismisses it rather than leaving it up.
+    app.menu.open = Some(2);
+    click(&mut app, 95, 20, 100, 26);
+    assert!(!app.menu.is_open(), "clicking away left the menu open");
+}
+
+#[test]
+fn an_open_menu_takes_the_click_from_whatever_is_under_it() {
+    // The dropdown is drawn over the table, so a click inside it must not also
+    // land on the row beneath. The menu is checked first for exactly this
+    // reason: the table is the larger target and would otherwise win.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let (w, h) = (100u16, 26u16);
+    let area = ratatui::layout::Rect::new(0, 0, w, h);
+    app.menu.open = Some(2); // View, the tallest menu — it reaches the table
+    let rect = ui::dropdown_rect(&app, area).expect("no dropdown");
+    let items = &crate::menu::bar()[2].items;
+
+    // A separator low enough to be over the table. Clicking one should do
+    // nothing at all beyond dismissing the menu — which makes it the sharpest
+    // test of whether the click fell through.
+    let table_top = ui::timeline_rows_range(h).end;
+    let at = items
+        .iter()
+        .enumerate()
+        .find(|(i, it)| it.action().is_none() && rect.y + 1 + *i as u16 > table_top)
+        .map(|(i, _)| i)
+        .expect("no separator over the table");
+
+    // Something selected first, so "unchanged" is a claim rather than a
+    // restatement of "nothing happened".
+    app.select_row(0);
+    let before = format!("{:?}", app.selected);
+    assert!(
+        app.selected.is_some(),
+        "nothing to lose, so this proves nothing"
+    );
+
+    click(&mut app, rect.x + 2, rect.y + 1 + at as u16, w, h);
+    assert_eq!(
+        format!("{:?}", app.selected),
+        before,
+        "the click went through the menu and selected a row underneath it"
+    );
+}
+
+#[test]
+fn clicking_the_timeline_scrubs_to_that_moment() {
+    let mut app = App::new(600);
+    for i in (0..300).rev() {
+        app.push(sample_at(10.0, i));
+    }
+    let (w, h) = (100u16, 26u16);
+    let r = ui::timeline_rows_range(h);
+    let timeline = ratatui::layout::Rect::new(0, r.start, w, r.end - r.start);
+    let (start, shown, _) = ui::shown_window(&app, timeline);
+    assert!(shown > 4, "no window to click in");
+
+    // The left edge of the graph is the oldest sample on screen.
+    click(&mut app, ui::GUTTER_W as u16, r.start + 1, w, h);
+    assert_eq!(
+        app.history.cursor_index(),
+        start,
+        "clicking the left edge did not land on the oldest sample shown"
+    );
+
+    // And a column further right is a later moment, not an earlier one.
+    let before = app.history.cursor_index();
+    click(&mut app, ui::GUTTER_W as u16 + 20, r.start + 1, w, h);
+    assert!(
+        app.history.cursor_index() > before,
+        "clicking rightwards went backwards in time"
+    );
+}
+
+#[test]
+fn the_wheel_moves_whatever_is_under_it() {
+    let mut app = App::new(600);
+    for i in (0..300).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 5.0, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let (w, h) = (100u16, 26u16);
+    let r = ui::timeline_rows_range(h);
+
+    // Over the graph: time.
+    app.history.goto_oldest();
+    let before = app.history.cursor_index();
+    wheel(&mut app, true, 40, r.start + 1, w, h);
+    assert!(
+        app.history.cursor_index() > before,
+        "the wheel over the timeline did not move time"
+    );
+
+    // Over the table: the selection.
+    let at = app.history.cursor_index();
+    let before = app.selected.clone();
+    wheel(&mut app, true, 40, r.end + 3, w, h);
+    assert!(
+        app.selected.is_some(),
+        "the wheel over the table selected nothing"
+    );
+    assert_ne!(
+        format!("{:?}", app.selected),
+        format!("{before:?}"),
+        "the wheel over the table did not move the selection"
+    );
+    assert_eq!(
+        app.history.cursor_index(),
+        at,
+        "the wheel over the table moved time as well"
+    );
+}
+
+#[test]
+fn clicking_a_row_selects_it() {
+    let mut app = App::new(600);
+    for i in (0..10).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let (w, h) = (100u16, 26u16);
+    // Past the section rule, the summary strip and the column headers, wherever
+    // those turned out to be.
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let first = ui::table_header_y(panel) + 1;
+    click(&mut app, 10, first, w, h);
+    let top = app.selected.clone();
+    assert!(top.is_some(), "clicking the first row selected nothing");
+    click(&mut app, 10, first + 3, w, h);
+    assert_ne!(
+        format!("{:?}", app.selected),
+        format!("{top:?}"),
+        "clicking a different row kept the same selection"
+    );
+}
+
+// ── surfaces ────────────────────────────────────────────────────────────────
+
+/// Every background actually painted in a rendered frame, by row.
+fn grounds(app: &App, w: u16, h: u16) -> Vec<Vec<Option<ratatui::style::Color>>> {
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw(f, app)).unwrap();
+    let buf = term.backend().buffer();
+    (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| match buf[(x, y)].bg {
+                    ratatui::style::Color::Reset => None,
+                    c => Some(c),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// A true-colour theme with its surfaces derived, as a real run would have.
+///
+/// The base is a dark terminal's, because that is what the surfaces are stepped
+/// away from — `with_surfaces(None)` paints nothing at all, which is what
+/// happens when the terminal will not say.
+fn lit(mut app: App) -> App {
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0x14, 0x14, 0x17]));
+    app
+}
+
+#[test]
+fn the_terminals_own_background_is_left_alone() {
+    // The application's ground is the terminal's ground. poptop painted over it
+    // for a while, which made the interface look like one surface and made
+    // every `--check-theme` figure a measurement — and also threw away a theme
+    // the user had already chosen. Elevation above the ground is poptop's to
+    // paint; the ground is not.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..4)
+            .map(|n| proc_named(100 + n, "proc", 5.0, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let app = lit(app);
+    let frame = grounds(&app, 92, 24);
+
+    // The header and the footer sit on the ground, and it is not painted.
+    let header: Vec<_> = frame[CHROME as usize].iter().flatten().collect();
+    assert!(
+        header.is_empty(),
+        "the header painted over the terminal's own background"
+    );
+
+    // And the raised parts are painted, or none of this would be visible.
+    let menu: Vec<_> = frame[0].iter().flatten().collect();
+    assert!(
+        !menu.is_empty(),
+        "the menu bar was not raised above the ground"
+    );
+}
+
+#[test]
+fn a_terminal_that_will_not_say_gets_nothing_painted() {
+    // A guessed base is worse than none. The steps are a few per cent, which is
+    // invisible against the wrong ground and ugly against a very wrong one, and
+    // there is no way to tell which from inside the program.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(None);
+    for (name, style) in [
+        ("surface", t.surface_style()),
+        ("panel", t.panel_style()),
+        ("raised", t.raised_style()),
+        ("stripe", t.stripe_style()),
+    ] {
+        assert_eq!(
+            style.bg, None,
+            "a {name} was painted with no base to step from"
+        );
+    }
+}
+
+#[test]
+fn a_light_terminal_gets_darker_panels_not_lighter_ones() {
+    // Elevation is away from the ground, not upward. A scheme that only knows
+    // how to lighten turns a solarized-light window into a wash.
+    let lum = |c: ratatui::style::Color| {
+        let [r, g, b] = crate::cvd::to_rgb(c).expect("a derived colour");
+        r as u32 + g as u32 + b as u32
+    };
+    let dark = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0x14, 0x14, 0x17]));
+    assert!(
+        lum(dark.panel) > 0x14 * 3,
+        "a dark terminal got darker panels"
+    );
+    let light = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0xfd, 0xf6, 0xe3]));
+    assert!(
+        lum(light.panel) < 0xfd + 0xf6 + 0xe3,
+        "a light terminal got lighter panels"
+    );
+}
+
+#[test]
+fn the_surfaces_are_layered_in_one_direction() {
+    // The whole point of four grounds is that they read as elevation. Four
+    // shades in no particular order is not a layer system, it is four shades —
+    // and the one that has to be highest is `raised`, since a dropdown
+    // indistinguishable from the table beneath it is a dropdown cut into the
+    // table rather than laid over it.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([0x14, 0x14, 0x17]));
+    let lum = |c: ratatui::style::Color| {
+        let [r, g, b] = crate::cvd::to_rgb(c).expect("a true colour");
+        r as u32 + g as u32 + b as u32
+    };
+    // Against the base it was derived from, not against `t.surface` — that is
+    // `Reset` now, because the ground belongs to the terminal.
+    let base = 0x14 * 3;
+    assert_eq!(
+        t.surface,
+        ratatui::style::Color::Reset,
+        "the ground was painted"
+    );
+    assert!(
+        base < lum(t.panel),
+        "a panel is not raised above the ground"
+    );
+    assert!(
+        lum(t.panel) < lum(t.stripe),
+        "a stripe is not distinguishable from the row beside it"
+    );
+    assert!(
+        lum(t.stripe) < lum(t.raised),
+        "the raised surface is not the highest one"
+    );
+    // And the steps are small. A stripe you notice competes with the figures it
+    // is there to help you read across.
+    assert!(
+        lum(t.stripe) - lum(t.panel) < lum(t.raised) - lum(t.panel),
+        "the stripe is a louder step than the raised surface"
+    );
+}
+
+#[test]
+fn a_terminal_that_cannot_be_trusted_with_a_background_is_given_none() {
+    // The 16 ANSI slots belong to the user's theme — their terminal decides
+    // what `DarkGray` looks like — so painting one as a background is as likely
+    // to fight their scheme as to match it. A tier that cannot promise a colour
+    // must not promise a surface.
+    for tier in [Tier::Mono, Tier::Ansi16] {
+        let t = Theme::new(Palette::Safe, tier);
+        assert!(!tier.paints_surfaces(), "{tier:?} claims it can paint");
+        for (name, style) in [
+            ("surface", t.surface_style()),
+            ("panel", t.panel_style()),
+            ("raised", t.raised_style()),
+            ("stripe", t.stripe_style()),
+        ] {
+            assert_eq!(style.bg, None, "{tier:?} painted a {name} background");
+        }
+    }
+    // And the frame really is left alone, not merely the styles.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::Ansi16);
+    assert!(
+        grounds(&app, 60, 12).iter().flatten().all(
+            |c| c.is_none() || *c == Some(Theme::new(Palette::Safe, Tier::Ansi16).selection_bg)
+        ),
+        "a 16-colour frame had a background painted into it"
+    );
+}
+
+#[test]
+fn the_table_stripes_alternate_and_the_selection_beats_them() {
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..8)
+            .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    let mut app = lit(app);
+    let (w, h) = (92u16, 26u16);
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let table_top = ui::table_header_y(panel) + 1;
+
+    let bg_of = |app: &App, y: u16| grounds(app, w, h)[y as usize][4];
+    let a = bg_of(&app, table_top);
+    let b = bg_of(&app, table_top + 1);
+    let c = bg_of(&app, table_top + 2);
+    assert_ne!(
+        a, b,
+        "adjacent rows share a ground, so there are no stripes"
+    );
+    assert_eq!(a, c, "the stripe does not alternate, it drifts");
+
+    // The selection outranks the stripe, or every other selected row would look
+    // different from the one above it for no reason the reader can see.
+    app.select_row(0);
+    let sel = bg_of(&app, table_top);
+    app.select_row(1);
+    assert_eq!(
+        sel,
+        bg_of(&app, table_top + 1),
+        "a selected row looks different depending on whether it is striped"
+    );
+}
+
+// ── the tab strip ───────────────────────────────────────────────────────────
+
+#[test]
+fn the_resource_on_screen_is_named_without_pressing_anything() {
+    // `v` cycled Generic → Memory → Disk and nothing on screen said which one
+    // you were in, that the others existed, or how to go back one. Activity
+    // Monitor spends its most valuable strip of screen on exactly this.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let strip = rows(&app, 100, 26)[strip_y(&app, 100, 26) as usize].clone();
+    for v in crate::app::View::ALL {
+        assert!(
+            strip.contains(v.label()),
+            "{} is not on the tab strip: {strip:?}",
+            v.label()
+        );
+    }
+    // And the scope, which shares this row because "which resource" and "which
+    // processes" are the same question.
+    assert!(
+        strip.contains("All processes"),
+        "the strip does not state the scope: {strip:?}"
+    );
+}
+
+// ── the bands of the screen ─────────────────────────────────────────────────
+
+#[test]
+fn the_strip_sits_on_the_table_it_governs() {
+    // The strip was above the header, where it read as navigation for the
+    // screen. Everything on it is about the table: the tabs choose the
+    // columns, the settings say what was done to the rows, the scope says
+    // which rows there are — so it sits on the table, and a reader looking at
+    // a row finds every control that shaped it on the line directly above.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    for (w, h) in [(80u16, 24u16), (100, 40), (140, 30)] {
+        let p = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h));
+        assert_eq!(p.menu.y, 0, "the bar is not at the top at {w}x{h}");
+        assert_eq!(
+            p.header.y,
+            p.menu.y + p.menu.height,
+            "the machine is not under the bar at {w}x{h}"
+        );
+        assert_eq!(
+            p.tabs.y,
+            p.header.y + p.header.height,
+            "the strip is not under the machine at {w}x{h}"
+        );
+        assert_eq!(
+            p.table.y,
+            p.tabs.y + p.tabs.height,
+            "the strip is not on the table at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn the_graphs_are_under_the_table_and_the_keys_under_them() {
+    // Reading down the screen: this machine, this table, how it got here. The
+    // graphs are the past and the table is the present, and the timeline's
+    // caption — how much time is on screen, which sample the cursor is on —
+    // lands beside the key hints that scrub it rather than eight rows above
+    // them.
+    let mut app = App::new(600);
+    for i in (0..60).rev() {
+        app.push(sample_at(50.0, i));
+    }
+    for (w, h) in [(80u16, 24u16), (100, 40), (140, 30), (60, 20)] {
+        let p = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h));
+        assert!(
+            p.timeline.y >= p.table.y + p.table.height,
+            "the graphs are not under the table at {w}x{h}: {p:?}",
+            p = (p.table, p.timeline)
+        );
+        assert_eq!(p.help.y, h - 1, "the keys are not the last row at {w}x{h}");
+        assert!(
+            p.timeline.y + p.timeline.height <= p.help.y,
+            "the graphs run into the keys at {w}x{h}"
+        );
+        // And the panel the tests locate by arithmetic is the panel drawn.
+        assert_eq!(
+            ui::timeline_rows_range(h),
+            p.timeline.y..p.timeline.y + p.timeline.height,
+            "the test's idea of the graph panel is not where it is at {w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn the_settings_give_way_before_the_tabs_and_the_scope() {
+    // Three things share one row and they are not equal. The tabs are the
+    // navigation — a strip that stops offering the other tabs is not a strip.
+    // The scope may never vanish: a table that does not say it is filtered
+    // lies about the machine silently. The settings are the part that gives
+    // way, and they can give way to nothing, because the sorted column wears
+    // a caret in its own header whatever this row has room for.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.tree = true;
+    for w in 30..=200u16 {
+        let line = rows(&app, w, 30)[strip_y(&app, w, 30) as usize].clone();
+        assert!(
+            line.chars().count() <= w as usize,
+            "the strip overflowed at {w}: {line:?}"
+        );
+        assert!(
+            crate::app::View::ALL
+                .iter()
+                .all(|v| line.contains(v.label())),
+            "a tab went to make room at {w}: {line:?}"
+        );
+        // Never nothing: whichever rung of the scope survives, the count is
+        // in it, and the count is what may not disappear.
+        let after_tabs = line.rsplit("Disk").next().unwrap_or_default();
+        assert!(
+            after_tabs.contains('4'),
+            "the scope vanished at {w}: {line:?}"
+        );
+        // And nothing is ever cut in half: what is drawn is one of the rungs.
+        if let Some(at) = line.find("sort") {
+            let settings = &line[at..];
+            assert!(
+                settings.starts_with("sort CPU"),
+                "the settings were cut at {w}: {line:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_terminal_too_short_for_the_strip_says_the_settings_in_the_rule() {
+    // The strip is the first row given up on a short terminal. What it was
+    // saying does not go with it: a table whose ordering and folding have no
+    // stated reason is one the reader cannot check, so the panel rule takes
+    // the clauses back at ranks of its own.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.tree = true;
+
+    let tall = 30u16;
+    let short = 16u16;
+    assert_eq!(ui::tabs_height(short), 0, "the fixture has a strip");
+    assert_eq!(ui::tabs_height(tall), 1, "the fixture has no strip");
+
+    let rule = |h: u16| {
+        rows(&app, 140, h)
+            .into_iter()
+            .find(|l| l.contains("processes ("))
+            .expect("no rule")
+    };
+    assert!(
+        !rule(tall).contains("sort"),
+        "the rule repeats the strip above it: {:?}",
+        rule(tall)
+    );
+    for want in ["sort CPU", "tree"] {
+        assert!(
+            rule(short).contains(want),
+            "`{want}` is stated nowhere on a short terminal: {:?}",
+            rule(short)
+        );
+    }
+}
+
+#[test]
+fn the_current_tab_is_marked_without_relying_on_colour() {
+    // Five meaning-bearing hues are already spent, and a navigation strip that
+    // is invisible at the mono tier fails on exactly the terminals a monitor is
+    // most likely to be opened in.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::Mono);
+    let marked = |app: &App| {
+        let y = strip_y(app, 100, 26);
+        let mut term = Terminal::new(TestBackend::new(100, 26)).unwrap();
+        term.draw(|f| ui::draw(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..100u16)
+            .filter(|&x| {
+                buf[(x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::UNDERLINED)
+                    && buf[(x, y)].symbol() != " "
+            })
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect::<String>()
+    };
+    for v in crate::app::View::ALL {
+        app.view = v;
+        assert_eq!(
+            marked(&app),
+            v.label(),
+            "the mono tier marks the wrong tab, or none"
+        );
+    }
+}
+
+#[test]
+fn the_tabs_are_reachable_by_key_by_menu_and_by_mouse() {
+    let mut app = App::new(600);
+    // Several samples, so the arrow key below has somewhere to go: from a
+    // one-sample buffer it correctly does nothing, which would pass the test
+    // that says it still scrubs.
+    for i in (0..20).rev() {
+        app.push(sample_at(10.0, i));
+    }
+
+    // Tab and Shift-Tab, and they must not be the arrows: those scrub time, and
+    // the timeline is the thing poptop has that Activity Monitor does not.
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.view, crate::app::View::Cpu.next());
+    press(&mut app, KeyCode::BackTab);
+    assert_eq!(app.view, crate::app::View::Cpu);
+    let at = app.history.cursor_index();
+    press(&mut app, KeyCode::Left);
+    assert_ne!(
+        app.history.cursor_index(),
+        at,
+        "the arrows stopped scrubbing"
+    );
+
+    // The number keys.
+    for (i, v) in crate::app::View::ALL.into_iter().enumerate() {
+        press(&mut app, KeyCode::Char((b'1' + i as u8) as char));
+        assert_eq!(app.view, v, "key {} did not open {}", i + 1, v.label());
+    }
+
+    // The mouse.
+    for (i, v) in crate::app::View::ALL.into_iter().enumerate() {
+        app.view = crate::app::View::Cpu;
+        let at = crate::ui::tab_column(i) + v.label().chars().count() / 2 + 2;
+        let y = strip_y(&app, 100, 26);
+        click(&mut app, at as u16, y, 100, 26);
+        assert_eq!(
+            app.view,
+            v,
+            "clicking {} at column {at} opened {:?}",
+            v.label(),
+            app.view
+        );
+    }
+
+    // And the menu.
+    let items: Vec<_> = crate::menu::bar()
+        .into_iter()
+        .flat_map(|t| t.items)
+        .collect();
+    for v in crate::app::View::ALL {
+        assert!(
+            items
+                .iter()
+                .any(|i| i.action() == Some(crate::command::Action::SetView(v))),
+            "{} is not in the menu",
+            v.label()
+        );
+    }
+}
+
+#[test]
+fn the_tab_strip_is_the_first_row_given_up() {
+    // A graph too short to read is a worse loss than a strip whose contents the
+    // panel title still names.
+    assert_eq!(ui::tabs_height(80), 1, "a tall terminal has no strip");
+    assert_eq!(ui::tabs_height(10), 0, "a short terminal kept the strip");
+    // And giving it up buys the timeline its floor back.
+    for total in 6..=80u16 {
+        let left = total.saturating_sub(
+            ui::chrome_height(total) + ui::HEADER_H + ui::timeline_height(total, ui::HEADER_H) + 1,
+        );
+        assert!(left >= 1, "total={total}: the table got {left} rows");
+    }
+}
+
+#[test]
+fn the_disk_tab_asks_for_the_data_it_needs() {
+    // `i` gated the disk columns, which made a collection decision wear a
+    // display key: the figures are expensive to read, not optional to see, and
+    // the tab that exists to show them is the one that should pay for them.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.show_io = false;
+
+    press(&mut app, KeyCode::Char('3')); // Disk
+    assert_eq!(app.view, crate::app::View::Disk);
+    assert!(
+        app.show_io,
+        "choosing the disk tab did not ask for the disk figures"
+    );
+    assert!(
+        app.needs().wants(crate::collect::Source::Io),
+        "the collector was not told the disk tab needs it"
+    );
+}
+
+#[test]
+fn no_key_toggles_a_column_a_tab_already_answers_for() {
+    // The keys that remain are about *membership* — which processes are in the
+    // list — not about which columns describe them. That is a different
+    // question and the tab cannot answer it.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    let before = (app.show_io, app.view);
+    press(&mut app, KeyCode::Char('i'));
+    assert_eq!(
+        (app.show_io, app.view),
+        before,
+        "`i` still toggles a column set the tab owns"
+    );
+    assert!(
+        app.keys
+            .action(KeyCode::Char('i'), KeyModifiers::NONE)
+            .is_none(),
+        "`i` is still bound"
+    );
+
+    // And the menu does not offer it either, or the key would be gone and the
+    // command would not.
+    assert!(
+        !crate::menu::bar()
+            .into_iter()
+            .flat_map(|t| t.items)
+            .any(|i| i.label().contains("I/O")),
+        "the menu still offers the column toggle"
+    );
+
+    // Threads, kernel threads and cgroups survive: each changes which rows
+    // exist rather than which columns describe them.
+    for (key, label) in [('y', "Threads"), ('K', "Kernel threads"), ('C', "cgroups")] {
+        assert!(
+            crate::action_for(KeyCode::Char(key), KeyModifiers::NONE).is_some(),
+            "`{key}` was removed, and it is a membership question"
+        );
+        assert!(
+            crate::menu::bar()
+                .into_iter()
+                .flat_map(|t| t.items)
+                .any(|i| i.label() == label),
+            "{label} is not in the menu"
+        );
+    }
+}
+
+// ── the scope line ──────────────────────────────────────────────────────────
+
+#[test]
+fn a_filtered_table_cannot_be_read_as_the_whole_machine() {
+    // The line is present when nothing is filtered, which is what makes it
+    // trustworthy when something is: its absence can never mean "no filter".
+    //
+    // poptop used to say this in a clause of the process panel's title, and
+    // that title is a ladder whose clauses are dropped from the least important
+    // end — so on the terminals where the table is hardest to read, the
+    // sentence saying *which* processes these are went first.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..40)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "other" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+
+    let strip = |app: &App, w: u16| {
+        rows(app, w, 26)[strip_y(app, w, 26) as usize]
+            .trim()
+            .to_string()
+    };
+
+    let all = strip(&app, 120);
+    assert!(
+        all.contains("40"),
+        "the unfiltered scope states no count: {all:?}"
+    );
+
+    app.filter = "postgres".into();
+    let some = strip(&app, 120);
+    assert!(
+        some.contains("postgres") && some.contains("4") && some.contains("40"),
+        "a filtered scope does not say what was narrowed: {some:?}"
+    );
+    assert_ne!(all, some, "filtering did not change the scope line");
+}
+
+#[test]
+fn the_scope_line_never_disappears_however_narrow_it_gets() {
+    // The one property that matters. A scope line that can vanish is one whose
+    // absence means "unfiltered", and that is the claim it exists to stop.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..40)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "other" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+    app.filter = "postgres".into();
+
+    for w in 1..=200usize {
+        let text = ui::scope_text(&app, w);
+        assert!(!text.trim().is_empty(), "the scope vanished at {w} columns");
+        // And it still carries both numbers, which is the irreducible claim:
+        // "this is not all of them".
+        assert!(
+            text.contains('4') && text.contains("40"),
+            "at {w} columns the scope stopped saying how much is hidden: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn the_scope_shortens_by_rungs_rather_than_by_clipping() {
+    // A clipped scope reads as a message that does not exist — `postgres · 4 of
+    // 4` with the denominator cut off is worse than no line at all, because it
+    // is wrong rather than absent.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..40)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "other" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+    app.filter = "postgres".into();
+
+    let mut seen: Vec<String> = (10..=60usize).map(|w| ui::scope_text(&app, w)).collect();
+    seen.dedup();
+    assert!(
+        seen.len() > 1,
+        "the scope has only one rung, so nothing is being tested"
+    );
+    for text in &seen {
+        assert!(
+            text.chars().count() <= 60,
+            "a rung is wider than the widest width asked for: {text:?}"
+        );
+        assert!(
+            !text.ends_with(" of") && !text.ends_with('·'),
+            "a rung is a clipped sentence rather than a shorter one: {text:?}"
+        );
+    }
+}
+
+// ── the summary's zones ─────────────────────────────────────────────────────
+
+#[test]
+fn a_figure_never_moves_it_only_appears_and_disappears() {
+    // The property that makes a position mean something. A header that
+    // rearranged as the terminal resized would be one where nothing could be
+    // found by where it is — you would have to read the labels every time,
+    // which is the whole cost a fixed layout exists to avoid.
+    //
+    // `fit` keeps figures by rank and *positions* them by group, and those are
+    // deliberately different orders. This is the test that the second one holds
+    // whatever the first one drops.
+    let mut app = App::new(600);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let labels = |w: u16| -> Vec<&'static str> {
+        let line = figures_line(&app, w, 24);
+        let mut at: Vec<(usize, &'static str)> = [
+            "CPU", "WAIT", "RUN", "BLOCKED", "LOAD", "MEM", "SWP", "UP ", "PROCS",
+        ]
+        .into_iter()
+        .filter_map(|k| line.find(k).map(|i| (i, k)))
+        .collect();
+        at.sort();
+        at.into_iter().map(|(_, k)| k).collect()
+    };
+
+    let widest = labels(200);
+    assert!(widest.len() >= 6, "not enough figures to test: {widest:?}");
+    for w in (40..=200u16).step_by(3) {
+        let here = labels(w);
+        // A subsequence, which is exactly "things were dropped, nothing moved".
+        let mut wide = widest.iter();
+        for k in &here {
+            assert!(
+                wide.any(|w2| w2 == k),
+                "at {w} columns the figures are reordered, not merely thinned:\n\
+                 {here:?}\nagainst\n{widest:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_zones_stay_in_one_order_across_every_tab() {
+    // The tab governs the columns of the table. It does not reorder the machine
+    // summary, because "why is this machine slow" has the same answer whichever
+    // table you are reading — and a summary that rearranged per tab would undo
+    // the property above for the sake of matching the tab.
+    let mut app = App::new(600);
+    app.push(stalled());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let mut seen = None;
+    for v in crate::app::View::ALL {
+        app.view = v;
+        let line = figures_line(&app, 200, 24);
+        let order: Vec<usize> = ["CPU", "MEM", "UP "]
+            .into_iter()
+            .filter_map(|k| line.find(k))
+            .collect();
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(order, sorted, "{v:?} put the zones in a different order");
+        match &seen {
+            None => seen = Some(order),
+            Some(first) => assert_eq!(&order, first, "{v:?} moved a zone"),
+        }
+    }
+}
+
+// ── the sort marker ─────────────────────────────────────────────────────────
+
+#[test]
+fn the_sorted_column_is_marked_in_its_own_header() {
+    // It used to be stated in the panel title several rows away, in a clause
+    // the width ladder can drop — so the ordering was named furthest from the
+    // thing it ordered, and on a narrow terminal not at all.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let head = |app: &App| {
+        table_rows(app, 150, 26)
+            .into_iter()
+            .find(|l| l.contains("COMMAND"))
+            .expect("no column headers")
+    };
+    for (sort, label) in [
+        (crate::app::Sort::Cpu, "CPU%"),
+        (crate::app::Sort::Mem, "RSS"),
+        (crate::app::Sort::Pid, "PID"),
+        (crate::app::Sort::Name, "COMMAND"),
+    ] {
+        app.sort = sort;
+        let line = head(&app);
+        assert_eq!(
+            line.matches('▾').count(),
+            1,
+            "sorting by {label} marked {} columns: {line:?}",
+            line.matches('▾').count()
+        );
+        // Beside its own label, not somewhere else on the row.
+        let at = line.find('▾').expect("just counted one");
+        let near = line
+            .find(label)
+            .map(|i| i.abs_diff(at) <= label.len() + 2)
+            .unwrap_or(false);
+        assert!(near, "the caret is not on the {label} header: {line:?}");
+    }
+}
+
+#[test]
+fn the_caret_does_not_push_a_header_off_its_column() {
+    // Appending it to a right-aligned label shifts the label left and the
+    // header stops sharing a right edge with the figures under it, which
+    // `a_column_of_figures_shares_a_right_edge` exists to prevent. It goes in
+    // the padding the column already has.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![proc_named(824, "postgres", 88.4, 512 << 20)];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let edge = |app: &App| {
+        let table = table_rows(app, 150, 26);
+        let head = table.iter().find(|l| l.contains("CPU%")).unwrap();
+        let row = table.iter().find(|l| l.contains("postgres")).unwrap();
+        // Counted in characters: `▾` is three bytes, so a byte offset makes a
+        // marked header look four columns wider than it is.
+        let ends = |l: &str, s: &str| {
+            l.find(s)
+                .map(|b| l[..b].chars().count() + s.chars().count())
+        };
+        (ends(head, "CPU%").unwrap(), ends(row, "88.4").unwrap())
+    };
+    app.sort = crate::app::Sort::Pid;
+    let (unsorted_head, figures) = edge(&app);
+    app.sort = crate::app::Sort::Cpu;
+    let (sorted_head, figures_again) = edge(&app);
+    assert_eq!(
+        figures, figures_again,
+        "marking a column moved the figures under it"
+    );
+    assert_eq!(
+        unsorted_head, sorted_head,
+        "the caret pushed the CPU% header off its column's right edge"
+    );
+}
+
+#[test]
+fn the_strip_and_the_header_cannot_disagree_about_the_sort() {
+    // Both name it, and they are built from different code. `s` cycles, and the
+    // caret has to follow — a strip that says `sort MEM` over a caret on CPU%
+    // is two sources of truth, one of them wrong.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..3)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for _ in 0..6 {
+        press(&mut app, KeyCode::Char('s'));
+        let frame = rows(&app, 150, 26);
+        let strip = &frame[strip_y(&app, 150, 26) as usize];
+        let head = frame.iter().find(|l| l.contains("COMMAND")).unwrap();
+        assert!(
+            strip.contains(&format!("sort {}", app.sort.label())),
+            "the strip does not name the sort: {strip:?}"
+        );
+        assert_eq!(
+            head.matches('▾').count(),
+            1,
+            "the header marks {} columns for {:?}",
+            head.matches('▾').count(),
+            app.sort
+        );
+    }
+}
+
+#[test]
+fn clicking_a_header_sorts_by_that_column() {
+    // Where the state is shown is where the action happens, which is why nobody
+    // has ever needed to be told how a sortable table works.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let (w, h) = (150u16, 26u16);
+    let table = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+
+    // Every column that stands for a sort key is clickable, found by the caret
+    // it draws when it is the one in force — so this cannot pass by clicking
+    // somewhere that happens to work.
+    for want in [
+        crate::app::Sort::Mem,
+        crate::app::Sort::Pid,
+        crate::app::Sort::Name,
+        crate::app::Sort::Cpu,
+    ] {
+        app.sort = want;
+        let head = table_rows(&app, w, h)
+            .into_iter()
+            .find(|l| l.contains("COMMAND"))
+            .unwrap();
+        let at = head
+            .find('▾')
+            .map(|b| head[..b].chars().count())
+            .expect("no caret to aim at");
+        // Somewhere else first, so landing on `want` is the click's doing.
+        app.sort = crate::app::Sort::Cpu;
+        if want == crate::app::Sort::Cpu {
+            app.sort = crate::app::Sort::Pid;
+        }
+        click(&mut app, at as u16 + 1, ui::table_header_y(table), w, h);
+        assert_eq!(
+            app.sort, want,
+            "clicking the caret column at {at} gave {:?}",
+            app.sort
+        );
+    }
+}
+
+#[test]
+fn clicking_a_column_that_sorts_by_nothing_does_nothing() {
+    // The state letter, the bars and the sparkline are not orderings. Clicking
+    // one should leave the table alone rather than doing whatever is nearest.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let (w, h) = (150u16, 26u16);
+    let table = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let head = table_rows(&app, w, h)
+        .into_iter()
+        .find(|l| l.contains("COMMAND"))
+        .unwrap();
+    let at = head
+        .find("HIST")
+        .map(|b| head[..b].chars().count())
+        .expect("no sparkline header");
+
+    app.sort = crate::app::Sort::Pid;
+    click(&mut app, at as u16 + 1, ui::table_header_y(table), w, h);
+    assert_eq!(
+        app.sort,
+        crate::app::Sort::Pid,
+        "clicking the sparkline header changed the ordering"
+    );
+}
+
+#[test]
+fn clicking_a_row_still_selects_rather_than_sorting() {
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..6)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    let (w, h) = (150u16, 26u16);
+    let table = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    app.sort = crate::app::Sort::Pid;
+    click(&mut app, 10, table.y + 3, w, h);
+    assert_eq!(app.sort, crate::app::Sort::Pid, "a row click re-sorted");
+    assert!(app.selected.is_some(), "a row click selected nothing");
+}
+
+#[test]
+#[ignore]
+fn show_inspector() {
+    let mut app = App::new(600);
+    for i in (0..60).rev() {
+        let mut s = sample_at(30.0, i);
+        s.procs = vec![
+            ProcSample {
+                cpu: if i == 30 { 190.0 } else { 88.4 },
+                rss: if i == 30 { 640 << 20 } else { 512 << 20 },
+                threads: Some(4),
+                nice: Some(0),
+                cmd: Some(std::sync::Arc::from(
+                    "/usr/local/pgsql/bin/postgres -D /var/db/postgres",
+                )),
+                started: Some(2),
+                io: Some(crate::sample::IoRates {
+                    read: 1 << 20,
+                    write: 0,
+                }),
+                ..proc_named(824, "postgres", 0.0, 0)
+            },
+            proc_named(1190, "nginx", 12.5, 32 << 20),
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.select_row(0);
+    app.inspecting = true;
+    for l in rows(&app, 92, 26) {
+        println!("{}", l.trim_end());
+    }
+}
+
+// ── the inspector ───────────────────────────────────────────────────────────
+
+/// A buffer with one interesting process that spiked halfway through.
+fn one_process(app: &mut App) {
+    for i in (0..60).rev() {
+        let mut s = sample_at(30.0, i);
+        s.procs = vec![
+            ProcSample {
+                cpu: if i == 30 { 190.0 } else { 88.4 },
+                rss: if i == 30 { 640 << 20 } else { 512 << 20 },
+                threads: Some(4),
+                cmd: Some(std::sync::Arc::from(
+                    "/usr/local/pgsql/bin/postgres -D /var/db/postgres",
+                )),
+                started: Some(2),
+                ..proc_named(824, "postgres", 0.0, 0)
+            },
+            proc_named(1190, "nginx", 12.5, 32 << 20),
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.select_row(0);
+}
+
+#[test]
+fn the_inspector_says_what_the_table_cannot() {
+    // The full command is truncated in the table and available nowhere, the
+    // parent is collected and shown only in the tree, and `--export` has every
+    // field and is not a thing you read while looking at a row.
+    let mut app = App::new(600);
+    one_process(&mut app);
+
+    let shut = rows(&app, 92, 26).join("\n");
+    assert!(
+        !shut.contains("/var/db/postgres"),
+        "the inspector is drawing while closed"
+    );
+
+    press(&mut app, KeyCode::Enter);
+    assert!(app.inspecting, "⏎ did not open the inspector");
+    let open = rows(&app, 92, 26).join("\n");
+    for want in [
+        "/usr/local/pgsql/bin/postgres -D /var/db/postgres", // the full command
+        "parent 1",                                          // the parent
+        "sleeping",                                          // the state, spelled out
+        "threads",
+    ] {
+        assert!(open.contains(want), "the inspector omits {want:?}:\n{open}");
+    }
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.inspecting, "⏎ did not close it again");
+}
+
+#[test]
+fn the_peaks_come_from_the_buffer_and_say_what_they_cover() {
+    // The part Activity Monitor cannot do. It shows the instant you happen to
+    // be looking at; poptop kept the samples, and "is this normal for it" is a
+    // question about all of them.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.inspecting = true;
+    let open = rows(&app, 92, 26).join("\n");
+
+    assert!(open.contains("88.4%"), "no current figure:\n{open}");
+    assert!(
+        open.contains("190.0%"),
+        "the peak is not the buffer's, only the cursor's:\n{open}"
+    );
+    assert!(
+        open.contains("640.0M"),
+        "the memory peak is not the buffer's:\n{open}"
+    );
+    // And it says what window the peak covers, because the figure beside it is
+    // the cursor's moment: two clocks in one panel, named rather than inferred.
+    assert!(
+        open.contains("60 samples"),
+        "the peak does not say what it is over:\n{open}"
+    );
+}
+
+#[test]
+fn the_inspector_closes_its_box_whatever_is_in_it() {
+    // The first line is the full command, and a full command is longer than
+    // the panel. It was laid down whole and clipped by the terminal, which ate
+    // the right border and ran the text into whatever was behind the box — so
+    // on most processes the inspector simply had no right-hand side.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.selected = Some(crate::app::Watched::Process {
+        pid: 824,
+        started: Some(2),
+        name: std::sync::Arc::from(
+            "a-name-long-enough-to-overrun-any-terminal-this-test-will-ever-be-run-on",
+        ),
+    });
+    app.inspecting = true;
+
+    for w in 40..=200u16 {
+        let drawn = rows(&app, w, 26);
+        let first = drawn
+            .iter()
+            .position(|l| l.contains('\u{256d}'))
+            .unwrap_or_else(|| panic!("no box at w={w}"));
+        let last = drawn
+            .iter()
+            .position(|l| l.contains('\u{2570}'))
+            .unwrap_or_else(|| panic!("the box has no bottom at w={w}"));
+        let top = &drawn[first];
+        // Counted in characters, not bytes: every glyph the box is drawn from
+        // is three bytes wide and `find` answers in bytes.
+        let at = |line: &str, c: char| line.chars().position(|x| x == c);
+        let left = at(top, '\u{256d}').expect("no left corner");
+        let right = at(top, '\u{256e}').unwrap_or_else(|| {
+            panic!("the top border has no right corner at w={w}:\n{top}");
+        });
+        // Every row of the box reaches the same column and stops there.
+        for l in &drawn[first + 1..last] {
+            let bars: Vec<usize> = l
+                .chars()
+                .enumerate()
+                .filter(|(_, c)| *c == '\u{2502}')
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                (bars.first().copied(), bars.last().copied()),
+                (Some(left), Some(right)),
+                "a line broke out of the box at w={w}:\n{l}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_inspector_does_not_disturb_the_timeline() {
+    // `d` replaces the timeline with the process's history, which is a
+    // different thing. This floats over the table and leaves the graph alone,
+    // because the graph is what poptop has that Activity Monitor does not.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    let r = ui::timeline_rows_range(26);
+    let graph = |app: &App| {
+        rows(app, 92, 26)[r.start as usize..r.end as usize]
+            .iter()
+            .map(|l| l.chars().take(ui::GUTTER_W).collect::<String>())
+            .collect::<Vec<_>>()
+    };
+    let before = graph(&app);
+    app.inspecting = true;
+    assert_eq!(
+        before,
+        graph(&app),
+        "opening the inspector changed the timeline's own rows"
+    );
+    assert!(!app.detail, "the inspector turned the detail view on");
+}
+
+#[test]
+fn the_inspector_says_nothing_about_a_process_that_is_not_there() {
+    // Scrub back past the moment it started and the selection has no sample to
+    // describe. A panel that drew zeroes there would be inventing a process.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.inspecting = true;
+    app.selected = Some(crate::app::Watched::Process {
+        pid: 999_999,
+        started: Some(7),
+        name: std::sync::Arc::from("gone"),
+    });
+    let open = rows(&app, 92, 26).join("\n");
+    // No box at all, not merely the wrong title. Asserting the absent name is
+    // missing passes just as well when the panel has drawn somebody *else* —
+    // which is what falling back to the first process in the sample does, and
+    // is a worse failure than drawing nothing.
+    assert!(
+        !open.contains("╭ "),
+        "the inspector drew a box for a process that is not in this sample:\n{open}"
+    );
+    assert!(
+        !open.contains("parent"),
+        "the inspector described some other process:\n{open}"
+    );
+}
+
+// ── the filter field ────────────────────────────────────────────────────────
+
+#[test]
+fn the_filter_is_typed_where_it_is_shown() {
+    // It used to be a box at the bottom of the screen while the scope line at
+    // the top said the same thing — two places for one fact, which is the
+    // objection the key hints already answer to.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..8)
+        .map(|i| {
+            proc_named(
+                100 + i,
+                if i < 2 { "postgres" } else { "nginx" },
+                5.0,
+                1 << 20,
+            )
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    press(&mut app, KeyCode::Char('/'));
+    for c in "postgres".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let frame = rows(&app, 120, 26);
+    let strip = &frame[strip_y(&app, 100, 26) as usize];
+    assert!(
+        strip.contains("filter: postgres"),
+        "the field is not on the scope line: {strip:?}"
+    );
+    assert_eq!(
+        frame
+            .iter()
+            .filter(|l| l.contains("filter: postgres"))
+            .count(),
+        1,
+        "the query is echoed in more than one place"
+    );
+    // The footer says what the field takes and how to leave it, which is the
+    // only thing a box was for that the field is not.
+    let footer = frame.last().unwrap();
+    assert!(
+        footer.contains("esc") && footer.contains("⏎"),
+        "the footer does not say how to leave the field: {footer:?}"
+    );
+}
+
+#[test]
+fn escape_puts_back_the_filter_that_was_there() {
+    // Enter and Escape both used to commit, so Escape was a second Enter — and
+    // a key that every other program uses to undo is the wrong one to spend on
+    // "finish".
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 5.0, 1 << 20))
+        .collect();
+    app.push(s);
+
+    press(&mut app, KeyCode::Char('/'));
+    for c in "post".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.filter, "post", "Enter did not keep what was typed");
+
+    // Narrowing a narrowed list starts from what is already there rather than
+    // throwing it away before a key is pressed.
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!(
+        app.filter, "post",
+        "`/` cleared the filter it was opened on"
+    );
+    for c in "gres".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(app.filter, "postgres");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.filter, "post", "Escape committed instead of cancelling");
+    assert!(!app.editing_filter);
+}
+
+#[test]
+fn clearing_the_filter_is_one_action() {
+    // Not backspacing it away a character at a time, and not a guess.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 5.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.filter = "postgres".into();
+
+    let clear = crate::menu::bar()
+        .into_iter()
+        .flat_map(|t| t.items)
+        .find(|i| i.action() == Some(crate::command::Action::ClearFilter))
+        .expect("no way to clear the filter");
+    assert!(!clear.label().is_empty());
+    crate::command::Action::ClearFilter.apply(&mut app);
+    assert!(app.filter.is_empty(), "clearing left the filter in place");
+    assert!(!app.editing_filter, "clearing left the field focused");
+}
+
+// ── the action bar ──────────────────────────────────────────────────────────
+
+#[test]
+fn what_can_be_done_to_the_selection_is_visible_without_a_menu() {
+    // Activity Monitor puts three controls in its title bar and attaches them
+    // to the selection: visible, few, and which of them are available tells you
+    // what can be done to what you picked.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.signals = true;
+
+    let footer = |app: &App| rows(app, 120, 26).last().unwrap().clone();
+
+    app.selected = None;
+    let none = footer(&app);
+    assert!(
+        !none.contains("inspect"),
+        "actions are offered with nothing selected: {none:?}"
+    );
+
+    app.select_row(0);
+    let some = footer(&app);
+    assert!(
+        some.contains("postgres") && some.contains("824"),
+        "the bar does not name what is selected: {some:?}"
+    );
+    assert!(some.contains("⏎ inspect"), "{some:?}");
+    assert!(some.contains("TERM") && some.contains("KILL"), "{some:?}");
+    // And it does not spend sixty columns repeating the command line the table
+    // is already showing.
+    assert!(
+        !some.contains("/var/db/postgres"),
+        "the bar printed the whole command line: {some:?}"
+    );
+}
+
+#[test]
+fn what_cannot_be_done_says_so_before_it_is_attempted() {
+    // An action bar offering `x TERM` on a recorded day, which then refuses it,
+    // is worse than one that never offered it: the reader has already decided
+    // by the time they find out.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.select_row(0);
+    app.signals = true;
+
+    let footer = |app: &App| rows(app, 120, 26).last().unwrap().clone();
+    assert!(footer(&app).contains("TERM"), "live, and it is not offered");
+
+    // Scrubbed into history: the pid on this row may belong to something else
+    // now, which is the whole reason signalling is refused there.
+    app.history.scrub(-5);
+    let back = footer(&app);
+    assert!(
+        !back.contains("x TERM"),
+        "the bar still offers a signal while scrubbing: {back:?}"
+    );
+    assert!(
+        back.contains("postgres"),
+        "the bar stopped naming the selection too: {back:?}"
+    );
+    // Whatever it says instead, it is the same reason the attempt would give.
+    assert!(
+        app.signal_refusal().is_some(),
+        "this test is no longer about a refusal"
+    );
+
+    // And with signals off entirely.
+    app.history.goto_live();
+    app.signals = false;
+    let off = footer(&app);
+    assert!(
+        !off.contains("x TERM"),
+        "signals are off and still offered: {off:?}"
+    );
+}
+
+#[test]
+fn a_folded_row_offers_nothing_because_it_is_several_processes() {
+    // Signalling "the one under the cursor" there means picking one of them,
+    // which is not a decision a confirmation could describe — `ask_to_signal`
+    // already refuses it, and offering it first would be the same mistake the
+    // refusal exists to avoid.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.selected = Some(crate::app::Watched::Group {
+        name: std::sync::Arc::from("postgres"),
+    });
+    let footer = rows(&app, 120, 26).last().unwrap().clone();
+    assert!(
+        !footer.contains("inspect"),
+        "a folded row was offered a process action: {footer:?}"
+    );
+}
+
+#[test]
+fn a_prompt_outranks_the_action_bar() {
+    // A pending confirmation, a jump note and a filter error are about
+    // something the reader just did; the bar is about something they are still
+    // looking at. The row is shared and the question wins.
+    let mut app = App::new(600);
+    one_process(&mut app);
+    app.select_row(0);
+    app.signals = true;
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.pending.is_some(), "no confirmation to outrank the bar");
+    let footer = rows(&app, 120, 26).last().unwrap().clone();
+    assert!(
+        footer.contains("y to confirm") || footer.contains("send"),
+        "the action bar displaced the confirmation: {footer:?}"
+    );
+}
+
+// ── the table's own shape ───────────────────────────────────────────────────
+
+#[test]
+fn every_numeric_column_is_right_aligned_and_every_text_column_is_not() {
+    // The rule was followed by hand in eleven places and checked nowhere. A
+    // figure that does not share a right edge with the one above it cannot be
+    // compared by eye, which is most of what a column of figures is for.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    // Deliberately different widths in every column: `7.0` against `100.0`, a
+    // megabyte against a gigabyte, two digits of pid against six. A uniform
+    // fixture would pass whatever the alignment was.
+    s.procs = vec![
+        ProcSample {
+            cpu: 100.0,
+            rss: 4 << 30,
+            threads: Some(128),
+            io: Some(crate::sample::IoRates {
+                read: 900 << 20,
+                write: 7,
+            }),
+            started: Some(1),
+            ..proc_named(999_999, "postgres", 0.0, 0)
+        },
+        ProcSample {
+            cpu: 7.0,
+            rss: 1 << 20,
+            threads: Some(2),
+            io: Some(crate::sample::IoRates { read: 3, write: 0 }),
+            started: Some(2),
+            ..proc_named(42, "sh", 0.0, 0)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let (w, h) = (170u16, 26u16);
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let shape = ui::table_shape(&app, panel);
+    let (widths, cols) = ui::table_columns(&shape);
+    // The same split the table lays itself out with.
+    let cells = ratatui::layout::Layout::horizontal(widths)
+        .spacing(1)
+        .split(ratatui::layout::Rect::new(
+            panel.x,
+            panel.y + 1,
+            panel.width,
+            1,
+        ));
+
+    let table = data_rows(&app, w, h);
+    let rows: Vec<&String> = table
+        .iter()
+        .filter(|l| l.contains("postgres") || l.contains(" sh"))
+        .collect();
+    assert_eq!(rows.len(), 2, "expected two rows: {rows:?}");
+
+    for (i, col) in cols.iter().enumerate() {
+        let rect = cells[i];
+        let slice = |l: &str| -> String {
+            l.chars()
+                .skip(rect.x as usize)
+                .take(rect.width as usize)
+                .collect()
+        };
+        let cut: Vec<String> = rows.iter().map(|l| slice(l)).collect();
+        if cut.iter().any(|c| c.trim().is_empty()) {
+            continue; // an empty column says nothing about alignment
+        }
+        if col.numeric {
+            assert!(
+                cut.iter()
+                    .all(|c| c.ends_with(|ch: char| !ch.is_whitespace())),
+                "a numeric column does not share a right edge: {cut:?}"
+            );
+        } else {
+            let pad = |c: &String| c.len() - c.trim_start().len();
+            assert!(
+                cut.iter()
+                    .map(pad)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    == 1,
+                "a text column does not share a left edge: {cut:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_truncated_name_keeps_the_half_that_identifies_it() {
+    // Three rows reading `Google Chrome Helpe` are a renderer, a GPU process
+    // and a network service. Cutting the head is no better: `…Helper
+    // (Renderer)` could belong to any application on the machine.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![ProcSample {
+        cmd: Some(std::sync::Arc::from(
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (Renderer)",
+        )),
+        started: Some(1),
+        ..proc_named(824, "Google Chrome H", 10.0, 1 << 20)
+    }];
+    app.push(s);
+    let row = table_rows(&app, 110, 26)
+        .into_iter()
+        .find(|l| l.contains('…'))
+        .expect("nothing was elided");
+    assert!(row.contains("/Applications"), "the head was cut: {row:?}");
+    assert!(row.contains("(Renderer)"), "the tail was cut: {row:?}");
+}
+
+#[test]
+fn the_selected_row_is_identifiable_without_its_background() {
+    // A screenshot, a copy-paste, a terminal whose theme fights the selection
+    // colour: the row has to be findable by more than its ground.
+    let t = Theme::new(Palette::Safe, Tier::TrueColor);
+    let sel = t.selection_style();
+    assert!(
+        sel.add_modifier.contains(ratatui::style::Modifier::BOLD),
+        "the selection rests on its background alone"
+    );
+    assert!(sel.fg.is_some(), "the selection sets no foreground");
+    // And at the mono tier, where there is no background to rest on.
+    let mono = Theme::new(Palette::Safe, Tier::Mono).selection_style();
+    assert!(
+        mono.add_modifier
+            .contains(ratatui::style::Modifier::REVERSED),
+        "the mono tier cannot show a selection at all"
+    );
+}
+
+// ── the honest end of energy ────────────────────────────────────────────────
+
+#[test]
+fn a_thrashing_machine_does_not_look_like_a_busy_one() {
+    // Activity Monitor scores energy from a formula that is not public, using a
+    // per-process wakeup count neither platform gives up cheaply. What *is*
+    // measured is the machine's switch and interrupt rate, and a box thrashing
+    // between threads looks identical to a busy one without it.
+    let mut app = App::new(600);
+    let mut s = sample(50.0);
+    s.ctxt = Some(184_000);
+    s.intr = Some(96_000);
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let line = header_rows(&app, 200, 24)
+        .into_iter()
+        .find(|l| l.contains("CSW"))
+        .expect("the switch rate is not on the header");
+    assert!(line.contains("184k/s"), "unreadable switch rate: {line:?}");
+    assert!(
+        line.contains("IRQ"),
+        "no interrupt rate beside it: {line:?}"
+    );
+    assert!(
+        line.contains("96k/s"),
+        "unreadable interrupt rate: {line:?}"
+    );
+}
+
+#[test]
+fn a_platform_that_does_not_count_switches_says_nothing_rather_than_zero() {
+    // macOS has no `/proc/stat`. A zero there would be a fabricated figure
+    // about the one thing this row exists to notice.
+    let mut app = App::new(600);
+    let mut s = sample(50.0);
+    s.ctxt = None;
+    s.intr = None;
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let head = header_rows(&app, 200, 24).join("\n");
+    assert!(
+        !head.contains("CSW"),
+        "a platform that cannot count them drew the figure anyway:\n{head}"
+    );
+    assert!(!head.contains("0/s"), "a fabricated zero:\n{head}");
+
+    // And the interrupt half alone is an em dash rather than a zero.
+    let mut app = App::new(600);
+    let mut s = sample(50.0);
+    s.ctxt = Some(1_000);
+    s.intr = None;
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let line = header_rows(&app, 200, 24)
+        .into_iter()
+        .find(|l| l.contains("CSW"))
+        .expect("no switch rate");
+    assert!(
+        line.contains('—'),
+        "a missing interrupt count drew a number: {line:?}"
+    );
+}
+
+#[test]
+fn a_rate_stays_readable_however_large_it_gets() {
+    // `103847/s` is six characters of precision nobody uses on a row that is
+    // already fighting for width.
+    assert_eq!(ui::rate_per_s_for_test(7), "7/s");
+    assert_eq!(ui::rate_per_s_for_test(9_999), "9999/s");
+    assert_eq!(ui::rate_per_s_for_test(184_000), "184k/s");
+    assert_eq!(ui::rate_per_s_for_test(2_400_000), "2.4M/s");
+    for n in [0u64, 1, 9_999, 10_000, 999_999, 1_000_000, u64::MAX] {
+        assert!(
+            ui::rate_per_s_for_test(n).chars().count() <= 7,
+            "{n} renders as {:?}",
+            ui::rate_per_s_for_test(n)
+        );
+    }
+}
+
+// ── the summary strip ───────────────────────────────────────────────────────
+
+/// Eight processes: four postgres at 10% each, four nginx at 5%.
+fn a_mixed_table(app: &mut App) {
+    let mut s = sample(10.0);
+    s.procs = (0..8)
+        .map(|i| ProcSample {
+            threads: Some(if i < 4 { 8 } else { 2 }),
+            started: Some(i as u64),
+            ..proc_named(
+                100 + i,
+                if i < 4 { "postgres" } else { "nginx" },
+                if i < 4 { 10.0 } else { 5.0 },
+                if i < 4 { 1 << 30 } else { 1 << 28 },
+            )
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+}
+
+fn strip_of(app: &App) -> String {
+    let (w, h) = (140u16, 30u16);
+    let panel = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    rows(app, w, h)[(panel.y + 1) as usize].trim().to_string()
+}
+
+#[test]
+fn the_strip_says_what_the_rows_on_screen_add_up_to() {
+    // Nothing else on screen states it. The header above is about the machine;
+    // the scope line says how many rows there are and not what they cost.
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    let all = strip_of(&app);
+    assert!(all.contains("8 shown"), "{all:?}");
+    // Four at 10% and four at 5%.
+    assert!(
+        all.contains("60.0%"),
+        "the CPU total is wrong or absent: {all:?}"
+    );
+    // Four gigabytes and four 256M.
+    assert!(
+        all.contains("5.0G"),
+        "the memory total is wrong or absent: {all:?}"
+    );
+    assert!(
+        all.contains("40 threads"),
+        "the thread total is wrong: {all:?}"
+    );
+}
+
+#[test]
+fn the_strip_follows_the_filter() {
+    // The question the filter just asked. Four postgres processes using 40% of
+    // a core between them is the fact this row exists for, and it is wrong the
+    // moment it describes the machine instead of the rows.
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    let before = strip_of(&app);
+
+    app.filter = "postgres".into();
+    let after = strip_of(&app);
+    assert_ne!(before, after, "filtering did not change the strip");
+    assert!(after.contains("4 shown"), "{after:?}");
+    assert!(
+        after.contains("40.0%"),
+        "the CPU total is still the machine's: {after:?}"
+    );
+    assert!(
+        after.contains("4.0G"),
+        "the memory total is still the machine's: {after:?}"
+    );
+    assert!(after.contains("32 threads"), "{after:?}");
+}
+
+#[test]
+fn the_strip_follows_the_grouping_and_says_how_many_groups() {
+    // Folding does not change what the rows cost, only how many rows there are.
+    // Saying both is the difference between "twelve things" and "twelve things
+    // that are two".
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    let flat = strip_of(&app);
+    assert!(
+        !flat.contains("groups"),
+        "an ungrouped table claims groups: {flat:?}"
+    );
+
+    press(&mut app, KeyCode::Char('g'));
+    assert_ne!(app.group, crate::app::Grouping::Off);
+    let grouped = strip_of(&app);
+    assert!(
+        grouped.contains("2 groups"),
+        "grouping did not say how many: {grouped:?}"
+    );
+    // And the totals are the same processes, however they are folded.
+    assert!(
+        grouped.contains("8 shown") && grouped.contains("60.0%"),
+        "folding changed what the rows cost: {grouped:?}"
+    );
+}
+
+#[test]
+fn the_strip_and_the_scope_line_count_the_same_processes() {
+    // Two rows describing the same set, built from different code. One saying
+    // `4 of 8` above another saying `5 shown` is the interface contradicting
+    // itself in adjacent rows.
+    let mut app = App::new(600);
+    a_mixed_table(&mut app);
+    for f in ["", "postgres", "nginx", "zzz"] {
+        app.filter = f.into();
+        let scope = ui::scope_text(&app, 80);
+        let shown = ui::totals(&app).procs;
+        assert!(
+            scope.contains(&shown.to_string()),
+            "the scope says {scope:?} and the strip counts {shown}"
+        );
+    }
+}
+
+#[test]
+fn the_strip_gives_up_its_row_before_the_table_does() {
+    // A summary of rows you cannot see is worth less than the rows.
+    assert_eq!(
+        ui::summary_height(ratatui::layout::Rect::new(0, 0, 100, 30)),
+        1,
+        "a tall table has no strip"
+    );
+    assert_eq!(
+        ui::summary_height(ratatui::layout::Rect::new(0, 0, 100, 3)),
+        0,
+        "a table at its floor kept the strip"
+    );
+}
+
+#[test]
+fn an_expanded_process_is_still_one_process() {
+    // `y` puts a row under a process for each of its threads. They are rows,
+    // not processes, and counting them would make expanding one look like the
+    // machine had just grown forty more — and double its CPU, since a thread
+    // row carries its process's figures.
+    let mut app = App::new(600);
+    app.push(sample_with_threads());
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let shut = ui::totals(&app);
+    app.select_delta(1);
+    app.toggle_threads();
+    let open = ui::totals(&app);
+
+    assert!(
+        app.visible_rows().iter().any(|r| r.is_thread()),
+        "nothing expanded, so this proves nothing"
+    );
+    assert_eq!(
+        (shut.procs, shut.cpu, shut.rss),
+        (open.procs, open.cpu, open.rss),
+        "expanding a process changed what the table is said to contain"
+    );
+}
+
+#[test]
+fn a_thread_total_nobody_can_supply_is_left_out_rather_than_dashed() {
+    // An em dash here is a clause that says nothing on every frame, and on
+    // macOS — where a process poptop cannot open reports no thread count —
+    // that is most of them. A figure absent for a stated reason belongs on the
+    // row about that process; a permanent `— threads` is noise on the row about
+    // all of them.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            threads: Some(4),
+            started: Some(1),
+            ..proc_named(100, "postgres", 10.0, 1 << 30)
+        },
+        ProcSample {
+            threads: None,
+            started: Some(2),
+            ..proc_named(101, "opaque", 5.0, 1 << 28)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let strip = strip_of(&app);
+    assert!(
+        !strip.contains("threads"),
+        "a total nobody can supply was claimed anyway: {strip:?}"
+    );
+    assert!(!strip.contains('—'), "a dash stood in for it: {strip:?}");
+    // The magnitudes it *can* give are still there.
+    assert!(
+        strip.contains("15.0%") && strip.contains("2 shown"),
+        "{strip:?}"
+    );
+}
+
+// ── a header that holds still ───────────────────────────────────────────────
+
+#[test]
+fn no_figure_moves_when_the_numbers_change() {
+    // Measured on a real terminal before this was written: forty-six columns of
+    // the header shifted every second, because the network figure is wider at
+    // `635.7K/s` than at `4.1M/s` and everything to its right moved with it.
+    //
+    // The rule is that a figure's *width* must not depend on its *value*. This
+    // walks the extremes of every figure that has a variable one and asserts
+    // the row is laid out identically.
+    let at = |cpu: f32, procs: usize, rx: u64, tx: u64, iface: &str, up_days: u64| {
+        let mut app = App::new(60);
+        let mut s = sample(cpu);
+        s.uptime = std::time::Duration::from_secs(up_days * 86400 + 3600 + 60);
+        s.procs = (0..procs)
+            .map(|i| proc_named(100 + i as i32, "p", 1.0, 1 << 20))
+            .collect();
+        s.net = Some(crate::sample::NetStat {
+            links: vec![crate::sample::Link {
+                name: std::sync::Arc::from(iface),
+                rx,
+                tx,
+                rx_packets: 1,
+                tx_packets: 1,
+            }],
+            errors: None,
+            drops: None,
+            retrans: None,
+            listen_drops: None,
+        });
+        app.push(s);
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        figures_line(&app, 200, 24)
+    };
+
+    // The narrowest each figure gets, and the widest.
+    // Non-zero on both, and not loopback on either: the header follows one
+    // real interface chosen over a window — an idle link and a loopback one
+    // are both passed over, and either would drop the network figure entirely
+    // and stop the comparison being about its width.
+    let narrow = at(0.0, 1, 1, 1, "en0", 0);
+    let wide = at(100.0, 9999, 900 << 20, 1023 << 30, "enp0s31f6", 999);
+
+    // Every label lands in the same column in both.
+    for label in ["CPU", "MEM", "SWP", "UP ", "PROCS"] {
+        let a = narrow.find(label).map(|b| narrow[..b].chars().count());
+        let b = wide.find(label).map(|b| wide[..b].chars().count());
+        assert_eq!(
+            a, b,
+            "{label} moved between the narrowest and widest values:\n{narrow}\n{wide}"
+        );
+    }
+    assert_eq!(
+        narrow.trim_end().chars().count(),
+        wide.trim_end().chars().count(),
+        "the row is a different length:\n{narrow}\n{wide}"
+    );
+    // The interface name is in a fixed cell too: a laptop's busiest interface
+    // flips between `en0` and `en5` from second to second, and a long name on a
+    // server must not make the figure wider than a short one.
+    assert!(
+        narrow.contains("en0"),
+        "the short name is not drawn:\n{narrow}"
+    );
+    // A long one is elided into the same cell rather than widening it, which is
+    // the only way the figures after it can stay put.
+    assert!(
+        wide.contains("en…f6"),
+        "a long interface name widened its cell instead of being elided:\n{wide}"
+    );
+}
+
+#[test]
+fn a_rate_is_the_same_width_whatever_it_is() {
+    for b in [
+        0u64,
+        1,
+        999,
+        1023,
+        1024,
+        100 << 10,
+        900 << 20,
+        1023 << 30,
+        u64::MAX,
+    ] {
+        assert_eq!(
+            ui::fmt_rate(b).chars().count(),
+            ui::RATE_W,
+            "{b} renders as {:?}",
+            ui::fmt_rate(b)
+        );
+    }
+    // And it is still readable: three significant figures, with the unit.
+    assert!(ui::fmt_rate(4 << 20).trim().starts_with("4.00M"));
+    assert!(ui::fmt_rate(635 << 10).trim().starts_with("635K"));
+    assert!(ui::fmt_rate(896).trim() == "896B/s");
+}
+
+#[test]
+fn an_uptime_is_the_same_width_on_its_ninth_day_and_its_tenth() {
+    let up = |secs| {
+        let mut app = App::new(60);
+        let mut s = sample(10.0);
+        s.uptime = std::time::Duration::from_secs(secs);
+        app.push(s);
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+        let line = figures_line(&app, 200, 24);
+        let at = line.find("UP ").expect("no uptime");
+        line[at..].chars().take(14).collect::<String>()
+    };
+    let widths: std::collections::HashSet<usize> =
+        [60, 3600, 86400 * 9 + 3600, 86400 * 10 + 3600, 86400 * 365]
+            .into_iter()
+            .map(|s| up(s).trim_end().chars().count())
+            .collect();
+    assert_eq!(widths.len(), 1, "the uptime changes width: {widths:?}");
+}
+
+#[test]
+fn the_table_is_given_air_only_where_there_is_room_for_it() {
+    // Two columns either side of the rows. They are the first thing given up:
+    // at a hundred and four columns a deep tree of Chrome helpers needs every
+    // one of them, and a process elided to `…derer)` is a worse loss than a row
+    // that touches the edge.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let left_edge = |w: u16| -> usize {
+        data_rows(&app, w, 26)
+            .into_iter()
+            .find(|l| l.contains("postgres"))
+            .map(|l| l.len() - l.trim_start().len())
+            .expect("no row")
+    };
+    assert!(
+        left_edge(150) > left_edge(104),
+        "a wide terminal is no more spacious than a cramped one"
+    );
+
+    // And the panel's own divider still spans the whole width: it is what says
+    // where the panel starts, and one stopping short reads as a box missing its
+    // corners.
+    let title = table_rows(&app, 150, 26)
+        .into_iter()
+        .find(|l| l.contains("processes"))
+        .unwrap();
+    assert!(
+        title.starts_with("──"),
+        "the divider was inset with the content: {title:?}"
+    );
+    assert!(title.trim_end().chars().count() >= 148, "{title:?}");
+}
+
+#[test]
+fn a_click_lands_on_the_column_the_air_moved() {
+    // The inset shifts every column right, and the mouse resolves through the
+    // same `table_body` — which is the whole reason it is a function rather
+    // than two copies of the arithmetic.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..4)
+        .map(|i| proc_named(100 + i, "postgres", 20.0 - i as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let (w, h) = (150u16, 26u16);
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    assert!(
+        ui::table_body(&app, panel).x > panel.x,
+        "no air to test against"
+    );
+
+    app.sort = crate::app::Sort::Cpu;
+    let head = table_rows(&app, w, h)
+        .into_iter()
+        .find(|l| l.contains("COMMAND"))
+        .unwrap();
+    let at = head
+        .find("PID")
+        .map(|b| head[..b].chars().count())
+        .expect("no pid header");
+    click(&mut app, at as u16 + 1, ui::table_header_y(panel), w, h);
+    assert_eq!(
+        app.sort,
+        crate::app::Sort::Pid,
+        "the click landed a column away from the header it was on"
+    );
+}
+
+// ── smoothing ───────────────────────────────────────────────────────────────
+
+/// Two processes whose CPU crosses back and forth every sample while their
+/// averages stay clearly apart.
+fn a_jittery_pair(app: &mut App, samples: usize) {
+    for i in 0..samples {
+        let mut s = sample_at(50.0, (samples - i) as u64);
+        let flip = i % 2 == 0;
+        // The averages have to be clearly apart, not merely different: with a
+        // five-sample window an alternating series averages to 58 or 42
+        // depending on which end it starts, and a pair whose means are 35 and
+        // 31 crosses anyway — which tests the fixture rather than the feature.
+        s.procs = vec![
+            ProcSample {
+                cpu: if flip { 90.0 } else { 10.0 },
+                started: Some(1),
+                ..proc_named(101, "spiky", 0.0, 1 << 30)
+            },
+            ProcSample {
+                cpu: 30.0,
+                started: Some(2),
+                ..proc_named(102, "level", 0.0, 1 << 28)
+            },
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+}
+
+#[test]
+fn the_rows_stop_swapping_places_under_your_eye() {
+    // The half of smoothing that matters. A row whose *number* twitches is
+    // mildly annoying; a row that swaps with its neighbour while you are
+    // reading it is what makes a table unreadable — and that happens on a
+    // single noisy sample unless the ordering is over the average too.
+    let order = |app: &App| -> Vec<String> {
+        app.visible_rows()
+            .iter()
+            .filter(|r| !r.is_thread())
+            .map(|r| r.proc.name.to_string())
+            .collect()
+    };
+
+    let mut raw = App::new(600);
+    raw.smooth = 1;
+    a_jittery_pair(&mut raw, 9);
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..6 {
+        seen.insert(order(&raw));
+        raw.history.scrub(-1);
+    }
+    assert!(
+        seen.len() > 1,
+        "the fixture does not actually swap rows, so this proves nothing"
+    );
+
+    let mut smooth = App::new(600);
+    a_jittery_pair(&mut smooth, 9);
+    assert!(smooth.smooth > 1, "smoothing is off by default");
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..6 {
+        seen.insert(order(&smooth));
+        smooth.history.scrub(-1);
+    }
+    assert_eq!(
+        seen.len(),
+        1,
+        "the rows still swap places with smoothing on: {seen:?}"
+    );
+}
+
+#[test]
+fn a_figure_is_the_average_of_the_window_ending_at_the_cursor() {
+    // Ends at the cursor, not at the live edge: scrubbed to a moment, the table
+    // shows what those processes were doing around it, which is the only
+    // reading that agrees with the timeline beside it.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    app.smooth = 4;
+
+    let cpu = |app: &App, name: &str| {
+        let sm = app.smoothing();
+        app.visible_rows()
+            .iter()
+            .find(|r| &*r.proc.name == name)
+            .map(|r| sm.cpu(&r.proc))
+            .expect("no such row")
+    };
+    // Four samples alternating 90/10 average to 50 whichever end you start.
+    assert!(
+        (cpu(&app, "spiky") - 50.0).abs() < 0.01,
+        "{}",
+        cpu(&app, "spiky")
+    );
+    // And the raw figure is still the raw figure.
+    let raw = app
+        .history
+        .current()
+        .unwrap()
+        .procs
+        .iter()
+        .find(|p| &*p.name == "spiky")
+        .unwrap()
+        .cpu;
+    assert!(raw == 90.0 || raw == 10.0, "the buffer was smoothed: {raw}");
+}
+
+#[test]
+fn a_process_absent_for_part_of_the_window_is_not_averaged_with_zeroes() {
+    // It was not idle for those samples. Dividing by the whole window would
+    // report a figure it never had, which is the fabricated zero this codebase
+    // refuses everywhere else.
+    let mut app = App::new(600);
+    for i in 0..6 {
+        let mut s = sample_at(10.0, (6 - i) as u64);
+        s.procs = if i >= 4 {
+            vec![ProcSample {
+                cpu: 80.0,
+                started: Some(1),
+                ..proc_named(101, "late", 0.0, 1 << 20)
+            }]
+        } else {
+            vec![]
+        };
+        app.push(s);
+    }
+    app.smooth = 5;
+    let sm = app.smoothing();
+    let p = app.history.current().unwrap().procs[0].clone();
+    assert!(
+        (sm.cpu(&p) - 80.0).abs() < 0.01,
+        "a process present for two of five samples averaged to {}",
+        sm.cpu(&p)
+    );
+}
+
+#[test]
+fn the_table_says_that_its_figures_are_averaged() {
+    // Otherwise the table and the timeline disagree in silence: a row reading
+    // 35% directly under a graph showing a spike to 60 is two panels
+    // contradicting each other, with no way to know one is an average.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    // On the strip directly above the table, with the sort and the folding:
+    // it is a setting somebody chose, not something the table cannot show.
+    let strip = |app: &App| rows(app, 150, 26)[strip_y(app, 150, 26) as usize].clone();
+    let on = strip(&app);
+    assert!(on.contains("avg 5s"), "the table does not say so: {on:?}");
+
+    app.smooth = 1;
+    let off = strip(&app);
+    assert!(
+        !off.contains("avg"),
+        "it claims to be averaging with smoothing off: {off:?}"
+    );
+}
+
+#[test]
+fn the_timeline_is_not_smoothed() {
+    // Peak in the timeline, mean in the table. That looks like a contradiction
+    // and is the opposite: the timeline is where a spike must be *found*, so
+    // averaging it away would be a lie — and the table is a thing you read,
+    // with the spike on the graph directly above it.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    let r = ui::timeline_rows_range(26);
+    let lines = render_lines(&app, 120, 26);
+    let band = &lines[r.start as usize..r.end as usize];
+    // The machine's own series is a flat 50 in this fixture, so what would
+    // change under smoothing is the *process* detail — check the buffer is
+    // untouched instead, which is the claim that matters.
+    assert!(band.iter().any(|l| l.contains("CPU")), "no timeline drawn");
+    let raws: std::collections::HashSet<String> = app
+        .history
+        .iter()
+        .flat_map(|s| s.procs.iter())
+        .filter(|p| &*p.name == "spiky")
+        .map(|p| format!("{:.1}", p.cpu))
+        .collect();
+    assert_eq!(
+        raws.len(),
+        2,
+        "the buffer no longer holds the samples it was given: {raws:?}"
+    );
+}
+
+#[test]
+fn the_figure_on_the_row_is_the_one_the_ordering_used() {
+    // Sorting on the average while drawing the raw value would be the worst of
+    // both: rows that hold still showing numbers that do not, and a table whose
+    // order cannot be explained by the figures in it.
+    let mut app = App::new(600);
+    a_jittery_pair(&mut app, 9);
+    let row = data_rows(&app, 140, 26)
+        .into_iter()
+        .find(|l| l.contains("spiky"))
+        .expect("no row");
+    // The raw samples are 90.0 and 10.0; five of them average to 58 or 42.
+    assert!(
+        !row.contains("90.0") && !row.contains("10.0"),
+        "the row shows a raw sample rather than the average: {row:?}"
+    );
+    let sm = app.smoothing();
+    let p = app
+        .history
+        .current()
+        .unwrap()
+        .procs
+        .iter()
+        .find(|p| &*p.name == "spiky")
+        .unwrap()
+        .clone();
+    assert!(
+        row.contains(&format!("{:.1}", sm.cpu(&p))),
+        "the row does not show {:.1}: {row:?}",
+        sm.cpu(&p)
+    );
+}
+
+#[test]
+fn the_order_holds_still_between_boundaries_and_moves_on_them() {
+    // Averaging alone only makes reordering less frequent — measured on a real
+    // machine at fifteen frames in fifteen. The calm comes from the averages
+    // ending on a boundary, so between one and the next nothing in the table
+    // can change its mind. Same measurement with this: three in fifteen.
+    let mut app = App::new(600);
+    app.smooth = 5;
+    let order = |app: &App| -> Vec<i32> {
+        app.visible_rows()
+            .iter()
+            .filter(|r| !r.is_thread())
+            .map(|r| r.proc.pid)
+            .collect()
+    };
+    // A pair that trades places every sample, so any un-quantised ordering
+    // changes on every push.
+    let mut seen = Vec::new();
+    for i in 0..15 {
+        let mut s = sample_at(50.0, (15 - i) as u64);
+        s.procs = vec![
+            ProcSample {
+                cpu: if i % 2 == 0 { 90.0 } else { 10.0 },
+                started: Some(1),
+                ..proc_named(101, "a", 0.0, 1 << 20)
+            },
+            ProcSample {
+                cpu: if i % 2 == 0 { 10.0 } else { 90.0 },
+                started: Some(2),
+                ..proc_named(102, "b", 0.0, 1 << 20)
+            },
+        ];
+        app.push(s);
+        seen.push(order(&app));
+    }
+    let flips = seen.windows(2).filter(|w| w[0] != w[1]).count();
+    assert!(
+        flips <= 15 / 5,
+        "the order changed {flips} times in fifteen samples, which is not calm"
+    );
+
+    // And it is not frozen: a process that takes over does eventually get to
+    // the top, within a window.
+    app.smooth = 1;
+    let live = order(&app);
+    app.smooth = 5;
+    assert!(!live.is_empty() && !order(&app).is_empty());
+}
+
+#[test]
+fn a_process_that_has_just_started_is_listed_at_once() {
+    // Quantising the *rows* as well as the averages was tried and is wrong: a
+    // process that had just started would not be listed for five seconds, and
+    // "what is running now" is the question the table exists to answer.
+    let mut app = App::new(600);
+    app.smooth = 5;
+    for i in 0..7 {
+        let mut s = sample_at(10.0, (7 - i) as u64);
+        s.procs = vec![proc_named(101, "old", 5.0, 1 << 20)];
+        app.push(s);
+    }
+    let mut s = sample_at(10.0, 0);
+    s.procs = vec![
+        proc_named(101, "old", 5.0, 1 << 20),
+        ProcSample {
+            started: Some(9),
+            ..proc_named(999, "brandnew", 50.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+
+    let names: Vec<String> = app
+        .visible_rows()
+        .iter()
+        .map(|r| r.proc.name.to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "brandnew"),
+        "a process that started this second is not in the table: {names:?}"
+    );
+}
+
+#[test]
+fn scrubbing_asks_about_the_moment_rather_than_the_boundary() {
+    // While live the window ends on a boundary, which is what holds the table
+    // still. While scrubbing the reader is asking about a particular moment,
+    // and quantising the answer would show them a different one.
+    let mut app = App::new(600);
+    app.smooth = 4;
+    for i in 0..12 {
+        let mut s = sample_at(10.0, (12 - i) as u64);
+        s.procs = vec![ProcSample {
+            cpu: i as f32 * 10.0,
+            started: Some(1),
+            ..proc_named(101, "ramp", 0.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    let cpu = |app: &App| {
+        let sm = app.smoothing();
+        sm.cpu(&app.history.current().unwrap().procs[0])
+    };
+    // Every step back changes the answer, rather than changing it every fourth.
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..4 {
+        app.history.scrub(-1);
+        seen.insert(format!("{:.2}", cpu(&app)));
+    }
+    assert_eq!(
+        seen.len(),
+        4,
+        "scrubbing moved the cursor without moving the window: {seen:?}"
+    );
+}
+
+// ── density ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn each_density_is_roomier_than_the_one_below_it() {
+    // Three settings that all looked the same would be three settings nobody
+    // would use. Measured on a wide, tall terminal, where every comfort is
+    // actually granted.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = (0..6)
+        .map(|i| proc_named(100 + i, "postgres", 10.0, 1 << 20))
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let (w, h) = (170u16, 40u16);
+    let air = |app: &App| -> (u16, usize, u16) {
+        let panel = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+        let indent = ui::table_body(app, panel).x;
+        // The gap *between two named figures in the same group*, which is what
+        // `header_gap` sets. Taking the widest run of spaces anywhere on the
+        // row measured something else entirely and held whatever the setting
+        // said.
+        let header = header_rows(app, w, h)
+            .into_iter()
+            .find(|l| l.contains("MEM"))
+            .unwrap();
+        let gap = header
+            .find("SWP")
+            .map(|at| {
+                let head = &header[..at];
+                head.len() - head.trim_end().len()
+            })
+            .expect("no SWP figure to measure against");
+        (indent, gap, panel.y)
+    };
+
+    let mut seen = Vec::new();
+    for d in ui::Density::ALL {
+        app.density = d;
+        seen.push((d, air(&app)));
+    }
+    for pair in seen.windows(2) {
+        let ((da, a), (db, b)) = (pair[0], pair[1]);
+        assert!(
+            b.0 >= a.0 && b.1 >= a.1 && b.2 >= a.2,
+            "{db:?} is not roomier than {da:?}: {a:?} against {b:?}"
+        );
+    }
+    assert_ne!(
+        seen[0].1, seen[2].1,
+        "compact and spacious are the same layout"
+    );
+}
+
+#[test]
+fn comfort_is_the_first_thing_a_small_terminal_gives_up() {
+    // A process elided to `…derer)` is a worse loss than a row that touches the
+    // edge, and a graph too short to read is a worse loss than a blank line.
+    for d in ui::Density::ALL {
+        assert_eq!(d.margin(80), 0, "{d:?} indented an eighty-column table");
+        assert_eq!(d.panel_gap(24), 0, "{d:?} spent a row on air at 24 rows");
+    }
+    // And granted where there is room.
+    assert!(ui::Density::Spacious.margin(200) > ui::Density::Compact.margin(200));
+    assert_eq!(ui::Density::Spacious.panel_gap(40), 1);
+    assert_eq!(ui::Density::Comfortable.panel_gap(40), 0);
+}
+
+#[test]
+fn the_density_is_reachable_from_the_menu_and_the_config() {
+    let items: Vec<_> = crate::menu::bar()
+        .into_iter()
+        .flat_map(|t| t.items)
+        .collect();
+    for d in ui::Density::ALL {
+        assert!(
+            items
+                .iter()
+                .any(|i| i.action() == Some(crate::command::Action::SetDensity(d))),
+            "{d:?} is not in the menu"
+        );
+        assert_eq!(ui::Density::parse(&d.label().to_lowercase()), Some(d));
+    }
+    // And the one in force is ticked, so the menu says which you are in.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.density = ui::Density::Spacious;
+    assert_eq!(
+        crate::command::Action::SetDensity(ui::Density::Spacious).checked(&app),
+        Some(true)
+    );
+    assert_eq!(
+        crate::command::Action::SetDensity(ui::Density::Compact).checked(&app),
+        Some(false)
+    );
+}
+
+#[test]
+fn the_divider_spans_the_panel_whatever_the_density() {
+    // The dividers are what tell you where a panel starts. One stopping short
+    // of the edge reads as a box missing its corners.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for d in ui::Density::ALL {
+        app.density = d;
+        let title = table_rows(&app, 170, 40)
+            .into_iter()
+            .find(|l| l.contains("processes"))
+            .unwrap();
+        assert!(title.starts_with("──"), "{d:?}: {title:?}");
+        assert!(
+            title.trim_end().chars().count() >= 168,
+            "{d:?} inset the divider: {title:?}"
+        );
+    }
+}
+
+#[test]
+fn the_header_gap_widens_with_the_density() {
+    // Measured on the row itself rather than through `header_gap`, so a setting
+    // that is read and then ignored fails too.
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let row = |app: &App| {
+        header_rows(app, 200, 30)
+            .into_iter()
+            .find(|l| l.contains("MEM") && l.contains("SWP"))
+            .expect("no header row with both figures")
+    };
+    let mut widths = Vec::new();
+    for d in ui::Density::ALL {
+        app.density = d;
+        let r = row(&app);
+        let at = r.find("SWP").unwrap();
+        let head = &r[..at];
+        widths.push(head.len() - head.trim_end().len());
+    }
+    assert!(
+        widths[0] < widths[1] && widths[1] < widths[2],
+        "the gap between two figures does not widen with the density: {widths:?}"
+    );
+}
+
+#[test]
+fn every_content_row_starts_at_the_same_margin() {
+    // Measured before this was one setting: content began at column 0, 1, 2 or
+    // 3 depending on which row it was — the menu bar flush left, the tab strip
+    // three in, the header one, the table two, the footer none. Five margins
+    // rather than one, which is what made the layout read as ragged rather than
+    // merely tight.
+    let mut app = App::new(600);
+    for i in (0..30).rev() {
+        let mut s = sample_at(10.0, i);
+        s.procs = (0..4)
+            .map(|n| proc_named(100 + n, "postgres", 10.0, 1 << 20))
+            .collect();
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for d in ui::Density::ALL {
+        app.density = d;
+        let (w, h) = (170u16, 40u16);
+        let margin = ui::content(&app, ratatui::layout::Rect::new(0, 0, w, h)).x;
+        let mut starts: std::collections::BTreeSet<u16> = Default::default();
+        for row in rows(&app, w, h) {
+            if row.trim().is_empty() {
+                continue;
+            }
+            // Dividers span the panel: they are what says where one starts, and
+            // one stopping short of the edge reads as a box missing its corners.
+            if row.starts_with("──") {
+                continue;
+            }
+            let at = (row.len() - row.trim_start().len()) as u16;
+            // The timeline's gutter right-aligns its axis labels, so those rows
+            // start wherever the label is wide enough to reach — the gutter
+            // itself begins at the margin like everything else.
+            if at > margin + 1 {
+                continue;
+            }
+            starts.insert(at);
+        }
+        assert!(
+            starts.len() <= 2,
+            "{d:?}: content starts at {starts:?}, which is more than one margin"
+        );
+        let first = *starts.iter().next().expect("nothing drawn");
+        assert!(
+            first >= margin,
+            "{d:?}: a row starts at {first}, inside the {margin}-column margin"
+        );
+    }
+}
+
+#[test]
+fn a_divider_is_never_indented_with_the_content() {
+    let mut app = App::new(600);
+    app.push(sample(10.0));
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for d in ui::Density::ALL {
+        app.density = d;
+        for row in rows(&app, 170, 40) {
+            if !row.contains("──") {
+                continue;
+            }
+            assert!(
+                row.starts_with("──"),
+                "{d:?}: a divider was indented: {row:?}"
+            );
+            assert!(
+                row.trim_end().chars().count() >= 168,
+                "{d:?}: a divider stopped short: {row:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_summary_leads_with_whatever_the_tab_is_about() {
+    // The strip is inside the table panel and describes the rows in it, so a
+    // tab that changes the columns and leaves the summary reading the same way
+    // has only half-changed the question.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.io_collected = true;
+    s.procs = (0..3)
+        .map(|i| ProcSample {
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 2 << 20,
+            }),
+            started: Some(i as u64),
+            ..proc_named(100 + i, "postgres", 10.0, 1 << 30)
+        })
+        .collect();
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    let first = |app: &App| {
+        let s = strip_of(app);
+        // The clause after the count.
+        s.split(" · ").nth(1).unwrap_or_default().to_string()
+    };
+
+    app.view = crate::app::View::Cpu;
+    assert!(first(&app).starts_with("CPU"), "{:?}", strip_of(&app));
+    app.view = crate::app::View::Memory;
+    assert!(first(&app).starts_with("MEM"), "{:?}", strip_of(&app));
+    app.view = crate::app::View::Disk;
+    assert!(first(&app).starts_with("DISK"), "{:?}", strip_of(&app));
+    // Three megabytes a second across three processes.
+    assert!(
+        strip_of(&app).contains("3.00M/s") || strip_of(&app).contains("3.0M/s"),
+        "the disk total is wrong: {:?}",
+        strip_of(&app)
+    );
+}
+
+#[test]
+fn a_disk_total_nobody_can_supply_falls_back_rather_than_lying() {
+    // A process whose IO could not be read is not an idle one. Summing the ones
+    // that answered would report a rate the machine never had.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.procs = vec![
+        ProcSample {
+            io: Some(crate::sample::IoRates {
+                read: 1 << 20,
+                write: 0,
+            }),
+            started: Some(1),
+            ..proc_named(100, "a", 10.0, 1 << 20)
+        },
+        ProcSample {
+            io: None,
+            started: Some(2),
+            ..proc_named(101, "b", 10.0, 1 << 20)
+        },
+    ];
+    app.push(s);
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.view = crate::app::View::Disk;
+    let strip = strip_of(&app);
+    assert!(
+        !strip.contains("DISK"),
+        "a partial disk total was presented as the whole: {strip:?}"
+    );
+    assert!(
+        strip.contains("CPU"),
+        "and it said nothing at all: {strip:?}"
+    );
+}
+
+#[test]
 fn a_narrow_table_drops_columns_rather_than_digits() {
     // 0105. Every column was a fixed length, and below about sixty-six columns
     // ratatui squeezed them rather than dropping any — a right-aligned number
@@ -11477,12 +15797,17 @@ fn a_narrow_table_drops_columns_rather_than_digits() {
             .find(|r| r.contains("CPU%"))
             .unwrap_or_else(|| panic!("no table header at {w} columns:\n{}", screen.join("\n")));
         for word in header.split_whitespace() {
+            // The sorted column wears a caret, which is part of the mark and
+            // not part of the name.
+            let word = word.trim_start_matches(['▾', '▴']);
             assert!(
                 known.contains(&word) || word.starts_with("HIST") || word.starts_with('≤'),
                 "a header clipped to `{word}` at {w} columns: {header:?}"
             );
         }
-        let shows_rss = header.split_whitespace().any(|h| h == "RSS");
+        let shows_rss = header
+            .split_whitespace()
+            .any(|h| h.trim_start_matches(['▾', '▴']) == "RSS");
         for (name, cpu, rss) in [("postgres", "100.9", "1.2M"), ("nginx", "17.2", "14.6M")] {
             let row = screen
                 .iter()
@@ -11506,16 +15831,47 @@ fn a_narrow_table_drops_columns_rather_than_digits() {
 #[test]
 fn the_columns_that_are_drawn_always_fit() {
     // What the ladder promises, checked against its own arithmetic: at every
-    // width from the narrowest that can hold CPU% and a name, the fixed columns
-    // leave the command its minimum — so nothing is left for ratatui to squeeze.
-    for all in [false, true] {
-        for w in 17..=200u16 {
-            let (cols, fixed) = ui::fitted_columns_for_test(w, all);
-            assert!(fixed + 10 <= w, "{fixed} fixed at {w} columns: {cols:?}");
+    // width, the columns the shape says are on ask for no more than the table
+    // has — so nothing is left for ratatui to squeeze, and no right-aligned
+    // figure loses its leading digits.
+    //
+    // Asked of `table_shape` through a real panel rather than of the ladder
+    // directly, because the width a shape is fitted against is the table's
+    // body and not the frame: a test that skipped that step would pass on
+    // arithmetic the renderer never performs.
+    let mut s = sample(40.0);
+    s.procs = vec![
+        proc_named(42, "postgres", 100.9, 1_258_291),
+        proc_named(99, "nginx", 17.2, 15_309_209),
+    ];
+    for view in [
+        crate::app::View::Cpu,
+        crate::app::View::Memory,
+        crate::app::View::Disk,
+    ] {
+        let mut app = App::new(60);
+        app.push(s.clone());
+        app.view = view;
+        for w in 20..=200u16 {
+            let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, 30)).table;
+            let shape = ui::table_shape(&app, panel);
+            let body = ui::table_body(&app, panel).width;
+            let want = ui::table_request_for_test(&shape, 1);
+            assert!(
+                want <= body || w < 30,
+                "{view:?} asks for {want} columns of {body} at {w}: {shape:?}"
+            );
         }
         // And nothing is dropped that did not have to be.
-        let (wide, _) = ui::fitted_columns_for_test(250, all);
-        assert!(wide.spark && wide.bars && wide.user && wide.pid && wide.rss);
+        let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, 250, 30)).table;
+        let wide = ui::table_shape(&app, panel);
+        // Not `bars`, which the disk tab spends on its throughput columns,
+        // and not `user`: both processes here have the same owner, and a
+        // column whose every value is the same is folded into the title.
+        assert!(
+            wide.spark && wide.rss && wide.pid && wide.state,
+            "{view:?} dropped a column it could keep: {wide:?}"
+        );
     }
 }
 
@@ -11612,36 +15968,45 @@ fn the_history_column_is_drawn_when_something_moved_and_says_so_when_nothing_did
 }
 
 #[test]
-fn the_selected_row_is_marked_in_the_margin() {
-    // 0114. The selection was a dark grey background and bold — faint on most
-    // themes, among rows that reorder every second. A mark in a one-column
-    // margin, in the accent colour, where the eye starts reading a row.
+fn exactly_one_row_is_marked_as_the_selection() {
+    // 0114. The selection was a dark grey background and bold, which is faint
+    // on most themes among rows that reorder every second. It is a ground of
+    // its own now — `Theme::selection_style`, which reverses where there is no
+    // colour to paint with — and what that item asked for is unchanged: one
+    // row marked, the row the reader chose, and nothing marked when nothing is
+    // chosen.
     let mut app = App::new(60);
-    app.push(sample(10.0));
+    let mut s = sample(10.0);
+    s.procs = (0..6)
+        .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    let mut app = lit(app);
+    let (w, h) = (120u16, 30u16);
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let first = ui::table_header_y(panel) + 1;
+    let sel = app.theme.selection_bg;
+    let marked = |app: &App| -> Vec<usize> {
+        let g = grounds(app, w, h);
+        (first as usize..h as usize)
+            .filter(|&y| g[y][4] == Some(sel))
+            .collect()
+    };
+
+    assert!(
+        marked(&app).is_empty(),
+        "a row was marked before anything was chosen"
+    );
     crate::handle_key_for_test(&mut app, KeyCode::Down);
-    let screen = rows(&app, 120, 30);
-    let marked: Vec<&String> = screen.iter().filter(|r| r.starts_with('▶')).collect();
-    assert_eq!(marked.len(), 1, "not exactly one marked row: {marked:?}");
+    let rows = marked(&app);
+    assert_eq!(rows.len(), 1, "not exactly one marked row: {rows:?}");
     let chosen = app.selected_name_for_test();
-    assert!(
-        marked[0].contains(&*chosen),
-        "{:?} is not {chosen}",
-        marked[0]
-    );
+    let line = &render_lines(&app, w, h)[rows[0]];
+    assert!(line.contains(&*chosen), "{line:?} is not {chosen}");
 
-    // ASCII has no triangle.
-    app.glyphs = crate::glyphs::GlyphSet::Ascii;
-    let screen = rows(&app, 120, 30);
-    assert_eq!(screen.iter().filter(|r| r.starts_with('>')).count(), 1);
-
-    // Nothing selected, nothing marked.
+    // And Escape lets go of it.
     crate::handle_key_for_test(&mut app, KeyCode::Esc);
-    let screen = rows(&app, 120, 30);
-    assert!(
-        !screen
-            .iter()
-            .any(|r| r.starts_with('▶') || r.starts_with('>'))
-    );
+    assert!(marked(&app).is_empty(), "the selection survived Escape");
 }
 fn with_links(links: &[(&str, u64, u64)]) -> Sample {
     let mut s = sample(10.0);
@@ -11695,8 +16060,10 @@ fn the_header_names_one_real_interface_and_says_which_way_the_bytes_go() {
             );
         }
     }
-    let screen = rows(&app, 160, 40);
-    let header = &screen[0];
+    // The figures row, found rather than counted from the top: the menu bar
+    // and the tab strip sit above it now.
+    let header = figures_line(&app, 160, 40);
+    let header = &header;
     assert!(header.contains("en0"), "{header:?}");
     assert!(
         !header.contains("lo0"),
@@ -11711,7 +16078,159 @@ fn the_header_names_one_real_interface_and_says_which_way_the_bytes_go() {
     let mut app = App::new(600);
     app.push(with_links(&[("lo", 5, 5)]));
     assert_eq!(app.headline_link(), None);
-    assert!(!rows(&app, 160, 40)[0].contains("lo "));
+    assert!(!figures_line(&app, 160, 40).contains("lo "));
+}
+
+/// The machine the README's sample frame is of.
+///
+/// One fixture, shared by the test that checks the README against the renderer
+/// and by the ignored printer that regenerates it. Two would drift, and the
+/// drift is exactly what that test exists to catch: a README showing figures no
+/// version of poptop would draw.
+fn readme_fixture() -> App {
+    let mut app = App::new(600);
+    for i in (0..300).rev() {
+        // Twenty seconds busy, twenty idle, so the graphs and the history
+        // column both have something to show.
+        let busy = (i / 20) % 2 == 0;
+        let mut s = sample_at(if busy { 89.2 } else { 11.0 }, i as u64);
+        let k = if busy { 1.0 } else { 0.1 };
+        s.procs = vec![
+            ProcSample {
+                cpu: 88.4 * k,
+                rss: 512 << 20,
+                ..proc_named(824, "postgres", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 12.5 * k,
+                rss: 32 << 20,
+                ..proc_named(1190, "nginx", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 4.2 * k,
+                rss: 148 << 20,
+                ..proc_named(2077, "node", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 0.1,
+                rss: 12 << 20,
+                ..proc_named(1, "systemd", 0.0, 0)
+            },
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    // Paused, which is what the frame is captioned as and what poptop is for.
+    app.history.scrub(-18);
+    app
+}
+
+#[test]
+#[ignore = "prints the README's sample frame; run with --ignored --nocapture"]
+fn print_readme_frame() {
+    for l in rows(&readme_fixture(), 78, 24) {
+        println!("{}", l.trim_end());
+    }
+}
+
+#[test]
+#[ignore = "prints the frame at a size; run with --ignored --nocapture"]
+fn print_frame_sizes() {
+    for (w, h) in [(80u16, 24u16), (60, 20), (100, 40), (46, 16), (120, 30)] {
+        println!("── {w}x{h} {}", "─".repeat(60));
+        for l in rows(&readme_fixture(), w, h) {
+            println!("|{}|", l.trim_end());
+        }
+    }
+}
+
+#[test]
+#[ignore = "prints the first-run guide's frame; run with --ignored --nocapture"]
+fn print_guide_frame() {
+    let mut app = App::new(600);
+    for i in (0..8).rev() {
+        let mut s = sample_at(99.5, i);
+        s.procs = vec![
+            ProcSample {
+                cpu: 30.3,
+                rss: 166 << 20,
+                threads: Some(12),
+                ..proc_named(96543, "node", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 25.5,
+                rss: 172 << 20,
+                threads: Some(45),
+                ..proc_named(96556, "Google Chrome", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 20.7,
+                rss: 437 << 20,
+                threads: Some(1),
+                ..proc_named(28117, "poptop", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 16.9,
+                rss: 13 << 20,
+                threads: Some(12),
+                ..proc_named(86077, "rsst", 0.0, 0)
+            },
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    for l in rows(&app, 100, 24) {
+        println!("{}", l.trim_end());
+    }
+}
+
+#[test]
+fn the_strip_does_not_describe_a_table_that_is_not_there() {
+    // `C` puts the cgroup table in the panel this strip sits on. It is a
+    // different list with an ordering of its own, so a marked tab would claim
+    // these columns are what is below, and `sort CPU` would name an ordering
+    // nothing on screen is in.
+    let mut app = App::new(600);
+    let mut s = sample(10.0);
+    s.cgroups = Some(vec![crate::sample::CgroupStat {
+        path: "/system.slice".into(),
+        cpu: Some(10.0),
+        mem: Some(1 << 30),
+        ..Default::default()
+    }]);
+    app.push(s);
+    let strip = |app: &App| rows(app, 120, 30)[strip_y(app, 120, 30) as usize].clone();
+
+    let before = strip(&app);
+    assert!(before.contains("sort CPU"), "{before:?}");
+
+    app.show_cgroups = true;
+    let after = strip(&app);
+    assert!(
+        !after.contains("sort"),
+        "the strip named the process table's ordering over the cgroup table: {after:?}"
+    );
+    assert!(
+        after.contains("cgroups"),
+        "the strip does not say which list is below it: {after:?}"
+    );
+    // And no tab is marked, at the tier where the mark is the only signal.
+    app.theme = Theme::new(Palette::Safe, Tier::Mono);
+    let y = strip_y(&app, 120, 30);
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = term.backend().buffer();
+    let marked = (0..120u16)
+        .filter(|&x| {
+            buf[(x, y)]
+                .modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        })
+        .count();
+    assert_eq!(
+        marked, 0,
+        "a tab is marked over a table it does not describe"
+    );
 }
 
 #[test]

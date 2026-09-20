@@ -51,7 +51,7 @@ past                              6s shown, 1s/slot, ┊ not running            
 A process that restarts every thirty seconds looks like a process that
 restarts every thirty seconds, instead of a smooth line through the gaps.
 
-Press `d` with nothing selected and the panel title asks:
+Press `d` with nothing selected and the graph's own rule asks:
 
 ```
 ── timeline — 6s of 10m00s — ↑/↓ to pick a process first ──
@@ -62,7 +62,8 @@ Press `d` with nothing selected and the panel title asks:
 ## `t` — where it sits in the tree
 
 ```
-── processes (734) — sort: CPU · tree ! io: 183/734 need root ──
+ CPU   Memory   Disk    sort CPU · tree       All processes · 734
+── processes (734) ! io: 183/734 need root ──────────────────────
    CPU%            RSS      S   THR    DISK R    DISK W HIST ≤50%      PID USER       COMMAND
       —              —      ?     —         —         — ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀       1 ?          launchd
    15.0 ▋       110.7M      R    11         0         0 ⠀⠀⠀⠀⠀⠀⣄⣤⣤⣄   38359 oddurs     ├─ ghostty
@@ -95,7 +96,7 @@ thousand rows.
 On macOS the count is all that is published:
 
 ```
-── processes (733) · threads: not read on this platform — sort: CPU · 101 git (g folds them) ──
+── processes (733) · threads: not read on this platform · 101 git (g folds them) ──
 ```
 
 The `THR` column still has the number. On Linux the threads appear as rows.
