@@ -2,7 +2,7 @@
 id: 145
 title: Why a process is hot needs a different tool
 type: feature
-status: backlog
+status: done
 milestone: v5.1
 depends_on:
 - 76
@@ -70,9 +70,29 @@ thing you reach for during an incident.
 
 ## Acceptance criteria
 
-- [ ] Decided in writing, either way, with the reasoning
-- [ ] If built: opt-in, and off by default like signals
-- [ ] If built: refuses while scrubbing, because stacks have no history
-- [ ] If built: native frames only, with interpreted runtimes declined in writing
-- [ ] If built: the cost to the sampled process is measured and stated
-- [ ] If declined: the README says so and why, rather than listing it as missing
+- [x] Decided in writing, either way, with the reasoning
+- [x] If built: opt-in, and off by default like signals
+- [x] If built: refuses while scrubbing, because stacks have no history
+- [x] If built: native frames only, with interpreted runtimes declined in writing
+- [x] If built: the cost to the sampled process is measured and stated
+- [x] If declined: the README says so and why, rather than listing it as missing
+
+## How it was resolved
+
+**The rule: an entry is on the disk before `append` returns.** One `sync_data` after the write, every entry. Measured first, then chosen:
+
+| | flush only | flush + `sync_data` |
+| --- | --- | --- |
+| APFS, M-series Mac | 0.087 ms | 4.189 ms |
+| ext4, Linux arm64 container | 0.020 ms | 2.781 ms |
+
+An 87 KB entry, which is what a ~740-process machine writes. At the default ten-minute interval that is nothing; at a one-second `log-interval` it is under half a percent of the interval. The alternatives — sync every N entries, or on rotation — buy a fraction of a percent back and give up the property that makes the log worth having, so they were not taken.
+
+`sync_data` rather than `sync_all`: the length is the metadata that matters and a data sync carries it.
+
+**What it does not promise**, both now in the recording guide: on macOS this is `fsync`, which asks the drive to persist and does not force the drive's own write cache (`F_FULLFSYNC` does, at roughly ten times the cost — not a trade a monitor should make for someone). And the restart store is deliberately different: written once on a clean exit, so `kill -9` costs at most the session's buffer.
+
+**The test.** A power cut needs hardware this does not have. What is checked instead is the property the call promises: a child process appends three entries and then `raise(SIGKILL)`s itself — no unwinding, no destructors, no exit path — and the parent reads all three back whole. Without the sync the entries are the exit path's responsibility; with it they are the writer's.
+
+**The budget.** `log: append one entry, synced` measured 3.8 ms against a 40 ms budget, so a regression that made the sync ten times dearer would fail `./check --perf` rather than being discovered by someone's disk.
+

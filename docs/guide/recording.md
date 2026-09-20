@@ -71,6 +71,26 @@ A typical daemon line:
 $ poptop --log=on --log-interval=1m --log-days=30 --log-bytes=2G --store=on
 ```
 
+### What a crash costs
+
+**An entry is on the disk before `append` returns.** poptop writes each entry
+in one call and then asks the kernel to persist it, so a machine that loses
+power keeps every entry written before the moment it went down. The case a
+log is most wanted for is the machine that went down, and a log that ended
+thirty seconds before the event would be worth little.
+
+That costs 4.2 ms an entry on APFS and 2.8 ms on ext4, against 0.09 ms for
+the write alone. At the default ten-minute interval it is nothing; at one
+second it is under half a percent of the interval. `./check --perf` holds it
+to a budget.
+
+Two things it does not promise. On macOS the sync asks the drive to persist
+and does not force the drive's own write cache — `F_FULLFSYNC` does, at
+roughly ten times the cost, which is not a trade a monitor should make for
+you. And the **restart store** is different by design: it is written once, on
+a clean exit, so `kill -9` costs at most the session's buffer. The log is the
+thing that outlives the process.
+
 ### What it costs
 
 Fifteen seconds at one sample a second, on a machine with ~740 processes:
