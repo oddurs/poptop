@@ -106,6 +106,13 @@ fi
 echo "host: $(uname -s)"
 need cargo || exit 1
 run "cargo fmt --check" cargo fmt --check
+# `--locked` as well as building: a manifest whose requirement the
+# lockfile does not satisfy still builds, by quietly resolving a newer
+# dependency — which is how a bump to a crate needing a compiler newer
+# than `rust-version` reached master with CI green. The lockfile is what
+# a release is built from; if it does not agree with the manifest, say so
+# here rather than at whatever version cargo happens to pick.
+run "cargo build --locked" cargo build --locked --all-targets
 run "cargo build --all-targets" cargo build --all-targets
 run "cargo test" cargo test
 # The other macOS ABI, under Rosetta. Hand-declared FFI is where the two differ.
