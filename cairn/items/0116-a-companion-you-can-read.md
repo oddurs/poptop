@@ -3,7 +3,7 @@ id: 116
 key: r6
 title: A companion you can read
 type: milestone
-status: backlog
+status: done
 labels:
 - docs
 created: 2026-09-19
