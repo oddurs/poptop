@@ -17,6 +17,7 @@ mod cvd;
 mod export;
 mod glyphs;
 mod history;
+mod keys;
 mod log;
 #[cfg(test)]
 mod mangle;
@@ -38,6 +39,7 @@ mod ui_tests;
 use app::App;
 use collect::{Collector, Needs, Platform, Source};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use keys::Action;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +61,7 @@ USAGE:
     poptop --report [DATE]
                     summarise a recorded day: peak and sustained, and what was
                     responsible for each. Today unless a date is given.
+    poptop --keys     every action and the keys bound to it
     poptop --config   every setting, its value, and where that value came from
     poptop --write-config
                     write a commented config file of the current settings,
@@ -359,6 +362,8 @@ enum Command {
     Schema,
     /// Every setting, its value, and where it came from.
     Config,
+    /// Every action and the keys bound to it.
+    Keys,
     /// A config file of the current settings, at the config path.
     WriteConfig,
     /// `json` or `line`, of a recorded day or of the machine now.
@@ -434,6 +439,7 @@ fn command(args: &[String]) -> Result<Command, Usage> {
         },
         "--schema" => Command::Schema,
         "--config" => Command::Config,
+        "--keys" => Command::Keys,
         "--write-config" => Command::WriteConfig,
         "--days" => Command::Days,
         "--once" => Command::Once,
@@ -599,6 +605,30 @@ fn main() -> io::Result<()> {
             let value = shown.iter().map(|(_, v, _)| v.len()).max().unwrap_or(0);
             for (name, v, from) in &shown {
                 outln!("{name:<width$}  {v:<value$}  {from}");
+            }
+            return Ok(());
+        }
+        // What each key does, after the config file has had its say. The `?`
+        // list on screen is the same map; this is the one a reader can see
+        // without starting the monitor, and the one to check a `key.` line
+        // against.
+        Command::Keys => {
+            flush(&warnings);
+            let width = keys::ACTIONS
+                .iter()
+                .map(|b| b.name.len())
+                .max()
+                .unwrap_or(0);
+            let bound_keys: Vec<String> = keys::ACTIONS
+                .iter()
+                .map(|b| settings.keys.keys(b.action))
+                .collect();
+            let keys_w = bound_keys.iter().map(String::len).max().unwrap_or(0);
+            for (bound, shown) in keys::ACTIONS.iter().zip(&bound_keys) {
+                // The origin, as `--config` gives it: a binding that did not
+                // take effect is the same question as a setting that did not.
+                let from = settings.origin(&format!("key.{}", bound.name));
+                outln!("{:<width$}  {shown:<keys_w$}  {from}", bound.name);
             }
             return Ok(());
         }
@@ -796,6 +826,7 @@ fn main() -> io::Result<()> {
     app.interval = settings.interval;
     app.theme = theme;
     app.glyphs = settings.glyphs;
+    app.keys = settings.keys.clone();
     app.signals = settings.signals;
 
     // Collect once before drawing so the first frame has real numbers. CPU
@@ -1714,43 +1745,49 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     // The answer to the last jump belongs to the last jump. Left standing it
     // described nothing on screen as soon as the reader scrubbed away, and it
     // kept the key hints hidden for the rest of the run.
-    if code != KeyCode::Char('b') {
+    // Which action this key asks for, if any. Everything below is written in
+    // terms of actions rather than keys, so a config file that moves a key
+    // moves what it does with it.
+    let Some(action) = app.keys.action(code, mods) else {
+        // Not bound to anything: the notes still clear, as they do for any
+        // key that is not the one that put them there.
+        app.jump_note = None;
+        app.signal_note = None;
+        return;
+    };
+    if action != Action::Jump {
         app.jump_note = None;
     }
-    if !matches!(code, KeyCode::Char('x' | 'X')) {
+    if !matches!(action, Action::SignalTerm | Action::SignalKill) {
         app.signal_note = None;
     }
-    match code {
-        KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('?') => app.show_help = true,
+    match action {
+        Action::Quit => app.should_quit = true,
+        Action::Help => app.show_help = true,
         // Back out one level, as Esc does from the filter and the jump box: a
         // selection first, then the program.
-        KeyCode::Esc => {
+        Action::Back => {
             if !app.deselect() {
                 app.should_quit = true;
             }
         }
-        KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => app.should_quit = true,
 
         // Scrubbing. Shift jumps ten samples at a time for crossing a long
         // buffer without holding the key down.
-        KeyCode::Left | KeyCode::Char('h') => {
+        Action::ScrubBack | Action::ScrubForward => {
             let step = if mods.contains(KeyModifiers::SHIFT) {
                 10
             } else {
                 1
             };
-            app.history.scrub(-step);
-        }
-        KeyCode::Right | KeyCode::Char('l') => {
-            let step = if mods.contains(KeyModifiers::SHIFT) {
-                10
+            let step = if action == Action::ScrubBack {
+                -step
             } else {
-                1
+                step
             };
             app.history.scrub(step);
         }
-        KeyCode::Char(' ') => {
+        Action::Pause => {
             // Space toggles: pause pins the cursor where it is, resume returns
             // to the live edge.
             if app.history.is_live() {
@@ -1759,30 +1796,29 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 app.history.goto_live();
             }
         }
-        KeyCode::Home => {
+        Action::Oldest => {
             app.history.goto_oldest();
         }
-        KeyCode::End => {
+        Action::Live => {
             app.history.goto_live();
         }
 
-        KeyCode::Up | KeyCode::Char('k') => app.select_delta(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.select_delta(1),
-        KeyCode::PageUp => app.select_delta(-10),
-        KeyCode::PageDown => app.select_delta(10),
+        Action::SelectUp => app.select_delta(-1),
+        Action::SelectDown => app.select_delta(1),
+        Action::PageUp => app.select_delta(-10),
+        Action::PageDown => app.select_delta(10),
 
-        // '=' so zooming out does not require Shift on most layouts.
-        KeyCode::Char('+' | '=') => app.zoom_in(),
-        KeyCode::Char('-' | '_') => app.zoom_out(),
+        Action::ZoomIn => app.zoom_in(),
+        Action::ZoomOut => app.zoom_out(),
 
         // The selection is of a process, so re-sorting moves the row under it
         // and keeps it selected. Resetting to the top here was the same bug as
         // the one scrubbing had.
-        KeyCode::Char('s') => app.sort = app.sort.next(app.io_collected(), app.view),
+        Action::SortNext => app.sort = app.sort.next(app.io_collected(), app.view),
         // Column sets, over the same rows and the same renderer. `v` because
         // atop spends seven keys on this and poptop has three views and few
         // free letters.
-        KeyCode::Char('v') => {
+        Action::ViewNext => {
             app.view = app.view.next();
             // Asking for the view again is asking for its columns again, if the
             // budget had taken them away.
@@ -1794,10 +1830,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 app.sort = app.view.default_sort_for(app.io_collected());
             }
         }
-        // Accept the suggestion. Never applied on its own: a table that
-        // reorders itself under the reader is worse than one that does not, so
-        // the constraint is named and this is the one key that acts on it.
-        KeyCode::Char('S') => {
+        Action::SortConstraint => {
             if let Some(c) = app.constraint() {
                 app.sort = c.sort();
                 // Sorting by a column that is not on screen answers the
@@ -1811,14 +1844,14 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 }
             }
         }
-        KeyCode::Char('i') => app.toggle_io(),
+        Action::IoColumns => app.toggle_io(),
         // atop's key for the same thing.
-        KeyCode::Char('y') => app.toggle_threads(),
+        Action::Threads => app.toggle_threads(),
         // atop shows cgroups on G. C here, because g is already grouping and
         // G is not free either.
-        KeyCode::Char('C') => app.toggle_cgroups(),
-        KeyCode::Char('K') => app.show_kernel = !app.show_kernel,
-        KeyCode::Char('t') => {
+        Action::Cgroups => app.toggle_cgroups(),
+        Action::KernelThreads => app.show_kernel = !app.show_kernel,
+        Action::Tree => {
             app.tree = !app.tree;
             // Grouping destroys parentage by construction, so a grouped tree
             // would be a tree of things that are not processes. bottom makes
@@ -1827,8 +1860,8 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 app.group = crate::app::Grouping::Off;
             }
         }
-        KeyCode::Char('d') => app.detail = !app.detail,
-        KeyCode::Char('g') => {
+        Action::Detail => app.detail = !app.detail,
+        Action::Group => {
             // A cycle: off, by name, by user, by container — atop's `p`, `u`
             // and `j` on one key. Each is the same machinery with a different
             // key, so they are a choice rather than three exclusive layouts.
@@ -1837,25 +1870,24 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
                 app.tree = false;
             }
         }
-        KeyCode::Char('/') => {
+        Action::Filter => {
             app.editing_filter = true;
             app.filter.clear();
         }
         // `x`, not `k`: `k` is already "select the previous process", the vim
         // binding beside `j`, and a key that quietly stopped moving the
         // selection would be a bad trade anywhere and an unforgivable one here.
-        KeyCode::Char('x') => app.ask_to_signal(crate::signal::Signal::Term),
-        KeyCode::Char('X') => app.ask_to_signal(crate::signal::Signal::Kill),
+        Action::SignalTerm => app.ask_to_signal(crate::signal::Signal::Term),
+        Action::SignalKill => app.ask_to_signal(crate::signal::Signal::Kill),
         // `b` for the beginning of a moment, which is atop's `-b`. Not `j`:
         // that is already "select the next process", the vim binding beside
         // `k`, and a key that quietly stopped moving the selection would be a
         // worse trade than an unfamiliar letter.
-        KeyCode::Char('b') => {
+        Action::Jump => {
             app.editing_jump = true;
             app.jump.clear();
             app.jump_note = None;
         }
-        _ => {}
     }
 }
 
@@ -1993,6 +2025,42 @@ mod tests {
         for &c in codes {
             handle_key(app, c, KeyModifiers::NONE);
         }
+    }
+
+    #[test]
+    fn a_rebound_key_does_what_the_file_said() {
+        // End to end: the config file's binding, through `resolve`, into the
+        // app, and the key press that follows it.
+        let file = "key.quit = Q\nkey.filter = f\nkey.tree = /\n";
+        let (settings, _, warnings) = config::resolve(
+            config::Settings::detect(),
+            config::Sources {
+                file: Some(("conf", file)),
+                no_color: false,
+                themes: &config::read_theme,
+            },
+            &[],
+        )
+        .expect("the file is not fatal");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let mut a = app();
+        a.keys = settings.keys.clone();
+        // The keys those actions used to have do nothing now. Not `/`: it is
+        // the tree in this map, and pressing it here would toggle it.
+        keys(&mut a, &[KeyCode::Char('q'), KeyCode::Char('t')]);
+        assert!(
+            !a.should_quit && !a.editing_filter && !a.tree,
+            "an old binding still fired"
+        );
+        // `/` is the tree, `f` is the filter, `Q` quits.
+        keys(&mut a, &[KeyCode::Char('/')]);
+        assert!(a.tree, "`/` was not the tree");
+        keys(&mut a, &[KeyCode::Char('f')]);
+        assert!(a.editing_filter, "`f` was not the filter");
+        keys(&mut a, &[KeyCode::Esc]);
+        handle_key(&mut a, KeyCode::Char('Q'), KeyModifiers::SHIFT);
+        assert!(a.should_quit, "`Q` did not quit");
     }
 
     #[test]

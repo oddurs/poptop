@@ -81,6 +81,39 @@ fn the_key_reference_lists_exactly_the_keys_poptop_takes() {
 }
 
 #[test]
+fn the_key_reference_lists_every_action_and_its_default_keys() {
+    // The second table on the page: the names a config file binds. A new
+    // action that nobody can look up is one nobody can rebind.
+    const PAGE: &str = include_str!("../docs/reference/keys.md");
+    let table = section(PAGE, "## Moving them");
+    let documented = first_table_keys(table);
+    let map = crate::keys::Keymap::default();
+    for bound in crate::keys::ACTIONS {
+        let row = table
+            .lines()
+            .find(|l| {
+                l.starts_with('|')
+                    && unbacktick(l.trim_matches('|').split('|').next().unwrap_or("")) == bound.name
+            })
+            .unwrap_or_else(|| panic!("no row for `{}` in docs/reference/keys.md", bound.name));
+        for key in map.keys(bound.action).split(", ") {
+            assert!(
+                row.contains(&format!("`{key}`")),
+                "the row for `{}` does not give `{key}`:\n  {row}",
+                bound.name
+            );
+        }
+    }
+    assert_eq!(
+        documented.len(),
+        crate::keys::ACTIONS.len(),
+        "docs/reference/keys.md lists {} actions and poptop has {}",
+        documented.len(),
+        crate::keys::ACTIONS.len()
+    );
+}
+
+#[test]
 fn the_key_reference_says_what_each_key_does() {
     const PAGE: &str = include_str!("../docs/reference/keys.md");
     // Not word for word — the page has room to say more than a footer does.

@@ -4074,14 +4074,15 @@ fn draw_key_list(f: &mut Frame, app: &App) {
         .max()
         .unwrap_or(0);
     let w = (text_w + 4).min(area.width as usize) as u16;
-    let h = (HELP.len() + 2).min(area.height as usize) as u16;
+    let rows = HELP.len() + usize::from(!app.keys.is_default());
+    let h = (rows + 2).min(area.height as usize) as u16;
     let rect = Rect {
         x: area.x + (area.width - w) / 2,
         y: area.y + (area.height - h) / 2,
         width: w,
         height: h,
     };
-    let lines: Vec<Line> = HELP
+    let mut lines: Vec<Line> = HELP
         .iter()
         .map(|(key, _, what)| {
             Line::from(vec![
@@ -4090,6 +4091,15 @@ fn draw_key_list(f: &mut Frame, app: &App) {
             ])
         })
         .collect();
+    // The list above is the keys poptop ships with. Where a config file has
+    // moved one, saying so beats printing a list that is wrong: the resolved
+    // map is `poptop --keys`, which needs no running monitor to read.
+    if !app.keys.is_default() {
+        lines.push(Line::from(Span::styled(
+            " keys have been rebound — poptop --keys".to_string(),
+            app.theme.dim_style(),
+        )));
+    }
     f.render_widget(ratatui::widgets::Clear, rect);
     f.render_widget(
         Paragraph::new(lines).block(

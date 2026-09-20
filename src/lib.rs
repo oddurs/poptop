@@ -36,6 +36,8 @@ pub mod glyphs;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod history;
 #[cfg(all(feature = "fuzzing", not(test)))]
+pub mod keys;
+#[cfg(all(feature = "fuzzing", not(test)))]
 pub mod log;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod persist;
