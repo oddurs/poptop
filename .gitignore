@@ -1,1 +1,23 @@
+# Build output.
 /target
+
+# Editors and the things a desktop leaves behind. None of these are anybody
+# else's business, and all of them have been committed to a repository before.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Instruction files that assistant tooling writes into a checkout are not
+# listed here, and cannot be: naming one would put a tool's name in a tracked
+# file, which is the thing `.githooks/no-attribution` exists to stop — it
+# fails on this file if you try. They do not need listing. Such a file says
+# in its own contents what wrote it, so the same check refuses the commit,
+# and that check is the one CI runs and nobody can opt out of.
+#
+# Keep them out of the working tree, or under /scratch below.
+
+# Scratch. A directory for working files that are not the work.
+/scratch/

@@ -163,6 +163,22 @@ Documentation sprint. There is no landing page and there will not be one: a site
 - [x] `0122` What poptop can see depends on the platform, and nothing tabulates it <sup>docs · p2 · docs</sup>
 - [x] `0123` The README is 2,312 lines and cannot be the front of anything <sup>docs · p1 · docs</sup>
 
+## r7 — A project you would trust on sight
+
+`##########` 100% · 7 of 7 done
+
+Presentation sprint. The documentation is now a companion to the program, and
+
+### done
+
+- [x] `0127` The crate has no repository, keywords or categories, and cannot be published <sup>chore · p1 · repo</sup>
+- [x] `0128` Nothing at the top of the README says what poptop needs or whether it works <sup>docs · p1 · repo</sup>
+- [x] `0129` There is no changelog, so nothing says what changed between two versions <sup>docs · p2 · repo</sup>
+- [x] `0130` A tagged version produces no binaries, so installing needs a Rust toolchain <sup>chore · p2 · repo</sup>
+- [x] `0131` Nothing watches the dependencies or the actions CI runs <sup>chore · p3 · repo</sup>
+- [x] `0132` The colour work is the part nobody can see without running it <sup>docs · p2 · repo</sup>
+- [x] `0133` The repository has a two-line .gitignore and no .editorconfig <sup>chore · p3 · repo</sup>
+
 ## v0.2 — Cheap enough to run
 
 `##########` 100% · 11 of 11 done · due 2026-11-01

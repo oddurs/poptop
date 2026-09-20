@@ -2,10 +2,26 @@
 
 A system monitor you can rewind, with nothing to set up first.
 
+[![ci](https://github.com/oddurs/poptop/actions/workflows/ci.yml/badge.svg)](https://github.com/oddurs/poptop/actions/workflows/ci.yml)
+[![rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](Cargo.toml)
+[![linux | macos](https://img.shields.io/badge/platform-linux%20%7C%20macos-informational)](docs/reference/platforms.md)
+[![GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+
 poptop keeps every sample it takes — including the full process table — so you can
 scrub backwards and ask what was eating the box forty seconds ago. It starts
 with an empty buffer and fills it as it runs: no daemon, no config, no logfiles,
 nothing that had to be running before you noticed the problem.
+
+![poptop watching three compilers, a checksum and two compressors on a ten-core Linux box](docs/media/poptop.svg)
+
+A real frame, rendered from a terminal capture by
+[`tools/screenshot.py`](tools/screenshot.py) — not a drawing, and not
+retouched. `30 rustc (g folds them)` is poptop noticing that one program is
+crowding the table; `47 tasks came and went` is the processes that lived and
+died entirely between two samples. `████+` is a process past one core.
+
+<details>
+<summary>A paused frame, as text — the timeline scrubbed back eighteen seconds</summary>
 
 ```
  poptop — PAUSED  -18s · warn 50 · crit 80
@@ -35,18 +51,32 @@ warn and critical thresholds, drawn so the boundary is readable without relying
 on colour. Bars absorb the rule where they cross it. The `▐` marks which sample
 the cursor is on, down to which half of a braille cell.
 
+</details>
+
 The process table below the timeline is the real one from the moment under the
 cursor, not an interpolation. Sampling continues while you are scrubbing.
 
 ## Install
 
 ```sh
+cargo install --git https://github.com/oddurs/poptop
+```
+
+Or from a checkout:
+
+```sh
 cargo build --release
 ./target/release/poptop
 ```
 
-Linux and macOS. No daemon, no config file, no privileges — it reads what
-the kernel already publishes, and says so when it is not allowed to.
+Needs Rust 1.88 or newer — the floor is set by ratatui and time, not by
+poptop, and [CI holds it there](.github/workflows/ci.yml). Tagged versions
+also publish built binaries for x86-64 and arm64 on both platforms, with
+checksums.
+
+Linux and macOS, and nothing else. No daemon, no config file, no
+privileges — it reads what the kernel already publishes, and
+[says so](docs/reference/platforms.md) when it is not allowed to.
 
 ## The shape of it
 
@@ -105,6 +135,9 @@ everything CI does. See [docs/design/tests.md](docs/design/tests.md) for
 what the suite is for.
 
 ## Roadmap
+
+What changed is in [CHANGELOG.md](CHANGELOG.md), including whether a change
+to the store format or the export schema is compatible.
 
 Open work is tracked in-repo with [cairn](https://github.com/oddurs/cairn) —
 see [ROADMAP.md](ROADMAP.md), or `cairn board` in a checkout.

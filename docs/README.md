@@ -53,6 +53,16 @@ several are the only record of an argument that was had.
 | [Notes from reading the others](design/notes-from-the-others.md) | lessons taken from htop, btop and bottom, with measurements |
 | [Tests](design/tests.md) | what the suite is for, including the fuzzers |
 
+## The repository itself
+
+| | |
+|---|---|
+| [CHANGELOG.md](../CHANGELOG.md) | what changed, and what is promised across versions |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | how to work on it, and what `./check` runs |
+| [RELEASING.md](../RELEASING.md) | the checklist that comes before a tag |
+| [SECURITY.md](../SECURITY.md) | how to report something |
+| [tools/screenshot.py](../tools/screenshot.py) | how the frame in the README is made |
+
 ## Roadmaps
 
 [`roadmaps/`](roadmaps/) holds the per-release reasoning: what was audited,
