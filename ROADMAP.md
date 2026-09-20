@@ -52,6 +52,23 @@ The foundation for atop parity: a model that can carry two hundred metrics
 - [x] `0060` Collection cost is a global switch, not a per-subsystem budget <sup>feature · p1</sup>
 - [x] `0061` Threads are counted but never shown <sup>feature · p1</sup>
 
+## v1.2 — Logs and feeds you can build on
+
+`··········` 0% · 0 of 8 done · due 2027-06-01
+
+The recording half of poptop, hardened and opened up. Today a day log is appended with a length, a block and a checksum, flushed but never synced; retention counts days and bytes across the directory and stops writing when the budget is reached; and every feed is one-shot — `--export` prints a sample or a recorded day and exits. Nothing can follow poptop as it runs, nothing can tail a day as it is written, a day file cannot be checked without reading it into a monitor, and what poptop itself had to assume about the machine is printed once at startup and then lost. This milestone is about a log that survives the machine losing power and says what it contains, and feeds another program can subscribe to.
+
+### backlog
+
+- [ ] `0143` Nothing can follow poptop as it runs <sup>feature · p1</sup>
+- [ ] `0144` A day being written cannot be followed <sup>feature · p1</sup>
+- [ ] `0145` A log entry is flushed but never synced <sup>bug · p1</sup>
+- [ ] `0146` At the byte budget logging stops, and the session it was recording is the one it drops <sup>bug · p2</sup>
+- [ ] `0147` A day file can only be checked by opening it in a monitor <sup>feature · p2</sup>
+- [ ] `0148` A recorded day cannot say what poptop had to assume <sup>feature · p2</sup>
+- [ ] `0149` A feed carries every metric or none <sup>feature · p3</sup>
+- [ ] `0150` SIGHUP means quit, where every other logger reopens <sup>bug · p3</sup>
+
 ## v2.1 — Everything the kernel says
 
 `##########` 100% · 10 of 10 done · due 2027-07-01
