@@ -30,6 +30,12 @@ way and that key alone falls back to its default. The same mistake in a
 flag is fatal, because a flag is this run and you are there to read the
 error.
 
+## Keys
+
+`key.<action> = <keys>` moves a key. The actions, the key names and what
+happens when two actions want one key are in [keys](keys.md); `poptop
+--keys` prints the resolved map with where each binding came from.
+
 ## Seeing what a setting did
 
 A config file is read once, at startup, above a monitor that then erases

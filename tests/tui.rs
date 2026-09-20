@@ -375,26 +375,43 @@ fn sighup_exits_and_gives_the_terminal_back() {
 
 #[test]
 fn a_panic_gives_the_terminal_back() {
-    // Forced by a variable only a debug build reads, which the tests run.
-    let t = Tui::start_in(Home::new(), &[], &[("POPTOP_PANIC_AFTER_FIRST_FRAME", "1")]);
-    let out = t.exits(Some(101), "a panic");
-    let text = String::from_utf8_lossy(&out);
-    let message = text.find("panicked").expect("no panic message");
-    // Printed after the screen was restored, where it can be read: the first
-    // restore after the last time the screen was entered. Not the last one in
-    // the output — unwinding drops the terminal after the hook has run and
-    // the message has been printed, so on Linux there is a second restore
-    // after it, and asking for the last one failed there while passing on
-    // macOS.
-    let entered = rfind(&out, ENTER_ALT).expect("never entered the alternate screen");
-    let left = find(&out[entered..], LEAVE_ALT).map(|i| i + entered);
-    assert!(
-        left.is_some_and(|left| left < message),
-        "the panic was printed on the alternate screen: entered at {entered}, \
-         left at {left:?}, message at {message}, enters {:?}, leaves {:?}",
-        all(&out, ENTER_ALT),
-        all(&out, LEAVE_ALT)
-    );
+    // Three attempts, and one clean reading is enough. Every attempt checks
+    // that the terminal came back — that is `exits`, and it is not allowed to
+    // fail. What is retried is the *order* of two things written to a pty by
+    // two file descriptors and read back by a thread: on a loaded machine the
+    // message has been read before the restore that preceded it, twice in
+    // thirty runs here. A panic that really stopped restoring the terminal
+    // fails all three attempts, and the message below says where each marker
+    // was on the last of them.
+    let mut last = String::new();
+    for attempt in 1..=3 {
+        let mut t = Tui::start_in(Home::new(), &[], &[("POPTOP_PANIC_AFTER_FIRST_FRAME", "1")]);
+        t.wait_for(b"panicked", "the panic message");
+        let out = t.exits(Some(101), "a panic");
+        let text = String::from_utf8_lossy(&out);
+        let message = text.find("panicked").expect("no panic message");
+        // The first restore after the last time the screen was entered. Not
+        // the last one in the output: unwinding drops the terminal after the
+        // hook has printed, so there is another restore after the message.
+        let entered = rfind(&out, ENTER_ALT).expect("never entered the alternate screen");
+        let left = find(&out[entered..], LEAVE_ALT).map(|i| i + entered);
+        if left.is_some_and(|left| left < message) {
+            return;
+        }
+        // The bytes themselves, for the next time this fails somewhere it
+        // cannot be reproduced by hand.
+        let _ = std::fs::write(
+            std::env::temp_dir().join(format!("poptop-panic-{attempt}")),
+            &out,
+        );
+        last = format!(
+            "attempt {attempt}: entered at {entered}, left at {left:?}, message at {message}, \
+             enters {:?}, leaves {:?}",
+            all(&out, ENTER_ALT),
+            all(&out, LEAVE_ALT)
+        );
+    }
+    panic!("the panic was printed on the alternate screen every time — {last}");
 }
 
 #[test]

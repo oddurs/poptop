@@ -42,7 +42,10 @@ pub struct Settings {
     /// holds only what was said out loud, and `Settings::origin` fills in the
     /// rest. Not part of what a setting *is*, which is why every comparison in
     /// the tests is of a field rather than of the whole.
-    pub origins: Vec<(&'static str, String)>,
+    pub origins: Vec<(String, String)>,
+    /// Which key asks for what. Set by `key.<action>` lines; the default is
+    /// the keys poptop has always had. See [`crate::keys`].
+    pub keys: crate::keys::Keymap,
     /// Filled in by [`resolve`]: the built-in to start from, and the user's
     /// colours to write over it.
     pub palette: Palette,
@@ -123,6 +126,7 @@ impl Settings {
             theme: Palette::default().name().to_string(),
             theme_origin: None,
             origins: Vec::new(),
+            keys: crate::keys::Keymap::default(),
             palette: Palette::default(),
             overrides: Vec::new(),
             warn: Theme::DEFAULT_WARN_PCT,
@@ -174,6 +178,7 @@ impl Settings {
             theme: Palette::Safe.name().to_string(),
             theme_origin: None,
             origins: Vec::new(),
+            keys: crate::keys::Keymap::default(),
             palette: Palette::Safe,
             overrides: Vec::new(),
             warn: Theme::DEFAULT_WARN_PCT,
@@ -252,16 +257,17 @@ impl PartialEq for Settings {
             && self.log_days == other.log_days
             && self.log_bytes == other.log_bytes
             && self.signals == other.signals
+            && self.keys == other.keys
     }
 }
 
 impl Settings {
     /// Remember where a setting came from, replacing whatever said it last:
     /// the flag beats the file, which is the precedence `resolve` applies.
-    fn set_origin(&mut self, key: &'static str, from: String) {
-        match self.origins.iter_mut().find(|(k, _)| *k == key) {
+    fn set_origin(&mut self, key: &str, from: String) {
+        match self.origins.iter_mut().find(|(k, _)| k == key) {
             Some((_, was)) => *was = from,
-            None => self.origins.push((key, from)),
+            None => self.origins.push((key.to_string(), from)),
         }
     }
 
@@ -269,7 +275,7 @@ impl Settings {
     pub fn origin(&self, key: &str) -> &str {
         self.origins
             .iter()
-            .find(|(k, _)| *k == key)
+            .find(|(k, _)| k == key)
             .map_or("the default", |(_, from)| from.as_str())
     }
 
@@ -1058,6 +1064,25 @@ pub fn read(warnings: &mut Vec<Warning>) -> Option<(String, String)> {
 /// than one that ignores it and says so.
 pub fn apply_file(settings: &mut Settings, text: &str, origin: &str, warnings: &mut Vec<Warning>) {
     for_each_setting(text, origin, warnings, |key, value, line| {
+        // `key.<action> = <keys>` is a binding, not a setting: the actions
+        // are their own table (`crate::keys::ACTIONS`), and a file that
+        // listed them beside `interval` would be a file where a new action
+        // silently became an unknown key.
+        if let Some(action) = key.strip_prefix("key.") {
+            let action = crate::keys::action_named(action.trim()).ok_or_else(|| {
+                let names: Vec<&str> = crate::keys::ACTIONS.iter().map(|b| b.name).collect();
+                format!("unknown action `{action}`; poptop has {}", names.join(", "))
+            })?;
+            settings
+                .keys
+                .bind(action, value)
+                .map_err(|refused| refused.to_string())?;
+            settings.set_origin(
+                &format!("key.{}", crate::keys::name_of(action)),
+                format!("{origin}:{line}"),
+            );
+            return Ok(());
+        }
         apply(settings, key, value).map_err(|bad| bad.to_string())?;
         if let Some(k) = KEYS.iter().find(|k| k.name == key) {
             settings.set_origin(k.name, format!("{origin}:{line}"));

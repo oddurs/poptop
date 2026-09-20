@@ -23,19 +23,19 @@ Timeline, scrubbing, process tree, colour that survives a colourblind reader and
 
 ## v1.1 — Fits your hands
 
-`###·······` 25% · 1 of 4 done · due 2027-03-01
+`#####·····` 50% · 2 of 4 done · due 2027-03-01
 
 Configuration and theming beyond the thirteen settings and ten colour tokens v1.0 shipped: the key map, what the table shows and how poptop starts, every colour a reader might want to change, and a way to see what a setting actually did.
 
 ### backlog
 
-- [ ] `0138` The key map is poptop's, not yours <sup>feature · p2</sup>
 - [ ] `0139` poptop forgets how you had it set up <sup>feature · p2</sup>
 - [ ] `0140` Ten tokens is not the whole screen <sup>feature · p3</sup>
 
 ### done
 
 - [x] `0137` A setting that did not take effect is invisible <sup>feature · p2</sup>
+- [x] `0138` The key map is poptop's, not yours <sup>feature · p2</sup>
 
 ## v2.0 — Nothing escapes
 

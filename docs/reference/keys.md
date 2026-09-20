@@ -49,3 +49,65 @@ live.
 **Signals are off until you ask.** `x` and `X` do nothing without
 `--signals=on`, and the key says so when you press it. See
 [the signals guide](../guide/signals.md).
+
+## Moving them
+
+Every row above is an action with a name, and a config file can give it
+different keys:
+
+```conf
+key.quit           = q, Q
+key.filter         = /, f
+key.kernel-threads = ctrl-k
+```
+
+A key is a character (`q`, `X`, `/`), one of `esc`, `enter`, `space`, `tab`,
+`backspace`, `delete`, `insert`, `left`, `right`, `up`, `down`, `home`,
+`end`, `pageup`, `pagedown`, or one of those with `ctrl-` or `alt-` in front.
+Case is the character's own: `x` and `X` are different keys, which is why
+`TERM` and `KILL` can sit beside each other.
+
+Binding a key another action already holds is refused, naming the action
+that keeps it — a key that asks for two things is one that can only ever do
+one of them. An action can have several keys; listing none leaves it
+unreachable, which is how to turn one off.
+
+`poptop --keys` prints every action, the keys bound to it, and where the
+binding came from. The `?` list on screen shows the default keys and says
+when a file has moved any of them.
+
+Two keys are not in the map. Inside the filter and the jump box every key is
+text or editing, so nothing there can be rebound; and `Ctrl-C` always quits,
+because raw mode means poptop never sees a SIGINT and that is the reflex for
+leaving a full-screen program.
+
+| Action | Default |
+|---|---|
+| `quit` | `q` |
+| `back` | `esc` |
+| `scrub-back` | `left`, `h` |
+| `scrub-forward` | `right`, `l` |
+| `jump` | `b` |
+| `zoom-in` | `+`, `=` |
+| `zoom-out` | `-`, `_` |
+| `pause` | `space` |
+| `oldest` | `home` |
+| `live` | `end` |
+| `select-up` | `up`, `k` |
+| `select-down` | `down`, `j` |
+| `page-up` | `pageup` |
+| `page-down` | `pagedown` |
+| `sort` | `s` |
+| `sort-constraint` | `S` |
+| `filter` | `/` |
+| `signal-term` | `x` |
+| `signal-kill` | `X` |
+| `tree` | `t` |
+| `group` | `g` |
+| `detail` | `d` |
+| `threads` | `y` |
+| `view` | `v` |
+| `cgroups` | `C` |
+| `kernel-threads` | `K` |
+| `io-columns` | `i` |
+| `help` | `?` |

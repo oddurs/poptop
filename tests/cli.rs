@@ -319,6 +319,61 @@ fn write_config_writes_a_file_poptop_reads_back() {
 }
 
 #[test]
+fn keys_lists_every_action_and_a_file_can_move_one() {
+    let home = Home::new();
+    let r = home.run(&["--keys"]).ok();
+    assert!(r.out.lines().count() >= 20, "{}", r.out);
+    let row = |out: &str, action: &str| {
+        out.lines()
+            .find(|l| l.starts_with(&format!("{action} ")))
+            .unwrap_or_else(|| panic!("no `{action}` in:\n{out}"))
+            .to_string()
+    };
+    assert!(
+        row(&r.out, "quit").contains(" q "),
+        "{}",
+        row(&r.out, "quit")
+    );
+    assert!(row(&r.out, "quit").ends_with("the default"));
+
+    // Moved, with the file named as the origin.
+    home.write_config("key.quit = Q, ctrl-q\nkey.filter = /, f\n");
+    let r = home.run(&["--keys"]).ok();
+    assert!(
+        row(&r.out, "quit").contains("Q, ctrl-q"),
+        "{}",
+        row(&r.out, "quit")
+    );
+    assert!(
+        row(&r.out, "quit").contains("poptop.conf:1"),
+        "{}",
+        row(&r.out, "quit")
+    );
+    assert!(
+        row(&r.out, "filter").contains("/, f"),
+        "{}",
+        row(&r.out, "filter")
+    );
+
+    // A key another action holds, and an action that does not exist: both
+    // warn, naming what is wrong, and poptop still starts.
+    home.write_config("key.filter = t\nkey.nonsense = z\n");
+    let r = home.run(&["--keys"]);
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    assert!(r.err.contains("already `tree`"), "{}", r.err);
+    assert!(r.err.contains("unknown action `nonsense`"), "{}", r.err);
+    assert!(
+        row(&r.out, "filter").contains(" / "),
+        "the refused binding was taken"
+    );
+    assert!(
+        row(&r.out, "tree").contains(" t "),
+        "{}",
+        row(&r.out, "tree")
+    );
+}
+
+#[test]
 fn the_schema_is_json_on_stdout() {
     let r = Home::new().run(&["--schema"]).ok();
     assert!(r.out.trim_start().starts_with('{') && r.out.trim_end().ends_with('}'));
