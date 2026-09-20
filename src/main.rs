@@ -61,10 +61,13 @@ USAGE:
     poptop --export=json|line [DATE] [--follow [--for SPAN]]
                     every metric, by name, for a script. With a date, the whole
                     of that recorded day rather than the machine now. --follow
-                    keeps going, a record an interval, flushed as it is taken,
-                    until it is stopped, the reader goes away, or --for SPAN
-                    has passed. Under --follow the line format writes its
-                    header block once, at the top of the stream.
+                    keeps going: without a date a record an interval, flushed
+                    as it is taken; with one, the day's entries as they are
+                    appended, which is how to subscribe to a log something else
+                    is writing. Either ends when it is stopped, when the reader
+                    goes away, or after --for SPAN. Under --follow the line
+                    format writes its header block once, at the top of the
+                    stream.
     poptop --schema   what --export reports: every record, field, type and unit
     poptop --report [DATE]
                     summarise a recorded day: peak and sustained, and what was
@@ -499,18 +502,12 @@ fn command(args: &[String]) -> Result<Command, Usage> {
                     }
                 }
             }
-            if !follow {
-                // Refused rather than ignored, as everything else here is. A
-                // `--for` that quietly did nothing would read as a feed that
-                // stopped on time and printed one sample.
-                if until.is_some() {
-                    return Err(Usage(
-                        "--for is --follow's; there is no feed to stop".into(),
-                    ));
-                }
-            } else if day.is_some() {
+            // Refused rather than ignored, as everything else here is. A
+            // `--for` that quietly did nothing would read as a feed that
+            // stopped on time and printed one sample.
+            if until.is_some() && !follow {
                 return Err(Usage(
-                    "--follow reads the machine now — a recorded day does not grow".into(),
+                    "--for is --follow's; there is no feed to stop".into(),
                 ));
             }
             Command::Export {
@@ -611,9 +608,65 @@ fn fail(warnings: &[config::Warning], why: impl std::fmt::Display, code: i32) ->
 /// It ends on SIGTERM or SIGHUP, on `until` going by, or when the reader goes
 /// away — `poptop --export=json --follow | head -3` is a normal thing to type,
 /// and it exits 0, as every other output path does on a closed pipe.
+/// One record per sample, written as it is taken and flushed.
+///
+/// The flush is not a detail: stdout is block-buffered when it is a pipe, so a
+/// feed that only wrote would arrive 8 KB at a time — nothing for a minute,
+/// then forty samples at once. Shared by the two feeds, the machine's and a
+/// day file's, so they are one format and not two.
+struct Records {
+    json: bool,
+    /// The line format's state, and so the header block it has written. One
+    /// writer for the whole stream, which is what makes the header appear
+    /// once.
+    lines: export::Lines,
+    out: io::Stdout,
+}
+
+impl Records {
+    fn new(json: bool) -> Records {
+        Records {
+            json,
+            lines: export::Lines::default(),
+            out: io::stdout(),
+        }
+    }
+
+    /// Whether the reader is still there. A reader that has gone away is not
+    /// an error to report — `poptop --export=json --follow | head -3` is a
+    /// normal thing to type — but any other write failure is, since a feed
+    /// that swallowed a full disk would be a silent hole in somebody's
+    /// recording.
+    fn write(&mut self, s: &sample::Sample) -> io::Result<bool> {
+        use std::io::Write as _;
+        let record = if self.json {
+            export::sample_json(s)
+        } else {
+            self.lines.add(s);
+            self.lines.take()
+        };
+        let mut out = self.out.lock();
+        match out.write_all(record.as_bytes()).and_then(|()| out.flush()) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// A request to stop: SIGTERM from a service manager or `kill`, SIGHUP from
+/// the terminal going away.
+fn stop_flag() -> io::Result<Arc<AtomicBool>> {
+    let stop = Arc::new(AtomicBool::new(false));
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+        signal_hook::flag::register(sig, stop.clone())?;
+    }
+    Ok(stop)
+}
+
 fn feed(
     collector: &mut impl Collector,
-    json: bool,
+    records: &mut Records,
     interval: Duration,
     until: Option<Duration>,
 ) -> io::Result<()> {
@@ -625,20 +678,13 @@ fn feed(
     // feed's first line arrives one interval in and not at once.
     collector.sample(needs)?;
 
-    let stop = Arc::new(AtomicBool::new(false));
-    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
-        signal_hook::flag::register(sig, stop.clone())?;
-    }
-
+    let stop = stop_flag()?;
     let start = Instant::now();
     // A fixed cadence, for the reason the interactive loop keeps one: timing
     // the next sample from the end of the last adds the cost of collecting to
     // every period, and a feed that claims a second and delivers 1.05 is one
     // whose timestamps drift away from the rate it documents.
     let mut next = start + interval;
-    let mut lines = export::Lines::default();
-    use std::io::Write as _;
-    let mut out = io::stdout().lock();
     loop {
         // In slices, so a signal is noticed within one rather than at the end
         // of an interval that may be an hour.
@@ -657,26 +703,63 @@ fn feed(
         // that hour writing eighteen thousand records as fast as it could.
         next = now + interval;
 
-        let s = collector.sample(needs)?;
-        let record = if json {
-            export::sample_json(&s)
-        } else {
-            // One stream, so the header block is written once — at the top,
-            // where a reader that has been there since the start sees it. A
-            // reader attaching to a feed already running gets rows and no
-            // header; that is what `--export=json` is for, and the guide says
-            // so.
-            lines.add(&s);
-            lines.take()
-        };
-        // The reader going away is not an error to report. Anything else is:
-        // a feed that swallowed a full disk would be a silent hole in a
-        // recording somebody is keeping.
-        match out.write_all(record.as_bytes()).and_then(|()| out.flush()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
-            Err(e) => return Err(e),
+        // One stream for the line format, so the header block is written
+        // once — at the top, where a reader that has been there since the
+        // start sees it. A reader attaching to a feed already running gets
+        // rows and no header; that is what `--export=json` is for, and the
+        // guide says so.
+        if !records.write(&collector.sample(needs)?)? {
+            return Ok(());
         }
+    }
+}
+
+/// `--export DATE --follow`: a day file read as it is written.
+///
+/// The other feed samples the machine; this one waits on somebody else's
+/// writer, which may be another poptop on the same box or this one with
+/// `--log=on`. What is already recorded is written first — the file is a day,
+/// and a consumer that attached at noon wanting the morning has no other way
+/// to ask for it — and then each entry as it lands.
+///
+/// Polled rather than watched. The entries arrive a `log-interval` apart, ten
+/// minutes by default, and a poll is a `stat` and usually nothing else;
+/// inotify and kqueue are two platform APIs, two failure modes and a
+/// descriptor per file, to learn a quarter of a second sooner.
+fn follow_day(
+    dir: &std::path::Path,
+    date: log::Date,
+    records: &mut Records,
+    until: Option<Duration>,
+) -> io::Result<()> {
+    /// Often enough that a consumer sees an entry as it lands, rarely enough
+    /// that a feed left running all week is not a background load.
+    const POLL: Duration = Duration::from_millis(250);
+
+    let stop = stop_flag()?;
+    let start = Instant::now();
+    // Rolls over at midnight only when the day being followed is the live one:
+    // somebody following `2026-09-08` asked for that day, and a day that is
+    // over does not continue into the next.
+    let live = log::date_of(std::time::SystemTime::now()) == Some(date);
+    let mut following = log::Follower::open(dir, date, live);
+    loop {
+        let (samples, notes) = following.poll()?;
+        // Straight to stderr, where the warnings from every other path go, and
+        // not into the feed: a consumer parsing records must not have to parse
+        // prose. Each is said once, which the follower keeps track of.
+        flush(&notes.into_iter().map(config::Warning).collect::<Vec<_>>());
+        for s in &samples {
+            if !records.write(s)? {
+                return Ok(());
+            }
+        }
+        // Checked after writing rather than before waiting, so `--for 0s` and
+        // a day that is already complete still deliver what is there.
+        if stop.load(Ordering::Relaxed) || past(start, until, Instant::now()) {
+            return Ok(());
+        }
+        std::thread::sleep(POLL);
     }
 }
 
@@ -854,13 +937,15 @@ fn main() -> io::Result<()> {
             follow: true,
             until,
         } => {
-            debug_assert!(
-                day.is_none(),
-                "a day cannot be followed; the parser refuses it"
-            );
+            let mut records = Records::new(json);
+            if let Some(date) = day {
+                let dir = log::dir().unwrap_or_else(|| fail(&warnings, NO_STATE_DIR, 2));
+                flush(&warnings);
+                return follow_day(&dir, date, &mut records, until);
+            }
             let mut collector = open_collector(&mut warnings)?;
             flush(&warnings);
-            return feed(&mut collector, json, settings.interval, until);
+            return feed(&mut collector, &mut records, settings.interval, until);
         }
         Command::Export {
             json,
@@ -2451,6 +2536,15 @@ mod tests {
                 },
             ),
             (
+                "--export json 2026-09-08 --follow",
+                Command::Export {
+                    json: true,
+                    day: date("2026-09-08"),
+                    follow: true,
+                    until: None,
+                },
+            ),
+            (
                 "--export=line --follow --for 30s",
                 Command::Export {
                     json: false,
@@ -2501,10 +2595,6 @@ mod tests {
             (
                 "--export json --follow --for=soon",
                 "--for `soon`: expected a span",
-            ),
-            (
-                "--export json --follow 2026-09-08",
-                "--follow reads the machine now",
             ),
             ("--export json --tail", "--export does not take `--tail`"),
             ("--check-theme", "--check-theme needs a theme name"),

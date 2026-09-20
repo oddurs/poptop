@@ -673,6 +673,185 @@ pub fn read_blocks(bytes: &[u8], name: &str) -> (Vec<Sample>, Vec<String>) {
     (out, notes)
 }
 
+/// A day file read while it is still being written.
+///
+/// [`read_blocks`] reads a file that has stopped changing: what is not there is
+/// not coming. A follower's question is the opposite one — an entry whose
+/// length runs past the end of the file is not damage, it is a writer partway
+/// through `append`, and the answer is to wait rather than to resync. Nothing
+/// is ever read twice, because the offset only moves past an entry that
+/// decoded from exactly the bytes it claimed.
+///
+/// The recovery is the same as the whole-file reader's, so a day that a crash
+/// tore in the morning reads the same whether it is followed or opened: a
+/// length that will not decode with a later entry after it is a different
+/// version's and is skipped; anything else resyncs on the next entry's magic;
+/// and an entry that decoded only by borrowing the bytes of the entry after it
+/// is taken back, which is what the checksum and this check exist for.
+pub struct Follower {
+    dir: PathBuf,
+    date: Date,
+    /// Bytes of the current day's file already accounted for.
+    at: u64,
+    /// Whether to move on when the next day's file appears.
+    ///
+    /// Only for a follower that attached to the live day: somebody following
+    /// `2026-09-08` asked for that day, and a day that is over does not
+    /// continue into the next one.
+    roll: bool,
+    /// Notes already given out, so a day written across an upgrade says its
+    /// one sentence once rather than at every poll.
+    said: Vec<String>,
+}
+
+impl Follower {
+    /// Follow `date`, from the start of what is already recorded.
+    ///
+    /// From the start rather than from the end: the file is a day, and a
+    /// consumer that attached at noon wanting the morning has no other way to
+    /// ask for it. `roll` is whether to move to the next day's file when the
+    /// writer does, which is for a follower of the day that is happening.
+    pub fn open(dir: &Path, date: Date, roll: bool) -> Follower {
+        Follower {
+            dir: dir.to_path_buf(),
+            date,
+            at: 0,
+            roll,
+            said: Vec::new(),
+        }
+    }
+
+    /// Everything appended since the last call, and anything new to say.
+    ///
+    /// Empty when nothing has landed — including while an entry is half
+    /// written, which is the one case a reader of a growing file must not
+    /// mistake for the end of it.
+    pub fn poll(&mut self) -> io::Result<(Vec<Sample>, Vec<String>)> {
+        let (mut samples, mut notes) = self.drain()?;
+        // Only once this file has gone quiet. A file still producing entries
+        // is one the writer may not have finished with — two poptops logging
+        // to one directory can have started different days — and a follower
+        // that moved on while entries were arriving would leave them unread.
+        if self.roll && samples.is_empty() {
+            // The oldest day the writer has started since this one, which is
+            // tomorrow on an ordinary night and the day poptop was next run
+            // on a machine that was asleep for a week.
+            //
+            // The writer's own file, not the clock: a follower that rolled at
+            // local midnight would leave before the entry for the sample taken
+            // at 23:59:59, which is written a moment after it and filed by the
+            // sample's date. A file for a later day is the proof that this one
+            // is finished.
+            let next = days(&self.dir).into_iter().filter(|d| *d > self.date).min();
+            if let Some(next) = next {
+                self.date = next;
+                self.at = 0;
+                notes.push(format!("{next} was started; following it"));
+                let (more, said) = self.drain()?;
+                samples.extend(more);
+                notes.extend(said);
+            }
+        }
+        notes.retain(|n| {
+            let new = !self.said.contains(n);
+            if new {
+                self.said.push(n.clone());
+            }
+            new
+        });
+        Ok((samples, notes))
+    }
+
+    /// The whole entries waiting in the current file, and the offset moved
+    /// past exactly those.
+    fn drain(&mut self) -> io::Result<(Vec<Sample>, Vec<String>)> {
+        use std::io::{Read as _, Seek as _};
+        let name = file_name(self.date);
+        let path = self.dir.join(&name);
+        let mut f = match fs::File::open(&path) {
+            Ok(f) => f,
+            // Not yet created: a follower may be started before the writer is,
+            // and a day with nothing in it is not an error.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
+            Err(e) => return Err(e),
+        };
+        let len = f.metadata()?.len();
+        if len < self.at {
+            // Shorter than it was: the file was replaced, not appended to.
+            // Read from the start rather than from an offset into a different
+            // file, and say so, because what was there before is gone.
+            self.at = 0;
+            return Ok((
+                Vec::new(),
+                vec![format!("{name}: replaced while it was being followed")],
+            ));
+        }
+        if len == self.at {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        f.seek(io::SeekFrom::Start(self.at))?;
+        let mut bytes = Vec::new();
+        f.take(len - self.at).read_to_end(&mut bytes)?;
+
+        let mut out = Vec::new();
+        let mut notes = Vec::new();
+        let mut at = 0usize;
+        loop {
+            // The half-written entry, before anything else looks at it: a
+            // length naming more bytes than the file holds is the writer still
+            // inside `append`. `read_blocks` calls that torn, because for a
+            // file that has stopped growing it is.
+            match length_at(&bytes, at) {
+                None => break,
+                Some(len) if at + LEN + len > bytes.len() => break,
+                Some(_) => {}
+            }
+            match step(&bytes, at) {
+                Step::Read { to, samples, said } => {
+                    // An entry that decoded from bytes the entry after it
+                    // supplied: a whole entry starts inside the span it
+                    // claimed. Its samples are somebody else's last fields.
+                    if let Some(inner) = next_block(&bytes, at).filter(|n| *n < to) {
+                        notes.push(format!("{name}: an entry was cut short and was skipped"));
+                        at = inner;
+                        continue;
+                    }
+                    out.extend(samples);
+                    note_once(&mut notes, said);
+                    at = to;
+                }
+                Step::Foreign { to, said } => {
+                    note_once(&mut notes, said);
+                    notes.push(format!(
+                        "{name}: an entry could not be read, most likely written by a \
+                         different version"
+                    ));
+                    at = to;
+                }
+                // A length of zero, or bytes that are all here and decode as
+                // nothing: damage from an earlier crash, with the writer now
+                // past it. Resync on the next entry's magic; if none has
+                // arrived yet, wait for one rather than moving past what may
+                // still become one.
+                Step::Zeroes | Step::Torn => match next_block(&bytes, at) {
+                    Some(next) => {
+                        notes.push(format!("{name}: an entry was cut short and was skipped"));
+                        at = next;
+                    }
+                    None => break,
+                },
+                Step::End => break,
+            }
+        }
+        self.at += at as u64;
+        // In order, as `read_blocks` leaves a day: two poptops logging at once
+        // interleave their entries, and a consumer reading a feed is entitled
+        // to a series that moves forwards.
+        out.sort_by_key(|s| s.at);
+        Ok((out, notes))
+    }
+}
+
 /// The entry `read_blocks` read last, kept until the next step shows whether
 /// it was whole.
 struct Last {
@@ -1102,6 +1281,182 @@ mod tests {
         // SAFETY: as above.
         unsafe { raise(9) };
         unreachable!("SIGKILL did not end the process");
+    }
+
+    #[test]
+    fn a_day_is_followed_as_it_is_written() {
+        // Nothing twice, nothing skipped, and in order: the three things a
+        // consumer of a feed is entitled to.
+        let dir = scratch("follow");
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        append(&dir, day, &[&sample(1_800_000_000, 11.0)], u64::MAX).unwrap();
+
+        let mut f = Follower::open(&dir, date, false);
+        let (first, notes) = f.poll().unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(
+            first.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            [11.0],
+            "what was already recorded was not read"
+        );
+        // Nothing new: the same bytes are not read again.
+        assert!(f.poll().unwrap().0.is_empty(), "an entry was read twice");
+
+        for (i, cpu) in [22.0f32, 33.0].into_iter().enumerate() {
+            append(
+                &dir,
+                day,
+                &[&sample(1_800_000_001 + i as u64, cpu)],
+                u64::MAX,
+            )
+            .unwrap();
+            let (more, notes) = f.poll().unwrap();
+            assert!(notes.is_empty(), "{notes:?}");
+            assert_eq!(more.iter().map(|s| s.cpu_total).collect::<Vec<_>>(), [cpu]);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_entry_half_written_is_waited_for_rather_than_called_damage() {
+        // The difference between a follower and the whole-file reader. An
+        // entry whose length runs past the end of the file is a writer partway
+        // through `append` — `read_blocks` calls that torn, correctly, because
+        // for a file that has stopped growing it is. A follower that did the
+        // same would skip the entry the moment before it arrived, and say the
+        // log was damaged when nothing was wrong.
+        let dir = scratch("follow-partial");
+        fs::create_dir_all(&dir).unwrap();
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        let path = dir.join(file_name(date));
+        let whole = frame(&[&sample(1_800_000_000, 11.0)]).unwrap();
+        let next = frame(&[&sample(1_800_000_001, 22.0)]).unwrap();
+        let cut = next.len() / 2;
+        fs::write(&path, [&whole[..], &next[..cut]].concat()).unwrap();
+
+        let mut f = Follower::open(&dir, date, false);
+        let (first, notes) = f.poll().unwrap();
+        assert_eq!(first.len(), 1, "the whole entry before the fragment");
+        assert!(
+            notes.is_empty(),
+            "a half-written entry was called damage: {notes:?}"
+        );
+        assert!(f.poll().unwrap().0.is_empty());
+
+        // The rest of it lands.
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&next[cut..]).unwrap();
+        file.flush().unwrap();
+        let (second, notes) = f.poll().unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(
+            second.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            [22.0],
+            "the entry was not read once it was whole"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_follower_of_the_live_day_moves_to_the_next_file_at_midnight() {
+        // Not on the clock alone: the entry for the sample taken at 23:59:59
+        // is written after midnight, into yesterday's file, because `append`
+        // files a sample by its own date. The proof that a day is finished is
+        // that the writer has started the next one.
+        let dir = scratch("follow-midnight");
+        let yesterday = at(1_800_000_000);
+        let today = at(1_800_000_000 + 24 * 3600);
+        assert_ne!(date_of(yesterday), date_of(today));
+        append(&dir, yesterday, &[&sample(1_800_000_000, 11.0)], u64::MAX).unwrap();
+
+        let mut f = Follower::open(&dir, date_of(yesterday).unwrap(), true);
+        assert_eq!(f.poll().unwrap().0.len(), 1);
+
+        // Midnight: the last of yesterday is written, and then today opens.
+        append(&dir, yesterday, &[&sample(1_800_000_001, 22.0)], u64::MAX).unwrap();
+        append(
+            &dir,
+            today,
+            &[&sample(1_800_000_000 + 24 * 3600, 33.0)],
+            u64::MAX,
+        )
+        .unwrap();
+        // Two polls: the first drains what is left of the old day, and the
+        // follower only moves on once that file has gone quiet.
+        let (mut across, mut notes) = f.poll().unwrap();
+        let (more, said) = f.poll().unwrap();
+        across.extend(more);
+        notes.extend(said);
+        assert_eq!(
+            across.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            [22.0, 33.0],
+            "the last entry of the old day or the first of the new one was lost"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("following it")),
+            "the move was silent: {notes:?}"
+        );
+        // And it keeps following the new file.
+        append(
+            &dir,
+            today,
+            &[&sample(1_800_000_001 + 24 * 3600, 44.0)],
+            u64::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            f.poll()
+                .unwrap()
+                .0
+                .iter()
+                .map(|s| s.cpu_total)
+                .collect::<Vec<_>>(),
+            [44.0]
+        );
+
+        // A follower of a day that is over stays there: it was asked for that
+        // day, not for whatever happened next.
+        let mut fixed = Follower::open(&dir, date_of(yesterday).unwrap(), false);
+        assert_eq!(fixed.poll().unwrap().0.len(), 2, "a fixed day rolled over");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_follower_reads_a_day_a_crash_tore_the_same_way_the_reader_does() {
+        // A morning, a write cut short by a crash, and an afternoon appended
+        // by the poptop that started afterwards. Both readers see the same
+        // samples and both say the entry was lost.
+        let dir = scratch("follow-torn");
+        fs::create_dir_all(&dir).unwrap();
+        let day = at(1_800_000_000);
+        let date = date_of(day).unwrap();
+        let path = dir.join(file_name(date));
+        let morning = frame(&[&sample(1_800_000_000, 11.0)]).unwrap();
+        let lost = frame(&[&sample(1_800_000_001, 22.0)]).unwrap();
+        let afternoon = frame(&[&sample(1_800_000_002, 33.0)]).unwrap();
+        fs::write(
+            &path,
+            [&morning[..], &lost[..lost.len() / 3], &afternoon[..]].concat(),
+        )
+        .unwrap();
+
+        let (whole, said) = read_day(&dir, date);
+        let mut f = Follower::open(&dir, date, false);
+        let (followed, notes) = f.poll().unwrap();
+        assert_eq!(
+            followed.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            whole.iter().map(|s| s.cpu_total).collect::<Vec<_>>(),
+            "the two readers disagree about a torn day"
+        );
+        assert_eq!(followed.len(), 2, "the entries either side of the tear");
+        assert!(
+            notes.iter().any(|n| n.contains("cut short"))
+                && said.iter().any(|n| n.contains("cut short")),
+            "followed: {notes:?}, read: {said:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
