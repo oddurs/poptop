@@ -190,3 +190,45 @@ terminal clip whatever is rightmost — rightmost is not least useful. At sixty
 columns you still get all four of the figures above. `--once` reports the same
 three, because a script that reads only cpu and memory reads a stalled machine
 as an idle one.
+
+## Why the figures move and the rows do not
+
+A process table read at one sample a second is mostly noise. A row's CPU swings
+from 3 to 40 and back, and — far worse for reading it — rows swap places while
+your eye is on them. Activity Monitor answers both by refreshing every five
+seconds. poptop keeps every second and answers them separately, because they
+are different problems with different right answers.
+
+**The figure is live.** `--smooth=5s` averages each row over the last five
+seconds, ending at the moment on screen, weighted towards it: the newest sample
+is about a third of the figure, the oldest about a tenth. A spike moves the
+number on the second it starts and fades over the seconds after, so the table
+agrees with the graph under it.
+
+That weighting is the whole of it. A flat mean over the same window has two
+edges and both are visible: it answers late, and it answers *again* when the
+spike falls off the far end a whole window later — a step down to a number
+nothing caused, with no event under it. A weight that halves with age has
+neither.
+
+**The order is settled.** The rows are ordered by the same average taken on a
+beat — one every `smooth` seconds — so between beats the table cannot change
+its mind about what goes above what. Averaging alone does not fix this:
+measured on a real machine it reordered on fifteen frames out of fifteen, and
+on a beat, three.
+
+Ending *both* on a beat is what poptop used to do, and it is the trade that
+looks reasonable and is not. A process that ran at 90% for three seconds showed
+`5.0` for every one of them, because the block being averaged had closed before
+the spike began; then, once it was over, the table read `56.0` for five seconds
+— a figure the process had at no point — under a graph drawing the spike at the
+second it happened. Staleness is the wrong price for calm, because a stale
+figure is not what buys the calm. What has to hold still is the order, and only
+the order.
+
+While scrubbing there is no beat. The reader is asking about one moment, and an
+order quantised away from it would answer a different question from the figures
+beside it.
+
+The strip above the table says `avg 5s` whenever this is on, because a figure
+that is not the sample's own has to say so.

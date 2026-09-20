@@ -991,6 +991,37 @@ fn fmt_uptime(d: Duration) -> String {
 /// gives up a column of the command line, and a short one before it gives up a
 /// row of the table — comfort is the first thing surrendered, because a process
 /// you cannot identify is a worse loss than a row that touches the edge.
+/// Columns left over once the table has what it needs to identify a process.
+///
+/// A hundred and four is measured, not guessed: it is the width at which a
+/// nine-deep tree of `Google Chrome Helper (Renderer)` still tells one helper
+/// from another, with the disk columns and the owner drawn. Three tests hold
+/// that width, and each of them is a row that was once rendered as `…derer)`
+/// or as a bare `└`. Air is a comfort and a name is the point, so this is the
+/// one number here that stays where the measurement put it.
+///
+/// It is `table_request(&cpu_shape(true, true), 1) + COMMAND_WORTH_READING`
+/// to within a few columns — 101 against 104 as this is written — which is the
+/// check that it is still about the table rather than about a terminal
+/// somebody once had. The three it sits above are the tree's own indent, which
+/// that arithmetic does not account for and the measurement did.
+const AIR_FROM: u16 = 104;
+
+#[cfg(test)]
+pub fn air_from_is_about_the_table() -> (u16, u16) {
+    (
+        AIR_FROM,
+        table_request(&cpu_shape(true, true), 1) - MIN_COMMAND_W + COMMAND_WORTH_READING,
+    )
+}
+
+/// The tab strip's height when it is drawn, as a number the vertical arithmetic
+/// can use before the strip's own function is reachable.
+const TABS_H_MAX: u16 = 1;
+
+/// The key hints, which are always exactly one row.
+const HELP_H: u16 = 1;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Density {
     /// Everything packed. What poptop looked like before this was a choice.
@@ -1039,9 +1070,21 @@ impl Density {
             Self::Comfortable => 1,
             Self::Spacious => 2,
         };
-        // A hundred and four columns is enough to draw a deep tree of Chrome
-        // helpers and not enough to spare two.
-        want.min(width.saturating_sub(104) / 16)
+        // A column of air either side costs two columns of name, so that is the
+        // rate it is bought at: one column of margin per two columns past the
+        // width the table needs to identify a process.
+        //
+        // The slope was `/ 16`, and that was the bug. The floor is measured
+        // and right; sixteen meant comfortable did not arrive until 120
+        // columns and spacious until 136, so every terminal between was flat
+        // and every terminal below was flat twice over. On eighty columns the
+        // entire difference between compact and spacious was two spaces in the
+        // header — a setting a reader cannot see is not a setting.
+        //
+        // Below the floor this is nought for all three, which is correct and
+        // is where the vertical half of the setting does the work instead: see
+        // `panel_gap`, which an eighty-by-twenty-four terminal now reaches.
+        want.min(width.saturating_sub(AIR_FROM) / 2)
     }
 
     /// Columns between two of the table's columns.
@@ -1071,7 +1114,15 @@ impl Density {
     /// Vertical space is the scarcest thing in a terminal, so this is the last
     /// comfort granted and the first withdrawn.
     pub fn panel_gap(self, height: u16) -> u16 {
-        u16::from(self == Self::Spacious && height >= 30)
+        // Against what the row costs, which is a row of the table, rather than
+        // against a round number. `height >= 30` meant the most common tall
+        // terminal there is — eighty by twenty-four — never saw this at all,
+        // while a thirty-row one that was *also* narrow got it anyway.
+        //
+        // What it has to leave behind is every fixed band plus the table's own
+        // floor. Below that the gap is the row the table needed.
+        let need = MENU_H + HEADER_H + TABS_H_MAX + TIMELINE_MIN_H + PROCS_FLOOR_H + HELP_H;
+        u16::from(self == Self::Spacious && height > need)
     }
 }
 

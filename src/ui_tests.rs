@@ -15112,10 +15112,10 @@ fn an_uptime_is_the_same_width_on_its_ninth_day_and_its_tenth() {
 
 #[test]
 fn the_table_is_given_air_only_where_there_is_room_for_it() {
-    // Two columns either side of the rows. They are the first thing given up:
-    // at a hundred and four columns a deep tree of Chrome helpers needs every
-    // one of them, and a process elided to `…derer)` is a worse loss than a row
-    // that touches the edge.
+    // Air either side of the rows, and the first thing given up: a process
+    // elided to `…derer)` is a worse loss than a row that touches the edge.
+    // Measured against the narrowest terminal poptop works on, because that is
+    // what the margin spends — two columns of content per column of air.
     let mut app = App::new(600);
     let mut s = sample(10.0);
     s.procs = (0..4)
@@ -15133,7 +15133,7 @@ fn the_table_is_given_air_only_where_there_is_room_for_it() {
     };
     assert!(
         left_edge(150) > left_edge(104),
-        "a wide terminal is no more spacious than a cramped one"
+        "a terminal with room to spare is no more spacious than a cramped one"
     );
 
     // And the panel's own divider still spans the whole width: it is what says
@@ -15259,6 +15259,67 @@ fn the_rows_stop_swapping_places_under_your_eye() {
 }
 
 #[test]
+fn the_figure_is_live_while_the_order_is_calm() {
+    // The two halves of smoothing, which used to be one window and could not
+    // be both. Ending everything on a beat bought calm with staleness: a
+    // process that ran at 90% for three seconds showed `5.0` for every one of
+    // them, because the block being averaged had closed before the spike
+    // began — and then showed `56.0` for five seconds after it was over, a
+    // figure it had at no point, under a graph drawing the spike at the second
+    // it happened.
+    let spike_at = |n: usize| (12..15).contains(&n);
+    let build = |len: usize| {
+        let mut app = App::new(600);
+        for i in 0..len {
+            let mut s = sample_at(10.0, (len - i) as u64);
+            s.procs = vec![ProcSample {
+                cpu: if spike_at(i) { 90.0 } else { 5.0 },
+                started: Some(1),
+                ..proc_named(42, "spiky", 0.0, 1 << 20)
+            }];
+            app.push(s);
+        }
+        app
+    };
+
+    let shown = |app: &App| {
+        let sm = app.smoothing();
+        sm.cpu(&app.history.current().unwrap().procs[0])
+    };
+
+    // While the spike is running the figure climbs with it, rather than
+    // waiting for the next beat to notice.
+    let during: Vec<f32> = (13..=15).map(|n| shown(&build(n))).collect();
+    assert!(
+        during[0] > 20.0,
+        "the spike is invisible on the second it starts: {during:?}"
+    );
+    assert!(
+        during[1] > during[0] && during[2] > during[1],
+        "the figure does not follow the spike while it runs: {during:?}"
+    );
+
+    // And once it is over the figure comes down, rather than reporting a
+    // number the process never had for a whole window afterwards.
+    let after: Vec<f32> = (16..=20).map(|n| shown(&build(n))).collect();
+    assert!(
+        after.windows(2).all(|w| w[1] < w[0]),
+        "the figure does not decay after the spike: {after:?}"
+    );
+    assert!(
+        after.last().unwrap() < &10.0,
+        "the figure is still elevated five samples after the spike: {after:?}"
+    );
+    // Never a figure outside what the process actually did.
+    for v in during.iter().chain(&after) {
+        assert!(
+            (5.0..=90.0).contains(v),
+            "the table showed {v}, which the process never had"
+        );
+    }
+}
+
+#[test]
 fn a_figure_is_the_average_of_the_window_ending_at_the_cursor() {
     // Ends at the cursor, not at the live edge: scrubbed to a moment, the table
     // shows what those processes were doing around it, which is the only
@@ -15275,11 +15336,34 @@ fn a_figure_is_the_average_of_the_window_ending_at_the_cursor() {
             .map(|r| sm.cpu(&r.proc))
             .expect("no such row")
     };
-    // Four samples alternating 90/10 average to 50 whichever end you start.
+    // Alternating 90/10, weighted towards now: the figure sits between the two
+    // and leans towards whichever the newest sample was. A flat mean would be
+    // 50 whichever end you start; this one is not, and that is the point — the
+    // newest sample is about a third of it.
+    let shown = cpu(&app, "spiky");
     assert!(
-        (cpu(&app, "spiky") - 50.0).abs() < 0.01,
-        "{}",
-        cpu(&app, "spiky")
+        (10.0..=90.0).contains(&shown),
+        "the figure is outside the range of the samples it averages: {shown}"
+    );
+    let newest = app
+        .history
+        .current()
+        .unwrap()
+        .procs
+        .iter()
+        .find(|p| &*p.name == "spiky")
+        .unwrap()
+        .cpu;
+    let leans_up = shown > 50.0;
+    assert_eq!(
+        leans_up,
+        newest > 50.0,
+        "the average does not lean towards the newest sample ({newest} -> {shown})"
+    );
+    // And it is an average, not the newest sample wearing a hat.
+    assert!(
+        (shown - newest).abs() > 5.0,
+        "the figure is the raw sample, so nothing is being averaged: {shown}"
     );
     // And the raw figure is still the raw figure.
     let raw = app
@@ -15409,9 +15493,14 @@ fn the_figure_on_the_row_is_the_one_the_ordering_used() {
 #[test]
 fn the_order_holds_still_between_boundaries_and_moves_on_them() {
     // Averaging alone only makes reordering less frequent — measured on a real
-    // machine at fifteen frames in fifteen. The calm comes from the averages
-    // ending on a boundary, so between one and the next nothing in the table
-    // can change its mind. Same measurement with this: three in fifteen.
+    // machine at fifteen frames in fifteen. The calm comes from the key the
+    // rows are *ordered* by ending on a beat, so between one beat and the next
+    // nothing in the table can change its mind about what goes above what.
+    // Same measurement with this: three in fifteen.
+    //
+    // Only the ordering. The figures on the rows end at the cursor and go on
+    // moving — see `the_figure_is_live_while_the_order_is_calm`, which is the
+    // other half and the reason this is no longer one window doing both.
     let mut app = App::new(600);
     app.smooth = 5;
     let order = |app: &App| -> Vec<i32> {
@@ -15580,14 +15669,58 @@ fn each_density_is_roomier_than_the_one_below_it() {
 fn comfort_is_the_first_thing_a_small_terminal_gives_up() {
     // A process elided to `…derer)` is a worse loss than a row that touches the
     // edge, and a graph too short to read is a worse loss than a blank line.
+    // So every comfort is surrendered — but at the width and the height where
+    // it starts costing something, not at a round number.
+    //
+    // At the narrowest terminal poptop claims to work on there is nothing
+    // spare, and every density draws the same frame.
     for d in ui::Density::ALL {
-        assert_eq!(d.margin(80), 0, "{d:?} indented an eighty-column table");
-        assert_eq!(d.panel_gap(24), 0, "{d:?} spent a row on air at 24 rows");
+        assert_eq!(
+            d.margin(60),
+            0,
+            "{d:?} indented the narrowest table there is"
+        );
+        assert_eq!(
+            d.panel_gap(18),
+            0,
+            "{d:?} spent a row on air with none to spare"
+        );
     }
-    // And granted where there is room.
-    assert!(ui::Density::Spacious.margin(200) > ui::Density::Compact.margin(200));
+    // And granted as soon as there is room. The floor is measured and stays;
+    // the slope was the bug. At `/ 16` comfortable did not arrive until 120
+    // columns and spacious until 136, so everything between was flat.
+    for w in [110u16, 120, 140] {
+        assert_eq!(ui::Density::Compact.margin(w), 0, "compact indented at {w}");
+        assert_eq!(
+            ui::Density::Comfortable.margin(w),
+            1,
+            "comfortable is flat at {w}"
+        );
+        assert_eq!(
+            ui::Density::Spacious.margin(w),
+            2,
+            "spacious is flat at {w}"
+        );
+    }
+    // The floor is about the table, not about a terminal somebody once had.
+    let (floor, table) = ui::air_from_is_about_the_table();
+    assert!(
+        floor.abs_diff(table) <= 4,
+        "the air floor {floor} has drifted from what the table needs, {table}"
+    );
+
+    // Below it the vertical half does the work instead: the row between the
+    // table and the graphs. Eighty by twenty-four is the commonest terminal
+    // there is, and it used to miss out because the gate was thirty rows.
+    assert_eq!(ui::Density::Spacious.panel_gap(24), 1);
+    assert_eq!(ui::Density::Comfortable.panel_gap(24), 0);
     assert_eq!(ui::Density::Spacious.panel_gap(40), 1);
-    assert_eq!(ui::Density::Comfortable.panel_gap(40), 0);
+    // So an eighty-column terminal can still tell the three apart.
+    assert_ne!(
+        ui::Density::Compact.panel_gap(24),
+        ui::Density::Spacious.panel_gap(24),
+        "at eighty by twenty-four the setting does nothing at all"
+    );
 }
 
 #[test]
@@ -16318,4 +16451,101 @@ fn a_hidden_column_is_not_drawn_and_its_width_goes_to_the_command() {
         command_at(&after) < command_at(&before),
         "the width did not go to the command:\n  {before}\n  {after}"
     );
+}
+
+#[test]
+#[ignore = "diagnostic: what density actually changes; --ignored --nocapture"]
+fn print_density_differences() {
+    for (w, h) in [(80u16, 24u16), (100, 30), (120, 40), (140, 40), (170, 45)] {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for d in ui::Density::ALL {
+            let mut app = readme_fixture();
+            app.density = d;
+            seen.push((d.label().to_string(), rows(&app, w, h).join("\n")));
+        }
+        let same01 = seen[0].1 == seen[1].1;
+        let same12 = seen[1].1 == seen[2].1;
+        println!("{w}x{h}: compact==comfortable? {same01}   comfortable==spacious? {same12}");
+    }
+}
+
+#[test]
+#[ignore = "diagnostic: show the density diff; --ignored --nocapture"]
+fn print_density_diff_lines() {
+    let (w, h) = (100u16, 30u16);
+    let frame = |d| {
+        let mut app = readme_fixture();
+        app.density = d;
+        rows(&app, w, h)
+    };
+    let a = frame(ui::Density::Compact);
+    let c = frame(ui::Density::Spacious);
+    for (i, (x, y)) in a.iter().zip(&c).enumerate() {
+        if x != y {
+            println!("row {i}:");
+            println!("  compact  |{}|", x.trim_end());
+            println!("  spacious |{}|", y.trim_end());
+        }
+    }
+}
+
+#[test]
+#[ignore = "diagnostic; --ignored --nocapture"]
+fn print_density_gaps() {
+    for h in [18u16, 20, 24, 30, 40] {
+        let g: Vec<u16> = ui::Density::ALL.iter().map(|d| d.panel_gap(h)).collect();
+        println!("h={h:3}  panel gap by density: {g:?}");
+    }
+}
+
+#[test]
+#[ignore = "diagnostic; --ignored --nocapture"]
+fn print_margin_table() {
+    for w in [100u16, 102, 104, 106, 110, 114, 118, 120] {
+        let m: Vec<u16> = ui::Density::ALL.iter().map(|d| d.margin(w)).collect();
+        println!("w={w:4}  margins {m:?}");
+    }
+}
+
+#[test]
+#[ignore = "diagnostic: what a row's figure does over time; --ignored --nocapture"]
+fn print_smoothing_trace() {
+    // A process that spikes once, on an otherwise flat machine.
+    let mut app = App::new(600);
+    for i in (0..24).rev() {
+        let mut s = sample_at(10.0, i as u64);
+        let cpu = if (12..15).contains(&(23 - i)) {
+            90.0
+        } else {
+            5.0
+        };
+        s.procs = vec![ProcSample {
+            cpu,
+            started: Some(1),
+            ..proc_named(42, "spiky", 0.0, 1 << 20)
+        }];
+        app.push(s);
+    }
+    println!("sample  raw   shown");
+    for back in (0..12).rev() {
+        let mut a = App::new(600);
+        for i in (0..24 - back).rev() {
+            let mut s = sample_at(10.0, (i + back) as u64);
+            let cpu = if (12..15).contains(&(23 - back - i)) {
+                90.0
+            } else {
+                5.0
+            };
+            s.procs = vec![ProcSample {
+                cpu,
+                started: Some(1),
+                ..proc_named(42, "spiky", 0.0, 1 << 20)
+            }];
+            a.push(s);
+        }
+        let raw = a.history.current().unwrap().procs[0].cpu;
+        let sm = a.smoothing();
+        let shown = sm.cpu(&a.history.current().unwrap().procs[0]);
+        println!("{:6}  {raw:5.1}  {shown:5.1}", 24 - back);
+    }
 }
