@@ -1255,6 +1255,15 @@ pub struct Check {
     pub damage: Vec<Damage>,
     /// What decoding had to say — a version's fields this build does not know.
     pub said: Vec<String>,
+    /// The most bytes of the file this walk held at once.
+    ///
+    /// The property the command rests on, measured rather than asserted about:
+    /// a day is walked an entry at a time, so this stays at one entry however
+    /// large the day is. Resident memory would have been the obvious thing to
+    /// measure and is the wrong one — an allocator's slack, a test harness and
+    /// a sanitizer's redzones all move it, and none of them are poptop holding
+    /// a day.
+    pub held: u64,
 }
 
 impl Check {
@@ -1301,6 +1310,9 @@ impl std::fmt::Display for Damaged {
 /// How far past an entry [`verify`] reads so that `step` can tell a fragment
 /// from another version's entry: enough for the next entry's length and magic.
 const LOOKAHEAD: usize = LEN + store::MAGIC.len();
+
+/// How much of the file a resync looks at in one go.
+const RESYNC_WINDOW: usize = 256 << 10;
 
 /// How much of a candidate entry is read to decide whether it opens a store.
 ///
@@ -1353,6 +1365,7 @@ pub fn verify(dir: &Path, date: Date) -> io::Result<Check> {
         buf.resize(want, 0);
         f.seek(io::SeekFrom::Start(at))?;
         f.read_exact(&mut buf)?;
+        check.held = check.held.max(buf.capacity() as u64);
 
         match step(&buf, 0) {
             Step::Read { to, samples, said } => {
@@ -1401,6 +1414,7 @@ pub fn verify(dir: &Path, date: Date) -> io::Result<Check> {
                 // Where the next entry starts, which is where the reader
                 // would resume. Everything between is the stretch that is
                 // lost.
+                check.held = check.held.max(RESYNC_WINDOW as u64);
                 let next = resync(&mut f, at, size)?.unwrap_or(size);
                 check.damage.push(Damage {
                     at,
@@ -1426,7 +1440,7 @@ pub fn verify(dir: &Path, date: Date) -> io::Result<Check> {
 /// be a scan that could not be given a bound.
 fn resync(f: &mut fs::File, bad: u64, size: u64) -> io::Result<Option<u64>> {
     use std::io::{Read as _, Seek as _};
-    const WINDOW: usize = 256 << 10;
+    const WINDOW: usize = RESYNC_WINDOW;
     let magic = store::MAGIC;
     let mut window = vec![0u8; WINDOW];
     let mut from = bad + 1 + LEN as u64;
@@ -1886,14 +1900,17 @@ mod tests {
 
     #[test]
     fn verifying_a_day_does_not_hold_it() {
-        // The point of walking the file rather than reading it: a day of
-        // four hundred processes a sample, verified, must not cost what the
-        // day costs. Measured against this process's own resident memory,
-        // which is the only measure that means anything here.
+        // The point of walking the file rather than reading it: a day of four
+        // hundred processes a sample must not cost what the day costs. The
+        // walk reports the most it held at once, so this is a fact about the
+        // code and not about an allocator's slack — resident memory moves
+        // under a sanitizer and under whatever else the test binary has been
+        // doing, and neither is poptop holding a day.
         let dir = scratch("verify-memory");
         fs::create_dir_all(&dir).unwrap();
         let date = date_of(at(1_800_000_000)).unwrap();
         let s = crate::store::tests_support::big_sample(5.0, 400);
+        let entry = frame(&[&s]).unwrap().len() as u64;
         let mut day = Vec::new();
         for _ in 0..200 {
             day.extend(frame(&[&s]).unwrap());
@@ -1902,17 +1919,14 @@ mod tests {
         fs::write(dir.join(file_name(date)), &day).unwrap();
         drop(day);
 
-        let before = crate::budget::rss();
         let check = verify(&dir, date).unwrap();
-        let after = crate::budget::rss();
         assert_eq!(check.entries, 200);
         assert!(check.intact());
-        // A generous bound: what is being ruled out is holding the day, which
-        // is 8 MB here and the best part of a gigabyte on a real one.
+        assert_eq!(check.size, size);
         assert!(
-            after.saturating_sub(before) < size / 2,
-            "verifying a {size}-byte day grew memory by {} bytes",
-            after - before
+            check.held <= entry * 2,
+            "a {size}-byte day of {entry}-byte entries was walked holding {} bytes",
+            check.held
         );
         let _ = fs::remove_dir_all(&dir);
     }
