@@ -596,14 +596,9 @@ fn a_live_feed_writes_a_record_an_interval_until_it_is_signalled() {
     let mut feed = Feed::start(&home, &["--export=json", "--follow", "--interval=200ms"]);
     let at: Vec<f64> = (0..5)
         .map(|_| {
-            let line = feed.line();
-            let s = Json::parse(&line);
             // A record, not a fragment: whole, parseable JSON, flushed as it
             // was taken rather than left in the buffer until 8 KB had piled up.
-            match s.get("at").expect("a record with no `at`") {
-                Json::Num(n) => n.parse().unwrap(),
-                other => panic!("`at` is {other:?}"),
-            }
+            record_at(&feed.line())
         })
         .collect();
     // The schedule it claims. Measured across the whole run rather than
@@ -692,4 +687,61 @@ fn a_feed_stops_on_hangup_too() {
     feed.row();
     feed.signal("-HUP");
     assert_eq!(feed.ends().code(), Some(0), "SIGHUP did not end it cleanly");
+}
+
+#[test]
+fn a_day_is_followed_from_one_process_while_another_writes_it() {
+    // The shape this exists for: something subscribes to today's log, and
+    // whatever is doing the logging is a different process entirely.
+    let home = Home::new();
+    log_a_sample(&home);
+    let day = logged_day(&home);
+    let mut feed = Feed::start(&home, &["--export=json", &day, "--follow"]);
+
+    // What was already recorded comes first: the file is a day, and a
+    // consumer that attached at noon wanting the morning has no other way of
+    // asking for it.
+    let mut at = vec![record_at(&feed.line())];
+    for _ in 0..3 {
+        log_a_sample(&home);
+        at.push(record_at(&feed.line()));
+    }
+    // In order, and none of them twice.
+    for pair in at.windows(2) {
+        assert!(
+            pair[1] > pair[0],
+            "a follower repeated or reordered a sample: {at:?}"
+        );
+    }
+    feed.signal("-TERM");
+    assert_eq!(
+        feed.ends().code(),
+        Some(0),
+        "SIGTERM did not end the follower"
+    );
+}
+
+#[test]
+fn following_a_day_that_has_nothing_in_it_yet_waits_rather_than_failing() {
+    // A follower may be started before the writer is. `--export DATE` on its
+    // own is exit 1 with "nothing recorded on", because there is nothing to
+    // print and never will be; a follower's answer is to wait.
+    let home = Home::new();
+    log_a_sample(&home);
+    let today = logged_day(&home);
+    let home = Home::new();
+    let mut feed = Feed::start(&home, &["--export=json", &today, "--follow", "--for", "1s"]);
+    let s = feed.ends();
+    assert_eq!(s.code(), Some(0), "an empty day was not waited for");
+    let mut err = String::new();
+    std::io::Read::read_to_string(feed.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+    assert!(err.is_empty(), "it complained about an empty day:\n{err}");
+}
+
+/// The `at` of one JSON record.
+fn record_at(line: &str) -> f64 {
+    match Json::parse(line).get("at").expect("a record with no `at`") {
+        Json::Num(n) => n.parse().unwrap(),
+        other => panic!("`at` is {other:?}"),
+    }
 }

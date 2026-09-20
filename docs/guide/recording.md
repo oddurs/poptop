@@ -179,9 +179,24 @@ attaches to a feed already running, by `tail -f` on a redirect, sees rows
 with no header to map them by. Read from the start, keep the header from
 the first run, or use `--export=json`, whose records name every field.
 
-Two things it is not. It does not write the log — `--log=on` does that, and
-a feed is a reader. And it follows the machine, not a file: to follow a day
-as it is being written, see `--read`.
+It does not write the log — `--log=on` does that, and a feed is a reader.
+
+### Following the log itself
+
+With a date, `--follow` tails that day's file instead of sampling:
+
+```console
+$ poptop --export=json 2026-09-19 --follow
+```
+
+The day so far, then each entry as it is appended — by whatever poptop is
+running with `--log=on`, which need not be the one you are watching it from.
+That is the subscription: one process records, any number read.
+
+An entry half written when the follower reaches it is waited for, not called
+damage. A day an earlier crash tore reads the way `--export DATE` reads it,
+with the same line on stderr. Following today moves to tomorrow's file when
+the writer starts one; following a day that is over stays there.
 
 ## What the log does about bad days
 

@@ -66,9 +66,31 @@ first time later brings its own header then. A reader that attaches to a
 feed that is already running therefore has no header to map the columns by:
 read from the start, or use `--export=json`.
 
-`--follow` reads the machine as it is now, so it takes no date — a recorded
-day does not grow. `--for` without `--follow` is refused rather than
-ignored.
+`--for` without `--follow` is refused rather than ignored.
+
+### `--follow` with a date: a day log as it is written
+
+```console
+$ poptop --export=json 2026-09-19 --follow | jq -c '{at, cpu: .cpu_total}'
+```
+
+What the day already holds, oldest first, and then each entry as it is
+appended — by a poptop running with `--log=on`, which may be this one or
+another process entirely. Nothing is read twice, nothing is skipped, and an
+entry that is half written when the follower reaches it is waited for rather
+than reported as damage: a length running past the end of a growing file is
+a writer partway through, not a torn entry.
+
+A day a crash tore earlier reads exactly as `--export=json DATE` reads it —
+the entry that was cut short is skipped, with a line on stderr saying so, and
+the entries either side of it are read.
+
+Following the day that is happening now moves to the next day's file when
+the writer starts one, so a feed left running overnight keeps going. Following
+a day that is over stays on that day: it was asked for.
+
+Notes about the file go to stderr, never into the feed, so a consumer
+parsing records never has to parse prose.
 
 ## `--schema`: what the export contains
 
