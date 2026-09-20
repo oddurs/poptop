@@ -195,9 +195,10 @@ consumer reading line by line gets each sample when it happens rather than
 difference between two readings, and there is nothing to difference the
 first against.
 
-It stops when you stop it — `SIGTERM`, `--for 10m`, or the reader going away
-(`SIGHUP` is above: off a terminal it means reopen, not quit). `poptop --export=json --follow | head -3` exits 0 like any other
-piped output, and so does a feed whose consumer crashed.
+It stops when you stop it — `SIGTERM`, `--for 10m`, or the reader going away;
+`SIGHUP` off a terminal means reopen rather than quit, as above.
+`poptop --export=json --follow | head -3` exits 0 like any other piped
+output, and so does a feed whose consumer crashed.
 
 **The header rule.** Under `--follow` the line format writes its header block
 **once, at the top of the stream** — the same rule as a recorded day, so the

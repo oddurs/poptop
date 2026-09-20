@@ -222,5 +222,6 @@ survived is exactly what `--read` and `--export` give you.
 ## Exit status
 
 `0` on a clean exit, including `q`, `Ctrl-C`, `SIGTERM`, the terminal going
-away, and `SIGHUP` where there is a terminal to hang up. `1` for something that failed while running, `2` for a
-command line poptop could not read — which is also when it prints the usage.
+away, and `SIGHUP` where there is a terminal to hang up. `1` for something
+that failed while running, `2` for a command line poptop could not read —
+which is also when it prints the usage.

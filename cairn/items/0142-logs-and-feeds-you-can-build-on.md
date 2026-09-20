@@ -3,7 +3,7 @@ id: 142
 key: v1.2
 title: Logs and feeds you can build on
 type: milestone
-status: backlog
+status: done
 created: 2026-09-20
 updated: 2026-09-20
 priority: p2
