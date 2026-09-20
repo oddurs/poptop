@@ -67,7 +67,7 @@ undocumented_unsafe_blocks = "deny"
 unwrap_used = "deny"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-sysinfo = "0.39.6"
+sysinfo = "0.38.4"
 
 [profile.release]
 lto = true
