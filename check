@@ -80,12 +80,21 @@ run() {
 # Nothing published from here carries a note about what wrote it. Checked on
 # every run, because the commit-msg hook only fires for people who wired it up
 # and the tracked files are what a reader actually sees.
+#
+# Untracked-but-not-ignored files count too. CI scans what is committed, so a
+# new file that has not been `git add`ed yet passes here and fails there — one
+# push after the moment the fix was free. `--others --exclude-standard` is the
+# difference.
 printf '  %-34s' "no tool attribution"
-if git ls-files -z | grep -zv '^\.githooks/' | xargs -0 .githooks/no-attribution >/dev/null 2>&1; then
+attributable() {
+    git ls-files -z --cached --others --exclude-standard |
+        grep -zv '^\.githooks/'
+}
+if attributable | xargs -0 .githooks/no-attribution >/dev/null 2>&1; then
     echo ok
 else
     echo FAILED
-    git ls-files -z | grep -zv '^\.githooks/' | xargs -0 .githooks/no-attribution 2>&1 | sed 's/^/    /'
+    attributable | xargs -0 .githooks/no-attribution 2>&1 | sed 's/^/    /'
     fail=1
 fi
 

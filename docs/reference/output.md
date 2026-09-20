@@ -70,11 +70,11 @@ a test checks every exported sample against it.
 ```console
 $ poptop --report
 poptop report for 2026-09-19
-period  20:17:41 to 20:17:52, 10 samples every 1s
-cpu     peak 26.3% at 20:17:41 (claude)
-        never above 50%
-memory  peak 82.8% at 20:17:52 (poptop)
-        above 50% for 10s of 10s (poptop)
+period  20:32:01 to 20:32:16, 13 samples every 1s
+cpu     peak 100.0% at 20:32:07 (rustc)
+        above 50% for 5s of 19s (rustc)
+memory  peak 77.8% at 20:32:02 (node)
+        above 50% for 19s of 19s (poptop)
 ```
 
 Peak and sustained, each with what was responsible — the process named
