@@ -253,6 +253,9 @@ KEYS:
                         later. A pid the kernel has since handed to something
                         else is refused by name.
 
+    R               read the theme file again, so a colour can be tried
+                    without restarting. A theme file that changes on disk is
+                    picked up on the next sample anyway.
     /               filter. A bare word is a substring match on the name, the
                     command line, the user or the pid, as before. It is also a
                     small query language:
@@ -825,6 +828,9 @@ fn main() -> io::Result<()> {
     let mut app = App::new(capacity);
     app.interval = settings.interval;
     app.theme = theme;
+    // Where the theme came from, if it was a file: `R` and the watcher below
+    // read it again from here. A built-in cannot change under the program.
+    app.theme_file = config::theme_file(&settings.theme);
     app.glyphs = settings.glyphs;
     app.keys = settings.keys.clone();
     app.signals = settings.signals;
@@ -1589,6 +1595,15 @@ fn run(
             if !replaying {
                 app.push(s);
             }
+            // A theme file that has been written since it was read. One stat
+            // a sample, against the several hundred reads a sample already
+            // makes, so a reader editing colours sees them without restarting
+            // or pressing anything.
+            if let Some((name, was)) = app.theme_file.clone()
+                && config::theme_file(&name).is_some_and(|(_, now)| now != was)
+            {
+                reload_theme(app);
+            }
             next_sample += interval;
             // Falling a whole interval behind means the host cannot sustain
             // the rate. Resync rather than catch up: catching up would sample
@@ -1613,6 +1628,33 @@ fn run(
 /// Exposed because the modal boxes are state machines: what `Ctrl-C` does while
 /// the jump box is open, and what an arrow key does to the last jump's answer,
 /// are properties of the handler and cannot be checked by poking the `App`.
+/// Read the theme file again, for a reader trying a colour.
+///
+/// A built-in has no file, and says so rather than appearing to do nothing.
+/// A file that no longer parses keeps the colours that are on screen: the
+/// half-applied theme of a file being edited is worse than the old one.
+fn reload_theme(app: &mut App) {
+    let Some((name, _)) = app.theme_file.clone() else {
+        app.theme_note = Some("the theme is built in; there is no file to read".into());
+        return;
+    };
+    let mut warnings = Vec::new();
+    match config::resolve_named_theme(&name, &config::read_theme, &mut warnings) {
+        Ok((palette, overrides)) => {
+            let (theme, _) = theme::Theme::new(palette, app.theme.tier)
+                .with_thresholds(app.theme.warn_pct, app.theme.critical_pct)
+                .with_overrides(&overrides);
+            app.theme = theme;
+            app.theme_file = config::theme_file(&name);
+            app.theme_note = Some(match warnings.len() {
+                0 => format!("read {name}.theme again"),
+                n => format!("read {name}.theme again, with {n} line(s) ignored"),
+            });
+        }
+        Err(why) => app.theme_note = Some(format!("{name}.theme was not read: {why}")),
+    }
+}
+
 /// How often a wait for input looks at the stop flag.
 const STOP_CHECK: Duration = Duration::from_millis(100);
 
@@ -1794,6 +1836,7 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     match action {
         Action::Quit => app.should_quit = true,
         Action::Help => app.show_help = true,
+        Action::ReloadTheme => reload_theme(app),
         // Back out one level, as Esc does from the filter and the jump box: a
         // selection first, then the program.
         Action::Back => {
@@ -2091,6 +2134,33 @@ mod tests {
         keys(&mut a, &[KeyCode::Esc]);
         handle_key(&mut a, KeyCode::Char('Q'), KeyModifiers::SHIFT);
         assert!(a.should_quit, "`Q` did not quit");
+    }
+
+    #[test]
+    fn reloading_a_theme_says_what_happened() {
+        // A built-in has no file, and says so rather than appearing to do
+        // nothing when the key is pressed.
+        let mut a = app();
+        a.theme_file = None;
+        keys(&mut a, &[KeyCode::Char('R')]);
+        assert_eq!(
+            a.theme_note.as_deref(),
+            Some("the theme is built in; there is no file to read")
+        );
+
+        // A named theme whose file is not there keeps the colours on screen
+        // and says why.
+        let before = a.theme.ok;
+        a.theme_file = Some(("nosuch".into(), std::time::SystemTime::UNIX_EPOCH));
+        keys(&mut a, &[KeyCode::Char('R')]);
+        assert!(
+            a.theme_note
+                .as_deref()
+                .is_some_and(|n| n.starts_with("nosuch.theme was not read")),
+            "{:?}",
+            a.theme_note
+        );
+        assert_eq!(a.theme.ok, before, "a failed read changed the colours");
     }
 
     #[test]

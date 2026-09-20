@@ -16,4 +16,7 @@ chrome       = #505050
 text         = #cccccc
 text_dim     = #808080
 selection_bg = #3a3a3a
+selection_fg = #cccccc
 live         = #77ca9b
+border       = #505050
+gap          = #505050

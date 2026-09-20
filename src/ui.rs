@@ -1832,7 +1832,7 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
                 .get(i * spc..(i * spc + spc).min(gaps.len()))
                 .is_some_and(|g| g.iter().any(|&f| f))
             {
-                return Span::styled(set.gap_glyph().to_string(), theme.chrome_style());
+                return Span::styled(set.gap_glyph().to_string(), theme.gap_style());
             }
             let pcts: Vec<f32> = cell.iter().map(|v| v.unwrap_or(0.0)).collect();
             let left = glyphs::level_in_row_scaled(pcts[0], row, rows, ceiling);
@@ -3970,6 +3970,10 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("█", app.theme.cursor_style()),
             Span::styled(tail, app.theme.dim_style()),
         ])
+    } else if let Some(note) = app.theme_note.as_deref() {
+        // What the last theme reload did. Colours are judged by looking, so
+        // the message says which file and whether it took.
+        Line::from(Span::styled(format!(" {note}"), app.theme.warning_style()))
     } else if let Some(note) = app.signal_note.as_deref() {
         Line::from(Span::styled(format!(" {note}"), app.theme.warning_style()))
     } else if let Some(note) = app.jump_note.as_deref() {
@@ -4076,6 +4080,7 @@ pub const HELP: &[(&str, &str, &str)] = &[
     ("C", "C", "cgroups in place of processes"),
     ("K", "K", "kernel threads"),
     ("i", "i", "the disk IO columns"),
+    ("R", "R", "read the theme file again, for trying a colour"),
     ("?", "?", "this list"),
 ];
 
@@ -4123,7 +4128,7 @@ fn draw_key_list(f: &mut Frame, app: &App) {
         Paragraph::new(lines).block(
             ratatui::widgets::Block::bordered()
                 .title(" keys — any key closes ")
-                .border_style(app.theme.chrome_style()),
+                .border_style(app.theme.border_style()),
         ),
         rect,
     );
