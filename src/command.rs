@@ -16,6 +16,11 @@ use crate::signal::Signal;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     Quit,
+    /// Let go of whatever is held — the selection — and quit only when there
+    /// is nothing left to let go of. What `Esc` means everywhere else here.
+    Back,
+    /// The list of every key, which the footer has room for six of.
+    ShowKeys,
 
     // Time.
     Scrub(i32),
@@ -72,6 +77,12 @@ impl Action {
     pub fn apply(self, app: &mut App) {
         match self {
             Self::Quit => app.should_quit = true,
+            Self::Back => {
+                if !app.deselect() {
+                    app.should_quit = true;
+                }
+            }
+            Self::ShowKeys => app.show_help = true,
 
             Self::Scrub(n) => app.history.scrub(n as isize),
             Self::ToggleLive => {

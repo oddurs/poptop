@@ -152,6 +152,14 @@ pub fn bar() -> Vec<Title> {
                 Do("Send KILL…", "X", Signal(crate::signal::Signal::Kill)),
             ],
         },
+        // The list of every key, where a reader looks for it. The bar names
+        // the commands it has room for; this is the rest, and the two are the
+        // same list — `KEY_HINTS` and the menu both come from the bindings.
+        Title {
+            name: "Help",
+            hotkey: 'H',
+            items: vec![Do("All keys", "?", ShowKeys)],
+        },
     ]
 }
 

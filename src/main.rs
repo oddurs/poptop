@@ -8,6 +8,8 @@
 //! any later version. See the LICENSE file for details.
 
 mod app;
+#[cfg(test)]
+mod budget;
 mod check;
 mod collect;
 mod command;
@@ -32,13 +34,17 @@ mod tree;
 mod ui;
 
 #[cfg(test)]
+mod docs_tests;
+#[cfg(test)]
 mod ui_tests;
 
 use app::App;
 use collect::{Collector, Needs, Platform, Source};
 use command::Action;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
@@ -169,6 +175,15 @@ OPTIONS:
     -h, --help      show this help
     -V, --version   show version
 
+EXIT STATUS:
+    0               done as asked
+    1               could not: a recorded day that cannot be read, a failure
+                    reading the machine, or a --check-theme verdict other
+                    than PASS
+    2               would not: a command line or setting that cannot be run
+                    as written, no state directory for a command that needs
+                    one, or the interactive monitor without a terminal
+
 HEADER:
     CLK             how much of the processor's nominal clock the kernel is
                     currently allowing. Shown only when it is below nominal,
@@ -191,8 +206,9 @@ HEADER:
                     hardware capping that reports through counters instead.
 
 KEYS:
-    q, Esc          quit. Esc in the filter or jump box, or at a signal
-                    prompt, leaves that instead.
+    q, Esc          quit. Esc backs out one level first: it leaves the
+                    filter or jump box, cancels a signal, or lets go of the
+                    selected process, and quits only when there is none.
     Left/Right      scrub through history (Shift for 10 at a time)
     b               jump to a moment, as atop's -b does. Takes a distance or
                     a time: `-2h`,
@@ -235,11 +251,25 @@ KEYS:
                     several times over on a many-core box, and none of them is
                     what anyone opened a monitor to find. The number hidden is
                     in the panel title. Does nothing on macOS, which has none.
-    i               show or hide the per-process disk IO columns. Shown by
-                    default where they can be read: `/proc/<pid>/io` needs
-                    CAP_SYS_PTRACE for other users' processes, so on a box
-                    running its services as root they would be a wall of
-                    dashes, and poptop withdraws them after one sample.
+    v               the next tab: memory (what each process's memory
+                    costs, what it has reserved, whether it is being paged
+                    in), then disk (the throughput columns, whatever the
+                    width), then back. The strip above the table names them,
+                    so this is the keyboard's way of doing what a click does.
+    y               expand the selected process into its threads — the
+                    selected one only, so the table does not grow ninefold.
+    C               show cgroups in place of processes: what each is using and
+                    how stalled it is. Linux, cgroup v2.
+    ?               list every key.
+    F10             open the menu bar: File, Edit, View, Go, Process, Help.
+                    Alt and a title's underlined letter opens that one
+                    directly; arrows move, Enter chooses, Esc closes. Every
+                    item names the key that also runs it, so the menu teaches
+                    itself out of use.
+    Tab             the next tab, and Shift-Tab the previous one. 1-9 open one
+                    by number. A tab is a set of columns and the sort that goes
+                    with them: CPU, memory, disk.
+    Enter           open the inspector on the selected process.
     x, X            send TERM (x) or KILL (X) to the selected process, after a
                     confirmation that names it — the pid is the part that gets
                     misread, and poptop knows the command line. Off unless
@@ -339,8 +369,13 @@ macro_rules! out {
 /// it. A warning nobody can see is not a warning, so the interactive path
 /// waits until the terminal is its own again.
 fn flush(warnings: &[config::Warning]) {
+    // Written rather than `eprintln!`ed: that panics when stderr cannot be
+    // written — a terminal that has gone away, `2>&-` — and a warning that
+    // cannot be delivered is not a reason to crash on the way out.
+    use std::io::Write as _;
+    let mut err = io::stderr().lock();
     for w in warnings {
-        eprintln!("poptop: {w}");
+        let _ = writeln!(err, "poptop: {w}");
     }
 }
 
@@ -446,6 +481,29 @@ fn command(args: &[String]) -> Result<Command, Usage> {
 
 /// Whether the terminal is in raw mode on the alternate screen, for [`exit`].
 static TERMINAL_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the terminal has gone away underneath poptop — an ssh session
+/// dropped, a terminal emulator killed — rather than been handed back.
+///
+/// Once it has, nothing may be written to it. Restoring it fails with EIO, and
+/// ratatui reports that failure with `eprintln!`, which panics when stderr is
+/// the dead terminal too: the hangup that should have been a clean exit ended
+/// in an abort (0115).
+static TERMINAL_GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `Ok(None)` if `r` failed because the terminal is gone, noting it. EIO is
+/// what a read or write of a terminal whose far side has closed returns, on
+/// both platforms; ENXIO is the device itself disappearing.
+fn while_attached<T>(r: io::Result<T>) -> io::Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if matches!(e.raw_os_error(), Some(5 | 6)) => {
+            TERMINAL_GONE.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
 
 /// Leave the process, giving the terminal back first if poptop has it.
 ///
@@ -663,6 +721,20 @@ fn main() -> io::Result<()> {
         Command::Tui { day } => day,
     };
 
+    // The monitor draws on a terminal and reads keys from one. Without both
+    // it used to panic inside ratatui, exit 101, and leave escape codes in
+    // whatever stdout was redirected to. Checked before anything is read, so
+    // a cron line that forgot `--once` costs nothing and says what it meant.
+    use std::io::IsTerminal as _;
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        fail(
+            &warnings,
+            "the monitor needs a terminal on stdin and stdout; for a script, \
+             `--once` prints a sample and `--export=json` every metric",
+            2,
+        );
+    }
+
     // Reported here rather than beside the other config warnings, because
     // these are about what you will *see*. Emitting them before the argument
     // paths branch put a note about the configured theme on top of
@@ -805,7 +877,11 @@ fn main() -> io::Result<()> {
         app.theme = app.theme.with_surfaces(base);
     }
 
-    let mut terminal = ratatui::init();
+    let mut terminal = ratatui::try_init().unwrap_or_else(|e| {
+        // Half an initialisation is still a changed terminal.
+        ratatui::restore();
+        fail(&warnings, format!("could not take the terminal: {e}"), 1)
+    });
     TERMINAL_TAKEN.store(true, std::sync::atomic::Ordering::Relaxed);
     show_cursor_on_panic();
     // Reported by every terminal poptop is likely to run in, and ignored until
@@ -832,9 +908,32 @@ fn main() -> io::Result<()> {
     if mouse {
         // Before the screen is restored, so a terminal left in mouse-reporting
         // mode is not what somebody has to work out after poptop exits.
+        //
+        // Attempted whatever became of the terminal: if it has gone this fails
+        // and is ignored, which is the same answer the restore below reaches
+        // the long way round.
         let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture);
     }
-    ratatui::restore();
+    // Given back if it is still there. If it has gone, restoring it fails and
+    // ratatui says so with `eprintln!`, which panics on a dead stderr — and so
+    // would the `Terminal`'s drop, which shows the cursor it hid. Neither is
+    // attempted: the terminal is not anyone's to give back any more.
+    //
+    // Found out here as well as in the loop. A hangup signal and a dead
+    // terminal arrive together, and when the signal wins the race the loop
+    // ends normally without ever reading the EIO — so the restore is what
+    // discovers it, and must not report it on the terminal it failed to reach.
+    let gone = TERMINAL_GONE.load(std::sync::atomic::Ordering::Relaxed)
+        || while_attached(ratatui::try_restore())
+            .map(|r| r.is_none())
+            .unwrap_or_else(|e| {
+                use std::io::Write as _;
+                let _ = writeln!(io::stderr(), "poptop: could not restore the terminal: {e}");
+                false
+            });
+    if gone {
+        std::mem::forget(terminal);
+    }
     TERMINAL_TAKEN.store(false, std::sync::atomic::Ordering::Relaxed);
     warnings.extend(said.into_iter().map(config::Warning));
     // A source that is only opened when a view is — an exit listener, a cgroup
@@ -1344,19 +1443,65 @@ fn run(
     // whole graph as seams. The interval is a schedule, so schedule against it.
     let mut next_sample = Instant::now() + interval;
 
-    loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+    // SIGTERM is how a service manager or `kill` asks a program to stop, and
+    // SIGHUP is the terminal going away. Either used to end the process on
+    // the spot, leaving the shell in raw mode on the alternate screen and the
+    // history unsaved. Now each is a request to quit, answered like `q`.
+    let stop = Arc::new(AtomicBool::new(false));
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+        signal_hook::flag::register(sig, stop.clone())?;
+    }
 
-        // Poll with whatever is left of the sample interval: input stays
-        // responsive without spinning, and sampling stays on schedule.
-        let timeout = next_sample.saturating_duration_since(Instant::now());
-        if event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    handle_key(app, key.code, key.modifiers);
-                }
-                Event::Mouse(m) => handle_mouse(app, m, terminal.get_frame().area()),
-                _ => {}
+    // How the pty tests prove a panic gives the terminal back. Read only by a
+    // debug build, so no release binary has a way to be told to die.
+    #[cfg(debug_assertions)]
+    let mut forced = std::env::var_os("POPTOP_PANIC_AFTER_FIRST_FRAME").is_some();
+    loop {
+        // A terminal that has gone away is a request to quit, like the
+        // hangup signal that comes with it — not an error to report on it.
+        if while_attached(terminal.draw(|f| ui::draw(f, app)))?.is_none() {
+            return Ok(());
+        }
+        #[cfg(debug_assertions)]
+        if std::mem::take(&mut forced) {
+            panic!("forced by POPTOP_PANIC_AFTER_FIRST_FRAME");
+        }
+
+        // Wait for a key until the next sample is due, in slices short enough
+        // to notice a stop request: the signal handler only sets a flag, and
+        // the poll underneath is restarted rather than interrupted by it.
+        let key = loop {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let left = next_sample.saturating_duration_since(Instant::now());
+            let Some(ready) = while_attached(event::poll(left.min(STOP_CHECK)))? else {
+                return Ok(());
+            };
+            if ready {
+                let Some(event) = while_attached(event::read())? else {
+                    return Ok(());
+                };
+                break match event {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => Some(k),
+                    // Answered here rather than carried out of the loop like a
+                    // key. A click is a question about the layout the last
+                    // frame drew, and the frame is still on screen — the
+                    // redraw at the top of the loop is what shows the answer.
+                    Event::Mouse(m) => {
+                        handle_mouse(app, m, terminal.get_frame().area());
+                        None
+                    }
+                    _ => None,
+                };
+            }
+            if left <= STOP_CHECK {
+                break None;
+            }
+        };
+        if let Some(key) = key {
+            for k in rejoin(key, next_key) {
+                handle_key(app, k.code, k.modifiers);
             }
         }
 
@@ -1431,6 +1576,91 @@ fn run(
 /// Exposed because the modal boxes are state machines: what `Ctrl-C` does while
 /// the jump box is open, and what an arrow key does to the last jump's answer,
 /// are properties of the handler and cannot be checked by poking the `App`.
+/// How often a wait for input looks at the stop flag.
+const STOP_CHECK: Duration = Duration::from_millis(100);
+
+/// How long a lone Esc waits for the rest of an escape sequence.
+///
+/// Long enough for the next read over a slow link or a busy machine, short
+/// enough that a real Esc, which backs out or quits, is not felt to lag. Vim's
+/// `ttimeoutlen` in `defaults.vim`. 50ms, Neovim's, was not enough on a loaded
+/// CI runner: the second half arrived after it and the arrow quit poptop.
+const ESC_WAIT: Duration = Duration::from_millis(100);
+
+/// The next key press, if one arrives within [`ESC_WAIT`].
+fn next_key() -> Option<KeyEvent> {
+    loop {
+        if !event::poll(ESC_WAIT).ok()? {
+            return None;
+        }
+        match event::read().ok()? {
+            Event::Key(k) if k.kind == KeyEventKind::Press => return Some(k),
+            Event::Key(_) => continue,
+            _ => return None,
+        }
+    }
+}
+
+/// A key press, with an escape sequence that arrived split across two reads
+/// put back together.
+///
+/// The terminal sends Down as three bytes, `ESC [ B`. When they arrive in one
+/// read, crossterm sees Down. Over a slow link they can arrive as `ESC`, then
+/// `[B`, and crossterm, seeing an `ESC` with nothing after it, reports Esc,
+/// then `[`, then `B`. Esc backs out of whatever is open, and with nothing
+/// open it quits. So a lone Esc asks for what follows, and a
+/// `[` or `O` straight after it is read as the rest of a sequence. A sequence
+/// this does not know is dropped whole, rather than half of it being typed.
+fn rejoin(first: KeyEvent, mut next: impl FnMut() -> Option<KeyEvent>) -> Vec<KeyEvent> {
+    let plain = |k: &KeyEvent| k.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+    if first.code != KeyCode::Esc || !first.modifiers.is_empty() {
+        return vec![first];
+    }
+    let Some(second) = next() else {
+        return vec![first];
+    };
+    let intro = match second.code {
+        KeyCode::Char(c @ ('[' | 'O')) if plain(&second) => c,
+        _ => return vec![first, second],
+    };
+    // Parameters, then one final byte: `A`, `5~`, `1;2C`.
+    let mut params = String::new();
+    let final_byte = loop {
+        match next() {
+            Some(KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            }) if params.len() < 8 => {
+                if matches!(c, '0'..='9' | ';') {
+                    params.push(c);
+                } else {
+                    break c;
+                }
+            }
+            // Cut off, or not a sequence after all: nothing of it is a key.
+            _ => return Vec::new(),
+        }
+    };
+    let modifiers = match params.split_once(';').map(|(_, m)| m) {
+        Some("2") => KeyModifiers::SHIFT,
+        Some("3") => KeyModifiers::ALT,
+        Some("5") => KeyModifiers::CONTROL,
+        _ => KeyModifiers::NONE,
+    };
+    let code = match (intro, params.split(';').next().unwrap_or(""), final_byte) {
+        (_, _, 'A') => KeyCode::Up,
+        (_, _, 'B') => KeyCode::Down,
+        (_, _, 'C') => KeyCode::Right,
+        (_, _, 'D') => KeyCode::Left,
+        (_, _, 'H') | ('[', "1" | "7", '~') => KeyCode::Home,
+        (_, _, 'F') | ('[', "4" | "8", '~') => KeyCode::End,
+        ('[', "5", '~') => KeyCode::PageUp,
+        ('[', "6", '~') => KeyCode::PageDown,
+        _ => return Vec::new(),
+    };
+    vec![KeyEvent::new(code, modifiers)]
+}
+
 #[cfg(test)]
 pub fn handle_key_for_test(app: &mut App, code: KeyCode) {
     handle_key(app, code, KeyModifiers::NONE);
@@ -1448,6 +1678,15 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers) {
     // `c` left the reflexive escape from a full-screen program doing nothing.
     if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
         app.should_quit = true;
+        return;
+    }
+    // The key list is modal and any key puts it away — without also being
+    // acted on, so `q` closes it rather than quitting behind it. Ahead of the
+    // menu because it is the shallower surface: it holds no selection and
+    // nothing is lost by dismissing it, so a reader who opened it and then
+    // reached for `F10` gets the bar on the next press rather than nothing.
+    if app.show_help {
+        app.show_help = false;
         return;
     }
     // The bar, before every mode below it. F10 is the convention older than
@@ -1753,8 +1992,16 @@ pub fn action_for(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
         1
     };
     Some(match code {
-        KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        KeyCode::Char('q') => Action::Quit,
+        // Back out one level, as Esc does from the filter and the jump box: a
+        // selection first, then the program. It was a second `q`, and a key
+        // every other program uses to undo is the wrong one to spend on
+        // "quit" while there is something to let go of.
+        KeyCode::Esc => Action::Back,
         KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => Action::Quit,
+        // The whole list, for the keys the footer has no room to hint at and
+        // the menu bar puts one dropdown away.
+        KeyCode::Char('?') => Action::ShowKeys,
 
         KeyCode::Left | KeyCode::Char('h') => Action::Scrub(-step),
         KeyCode::Right | KeyCode::Char('l') => Action::Scrub(step),
@@ -2036,6 +2283,31 @@ mod tests {
     }
 
     #[test]
+    fn a_selection_is_a_mode_and_esc_leaves_it_before_it_quits() {
+        // 0102: the arrow keys set a selection and nothing cleared it, so once
+        // a process had been picked poptop followed it for the rest of the run
+        // — `d` showed its history rather than the machine's, and after it
+        // exited the table kept saying it was gone. Esc backs out one level, as
+        // it does from the filter and the jump box: first the selection, and
+        // what hangs off it; then the program. `q` still quits at once.
+        let mut a = App::new(60);
+        a.push(store::tests_support::big_sample(1.0, 3));
+        keys(&mut a, &[KeyCode::Down, KeyCode::Char('d')]);
+        assert!(a.selected.is_some() && a.detail);
+        keys(&mut a, &[KeyCode::Esc]);
+        assert!(a.selected.is_none(), "Esc did not let go of the process");
+        assert!(!a.detail, "its history outlived the selection");
+        assert!(!a.should_quit, "Esc quit with something selected");
+        keys(&mut a, &[KeyCode::Esc]);
+        assert!(a.should_quit, "Esc with nothing selected no longer quits");
+
+        let mut a = App::new(60);
+        a.push(store::tests_support::big_sample(1.0, 3));
+        keys(&mut a, &[KeyCode::Down, KeyCode::Char('q')]);
+        assert!(a.should_quit, "q waited for the selection to be cleared");
+    }
+
+    #[test]
     fn a_signal_prompt_is_answered_by_one_key_and_only_y_sends() {
         let mut a = app();
         a.signals = true;
@@ -2077,5 +2349,177 @@ mod tests {
         assert!(!a.show_io);
         a.toggle_io();
         assert!(a.show_io && a.needs().asked(Source::Io));
+    }
+
+    /// A live monitor with a real collector, signals on, and the newest sample
+    /// taken after `child` started.
+    fn watching(child: &std::process::Child) -> (App, Platform) {
+        let mut collector = Platform::new().expect("no collector");
+        let mut a = App::new(60);
+        a.signals = true;
+        // Two samples, as the monitor has by its second second; the pid is
+        // checked in the newest.
+        for _ in 0..2 {
+            let s = collector.sample(a.needs()).expect("no sample");
+            a.push(s);
+        }
+        assert!(
+            a.history
+                .newest()
+                .is_some_and(|s| s.procs.iter().any(|p| p.pid == child.id() as i32)),
+            "the collector did not see the child"
+        );
+        (a, collector)
+    }
+
+    /// Select one process the way a person would: filter to its pid, then Down.
+    fn select(a: &mut App, pid: u32) {
+        keys(a, &[KeyCode::Char('/')]);
+        for c in format!("pid = {pid}").chars() {
+            keys(a, &[KeyCode::Char(c)]);
+        }
+        keys(a, &[KeyCode::Enter, KeyCode::Down]);
+    }
+
+    fn sleeper() -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("cannot run sleep")
+    }
+
+    #[test]
+    fn x_then_y_signals_a_process_the_collector_found_and_it_receives_it() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child = sleeper();
+        let (mut a, _collector) = watching(&child);
+        select(&mut a, child.id());
+        keys(&mut a, &[KeyCode::Char('x')]);
+        let p = a.pending.as_ref().expect("x asked nothing");
+        assert_eq!(p.pid, child.id() as i32, "x asked about another process");
+        assert_eq!(&*p.name, "sleep");
+        keys(&mut a, &[KeyCode::Char('y')]);
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(15), "the child did not die of TERM");
+        assert_eq!(
+            a.signal_note.as_deref(),
+            Some(&*format!("sent TERM to sleep (pid {})", child.id()))
+        );
+    }
+
+    #[test]
+    fn a_stale_identity_is_refused_by_name_and_the_process_is_untouched() {
+        // The pid a reader chose now belongs to another process: the one on
+        // screen started at a different moment. Arranged with a real process
+        // by asking about its pid with the start time of an earlier one, since
+        // making the kernel hand out a particular pid again needs root.
+        let mut child = sleeper();
+        let (mut a, _collector) = watching(&child);
+        select(&mut a, child.id());
+        keys(&mut a, &[KeyCode::Char('X')]);
+        let p = a.pending.as_mut().expect("X asked nothing");
+        p.started = p.started.map(|t| t - 1);
+        p.name = "postgres".into();
+        keys(&mut a, &[KeyCode::Char('y')]);
+        let alive = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            a.signal_note.as_deref(),
+            Some(&*format!(
+                "pid {} is sleep now, not postgres — nothing was sent",
+                child.id()
+            ))
+        );
+        assert!(alive, "a process that was not chosen was signalled");
+    }
+
+    #[test]
+    fn a_process_that_exited_after_the_sample_is_refused_and_not_signalled() {
+        // Exited and reaped after the newest sample, which still shows it.
+        // The sample says yes; the kernel, asked at the moment of sending, says
+        // it is gone — or, if its pid has been handed on already, that it is
+        // another process. Either is a refusal.
+        let mut child = sleeper();
+        let (mut a, _collector) = watching(&child);
+        select(&mut a, child.id());
+        keys(&mut a, &[KeyCode::Char('x')]);
+        assert!(a.pending.is_some());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        keys(&mut a, &[KeyCode::Char('y')]);
+        let note = a.signal_note.clone().unwrap_or_default();
+        assert!(
+            note == format!("sleep (pid {}) is no longer running", child.id())
+                || note.contains("is another process now"),
+            "{note}"
+        );
+    }
+
+    fn k(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// `rejoin` fed the keys crossterm reports for `rest` arriving after a
+    /// lone ESC: each byte a character, uppercase with Shift.
+    fn after_esc(rest: &str) -> Vec<KeyEvent> {
+        let mut rest: std::collections::VecDeque<KeyEvent> = rest
+            .chars()
+            .map(|c| {
+                let shift = if c.is_ascii_uppercase() {
+                    KeyModifiers::SHIFT
+                } else {
+                    KeyModifiers::NONE
+                };
+                KeyEvent::new(KeyCode::Char(c), shift)
+            })
+            .collect();
+        rejoin(k(KeyCode::Esc), || rest.pop_front())
+    }
+
+    #[test]
+    fn an_escape_sequence_split_after_its_esc_is_put_back_together() {
+        let rows: &[(&str, KeyCode, KeyModifiers)] = &[
+            ("[A", KeyCode::Up, KeyModifiers::NONE),
+            ("[B", KeyCode::Down, KeyModifiers::NONE),
+            ("[C", KeyCode::Right, KeyModifiers::NONE),
+            ("[D", KeyCode::Left, KeyModifiers::NONE),
+            ("OA", KeyCode::Up, KeyModifiers::NONE),
+            ("[H", KeyCode::Home, KeyModifiers::NONE),
+            ("[F", KeyCode::End, KeyModifiers::NONE),
+            ("[1~", KeyCode::Home, KeyModifiers::NONE),
+            ("[4~", KeyCode::End, KeyModifiers::NONE),
+            ("[5~", KeyCode::PageUp, KeyModifiers::NONE),
+            ("[6~", KeyCode::PageDown, KeyModifiers::NONE),
+            // Shift-Right is ten samples at a time.
+            ("[1;2C", KeyCode::Right, KeyModifiers::SHIFT),
+            ("[1;2D", KeyCode::Left, KeyModifiers::SHIFT),
+        ];
+        for (rest, code, mods) in rows {
+            assert_eq!(
+                after_esc(rest),
+                vec![KeyEvent::new(*code, *mods)],
+                "ESC then {rest}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_esc_is_still_esc_and_nothing_half_read_is_typed() {
+        // Alone, it is Esc: nothing followed within the wait.
+        assert_eq!(after_esc(""), vec![k(KeyCode::Esc)]);
+        // Followed by something that does not start a sequence: both.
+        assert_eq!(after_esc("q"), vec![k(KeyCode::Esc), k(KeyCode::Char('q'))]);
+        // A sequence cut off, or one poptop has no key for: dropped whole,
+        // not typed into a filter as `[3` and `~`.
+        assert_eq!(after_esc("["), vec![]);
+        assert_eq!(after_esc("[5"), vec![]);
+        assert_eq!(after_esc("[3~"), vec![]);
+        assert_eq!(after_esc("[123456789~"), vec![]);
+        // Only a bare Esc waits; anything else is itself.
+        let up = k(KeyCode::Up);
+        assert_eq!(rejoin(up, || panic!("waited after Up")), vec![up]);
+        let alt_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT);
+        assert_eq!(rejoin(alt_esc, || panic!("waited")), vec![alt_esc]);
     }
 }

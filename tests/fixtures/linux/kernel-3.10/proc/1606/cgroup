@@ -1,0 +1,5 @@
+5:pids:/user.slice/user-1001.slice/user@1001.service/app.slice/dbus.service
+4:memory:/user.slice/user-1001.slice/user@1001.service/app.slice/dbus.service
+3:cpu,cpuacct:/user.slice/user-1001.slice/user@1001.service/app.slice/dbus.service
+2:blkio:/user.slice/user-1001.slice/user@1001.service/app.slice/dbus.service
+1:name=systemd:/user.slice/user-1001.slice/user@1001.service/app.slice/dbus.service

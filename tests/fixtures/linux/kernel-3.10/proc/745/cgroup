@@ -1,0 +1,5 @@
+5:pids:/azure.slice/walinuxagent.service
+4:memory:/azure.slice/walinuxagent.service
+3:cpu,cpuacct:/azure.slice/walinuxagent.service
+2:blkio:/azure.slice/walinuxagent.service
+1:name=systemd:/azure.slice/walinuxagent.service

@@ -17,12 +17,14 @@ set -eu
 
 usage() {
     cat <<'USAGE'
-usage: ./check [--linux] [--quick] [--fuzz[=SECONDS]]
+usage: ./check [--linux] [--quick] [--perf] [--fuzz[=SECONDS]]
 
   (no flags)  the host toolchain only
   --linux     also run everything inside rust:1-slim, which is the only way a
               Mac compiles the /proc backend
   --quick     fmt, build and test; skip clippy and the live-data smoke tests
+  --perf      also hold every performance budget (src/budget.rs), in a
+              release build: sampling, drawing, the store, startup, memory
   --fuzz      also run every fuzz target for SECONDS each (default 60), from
               fuzz/seeds; needs a nightly toolchain and cargo-fuzz. With
               --linux, the /proc targets run in the container too. A crash
@@ -35,11 +37,13 @@ USAGE
 
 linux=no
 quick=no
+perf=no
 fuzz=0
 for arg in "$@"; do
     case "$arg" in
         --linux) linux=yes ;;
         --quick) quick=yes ;;
+        --perf) perf=yes ;;
         --fuzz) fuzz=60 ;;
         --fuzz=*) fuzz=${arg#--fuzz=} ;;
         -h|--help) usage; exit 0 ;;
@@ -76,12 +80,21 @@ run() {
 # Nothing published from here carries a note about what wrote it. Checked on
 # every run, because the commit-msg hook only fires for people who wired it up
 # and the tracked files are what a reader actually sees.
+#
+# Untracked-but-not-ignored files count too. CI scans what is committed, so a
+# new file that has not been `git add`ed yet passes here and fails there — one
+# push after the moment the fix was free. `--others --exclude-standard` is the
+# difference.
 printf '  %-34s' "no tool attribution"
-if git ls-files -z | grep -zv '^\.githooks/' | xargs -0 .githooks/no-attribution >/dev/null 2>&1; then
+attributable() {
+    git ls-files -z --cached --others --exclude-standard |
+        grep -zv '^\.githooks/'
+}
+if attributable | xargs -0 .githooks/no-attribution >/dev/null 2>&1; then
     echo ok
 else
     echo FAILED
-    git ls-files -z | grep -zv '^\.githooks/' | xargs -0 .githooks/no-attribution 2>&1 | sed 's/^/    /'
+    attributable | xargs -0 .githooks/no-attribution 2>&1 | sed 's/^/    /'
     fail=1
 fi
 
@@ -123,6 +136,16 @@ if [ "$quick" = no ]; then
         'set -o pipefail 2>/dev/null || true
          cargo run --release -- --once | head -1 >/dev/null
          cargo run --release -- --help | head -1 >/dev/null'
+fi
+
+# Budgets fail here and are only reported in CI, where a shared runner's
+# timing is noise. Release, and one test at a time: they time each other.
+if [ "$perf" = yes ]; then
+    echo
+    echo "perf: every budget, release"
+    run "budgets hold" cargo test --release --bin poptop budget:: -- --ignored --test-threads=1
+    cargo test --release --bin poptop budget:: -- --ignored --test-threads=1 --nocapture 2>/dev/null |
+        sed -n 's/^\(test budget::[a-z_]* \.\.\. \)\{0,1\}  \([a-z]*:.* of .*\)$/    \2/p'
 fi
 
 if [ "$linux" = yes ]; then

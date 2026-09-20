@@ -176,6 +176,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "filedescriptor",
  "mio",
  "parking_lot",
  "rustix",
@@ -913,6 +914,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "ratatui",
+ "signal-hook",
  "sysinfo",
  "unicode-width",
 ]

@@ -1,0 +1,5 @@
+5:pids:/system.slice/chrony.service
+4:memory:/system.slice/chrony.service
+3:cpu,cpuacct:/system.slice/chrony.service
+2:blkio:/system.slice/chrony.service
+1:name=systemd:/system.slice/chrony.service

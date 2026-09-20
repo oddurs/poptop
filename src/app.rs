@@ -89,8 +89,18 @@ impl Sort {
     pub fn compare_with(self, sm: &Smoothing, a: &ProcSample, b: &ProcSample) -> Ordering {
         match self {
             // Descending for resource columns: the interesting rows go top.
-            Sort::Cpu => sm.cpu(b).total_cmp(&sm.cpu(a)),
-            Sort::Mem => sm.rss(b).cmp(&sm.rss(a)),
+            // A process the kernel said nothing about goes after one it did,
+            // not among the idle — its zeros were never measured. Ahead of the
+            // figures rather than folded into them, so it holds whether the
+            // figure compared is the raw one or the average.
+            Sort::Cpu => a
+                .unmeasured()
+                .cmp(&b.unmeasured())
+                .then(sm.cpu(b).total_cmp(&sm.cpu(a))),
+            Sort::Mem => a
+                .unmeasured()
+                .cmp(&b.unmeasured())
+                .then(sm.rss(b).cmp(&sm.rss(a))),
             // Unreadable sorts last, not as zero. A process whose IO could not
             // be read is not an idle one, and putting it among the idle ones
             // would be the fabricated zero this codebase refuses everywhere
@@ -483,6 +493,8 @@ pub struct App {
     /// What the last signal did, or why it did not.
     pub signal_note: Option<String>,
     pub should_quit: bool,
+    /// Whether the `?` list of every key is open. See `ui::draw_key_list`.
+    pub show_help: bool,
     pub tree: bool,
     /// Whether the IO columns are shown.
     pub show_io: bool,
@@ -628,6 +640,7 @@ impl App {
             pending: None,
             signal_note: None,
             should_quit: false,
+            show_help: false,
             tree: false,
             // On by default. The header may have just told the user their
             // machine is blocked on IO, and the table is where the culprit is
@@ -761,6 +774,25 @@ impl App {
         };
     }
 
+    /// Let go of the selected process, and of the view that was about it.
+    /// `false` if nothing was selected.
+    ///
+    /// The one way back to following nothing. The arrow keys set a selection
+    /// and nothing cleared it, so a process picked once was followed for the
+    /// rest of the run (0102). The per-process history goes with it: it is a
+    /// view *of* the selection, and left on it would show the machine's
+    /// timeline captioned with an instruction to pick a process.
+    ///
+    /// Threads stay as they are. `show_threads` is a way of looking at
+    /// whichever process is selected next, not a fact about this one.
+    pub fn deselect(&mut self) -> bool {
+        if self.selected.take().is_none() {
+            return false;
+        }
+        self.detail = false;
+        true
+    }
+
     /// Ask to signal the selected process, if signalling is allowed at all.
     ///
     /// Opens a question rather than acting: the number is the part that gets
@@ -832,6 +864,13 @@ impl App {
     }
 
     /// The process under the cursor in the sample under the cursor.
+    #[cfg(test)]
+    pub fn selected_name_for_test(&self) -> Arc<str> {
+        self.selected_process()
+            .map(|p| p.name)
+            .expect("nothing selected")
+    }
+
     fn selected_process(&self) -> Option<ProcSample> {
         // A *process*, not a group. `g` folds rows together and a folded row is
         // several processes; signalling "the one under the cursor" there would
@@ -1566,6 +1605,77 @@ impl App {
         agreed.filter(|c| *c != Constraint::Disk || self.io_collected())
     }
 
+    /// The interface the header and the NET graph follow: the one that carried
+    /// the most over the last [`Self::NET_WINDOW`] samples, never loopback.
+    ///
+    /// Chosen over a window, not per sample. Per sample, the header named
+    /// `lo0` one second and `en0` the next, and the graph was worse — one line
+    /// spliced from whichever interface won each sample, so a spike could be
+    /// one interface's and the trough beside it another's (0108). Over a
+    /// minute, the choice moves only when another interface has really taken
+    /// over. Ending at the cursor, like every other window here, so scrubbing
+    /// back follows the interface that was busy then.
+    ///
+    /// Ties go to the interface listed first in the newest sample: on an idle
+    /// machine every interface is at zero, and naming whichever sorted last
+    /// reads as a claim about which one poptop is watching.
+    pub fn headline_link(&self) -> Option<std::sync::Arc<str>> {
+        let mut totals: Vec<(&std::sync::Arc<str>, u64)> = Vec::new();
+        for s in self.history.window(Self::NET_WINDOW) {
+            for l in s.net.iter().flat_map(|n| &n.links) {
+                if l.is_loopback() {
+                    continue;
+                }
+                match totals.iter_mut().find(|(n, _)| **n == l.name) {
+                    Some((_, t)) => *t = t.saturating_add(l.bytes()),
+                    None => totals.push((&l.name, l.bytes())),
+                }
+            }
+        }
+        let mut best: Option<(&std::sync::Arc<str>, u64)> = None;
+        for (n, t) in totals {
+            if best.is_none_or(|(_, b)| t > b) {
+                best = Some((n, t));
+            }
+        }
+        best.map(|(n, _)| n.clone())
+    }
+
+    /// Samples the headline interface is chosen over: a minute at the default
+    /// interval — long enough not to flicker, short enough to follow a change.
+    pub const NET_WINDOW: usize = 60;
+
+    /// The program crowding the table, if one is: the name with the most
+    /// processes in the displayed sample, when there are at least
+    /// [`Self::CROWD`] of them and the table is neither grouped nor a tree.
+    ///
+    /// For offering `g`, never for acting on it (0112). Across the sample
+    /// rather than the rows on screen, so scrolling does not make the offer
+    /// come and go.
+    pub fn crowding(&self) -> Option<(std::sync::Arc<str>, usize)> {
+        if self.tree || self.group != Grouping::Off {
+            return None;
+        }
+        let s = self.history.current()?;
+        let mut counts: Vec<(&std::sync::Arc<str>, usize)> = Vec::new();
+        for p in s
+            .procs
+            .iter()
+            .filter(|p| self.show_kernel || !p.is_kernel_thread())
+        {
+            match counts.iter_mut().find(|(n, _)| **n == p.name) {
+                Some((_, c)) => *c += 1,
+                None => counts.push((&p.name, 1)),
+            }
+        }
+        let (name, n) = counts.into_iter().max_by_key(|(_, c)| *c)?;
+        (n >= Self::CROWD).then(|| (name.clone(), n))
+    }
+
+    /// How many processes of one name make a table crowded: five, which is a
+    /// fifth of a normal terminal's rows.
+    pub const CROWD: usize = 5;
+
     /// The one user every process belongs to, if there is only one.
     ///
     /// `USER` was measured at ten columns — more than `CPU%` — to repeat the
@@ -1596,7 +1706,13 @@ impl App {
         // about the lines directly under it.
         let shown = |p: &&ProcSample| self.show_kernel || !p.is_kernel_thread();
         for s in self.history.window(Self::CONSTANT_FOR) {
-            for p in s.procs.iter().filter(shown) {
+            // An owner the kernel would not name is not a second user. On
+            // macOS every process this user may not read comes back as `?` —
+            // two hundred of them on an ordinary Mac — so the column never
+            // folded, and ten columns said `oddurs` twenty times beside a
+            // command elided for want of them (0111). Those rows already say
+            // they could not be read, in every figure; the title says how many.
+            for p in s.procs.iter().filter(shown).filter(|p| !p.owner_unknown()) {
                 any = true;
                 match only {
                     None => only = Some(&p.user),
@@ -1606,6 +1722,18 @@ impl App {
             }
         }
         any.then(|| only.cloned()).flatten()
+    }
+
+    /// Processes in the displayed sample whose owner the kernel would not name,
+    /// among those the table shows. See [`Self::one_user`].
+    pub fn unknown_owners(&self) -> usize {
+        self.history.current().map_or(0, |s| {
+            s.procs
+                .iter()
+                .filter(|p| self.show_kernel || !p.is_kernel_thread())
+                .filter(|p| p.owner_unknown())
+                .count()
+        })
     }
 
     /// How many samples a column must have been constant over before its width

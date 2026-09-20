@@ -190,6 +190,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     // sizing it to the table clipped the measurements off the bottom — which
     // are the point, since they are the part Activity Monitor cannot do.
     draw_inspector(f, f.area(), app);
+    // The whole list of keys, which `?` and the Help menu both ask for. Over
+    // the inspector, because it is the more recent request and covering it is
+    // the only honest way to answer one modal asked for from another.
+    if app.show_help {
+        draw_key_list(f, app);
+    }
     // Last, over everything: a dropdown that the table drew on top of would be
     // a menu you can open and cannot read.
     draw_dropdown(f, f.area(), app);
@@ -1603,7 +1609,18 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // explains a slow machine — so it sits below memory and is given up before
     // it. The interface is named because a laptop has twenty-odd and only one
     // of them is carrying anything.
-    if let Some(l) = s.net.as_ref().and_then(NetStat::busiest) {
+    //
+    // Which interface is chosen over a window, not per sample, and never
+    // loopback — see `App::headline_link`. The two directions are labelled:
+    // `46.4K/s 2.1M/s` could be either way round.
+    if let Some(name) = app.headline_link() {
+        let link = s.net.iter().flat_map(|n| &n.links).find(|l| l.name == name);
+        let (rx, tx) = link.map_or((0, 0), |l| (l.rx, l.tx));
+        let (down, up) = if app.glyphs == crate::glyphs::GlyphSet::Ascii {
+            ("rx ", "tx ")
+        } else {
+            ("↓", "↑")
+        };
         figures.push(Figure {
             group: Group::Network,
             rank: 55,
@@ -1611,13 +1628,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                 // The name in a fixed cell too: a laptop's busiest interface
                 // flips between `lo0` and `en0` from second to second, and the
                 // figure cannot change width when it does.
-                Span::styled(
-                    format!("{:<IFACE_W$} ", elide_middle(&l.name, IFACE_W)),
-                    dim,
-                ),
-                Span::styled(fmt_rate(l.rx), dim),
+                Span::styled(format!("{:<IFACE_W$} ", elide_middle(&name, IFACE_W)), dim),
+                Span::styled(format!("{down}{}", fmt_rate(rx)), dim),
                 Span::styled(" ", dim),
-                Span::styled(fmt_rate(l.tx), dim),
+                Span::styled(format!("{up}{}", fmt_rate(tx)), dim),
             ],
         });
     }
@@ -2169,19 +2183,25 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // The busiest link rather than the sum, matching the header figure and for
     // the same reason: a machine can have a dozen interfaces and the panel has
     // room for one row, so the one carrying the most is the honest summary.
-    if app.history.current().is_some_and(|s| s.net.is_some()) {
+    //
+    // One interface for the whole line — the header's, chosen over a window.
+    // Picking the busiest per sample spliced interfaces together: the line was
+    // lo0 where lo0 won and en0 where en0 did (0108).
+    if let Some(name) = app
+        .headline_link()
+        .filter(|_| app.history.current().is_some_and(|s| s.net.is_some()))
+    {
         candidates.push((
             "NET",
             window
                 .iter()
                 .map(|s| {
                     s.net
-                        .as_ref()
-                        .and_then(|n| n.busiest())
-                        // `Link::bytes`, not `rx + tx`: that function is what
-                        // `busiest` selects on, so re-deriving it here would
-                        // keep the "matches the header figure" claim true in
-                        // two places instead of one.
+                        .iter()
+                        .flat_map(|n| &n.links)
+                        .find(|l| l.name == name)
+                        // `Link::bytes`, not `rx + tx`: the same measure the
+                        // headline interface is chosen by.
                         .map_or(0.0, |l| l.bytes() as f32)
                 })
                 .collect(),
@@ -2544,6 +2564,49 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         Line::from(spans)
     }));
     f.render_widget(Paragraph::new(all), full);
+
+    // The time before the buffer starts, said rather than left blank.
+    //
+    // At the widest zoom the graph is anchored right and the left of the panel
+    // is time from before there was any history — meaningful, as
+    // `effective_zoom` says, and indistinguishable from a graph with nothing to
+    // show. For the first minutes that is most of the biggest panel (0109).
+    // Stretching the time axis to fill it was the other answer, and the wrong
+    // one: a scale that changed as history arrived would reshape every line on
+    // screen during exactly the minutes someone is watching an incident.
+    //
+    // A clock time rather than "poptop started", because a replayed day's
+    // buffer starts where its log does, not where this process did.
+    //
+    // Placed against `area`, the content rect the rows are drawn in, so the
+    // margin is counted once: the rows carry it as padding and this carries it
+    // in its origin.
+    let used = shown.div_ceil(zoom).div_ceil(spc);
+    let empty = graph_w.saturating_sub(used);
+    if window_start == 0
+        && let Some(first) = window.first()
+    {
+        let since = crate::log::clock_string(first.at);
+        let label = [
+            format!("no history before {since} — it fills from the right"),
+            format!("no history before {since}"),
+            format!("before {since}"),
+        ]
+        .into_iter()
+        .find(|l| cols(l) + 4 <= empty);
+        if let Some(label) = label {
+            let w = cols(&label);
+            f.render_widget(
+                Paragraph::new(Span::styled(label, app.theme.dim_style())),
+                Rect {
+                    x: area.x + (gutter + (empty - w) / 2) as u16,
+                    y: area.y + 1 + (graph_rows / 2) as u16,
+                    width: w as u16,
+                    height: 1,
+                },
+            );
+        }
+    }
 }
 
 /// A peak that is a value, or `None` for a cell no sample landed in.
@@ -3270,7 +3333,14 @@ fn cpu_shape(show_io: bool, show_user: bool) -> TableShape {
         vsize: false,
         majflt: false,
         grow: false,
+        rss: true,
+        state: true,
+        pid: true,
         spark: true,
+        // The widest the table can be, which is what this shape is for: the
+        // question it answers is where the columns stop fitting, and a
+        // buffer that happens to be flat today is not a width.
+        flat: false,
         user: show_user,
         cid: false,
     }
@@ -3835,6 +3905,7 @@ pub fn table_header_y(table: Rect) -> u16 {
 /// guessed `show_user` — so a click on `COMMAND` landed on the column before it
 /// and sorted by something else. A hit box computed separately from the column
 /// it is over agrees until it does not.
+#[derive(Debug)]
 pub struct TableShape {
     pub bars: bool,
     pub thr: bool,
@@ -3855,7 +3926,25 @@ pub struct TableShape {
     /// The per-process history. The thing no other monitor draws, and so the
     /// last picture given up — but it is a picture, and a figure beside it
     /// that has been truncated to keep it is a worse trade than losing it.
+    /// The resident figure, the state letter and the pid.
+    ///
+    /// Droppable, and last of all, because below about sixty columns the
+    /// alternative is worse than losing them: every column here is a fixed
+    /// `Length`, ratatui squeezes a set that does not fit rather than dropping
+    /// any, and a squeezed right-aligned figure loses its *leading* digits —
+    /// `100.9` renders as `.9` (0105). A column that is not there says nothing;
+    /// a column that is there and wrong says something false.
+    pub rss: bool,
+    pub state: bool,
+    pub pid: bool,
     pub spark: bool,
+    /// Why `spark` is off, when the reason is the data rather than the width.
+    ///
+    /// The column is dropped by two different rules and the title says so only
+    /// for one of them, so the shape carries which — recomputing the movement
+    /// test beside the title would be a second fold over the buffer every
+    /// frame, and a second chance for the two answers to disagree.
+    pub flat: bool,
     pub user: bool,
     pub cid: bool,
 }
@@ -3865,6 +3954,11 @@ pub struct TableShape {
 /// Derived from [`table_columns`] rather than re-added by hand, for the reason
 /// that function exists: a second copy of this arithmetic agrees until it does
 /// not, and the way it fails here is silent.
+#[cfg(test)]
+pub fn table_request_for_test(shape: &TableShape, gap: u16) -> u16 {
+    table_request(shape, gap)
+}
+
 fn table_request(shape: &TableShape, gap: u16) -> u16 {
     let (widths, _) = table_columns(shape);
     let fixed: u16 = widths
@@ -3900,6 +3994,24 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
     // `smaps_rollup`. Growth is poptop's own arithmetic over two samples and is
     // always available, so the memory tab always has something on it.
     let has = app.mem_columns_available();
+    // The history column earns its width by showing change. The CPU% beside it
+    // already says how busy each process is; what only the sparkline can say is
+    // how that moved. When no row on screen moved — every line flat, which on a
+    // quiet machine is every line — it was ten columns repeating the CPU column
+    // as a picture, while the command was elided for want of room (0110). So it
+    // is drawn when some row's history moves, on the one shared scale, and
+    // otherwise gives its width back and says why.
+    //
+    // Not a log scale, which was tried: four levels cannot be both fine at the
+    // bottom and readable at the top, and the top is where a process pinning
+    // several cores lives.
+    //
+    // Not judged until there is history to judge: before `App::CONSTANT_FOR`
+    // samples nothing has had time to move, and a column that appeared a few
+    // seconds after start would move the layout under the reader for no reason.
+    // The same threshold the user column folds on.
+    let flat = app.history.len() >= crate::app::App::CONSTANT_FOR
+        && !any_history_moves(app, buffer_ceiling(app));
     let mut shape = TableShape {
         bars,
         thr,
@@ -3908,7 +4020,11 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
         vsize: mem_cols && has.vsize,
         majflt: mem_cols && has.majflt,
         grow: mem_cols,
-        spark: true,
+        rss: true,
+        state: true,
+        pid: true,
+        spark: !flat,
+        flat,
         user,
         cid: false,
     };
@@ -3930,8 +4046,14 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
     // columns go late, because without them it is not that view any more — but
     // they do go: the disk tab exists to show figures the width test would
     // otherwise hide, not to show them wrong.
+    // Below the view's own columns come the three that every view has had
+    // since the first version — the resident figure, the state letter and the
+    // pid. They go last and they do go: at twenty columns the alternative is
+    // not a narrower table but a wrong one, with `100.9` drawn as `.9`.
+    // What survives to the bottom is CPU% and the name, which is the least a
+    // row can be and still be about a process.
     let gap = app.density.column_gap();
-    for step in 0..9 {
+    for step in 0..12 {
         if table_request(&shape, gap) <= area.width {
             break;
         }
@@ -3944,7 +4066,10 @@ pub fn table_shape(app: &App, area: Rect) -> TableShape {
             5 => shape.grow = false,
             6 => shape.pss = false,
             7 => shape.spark = false,
-            _ => shape.io = false,
+            8 => shape.io = false,
+            9 => shape.state = false,
+            10 => shape.pid = false,
+            _ => shape.rss = false,
         }
     }
 
@@ -4010,11 +4135,15 @@ pub fn table_columns(s: &TableShape) -> (Vec<Constraint>, Vec<Column>) {
         // because the caret belongs on the label, not on both.
         col(Constraint::Length(BAR_W as u16 + 1), None, false);
     }
-    col(Constraint::Length(8), Some(Sort::Mem), true);
-    if show_bars {
-        col(Constraint::Length(BAR_W as u16), None, false);
+    if s.rss {
+        col(Constraint::Length(8), Some(Sort::Mem), true);
+        if show_bars {
+            col(Constraint::Length(BAR_W as u16), None, false);
+        }
     }
-    col(Constraint::Length(2), None, false);
+    if s.state {
+        col(Constraint::Length(2), None, false);
+    }
     if show_thr {
         col(Constraint::Length(4), None, true);
     }
@@ -4033,7 +4162,9 @@ pub fn table_columns(s: &TableShape) -> (Vec<Constraint>, Vec<Column>) {
     if s.spark {
         col(Constraint::Length(SPARK_W as u16), None, false);
     }
-    col(Constraint::Length(7), Some(Sort::Pid), true);
+    if s.pid {
+        col(Constraint::Length(7), Some(Sort::Pid), true);
+    }
     if show_user {
         col(Constraint::Length(USER_W), None, false);
     }
@@ -4246,11 +4377,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                 if show_bars {
                     cells.push(Cell::from(cpu_bar(th.cpu)).style(app.theme.dim_style()));
                 }
-                cells.push(num("—").style(app.theme.dim_style()));
-                if show_bars {
-                    cells.push(Cell::from(""));
+                if shape.rss {
+                    cells.push(num("—").style(app.theme.dim_style()));
+                    if show_bars {
+                        cells.push(Cell::from(""));
+                    }
                 }
-                cells.push(Cell::from(th.state.to_string()));
+                if shape.state {
+                    cells.push(Cell::from(th.state.to_string()));
+                }
                 if show_thr {
                     cells.push(num("—").style(app.theme.dim_style()));
                 }
@@ -4277,7 +4412,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                 if shape.spark {
                     cells.push(Cell::from(""));
                 }
-                cells.push(num(th.tid.to_string()));
+                if shape.pid {
+                    cells.push(num(th.tid.to_string()));
+                }
                 if show_user {
                     // The process's, one row up. A thread does not have its
                     // own.
@@ -4290,30 +4427,48 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
                 ])));
                 return Row::new(cells).style(style);
             }
-            let mut cells = vec![
-                num(format!("{:.1}", sm.cpu(p))).style(app.theme.heat_style(sm.cpu(p))),
-                // A bar beside the number turns a column that must be read
-                // into one that can be scanned. htop does the same, for the
-                // same reason.
-                //
-                // Both bars are neutral. Length already carries the magnitude,
-                // and the number beside each one already carries its status
-                // colour — colouring the bar too would spend a third channel
-                // on the same fact. Using a series hue here was worse still:
-                // that is an identity token, and a share of memory is not an
-                // identity. The C6 test caught it.
-            ];
+            // Withheld, not zero: see `ProcSample::unmeasured`.
+            let unmeasured = p.unmeasured();
+            let mut cells = vec![if unmeasured {
+                num("—").style(app.theme.dim_style())
+            } else {
+                num(format!("{:.1}", sm.cpu(p))).style(app.theme.heat_style(sm.cpu(p)))
+            }];
+            // A bar beside the number turns a column that must be read into
+            // one that can be scanned. htop does the same, for the same reason.
+            //
+            // Both bars are neutral. Length already carries the magnitude, and
+            // the number beside each one already carries its status colour —
+            // colouring the bar too would spend a third channel on the same
+            // fact. Using a series hue here was worse still: that is an
+            // identity token, and a share of memory is not an identity. The C6
+            // test caught it. An unmeasured process has no bar: a bar of
+            // nothing is a measurement of nothing.
             if show_bars {
-                cells.push(Cell::from(cpu_bar(sm.cpu(p))).style(app.theme.dim_style()));
+                cells.push(if unmeasured {
+                    Cell::from("")
+                } else {
+                    Cell::from(cpu_bar(sm.cpu(p))).style(app.theme.dim_style())
+                });
             }
-            cells.push(num(fmt_bytes(sm.rss(p))));
-            if show_bars {
-                cells.push(
-                    Cell::from(glyphs::micro_bar(mem_frac(sm.rss(p), total_mem), BAR_W))
-                        .style(app.theme.dim_style()),
-                );
+            if shape.rss {
+                cells.push(if unmeasured {
+                    num("—").style(app.theme.dim_style())
+                } else {
+                    num(fmt_bytes(sm.rss(p)))
+                });
+                if show_bars {
+                    cells.push(if unmeasured {
+                        Cell::from("")
+                    } else {
+                        Cell::from(glyphs::micro_bar(mem_frac(sm.rss(p), total_mem), BAR_W))
+                            .style(app.theme.dim_style())
+                    });
+                }
             }
-            cells.push(Cell::from(p.state.to_string()));
+            if shape.state {
+                cells.push(Cell::from(p.state.to_string()));
+            }
             if show_thr {
                 // An em dash, never a number we do not have. See
                 // `ProcSample::threads`: a fabricated `1` sits next to a CPU
@@ -4392,14 +4547,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             // Identity, all of it together — see the note above `rows`.
             // A group has no pid — it is not a process. The column carries how
             // many were folded in instead, which is the fact that replaces it.
-            // A group has no pid — it is not a process. The column carries how
-            // many were folded in instead, which is the fact that replaces it.
             // A group of one keeps the pid: there is a single process there and
             // `×1` says less than its number does.
-            cells.push(num(match r.members {
-                Some(n) if n > 1 => format!("×{n}"),
-                _ => p.pid.to_string(),
-            }));
+            if shape.pid {
+                cells.push(num(match r.members {
+                    Some(n) if n > 1 => format!("×{n}"),
+                    _ => p.pid.to_string(),
+                }));
+            }
             // Dropped, not blanked: an empty cell still occupies its ten
             // columns, and giving them to `COMMAND` is the whole point.
             if show_user {
@@ -4475,11 +4630,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     if show_bars {
         header_cells.push(head(""));
     }
-    header_cells.push(head("RSS"));
-    if show_bars {
-        header_cells.push(head(""));
+    if shape.rss {
+        header_cells.push(head("RSS"));
+        if show_bars {
+            header_cells.push(head(""));
+        }
     }
-    header_cells.push(head("S"));
+    if shape.state {
+        header_cells.push(head("S"));
+    }
     if show_thr {
         header_cells.push(head("THR"));
     }
@@ -4500,7 +4659,9 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
     if shape.spark {
         header_cells.push(head(&spark_header(spark_ceiling)));
     }
-    header_cells.push(head("PID"));
+    if shape.pid {
+        header_cells.push(head("PID"));
+    }
     if show_user {
         header_cells.push(head("USER"));
     }
@@ -4638,9 +4799,15 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         .sum();
 
     // What the column said, said once.
+    // Unknown owners are counted, not claimed: `all oddurs` over a table with
+    // two hundred root-owned daemons in it would be false, and the column that
+    // would have said otherwise has been folded.
     let all_one = one_user
         .as_deref()
-        .map_or(String::new(), |u| format!(" · all {u}"));
+        .map_or(String::new(), |u| match app.unknown_owners() {
+            0 => format!(" · all {u}"),
+            n => format!(" · all {u} but {n} unknown"),
+        });
 
     // Ranked, and given up from the least important end, because at eighty
     // columns not all of it fits and a clipped title reads as a message called
@@ -4697,6 +4864,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
             format!(" · {} is the constraint (S)", c.name())
         });
 
+    // The same principle for the view that folds a crowd. Twelve rows of one
+    // program crowded out everything else while the key that folds them was
+    // off screen and unadvertised (0112) — so it is named when it would help,
+    // and `g` acts on it.
+    let crowd = app.crowding().map_or(String::new(), |(name, n)| {
+        format!(" · {n} {name} (g folds them)")
+    });
+
     // A filter that could not be parsed is filtering nothing, which is a
     // surprising thing for the table to be doing silently once the filter box
     // has closed.
@@ -4724,9 +4899,22 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         // two panels contradicting each other, and the reader has no way to
         // know one of them is an average.
         (
-            35,
+            34,
             if sm.is_on() {
                 format!(" · avg {}", fmt_smooth(app.smooth, app.interval))
+            } else {
+                String::new()
+            },
+            plain,
+        ),
+        // Why the history column is missing, when that is the reason: said,
+        // because a column that comes and goes unexplained reads as a bug.
+        // Under the averaging note, which is about a figure on every row
+        // rather than about a column that is not there.
+        (
+            36,
+            if shape.flat {
+                " · history flat".to_string()
             } else {
                 String::new()
             },
@@ -4747,6 +4935,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect) {
         // narrow terminal drops is one nobody can act on, but it is still
         // advice rather than a fact about the data.
         (45, constraint, plain),
+        (46, crowd, plain),
         (
             50,
             match (app.tree, app.group) {
@@ -4867,6 +5056,48 @@ fn eighths(v: f32, ceiling: f32) -> usize {
         return 0;
     }
     ((v / ceiling * 8.0).ceil() as usize).clamp(1, 8)
+}
+
+/// The scale the movement test is judged on: the whole buffer's peak.
+///
+/// Not the window's, which is what the drawn sparklines are scaled to. The
+/// question here is whether anything moved at all, and an answer that changed
+/// as the window scrolled would take the column away and give it back while
+/// the reader scrubbed.
+fn buffer_ceiling(app: &App) -> f32 {
+    glyphs::ceiling_for(
+        app.history
+            .iter()
+            .flat_map(|s| s.procs.iter())
+            .map(|p| p.cpu)
+            .fold(0.0_f32, f32::max),
+    )
+}
+
+/// Whether any process in the buffer has a history that moves: whether, on the
+/// shared scale, any of them was ever drawn at two different heights.
+///
+/// Over the whole buffer and every process in it, like the scale itself — not
+/// over the rows on screen. Judged from the visible rows, scrolling the one
+/// busy process out of view took the column away, and the table changed shape
+/// because of where the list was sitting.
+///
+/// One pass, stopping at the first process seen at a second height, which on a
+/// real machine is within the first few samples. Measured per sample rather
+/// than per drawn slot: a process whose samples differ in height is one whose
+/// line is not flat, whatever the zoom packs together.
+fn any_history_moves(app: &App, ceiling: f32) -> bool {
+    let mut first: std::collections::HashMap<(i32, u64), usize> = std::collections::HashMap::new();
+    for s in app.history.iter() {
+        for p in &s.procs {
+            let Some(key) = p.key() else { continue };
+            let level = glyphs::level_in_row_scaled(p.cpu, 0, 1, ceiling);
+            if *first.entry(key).or_insert(level) != level {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Width of a process-table bar. Four cells at eight sub-steps is thirty-two
@@ -5145,8 +5376,9 @@ pub const KEY_HINTS: &[&str] = &[
     // key exists — which is worth less than `s sort` and more than `K kernel`.
     "x signal",
     "t tree",
-    "i io",
-    "v view",
+    // `Tab` rather than `v`: the strip above the table is what it moves, and
+    // the strip is on screen saying so.
+    "Tab tabs",
     "y threads",
     "C cgroups",
     "K kernel",
@@ -5160,9 +5392,127 @@ pub const KEY_HINTS: &[&str] = &[
 /// A clipped footer reads as a key called `filt`. Dropping whole hints from the
 /// end is the same degradation ladder the header figures and the timeline rows
 /// use, and it means what is on screen is always true.
+/// Every key, for the `?` overlay: how it is shown, how `--help` spells it, and
+/// what it does. The one list: the footer's hints must all be in it and every
+/// key in it must be in `--help`, which a test holds — the three had drifted,
+/// and `--help` had never mentioned `v`, `y` or `C` (0113).
+pub const HELP: &[(&str, &str, &str)] = &[
+    ("q", "q, Esc", "quit"),
+    (
+        "Esc",
+        "q, Esc",
+        "back out one level: a box, a signal, the selection — then quit",
+    ),
+    (
+        "←/→",
+        "Left/Right",
+        "scrub through history, ten at a time with Shift",
+    ),
+    ("b", "b", "jump to a moment: -2h, 03:00, 2026-09-08 03:00"),
+    ("+/-", "+ / -", "zoom the timeline in and out"),
+    ("Space", "Space", "pause on this sample, or go back to live"),
+    ("Home, End", "Home/End", "the oldest sample, or live"),
+    ("↑/↓", "Up/Down", "select a process"),
+    ("s", "s", "cycle the sort column"),
+    ("S", "S", "sort by what the panel names as the constraint"),
+    (
+        "/",
+        "/",
+        "filter: a word, or a query like `cpu > 5 and user = root`",
+    ),
+    (
+        "x, X",
+        "x, X",
+        "send TERM or KILL to the selected process (--signals=on)",
+    ),
+    ("t", "t", "the process tree"),
+    (
+        "g",
+        "g",
+        "fold processes by name, then by user, then by container",
+    ),
+    (
+        "d",
+        "d",
+        "the selected process's own history in place of the machine's",
+    ),
+    ("y", "y", "the selected process's threads"),
+    ("v", "v", "the next view: memory, then disk"),
+    ("C", "C", "cgroups in place of processes"),
+    ("K", "K", "kernel threads"),
+    (
+        "Tab",
+        "Tab",
+        "the next tab, Shift-Tab the previous, 1-9 one by number",
+    ),
+    ("Enter", "Enter", "the inspector on the selected process"),
+    (
+        "F10",
+        "F10",
+        "the menu bar, which names every command there is",
+    ),
+    ("?", "?", "this list"),
+];
+
+/// The `?` overlay: every key and what it does, over the middle of the screen.
+///
+/// Modal, and put away by any key — the key that closes it is not also acted
+/// on, so `q` closes the list rather than quitting behind it.
+fn draw_key_list(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let key_w = HELP.iter().map(|(k, _, _)| cols(k)).max().unwrap_or(0);
+    let text_w = HELP
+        .iter()
+        .map(|(_, _, what)| key_w + 2 + cols(what))
+        .max()
+        .unwrap_or(0);
+    let w = (text_w + 4).min(area.width as usize) as u16;
+    let h = (HELP.len() + 2).min(area.height as usize) as u16;
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    let lines: Vec<Line> = HELP
+        .iter()
+        .map(|(key, _, what)| {
+            Line::from(vec![
+                Span::styled(format!(" {key:<key_w$}  "), app.theme.title_style()),
+                Span::raw(what.to_string()),
+            ])
+        })
+        .collect();
+    f.render_widget(ratatui::widgets::Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            ratatui::widgets::Block::bordered()
+                .title(" keys — any key closes ")
+                .border_style(app.theme.chrome_style()),
+        ),
+        rect,
+    );
+}
+
+/// Where the footer points when it could not show every key.
+const MORE: &str = "? more";
+
 fn fit_hints(hints: &[&str], width: u16) -> String {
     const SEP: &str = " · ";
     let width = width as usize;
+    // Everything, if everything fits. Otherwise as much as fits with room kept
+    // for `? more` at the end — at 120 columns six keys never appeared, and
+    // nothing said there were more (0113).
+    let all = hints.join(SEP);
+    if cols(&all) <= width {
+        return all;
+    }
+    // Narrower than the pointer itself: nothing, rather than a pointer cut in
+    // half.
+    if cols(MORE) > width {
+        return String::new();
+    }
+    let width = width.saturating_sub(cols(SEP) + cols(MORE));
     let mut out = String::new();
     for h in hints {
         let need = if out.is_empty() {
@@ -5178,5 +5528,9 @@ fn fit_hints(hints: &[&str], width: u16) -> String {
         }
         out.push_str(h);
     }
-    out
+    if out.is_empty() {
+        MORE.to_string()
+    } else {
+        format!("{out}{SEP}{MORE}")
+    }
 }

@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=c41ffa85ccf83e57dfc1df270d81a1dc2a9fb466
+subject=read the rest of the CPU line (#85)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824783
+written_to=1789824786

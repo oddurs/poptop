@@ -99,30 +99,85 @@ Code review sprint. Read the code for what the tests cannot show: the reasoning 
 
 ## r3 — Tested as it is run
 
-`··········` 0% · 0 of 5 done
+`##########` 100% · 5 of 5 done
 
 Testing sprint. 593 unit tests exercise poptop from the inside. Nothing runs the binary the way a person or a script does. CI's live checks are `--once` and a closed pipe. This sprint tests from the outside: the command line, the export format against its own schema, the Linux backend against kernels other than the CI runner's, the TUI in a real pseudo-terminal, and signals sent to real processes.
 
-### backlog
+### done
 
-- [ ] `0091` No test runs the binary <sup>chore · p1 · testing</sup>
-- [ ] `0092` Export output is never checked against the schema it publishes <sup>chore · p1 · testing</sup>
-- [ ] `0093` The Linux backend is tested on one kernel: whatever GitHub runs <sup>chore · p1 · testing</sup>
-- [ ] `0094` The TUI has never been run in a terminal by a test <sup>chore · p2 · testing</sup>
-- [ ] `0095` Signals are tested against the test's own process <sup>chore · p2 · testing</sup>
+- [x] `0091` No test runs the binary <sup>chore · p1 · testing</sup>
+- [x] `0092` Export output is never checked against the schema it publishes <sup>chore · p1 · testing</sup>
+- [x] `0093` The Linux backend is tested on one kernel: whatever GitHub runs <sup>chore · p1 · testing</sup>
+- [x] `0094` The TUI has never been run in a terminal by a test <sup>chore · p2 · testing</sup>
+- [x] `0095` Signals are tested against the test's own process <sup>chore · p2 · testing</sup>
 
 ## r4 — Right, not just consistent
 
-`··········` 0% · 0 of 4 done
+`########··` 80% · 4 of 5 done
 
 Validation sprint. The tests show poptop agrees with itself. This sprint checks that it agrees with the machine: its numbers against other tools reading the same counters at the same moment, its performance against budgets that fail when they are broken, its stores against every format it promised to read forever, and its behaviour across hours, midnights and clock changes.
 
 ### backlog
 
-- [ ] `0096` No number poptop shows has been checked against another tool at the same moment <sup>chore · p1 · validation</sup>
-- [ ] `0097` Performance budgets live in ignored tests nobody runs <sup>chore · p2 · validation</sup>
-- [ ] `0098` The promise to read every store since format 15 is kept by nothing <sup>chore · p1 · validation</sup>
 - [ ] `0099` Nobody has run poptop for a day and looked at what happened <sup>chore · p2 · validation</sup>
+
+### done
+
+- [x] `0096` No number poptop shows has been checked against another tool at the same moment <sup>chore · p1 · validation</sup>
+- [x] `0097` Performance budgets live in ignored tests nobody runs <sup>chore · p2 · validation</sup>
+- [x] `0098` The promise to read every store since format 15 is kept by nothing <sup>chore · p1 · validation</sup>
+- [x] `0115` A poptop whose terminal goes away spins at 100% CPU forever <sup>bug · p0 · validation</sup>
+
+## r5 — What the screen says
+
+`##########` 100% · 10 of 10 done
+
+UI sprint, from a critique of the running program: the release build on a Mac, captured through a terminal emulator at 120×40, 80×24, 64 and 60 columns, after 45 seconds of history and after the keys people press. The first four items are bugs that put wrong or missing information on the screen. The next three are about space spent on nothing. The last three are design decisions about the default view.
+
+### done
+
+- [x] `0105` A narrow table cuts the leading digits off its numbers <sup>bug · p0 · ui</sup>
+- [x] `0106` Nearly every process reads as running on macOS <sup>bug · p1 · ui</sup>
+- [x] `0107` The tree view opens on a page of question marks on macOS <sup>bug · p1 · ui</sup>
+- [x] `0108` The header's network figure changes interface and counts loopback <sup>bug · p2 · ui</sup>
+- [x] `0109` The timeline is the biggest panel and is empty for its first minutes <sup>feature · p2 · ui</sup>
+- [x] `0110` The history column is the same picture in every row <sup>feature · p2 · ui</sup>
+- [x] `0111` Columns spend width on nothing while the command is squeezed <sup>feature · p2 · ui</sup>
+- [x] `0112` The default table spends its rows on copies of one program <sup>feature · p2 · ui</sup>
+- [x] `0113` Most of the keys can't be discovered from the screen <sup>feature · p2 · ui</sup>
+- [x] `0114` The selected row moves every second and its highlight is faint <sup>feature · p3 · ui</sup>
+
+## r6 — A companion you can read
+
+`##########` 100% · 7 of 7 done
+
+Documentation sprint. There is no landing page and there will not be one: a site is a second thing to maintain and a second place for a claim to go stale, and everyone who needs poptop already has the repository in front of them. So the repository is the documentation — furniture at the root, and practical pages under `docs/` that answer what someone actually asks while the box is slow and while they are configuring it afterwards. The README stops being all of it and becomes the front of it.
+
+### done
+
+- [x] `0117` The site is a second place for a claim to go stale <sup>chore · p1 · docs</sup>
+- [x] `0118` There is nowhere to look up a key, a column or a mark <sup>docs · p1 · docs</sup>
+- [x] `0119` Nothing says what to do when the box is slow <sup>docs · p1 · docs</sup>
+- [x] `0120` Recording, replay and machine-readable output are spread through an essay <sup>docs · p2 · docs</sup>
+- [x] `0121` Configuration and themes have no reference page <sup>docs · p2 · docs</sup>
+- [x] `0122` What poptop can see depends on the platform, and nothing tabulates it <sup>docs · p2 · docs</sup>
+- [x] `0123` The README is 2,312 lines and cannot be the front of anything <sup>docs · p1 · docs</sup>
+
+## r7 — A project you would trust on sight
+
+`##########` 100% · 7 of 7 done
+
+Presentation sprint. The documentation is now a companion to the program, and
+
+### done
+
+- [x] `0127` The crate has no repository, keywords or categories, and cannot be published <sup>chore · p1 · repo</sup>
+- [x] `0128` Nothing at the top of the README says what poptop needs or whether it works <sup>docs · p1 · repo</sup>
+- [x] `0129` There is no changelog, so nothing says what changed between two versions <sup>docs · p2 · repo</sup>
+- [x] `0130` A tagged version produces no binaries, so installing needs a Rust toolchain <sup>chore · p2 · repo</sup>
+- [x] `0131` Nothing watches the dependencies or the actions CI runs <sup>chore · p3 · repo</sup>
+- [x] `0132` The colour work is the part nobody can see without running it <sup>docs · p2 · repo</sup>
+- [x] `0133` The repository has a two-line .gitignore and no .editorconfig <sup>chore · p3 · repo</sup>
 
 ## v0.2 — Cheap enough to run
 
@@ -182,18 +237,22 @@ Config file, user themes, documented and safe to depend on.
 
 ## later — Someday
 
-`######····` 60% · 3 of 5 done
+`#######···` 67% · 6 of 9 done
 
 Good ideas without a date yet.
 
 ### backlog
 
-- [ ] `0101` sysinfo hands sysctlbyname a name with no NUL at its end <sup>bug · p2 · review</sup>
-- [ ] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
+- [ ] `0124` An empty process table says nothing about why it is empty <sup>bug · p2 · ui</sup>
+- [ ] `0125` Esc quits out of a filtered table instead of clearing the filter <sup>bug · p2 · ui</sup>
+- [ ] `0134` A process on its first sample reports 0.0% CPU, which is a fabricated zero <sup>bug · p2 · data</sup>
 
 ### done
 
 - [x] `0014` Persist history across restarts <sup>feature · p3</sup>
 - [x] `0032` The timeline can only draw percentages <sup>feature · p3</sup>
 - [x] `0036` Widths are counted in characters, not display columns <sup>bug · p3</sup>
+- [x] `0101` sysinfo hands sysctlbyname a name with no NUL at its end <sup>bug · p2 · review</sup>
+- [x] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
+- [x] `0103` macOS fault counts are in proc_taskinfo, which poptop already reads <sup>feature · p3 · validation</sup>
 

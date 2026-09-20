@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=58969afbd4ce6aed044425edab9fb67ebcea30aa
+subject=close 0058: the retained shape is declared once
+format=14
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824722
+written_to=1789824725

@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=2192d1805240aa2f6462ddf6abcf47c70e7cb82b
+subject=capture processes that live and die between samples (#80)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824748
+written_to=1789824750

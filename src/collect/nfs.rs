@@ -528,38 +528,6 @@ device tmpfs mounted on /run with fstype tmpfs
         assert_eq!(parse_rpc_nfs("net 0 0 0 0\n"), None);
     }
 
-    /// What one sample spends on NFS, measured rather than assumed.
-    ///
-    /// `cargo test --release -- --ignored --nocapture cost_of_nfs`, on a
-    /// machine that actually mounts some. The question is whether this belongs
-    /// behind the cost model with threads, PSS and cgroups; the answer is in
-    /// the numbers it prints.
-    #[test]
-    #[ignore]
-    fn cost_of_nfs() {
-        let real = std::fs::read_to_string("/proc/self/mountstats").unwrap_or_default();
-        // A machine with many mounts, built by repeating this one's file
-        // rather than the fixture above: NFSv4.2 writes seventy-odd per-op
-        // lines a mount and the fixture has three, so the fixture would make
-        // the parse look twenty times cheaper than it is.
-        let many: String = std::iter::repeat_n(real.as_str(), 100).collect();
-        for (what, text) in [("this machine", real.as_str()), ("×100", many.as_str())] {
-            let n = 200;
-            let t = std::time::Instant::now();
-            let mut kept = 0;
-            for _ in 0..n {
-                kept += parse_mountstats(text).len();
-            }
-            let each = t.elapsed() / n;
-            println!(
-                "{what}: {} bytes, {} of {} mounts are NFS, {each:?} a sample",
-                text.len(),
-                kept / n as usize,
-                text.lines().filter(|l| l.starts_with("device ")).count(),
-            );
-        }
-    }
-
     #[test]
     fn no_nfs_parser_panics_on_a_mangled_file() {
         // A mount point is chosen by whoever mounted it, and `mountstats` is

@@ -1,0 +1,122 @@
+#!/bin/sh
+# Record the files poptop reads on this machine, as a fixture the Linux
+# collector's tests can read instead of the machine running them.
+#
+#   tests/fixtures/linux/record POPTOP_BINARY OUT_DIR
+#
+# Runs `poptop --export=json` under strace and copies every /proc, /sys and
+# /etc/passwd file it opened: exactly what poptop reads on this kernel, and
+# nothing chosen by hand. Then writes OUT_DIR/expected, the facts the test
+# checks, worked out from the recorded files with awk rather than by poptop,
+# so a fixture cannot agree with a wrong parser by construction.
+#
+# Needs strace. Run as the user poptop normally runs as; as root it can also
+# read other users' /proc/<pid>/io. Read what it copied before committing it:
+# command lines and /etc/passwd are the machine's own.
+set -eu
+
+# Only the expected values, worked out again from files already recorded: for
+# a fixture derived by hand from a recorded one. See README.md.
+if [ "${1:-}" = --expected ]; then
+    only_expected=${2:?usage: record --expected DIR}
+else
+    only_expected=
+fi
+
+expected() {
+    p=$1/proc
+    {
+        echo "# Worked out from the recorded files by tests/fixtures/linux/record,"
+        echo "# not by poptop. Checked by the Linux collector's fixture test."
+        echo "cores=$(grep -c '^cpu[0-9]' "$p/stat")"
+        # Before 3.14 there is no MemAvailable, and the figure is the estimate
+        # free(1) used then: free + buffers + cached + reclaimable slab - shmem.
+        awk '{ v[$1] = $2 * 1024 }
+             END {
+                 printf "mem_total=%.0f\n", v["MemTotal:"]
+                 if ("MemAvailable:" in v) a = v["MemAvailable:"]
+                 else a = v["MemFree:"] + v["Buffers:"] + v["Cached:"] + v["SReclaimable:"] - v["Shmem:"]
+                 printf "mem_available=%.0f\n", a
+                 printf "swap_total=%.0f\n", v["SwapTotal:"]
+             }' "$p/meminfo"
+        echo "load1=$(cut -d' ' -f1 "$p/loadavg")"
+        echo "uptime=$(cut -d' ' -f1 "$p/uptime" | cut -d. -f1)"
+        echo "procs=$(for d in "$p"/[0-9]*; do [ -f "$d/stat" ] && echo; done | wc -l | tr -d ' ')"
+        [ -f "$p/pressure/cpu" ] && echo "pressure=yes" || echo "pressure=no"
+        [ -f "$1/sys/fs/cgroup/cgroup.controllers" ] && echo "cgroup=v2" || echo "cgroup=none"
+        # AT_PAGESZ (6) from the auxiliary vector: pairs of 64-bit words.
+        echo "page_size=$(perl -e 'local $/; my @v = unpack("Q<*", <STDIN>);
+            for (my $i = 0; $i < @v; $i += 2) { print $v[$i + 1] if $v[$i] == 6 }' <"$p/self/auxv")"
+        if [ -f "$p/1/stat" ]; then
+            # Field 24, counted after the name's closing parenthesis.
+            echo "pid1_name=$(sed 's/^[0-9]* (\(.*\)) .*/\1/' "$p/1/stat")"
+            echo "pid1_rss_pages=$(sed 's/.*) //' "$p/1/stat" | cut -d' ' -f22)"
+        fi
+        # Those that have ever carried a byte, in either direction.
+        echo "interfaces=$(sed '1,2d; s/:/ /' "$p/net/dev" | awk '$2 + $10 > 0 { print $1 }' | sort | paste -sd, -)"
+        grep -q ' with fstype nfs4\{0,1\} ' "$p/self/mountstats" 2>/dev/null &&
+            echo "nfs=yes" || echo "nfs=no"
+    } >"$1/expected"
+}
+
+if [ -n "$only_expected" ]; then
+    expected "$only_expected"
+    exit 0
+fi
+
+bin=${1:?usage: record POPTOP_BINARY OUT_DIR}
+out=${2:?usage: record POPTOP_BINARY OUT_DIR}
+command -v strace >/dev/null || { echo "record: needs strace" >&2; exit 1; }
+[ -e "$out" ] && { echo "record: $out exists" >&2; exit 1; }
+mkdir -p "$out"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+strace -f -qq -e trace=%file -o "$tmp/trace" "$bin" --export=json >/dev/null
+
+# Every path a call succeeded on: `openat(AT_FDCWD, "/proc/stat", O_RDONLY) = 3`
+# and `statx(AT_FDCWD, "/sys/fs/cgroup/cgroup.controllers", …) = 0` alike.
+# What it is (file or directory) is decided below by looking, not by flags.
+sed -n 's/^[0-9]* *[a-z0-9_]*([^"]*"\(\/[^"]*\)".*) = [0-9][0-9]*$/\1/p' "$tmp/trace" |
+    sort -u >"$tmp/opened"
+
+while read -r path; do
+    case $path in
+    /proc/* | /sys/* | /etc/passwd) ;;
+    *) continue ;;
+    esac
+    case $(test -d "$path" && echo dir) in
+    dir)
+        mkdir -p "$out$path"
+        # Directory listings poptop reads for their names alone: whole block
+        # devices, NUMA nodes, cgroup children. Each subdirectory becomes an
+        # empty one here; any that poptop also opened is filled in by its own
+        # line. /proc itself is left to the pids that were read.
+        # Each gets a `.keep`, because neither git nor an artifact upload keeps
+        # an empty directory, and a listing with its names missing is a
+        # machine with no block devices. poptop reads these for their names
+        # and skips anything that is not a directory.
+        case $path in
+        /proc) ;;
+        *)
+            for e in "$path"/*; do
+                [ -d "$e" ] && mkdir -p "$out$e" && touch "$out$e/.keep"
+            done
+            ;;
+        esac
+        ;;
+    *)
+        mkdir -p "$out$(dirname "$path")"
+        # `cat`, not `cp`: /proc files report a size of zero. A process that
+        # exited since is simply not recorded.
+        cat "$path" >"$out$path" 2>/dev/null || rm -f "$out$path"
+        ;;
+    esac
+done <"$tmp/opened"
+
+# /proc/self was poptop; what matters in it (auxv, mountstats, io) is the same
+# for any process in this mount namespace, so `cat` copying its own is fine.
+
+expected "$out"
+
+echo "recorded $(find "$out" -type f | wc -l | tr -d ' ') files in $out"

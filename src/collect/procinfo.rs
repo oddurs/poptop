@@ -300,9 +300,41 @@ const TASKINFO_SIZE: i32 = 96;
 /// `pti_messages_sent` 64, `_received` 68, `pti_syscalls_mach` 72,
 /// `_unix` 76, `pti_csw` 80, then `pti_threadnum` at 84.
 const OFF_THREADNUM: usize = 84;
+/// `pti_virtual_size`, the first of the six `uint64_t`s.
+const OFF_VIRTUAL: usize = 0;
 const _: () = assert!(OFF_THREADNUM + 4 <= TASKINFO_SIZE as usize);
+/// `pti_numrunning`, the next `int32_t` after the thread count: how many of the
+/// task's threads are runnable at this instant. The difference between `R` and
+/// `S`, which the BSD `p_stat` sysinfo reports cannot make — it is `SRUN` for a
+/// process that has been asleep for a week.
+const OFF_NUMRUNNING: usize = 88;
+const _: () = assert!(OFF_NUMRUNNING + 4 <= TASKINFO_SIZE as usize);
+/// `pti_faults`, every fault the task has taken, and `pti_pageins`, the ones
+/// that went to disk. Both cumulative over its life, and both already in the
+/// buffer read for the thread count — the fault columns were em dashes on
+/// macOS on a note that sysinfo publishes no such figure (0103).
+const OFF_FAULTS: usize = 52;
+const OFF_PAGEINS: usize = 56;
+const _: () = assert!(OFF_PAGEINS + 4 <= OFF_THREADNUM);
 
-/// How many threads a process has, or `None` if the kernel will not say.
+/// What `proc_taskinfo` says about one process.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Task {
+    pub threads: u32,
+    /// Bytes of address space, as `ps -o vsz` reports it. On macOS this
+    /// includes the shared region every process maps, so hundreds of
+    /// gigabytes is normal and says nothing about the process itself.
+    pub vsize: u64,
+    /// Threads runnable at the moment of the call. See [`OFF_NUMRUNNING`].
+    pub running: u32,
+    /// Faults taken over the task's life, and the subset served from disk.
+    /// Rates are the caller's to derive, as they are for the `/proc` backend.
+    pub faults: u32,
+    pub pageins: u32,
+}
+
+/// How many threads a process has and how much address space it maps, or
+/// `None` if the kernel will not say.
 ///
 /// `None` for any process this user does not own, which is roughly a third of a
 /// Mac's table — and deliberately not `1`. A flat `1` is not a missing figure,
@@ -313,7 +345,7 @@ const _: () = assert!(OFF_THREADNUM + 4 <= TASKINFO_SIZE as usize);
 /// bytes it wrote, and anything but the expected size means the structure is
 /// not the one these offsets were written against.
 #[cfg(not(target_vendor = "apple"))]
-pub fn threads(_pid: i32) -> Option<u32> {
+pub fn task(_pid: i32) -> Option<Task> {
     // Another BSD has `proc_pidinfo` nowhere, or somewhere else. Saying nothing
     // is the same answer this gives for a process it may not read, and the
     // column already renders that.
@@ -321,7 +353,7 @@ pub fn threads(_pid: i32) -> Option<u32> {
 }
 
 #[cfg(target_vendor = "apple")]
-pub fn threads(pid: i32) -> Option<u32> {
+pub fn task(pid: i32) -> Option<Task> {
     let mut buf = [0u8; TASKINFO_SIZE as usize];
     // SAFETY: `buf` is exactly `TASKINFO_SIZE` writable bytes, which is the
     // size passed; the call writes no more than that and returns how many it
@@ -339,9 +371,23 @@ pub fn threads(pid: i32) -> Option<u32> {
         return None;
     }
     let v = i32::from_ne_bytes(buf[OFF_THREADNUM..OFF_THREADNUM + 4].try_into().ok()?);
+    let vsize = u64::from_ne_bytes(buf[OFF_VIRTUAL..OFF_VIRTUAL + 8].try_into().ok()?);
+    let running = i32::from_ne_bytes(buf[OFF_NUMRUNNING..OFF_NUMRUNNING + 4].try_into().ok()?);
+    let faults = i32::from_ne_bytes(buf[OFF_FAULTS..OFF_FAULTS + 4].try_into().ok()?);
+    let pageins = i32::from_ne_bytes(buf[OFF_PAGEINS..OFF_PAGEINS + 4].try_into().ok()?);
     // A live task always has at least one thread. Zero or negative means the
     // offset is not pointing at a thread count.
-    (v > 0).then_some(v as u32)
+    // A live task always has at least one thread, cannot have more runnable
+    // than it has, and cannot have taken a negative number of faults. Any of
+    // those means the offsets are not pointing at the fields they name.
+    (v > 0 && (0..=v).contains(&running) && faults >= 0 && (0..=faults).contains(&pageins))
+        .then_some(Task {
+            threads: v as u32,
+            vsize,
+            running: running as u32,
+            faults: faults as u32,
+            pageins: pageins as u32,
+        })
 }
 
 /// Ask for what is already known rather than going to the filesystem to find
@@ -734,11 +780,11 @@ mod tests {
         // buys robustness against load without buying tolerance of a bug.
         let mut attempts = Vec::new();
         for _ in 0..3 {
-            let before = threads(me);
+            let before = task(me).map(|t| t.threads);
             let ps = std::process::Command::new("ps")
                 .args(["-M", "-p", &me.to_string()])
                 .output();
-            let after = threads(me);
+            let after = task(me).map(|t| t.threads);
             attempts.push((before, ps, after));
             if let Some((Some(b), Ok(p), Some(a))) = attempts.last() {
                 let n = String::from_utf8_lossy(&p.stdout)
@@ -790,7 +836,7 @@ mod tests {
     #[test]
     fn a_process_that_is_not_ours_reports_nothing_rather_than_one() {
         // A pid that cannot exist, whoever is asking.
-        assert_eq!(threads(-1), None);
+        assert_eq!(task(-1).map(|t| t.threads), None);
 
         // pid 1 is launchd, owned by root. A `1` here would be a fabricated
         // figure sitting next to a CPU percentage that can contradict it — but
@@ -799,7 +845,11 @@ mod tests {
         // Asserting unconditionally would fail under `sudo cargo test`.
         // SAFETY: takes nothing, returns an integer, cannot fail.
         if unsafe { geteuid() } != 0 {
-            assert_eq!(threads(1), None, "a thread count was invented for launchd");
+            assert_eq!(
+                task(1).map(|t| t.threads),
+                None,
+                "a thread count was invented for launchd"
+            );
         }
     }
 
@@ -840,5 +890,22 @@ mod tests {
             None,
             "a truncated read was accepted"
         );
+    }
+
+    #[test]
+    fn our_own_address_space_agrees_with_ps() {
+        // Checked against another reader of the same figure, which is how its
+        // absence was found: validate/run compared poptop with `ps`.
+        let me = std::process::id() as i32;
+        let got = task(me).expect("no task info for our own process").vsize;
+        let out = std::process::Command::new("ps")
+            .args(["-o", "vsz=", "-p", &me.to_string()])
+            .output()
+            .unwrap();
+        let ps: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        let ps = ps * 1024;
+        // Read a moment apart, by a process that is allocating as it runs.
+        let apart = got.abs_diff(ps) as f64 / ps as f64;
+        assert!(apart < 0.05, "poptop {got}, ps {ps}");
     }
 }

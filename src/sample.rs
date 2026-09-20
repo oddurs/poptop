@@ -220,6 +220,25 @@ impl ProcSample {
         cfg!(target_os = "linux") && (self.pid == KTHREADD || self.ppid == KTHREADD)
     }
 
+    /// Whether the kernel told this user nothing about the process's resources.
+    ///
+    /// No resident memory and no thread count together. A live process always
+    /// has resident pages, and the one kind that has none — a kernel thread —
+    /// still has a thread count, so the pair only coincides where the figures
+    /// were withheld: another user's process on macOS, which sysinfo returns
+    /// with zero memory, zero CPU and no owner. Those zeros are not
+    /// measurements, and a row that prints them says the process is idle
+    /// (0107).
+    pub fn unmeasured(&self) -> bool {
+        self.rss == 0 && self.threads.is_none()
+    }
+
+    /// Whether the process's owner is unknown: the kernel would not say whose
+    /// it is, and the collector wrote `?` rather than guess.
+    pub fn owner_unknown(&self) -> bool {
+        &*self.user == "?"
+    }
+
     /// What to write in the identity column: the command line if there is one,
     /// and `comm` if there is not.
     ///
@@ -399,6 +418,17 @@ pub struct Link {
 crate::persist::codec! { Link { name: Arc<str>, rx: u64, tx: u64, rx_packets: u64, tx_packets: u64 } }
 
 impl Link {
+    /// Whether this is the loopback interface — `lo` on Linux, `lo0` on macOS.
+    ///
+    /// A machine talking to itself is not network traffic. On a Mac it is the
+    /// chattiest interface there is, and a header that named it was reporting
+    /// a local socket as the network (0108).
+    pub fn is_loopback(&self) -> bool {
+        self.name
+            .strip_prefix("lo")
+            .is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()))
+    }
+
     /// Bytes per second in both directions, which is what "busiest" means here.
     pub fn bytes(&self) -> u64 {
         self.rx.saturating_add(self.tx)
@@ -544,22 +574,6 @@ impl NfsStat {
 }
 
 impl NetStat {
-    /// The interface carrying the most traffic, if any is known.
-    ///
-    /// Ties go to the earlier one, as with [`Sample::busiest_disk`]: on an idle
-    /// machine every interface is at zero, and naming whichever sorted last
-    /// reads as a claim about which one poptop is watching.
-    pub fn busiest(&self) -> Option<&Link> {
-        let mut it = self.links.iter();
-        let mut best = it.next()?;
-        for l in it {
-            if l.bytes() > best.bytes() {
-                best = l;
-            }
-        }
-        Some(best)
-    }
-
     /// The worst thing that happened to the network this interval, if anything
     /// did.
     ///
@@ -1147,6 +1161,32 @@ impl Sample {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn link(name: &str, rx: u64, tx: u64) -> Link {
+        Link {
+            name: Arc::from(name),
+            rx,
+            tx,
+            rx_packets: 0,
+            tx_packets: 0,
+        }
+    }
+
+    #[test]
+    fn loopback_is_known_by_name() {
+        for (name, lo) in [
+            ("lo", true),
+            ("lo0", true),
+            ("lo12", true),
+            ("low0", false),
+            ("en0", false),
+            ("lo-", false),
+        ] {
+            assert_eq!(link(name, 0, 0).is_loopback(), lo, "{name}");
+        }
+    }
+
     #[test]
     fn the_busiest_mount_is_the_one_making_the_most_calls() {
         // By calls, not by bytes: an NFS mount that is a problem is usually
@@ -1209,8 +1249,6 @@ mod tests {
             "a running server with an idle interval was reported as no server"
         );
     }
-
-    use super::*;
 
     #[test]
     fn a_sample_that_knows_nothing_claims_nothing() {

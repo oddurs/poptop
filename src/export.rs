@@ -375,8 +375,9 @@ impl Visit for Lines {
     }
     fn text(&mut self, name: &str, v: &str) {
         // The separator can never appear inside a value, whatever the kernel
-        // had in a process name.
-        self.push(name, v.replace([SEP, '\n'], " "));
+        // had in a process name, and neither can a line ending: a CR is one
+        // to every reader that splits on universal newlines.
+        self.push(name, v.replace([SEP, '\n', '\r'], " "));
     }
     fn flag(&mut self, name: &str, v: bool) {
         self.push(name, if v { "1" } else { "0" }.into());

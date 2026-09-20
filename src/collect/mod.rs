@@ -499,6 +499,35 @@ pub trait Collector {
     }
 }
 
+/// A kernel path, as the Linux collector opens it.
+///
+/// Every read of `/proc`, `/sys` and `/etc/passwd` goes through here, so tests
+/// can point the whole collector at a recorded tree instead of the machine
+/// running them: `tests/fixtures/linux/*`, one per kind of kernel and
+/// machine. Outside tests it is the path unchanged, and costs nothing.
+#[cfg(all(target_os = "linux", not(test)))]
+#[inline(always)]
+pub(crate) fn at<P: AsRef<std::path::Path>>(path: P) -> P {
+    path
+}
+
+#[cfg(all(target_os = "linux", test))]
+pub(crate) fn at<P: AsRef<std::path::Path>>(path: P) -> std::path::PathBuf {
+    let path = path.as_ref();
+    FIXTURE_ROOT.with(|root| match &*root.borrow() {
+        Some(root) => root.join(path.strip_prefix("/").unwrap_or(path)),
+        None => path.to_path_buf(),
+    })
+}
+
+#[cfg(all(target_os = "linux", test))]
+thread_local! {
+    /// The tree [`at`] reads under, for this test's thread only, so tests on
+    /// other threads keep reading the machine.
+    pub(crate) static FIXTURE_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[cfg(target_os = "linux")]
 pub mod cgroups;
 #[cfg(target_os = "linux")]

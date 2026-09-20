@@ -29,6 +29,7 @@
 //! 41 exit records arrived in eight seconds for processes that lived 224 to 924
 //! microseconds.
 
+use super::at;
 use crate::sample::{IoRates, ProcSample};
 use std::io;
 use std::sync::Arc;
@@ -513,7 +514,7 @@ impl Boot {
 
 /// Every CPU the kernel knows about, as the string the cpumask parser wants.
 fn possible_cpus() -> String {
-    std::fs::read_to_string("/sys/devices/system/cpu/possible")
+    std::fs::read_to_string(at("/sys/devices/system/cpu/possible"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

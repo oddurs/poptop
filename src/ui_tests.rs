@@ -2353,11 +2353,18 @@ fn a_line_draws_nothing_where_nothing_was_recorded() {
         let buf = term.backend().buffer();
         // Newest is at the right, so the recorded samples occupy the last few
         // columns and everything to the left of them is unrecorded.
+        // The dim token is excluded along with the chrome: the empty left of
+        // the panel carries a sentence saying what that space is — `no history
+        // before 08:14` — and a notice explaining the blank is not the
+        // baseline this test exists to catch.
         let drawn: Vec<u16> = (ui::GUTTER_W as u16..w)
             .filter(|&x| {
                 (1..h - 1).any(|y| {
                     let c = &buf[(x, y)];
-                    c.fg != app.theme.chrome && c.symbol() != " " && c.symbol() != "\u{2800}"
+                    c.fg != app.theme.chrome
+                        && c.fg != app.theme.text_dim
+                        && c.symbol() != " "
+                        && c.symbol() != "\u{2800}"
                 })
             })
             .collect();
@@ -3915,6 +3922,39 @@ fn the_axis_states_the_ceiling_it_scaled_to() {
 }
 
 #[test]
+fn the_empty_start_of_the_timeline_says_what_it_is() {
+    // 0109. For the first minutes most of the biggest panel is blank: the time
+    // axis is fixed, and the left of it is time from before poptop was
+    // running. That is meaningful — but a blank panel reads as a broken one.
+    // The empty region says so, in the empty region only, and goes once
+    // history reaches the edge.
+    let mut app = App::new(600);
+    for age in (0..20).rev() {
+        app.push(sample_at(30.0, age));
+    }
+    let screen = rows(&app, 120, 40);
+    let line = screen
+        .iter()
+        .find(|r| r.contains("no history before"))
+        .unwrap_or_else(|| panic!("the empty timeline says nothing:\n{}", screen.join("\n")));
+    // Left of the data, never over it: twenty samples fill ten braille cells
+    // at the right edge.
+    let at = line.find("no history before").unwrap();
+    assert!(line[..at].chars().count() < 120 - 12, "{line:?}");
+
+    let mut full = App::new(600);
+    for age in (0..600).rev() {
+        full.push(sample_at(30.0, age));
+    }
+    assert!(
+        !rows(&full, 120, 40)
+            .iter()
+            .any(|r| r.contains("no history before")),
+        "the label stayed once history filled the panel"
+    );
+}
+
+#[test]
 fn the_rules_do_not_mark_a_buffer_that_has_no_data_yet() {
     // Dashing a reference line across the part of the window that has never
     // been sampled is noise about a region with nothing to reference.
@@ -3933,8 +3973,26 @@ fn the_rules_do_not_mark_a_buffer_that_has_no_data_yet() {
     // The left third of the graph holds no samples at all. Starting past the
     // gutter, whose width is derived from the series names rather than fixed —
     // an axis figure sitting in column four is a label, not a sample.
+    //
+    // Except the label saying so (0109): text naming the empty region is not a
+    // glyph claiming a value in it. Its cells are exempt; nothing else is.
     for y in range.start + 1..range.start + 1 + graph_rows as u16 {
+        let row: String = (0..100u16).map(|x| buf[(x, y)].symbol()).collect();
+        // Exactly the label's own cells: `no history before HH:MM:SS`, and
+        // the tail when it fitted.
+        let label = row.find("no history before").map(|at| {
+            let rest = &row[at..];
+            let mut len = "no history before 00:00:00".chars().count();
+            if rest.contains(" — it fills from the right") {
+                len += " — it fills from the right".chars().count();
+            }
+            let start = row[..at].chars().count();
+            start..start + len
+        });
         for x in ui::GUTTER_W as u16..25u16 {
+            if label.as_ref().is_some_and(|l| l.contains(&(x as usize))) {
+                continue;
+            }
             let s = buf[(x, y)].symbol();
             assert!(
                 s == " " || s == "\u{2800}",
@@ -4208,11 +4266,17 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
         } else {
             (Some(222), 2.0)
         };
-        s.procs = vec![ProcSample {
-            cpu,
-            started,
-            ..proc_named(4242, "recycled", 0.0, 1 << 20)
-        }];
+        s.procs = vec![
+            ProcSample {
+                cpu,
+                started,
+                ..proc_named(4242, "recycled", 0.0, 1 << 20)
+            },
+            // A neighbour whose history moves, so the column is drawn: it is
+            // left out when no row's history moves (0110). Below the old
+            // occupant's 90%, so the shared ceiling is unchanged.
+            proc_named(4243, "neighbour", (i % 7) as f32 * 10.0, 1 << 20),
+        ];
         app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -4283,7 +4347,9 @@ fn scrolling_the_list_does_not_rescale_everybody_else_history() {
         // One heavy process, then a long tail of quiet ones. The heavy one
         // sorts to the top, so scrolling down takes it off screen.
         s.procs = vec![ProcSample {
-            cpu: 900.0,
+            // Wobbling, so there is history to draw (0110); the peak, and so
+            // the shared ceiling, is the 900% it always was.
+            cpu: if i % 2 == 0 { 900.0 } else { 500.0 },
             ..proc_named(1, "vm", 0.0, 1 << 20)
         }];
         s.procs.extend((2..40).map(|pid| ProcSample {
@@ -4958,16 +5024,15 @@ fn an_unknown_thread_count_is_a_dash_not_a_one() {
         }];
         app.push(s);
         app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-        // The data row, not the frame: the summary strip totals the thread
-        // count too, so a frame-wide count finds it twice.
+        // The data row, not the frame: `render` joins every cell with no line
+        // breaks, so `.lines()` on it is the whole screen, and the count below
+        // then counted a `36` anywhere on it — a clock time in the timeline
+        // reading `17:36`, say. The summary strip totals the thread count too,
+        // which a frame-wide count finds a second time.
         data_rows(&app, 200, 40)
             .into_iter()
             .find(|l| l.contains("zzsentinel"))
-            .unwrap_or_default()
-            .lines()
-            .find(|l| l.contains("zzsentinel"))
             .expect("no process row")
-            .to_string()
     };
 
     let unknown = row(None);
@@ -4997,11 +5062,22 @@ fn a_pid_with_no_start_time_gets_no_history_rather_than_the_wrong_one() {
     for i in (0..60).rev() {
         let mut s = sample_at(10.0, i as u64);
         let cpu = if i > 30 { 90.0 } else { 2.0 };
-        s.procs = vec![ProcSample {
-            cpu,
-            started: None,
-            ..proc_named(4242, "unknowable", 0.0, 1 << 20)
-        }];
+        s.procs = vec![
+            ProcSample {
+                cpu,
+                started: None,
+                ..proc_named(4242, "unknowable", 0.0, 1 << 20)
+            },
+            // A process that does have an identity, and a history that moves.
+            // Without one the column is not drawn at all — a table where
+            // nothing moved gives those ten columns back (0110) — and this
+            // test would pass for the wrong reason, never having looked.
+            ProcSample {
+                cpu,
+                started: Some(7),
+                ..proc_named(4243, "knowable", 0.0, 1 << 20)
+            },
+        ];
         app.push(s);
     }
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
@@ -5057,30 +5133,6 @@ fn a_process_absent_from_a_sample_leaves_a_gap_not_a_zero() {
     assert_eq!(s.len(), 10);
     assert!(s[..5].iter().all(Option::is_none), "absence became data");
     assert!(s[5..].iter().all(Option::is_some), "presence became a gap");
-}
-
-#[test]
-#[ignore = "measurement"]
-fn measure_render_with_sparklines() {
-    let mut app = App::new(600);
-    for i in (0..600).rev() {
-        let mut s = sample_at((i as f32 * 1.7) % 100.0, i as u64);
-        s.procs = (0..900)
-            .map(|p| proc_named(p, "some-process-name", (p as f32) % 100.0, 1 << 20))
-            .collect();
-        app.push(s);
-    }
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
-    let mut term = Terminal::new(TestBackend::new(200, 60)).unwrap();
-    let n = 50;
-    let t0 = std::time::Instant::now();
-    for _ in 0..n {
-        term.draw(|f| ui::draw(f, &app)).unwrap();
-    }
-    println!(
-        "  render: {:?}/frame at 900 procs x 600 samples, 200x60",
-        t0.elapsed() / n
-    );
 }
 
 /// The rendered frame as one string per terminal row, for tests that care
@@ -5798,11 +5850,11 @@ fn a_deep_tree_never_leaves_a_row_without_a_name() {
     app.tree = true;
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    // One row taller than it was: the tab strip took a row from the table, and
-    // this test is about what a *deep tree* does with nine rows rather than
-    // about how many rows there happen to be.
-    // A row taller again: the summary strip took one from the table, and this
-    // test is about what a deep tree does with nine rows.
+    // Two rows taller than it was: the tab strip took one from the table and
+    // the summary strip another, and this test is about what a *deep tree*
+    // does with nine rows rather than about how many rows there happen to be.
+    // The width stays 104: the selection margin 0114 reserved went back to the
+    // table when the selected row got a ground of its own.
     let rows: Vec<String> = rows(&app, 104, 26)
         .into_iter()
         .filter(|l| l.contains("Chrome") || l.contains('…'))
@@ -5946,7 +5998,8 @@ fn processes_that_differ_only_by_a_suffix_are_told_apart() {
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
-    let shown: Vec<String> = rows(&app, 104, 20)
+    // 105: see the selection margin note in `a_deep_tree_never_leaves_a_row_without_a_name`.
+    let shown: Vec<String> = rows(&app, 105, 20)
         .into_iter()
         .filter(|l| l.contains("Chrome") || l.contains('…'))
         .map(|l| l.trim_end().to_string())
@@ -7461,7 +7514,7 @@ fn the_footer_drops_whole_hints_rather_than_cutting_one() {
             line.chars().count() <= w as usize,
             "the footer overflowed at {w}: {line:?}"
         );
-        for hint in line.split(" · ") {
+        for hint in line.split(" · ").filter(|h| *h != "? more") {
             assert!(
                 ui::KEY_HINTS.contains(&hint),
                 "a hint was cut in half at {w}: {hint:?}"
@@ -7471,12 +7524,90 @@ fn the_footer_drops_whole_hints_rather_than_cutting_one() {
 }
 
 #[test]
+fn every_key_is_in_the_help_and_the_help_is_in_usage() {
+    // 0113. Three lists of keys — the footer, the help overlay and `--help` —
+    // and they had drifted: `--help` never mentioned `v`, `y` or `C`, which the
+    // footer advertised. The overlay's table is the one list; the footer's
+    // hints must all be in it, and every key in it must be in `--help`.
+    // With its leading newline, so the first key is found like every other.
+    let usage_keys = crate::USAGE
+        .split("\nKEYS:")
+        .nth(1)
+        .and_then(|k| k.split("\nON MACOS:").next())
+        .expect("no KEYS section in --help");
+    for hint in ui::KEY_HINTS {
+        let key = hint.split(' ').next().unwrap();
+        assert!(
+            ui::HELP.iter().any(|h| h.0.split(", ").any(|k| k == key)),
+            "the footer's `{hint}` is not in the help"
+        );
+    }
+    for (shown, usage, _) in ui::HELP {
+        assert!(
+            usage_keys.contains(&format!("\n    {usage}")),
+            "`{shown}` is in the help but not in --help (as `{usage}`)"
+        );
+    }
+}
+
+#[test]
+fn a_footer_that_drops_hints_says_where_the_rest_are() {
+    // 0113. At 120 columns six of the keys — `d`, `g`, `y` among them — never
+    // appeared, and nothing said there were more.
+    let at_120 = ui::fit_hints_for_test(120);
+    assert!(at_120.ends_with("? more"), "{at_120:?}");
+    assert!(at_120.chars().count() <= 120);
+    let everything: usize = ui::KEY_HINTS
+        .iter()
+        .map(|h| h.chars().count() + 3)
+        .sum::<usize>()
+        .saturating_sub(3);
+    assert!(
+        !ui::fit_hints_for_test(everything as u16).contains("? more"),
+        "offered more when nothing was left out"
+    );
+}
+
+#[test]
+fn question_mark_shows_every_key_and_any_key_puts_it_away() {
+    let mut app = App::new(60);
+    app.push(sample(10.0));
+    crate::handle_key_for_test(&mut app, KeyCode::Char('?'));
+    let screen = rows(&app, 120, 40).join("\n");
+    for (shown, _, _) in ui::HELP {
+        assert!(
+            screen.contains(shown),
+            "`{shown}` is not in the help overlay"
+        );
+    }
+    // Any key closes it, and is not also acted on: `q` puts the help away
+    // rather than quitting behind it.
+    crate::handle_key_for_test(&mut app, KeyCode::Char('q'));
+    assert!(!app.show_help, "the help stayed open");
+    assert!(!app.should_quit, "a key that closed the help also quit");
+}
+
+#[test]
 fn the_footer_gives_up_the_least_useful_key_first() {
     // Order is the ladder. `/` is reached for constantly and `K` is the most
-    // niche, so a narrow terminal must lose `K` and keep `/`.
-    let at_100 = ui::fit_hints_for_test(100);
-    assert!(at_100.contains("/ filter"), "{at_100:?}");
-    assert!(!at_100.contains("K kernel"), "{at_100:?}");
+    // niche, so a hint is never dropped while a more niche one is still shown.
+    //
+    // Stated as a relation rather than against a fixed width: the ladder has
+    // gained hints twice — `b jump`, then `F10 menu` — and each time every
+    // width below it moved. A test pinned to a column number passes or fails
+    // for a reason that has nothing to do with the claim.
+    for w in 20..=200u16 {
+        let line = ui::fit_hints_for_test(w);
+        let shown = |h: &str| line.split(" · ").any(|p| p == h);
+        assert!(
+            !shown("K kernel") || shown("/ filter"),
+            "`K kernel` survived a width that dropped `/ filter`: {line:?}"
+        );
+        assert!(
+            !shown("/ filter") || shown("q quit"),
+            "a hint outranked `q quit`: {line:?}"
+        );
+    }
     // `b jump` was added to the ladder above `t tree`, which pushed everything
     // below it ten columns right — so the width at which `K kernel` appears
     // moved with it. The number is measured rather than assumed: a ladder test
@@ -7502,10 +7633,51 @@ fn the_footer_gives_up_the_least_useful_key_first() {
         .iter()
         .position(|h| h.starts_with("b "))
         .unwrap();
-    for niche in ["t tree", "i io", "K kernel", "S constraint"] {
+    for niche in ["t tree", "Tab tabs", "K kernel", "S constraint"] {
         let k = ui::KEY_HINTS.iter().position(|h| *h == niche).unwrap();
         assert!(jump < k, "`b jump` is given up before `{niche}`");
     }
+}
+
+#[test]
+fn a_table_crowded_by_one_program_offers_to_fold_it() {
+    // 0112. Twelve rows of one program crowded out everything else, and the
+    // view that folds them — `g` — was off screen and unadvertised. Offered,
+    // not imposed: grouping by default would take `x` and the pid away from
+    // the rows, and a table that changes mode under the reader is worse than
+    // one that does not.
+    let fixture = |workers: i32| {
+        let mut app = App::new(60);
+        let mut s = sample(10.0);
+        s.procs = (0..workers)
+            .map(|i| proc_named(100 + i, "worker", 2.0, 1 << 20))
+            .chain([proc_named(1, "postgres", 30.0, 1 << 20)])
+            .collect();
+        app.push(s);
+        app
+    };
+    let title = |app: &App| {
+        rows(app, 160, 30)
+            .into_iter()
+            .find(|r| r.contains("processes ("))
+            .unwrap()
+    };
+    let crowded = fixture(8);
+    assert!(
+        title(&crowded).contains("8 worker (g folds them)"),
+        "{:?}",
+        title(&crowded)
+    );
+    assert!(!title(&fixture(3)).contains("g folds"), "offered for three");
+    let mut grouped = fixture(8);
+    grouped.group = crate::app::Grouping::Name;
+    assert!(
+        !title(&grouped).contains("g folds"),
+        "offered while already grouped"
+    );
+    let mut tree = fixture(8);
+    tree.tree = true;
+    assert!(!title(&tree).contains("g folds"), "offered in the tree");
 }
 
 #[test]
@@ -7515,7 +7687,7 @@ fn the_column_headers_name_the_columns_under_them() {
     // over DISK W, and `DISK W` over the sparkline. Every one of the three
     // named the column beside it.
     let mut app = App::new(60);
-    for _ in 0..App::CONSTANT_FOR {
+    for i in 0..App::CONSTANT_FOR {
         let mut s = sample(10.0);
         s.io_collected = true;
         s.procs = vec![ProcSample {
@@ -7523,7 +7695,8 @@ fn the_column_headers_name_the_columns_under_them() {
                 read: 1 << 20,
                 write: 1 << 21,
             }),
-            ..proc_named(101, "postgres", 20.0, 1 << 20)
+            // Varying, so the history column is drawn (0110).
+            ..proc_named(101, "postgres", 20.0 + 15.0 * i as f32, 1 << 20)
         }];
         app.push(s);
     }
@@ -7753,7 +7926,7 @@ fn the_columns_that_identify_a_process_are_adjacent() {
     // so reading a row meant starting at the left, jumping seventy columns
     // right to find out what it was, and coming back.
     let mut app = App::new(60);
-    for _ in 0..App::CONSTANT_FOR {
+    for i in 0..App::CONSTANT_FOR {
         let mut s = sample(10.0);
         s.io_collected = true;
         // Two users, so the USER column is not folded into the title — this
@@ -7768,7 +7941,8 @@ fn the_columns_that_identify_a_process_are_adjacent() {
                 cmd: Some(std::sync::Arc::from("node /srv/api/server.js")),
                 ..proc_named(4821, "node", 31.2, 1 << 30)
             },
-            proc_named(4822, "cron", 1.0, 1 << 20),
+            // Varying, so the history column is drawn (0110).
+            proc_named(4822, "cron", 1.0 + 10.0 * i as f32, 1 << 20),
         ];
         app.push(s);
     }
@@ -7937,35 +8111,7 @@ fn the_readme_shows_the_table_this_version_draws() {
     // headers, so anyone comparing the README to a running instance saw a
     // different table.
     let readme = include_str!("../README.md");
-    let mut app = App::new(60);
-    for _ in 0..App::CONSTANT_FOR {
-        let mut s = sample(10.0);
-        // The README's own four, so the count in the title matches too.
-        s.procs = vec![
-            ProcSample {
-                cpu: 88.4,
-                rss: 512 << 20,
-                ..proc_named(824, "postgres", 0.0, 0)
-            },
-            ProcSample {
-                cpu: 12.5,
-                rss: 32 << 20,
-                ..proc_named(1190, "nginx", 0.0, 0)
-            },
-            ProcSample {
-                cpu: 4.2,
-                rss: 148 << 20,
-                ..proc_named(2077, "node", 0.0, 0)
-            },
-            ProcSample {
-                cpu: 0.1,
-                rss: 12 << 20,
-                ..proc_named(1, "systemd", 0.0, 0)
-            },
-        ];
-        app.push(s);
-    }
-    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let app = readme_fixture();
     let drawn = rows(&app, 78, 24);
 
     // The footer too. It is the line most likely to drift, because every key
@@ -8774,6 +8920,53 @@ fn grouping_folds_a_worker_pool_into_one_row_that_sums() {
         !row.contains("26622"),
         "a group is showing one member's pid: {row:?}"
     );
+}
+
+#[test]
+fn owners_the_kernel_would_not_name_do_not_keep_the_user_column_open() {
+    // 0111. On macOS every process this user may not read comes back with
+    // owner `?` — two hundred on an ordinary Mac — and each counted as a
+    // second user, so the column never folded: ten columns saying `oddurs`
+    // beside a command elided for want of them. An unknown owner is not a
+    // second user; the title counts them instead of claiming `all oddurs`.
+    let fixture = |second: &str| {
+        let mut app = App::new(60);
+        for _ in 0..App::CONSTANT_FOR {
+            let mut s = sample(10.0);
+            let mut hidden = proc_named(400, "trustd", 0.0, 0);
+            hidden.threads = None;
+            hidden.user = std::sync::Arc::from(second);
+            s.procs = vec![
+                ProcSample {
+                    user: std::sync::Arc::from("oddurs"),
+                    ..proc_named(1, "rsst", 20.0, 1 << 20)
+                },
+                ProcSample {
+                    user: std::sync::Arc::from("oddurs"),
+                    ..proc_named(2, "ghostty", 8.0, 1 << 20)
+                },
+                hidden,
+            ];
+            app.push(s);
+        }
+        rows(&app, 140, 30)
+    };
+    let unknown = fixture("?");
+    let header = unknown.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(
+        !header.contains("USER"),
+        "an unknown owner kept the column: {header:?}"
+    );
+    assert!(
+        unknown
+            .iter()
+            .any(|r| r.contains("all oddurs but 1 unknown")),
+        "the title claimed more than it knows"
+    );
+    // A second user who is known is a second user.
+    let two = fixture("root");
+    let header = two.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(header.contains("USER"), "{header:?}");
 }
 
 #[test]
@@ -14598,10 +14791,11 @@ fn no_figure_moves_when_the_numbers_change() {
     };
 
     // The narrowest each figure gets, and the widest.
-    // Non-zero on both: `NetStat::busiest` returns nothing for an idle
-    // interface, so a zero here drops the network figure entirely and the
-    // comparison stops being about its width.
-    let narrow = at(0.0, 1, 1, 1, "lo0", 0);
+    // Non-zero on both, and not loopback on either: the header follows one
+    // real interface chosen over a window — an idle link and a loopback one
+    // are both passed over, and either would drop the network figure entirely
+    // and stop the comparison being about its width.
+    let narrow = at(0.0, 1, 1, 1, "en0", 0);
     let wide = at(100.0, 9999, 900 << 20, 1023 << 30, "enp0s31f6", 999);
 
     // Every label lands in the same column in both.
@@ -14619,10 +14813,10 @@ fn no_figure_moves_when_the_numbers_change() {
         "the row is a different length:\n{narrow}\n{wide}"
     );
     // The interface name is in a fixed cell too: a laptop's busiest interface
-    // flips between `lo0` and `en0` from second to second, and a long name on a
+    // flips between `en0` and `en5` from second to second, and a long name on a
     // server must not make the figure wider than a short one.
     assert!(
-        narrow.contains("lo0"),
+        narrow.contains("en0"),
         "the short name is not drawn:\n{narrow}"
     );
     // A long one is elided into the same cell rather than widening it, which is
@@ -15391,4 +15585,363 @@ fn a_disk_total_nobody_can_supply_falls_back_rather_than_lying() {
         strip.contains("CPU"),
         "and it said nothing at all: {strip:?}"
     );
+}
+
+#[test]
+fn a_narrow_table_drops_columns_rather_than_digits() {
+    // 0105. Every column was a fixed length, and below about sixty-six columns
+    // ratatui squeezed them rather than dropping any — a right-aligned number
+    // squeezed loses its leading digits, so 100.9% read `00.9` and 1.2M read
+    // `.2M`. A column goes before a digit does, at every width.
+    let mut s = sample(40.0);
+    s.procs = vec![
+        proc_named(42, "postgres", 100.9, 1_258_291),
+        proc_named(99, "nginx", 17.2, 15_309_209),
+    ];
+    let mut app = App::new(60);
+    app.push(s);
+    let known = [
+        "CPU%", "RSS", "S", "THR", "PID", "USER", "COMMAND", "DISK", "R", "W", "CID",
+    ];
+    for w in 20..=160u16 {
+        let screen = rows(&app, w, 30);
+        let header = screen
+            .iter()
+            .find(|r| r.contains("CPU%"))
+            .unwrap_or_else(|| panic!("no table header at {w} columns:\n{}", screen.join("\n")));
+        for word in header.split_whitespace() {
+            // The sorted column wears a caret, which is part of the mark and
+            // not part of the name.
+            let word = word.trim_start_matches(['▾', '▴']);
+            assert!(
+                known.contains(&word) || word.starts_with("HIST") || word.starts_with('≤'),
+                "a header clipped to `{word}` at {w} columns: {header:?}"
+            );
+        }
+        let shows_rss = header
+            .split_whitespace()
+            .any(|h| h.trim_start_matches(['▾', '▴']) == "RSS");
+        for (name, cpu, rss) in [("postgres", "100.9", "1.2M"), ("nginx", "17.2", "14.6M")] {
+            let row = screen
+                .iter()
+                .find(|r| r.contains(name))
+                .unwrap_or_else(|| panic!("no {name} row at {w} columns"));
+            let words: Vec<&str> = row.split_whitespace().collect();
+            assert!(
+                words.contains(&cpu),
+                "{name}'s CPU is not {cpu} at {w} columns: {row:?}"
+            );
+            if shows_rss {
+                assert!(
+                    words.contains(&rss),
+                    "{name}'s RSS is not {rss} at {w} columns: {row:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_columns_that_are_drawn_always_fit() {
+    // What the ladder promises, checked against its own arithmetic: at every
+    // width, the columns the shape says are on ask for no more than the table
+    // has — so nothing is left for ratatui to squeeze, and no right-aligned
+    // figure loses its leading digits.
+    //
+    // Asked of `table_shape` through a real panel rather than of the ladder
+    // directly, because the width a shape is fitted against is the table's
+    // body and not the frame: a test that skipped that step would pass on
+    // arithmetic the renderer never performs.
+    let mut s = sample(40.0);
+    s.procs = vec![
+        proc_named(42, "postgres", 100.9, 1_258_291),
+        proc_named(99, "nginx", 17.2, 15_309_209),
+    ];
+    for view in [
+        crate::app::View::Cpu,
+        crate::app::View::Memory,
+        crate::app::View::Disk,
+    ] {
+        let mut app = App::new(60);
+        app.push(s.clone());
+        app.view = view;
+        for w in 20..=200u16 {
+            let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, 30)).table;
+            let shape = ui::table_shape(&app, panel);
+            let body = ui::table_body(&app, panel).width;
+            let want = ui::table_request_for_test(&shape, 1);
+            assert!(
+                want <= body || w < 30,
+                "{view:?} asks for {want} columns of {body} at {w}: {shape:?}"
+            );
+        }
+        // And nothing is dropped that did not have to be.
+        let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, 250, 30)).table;
+        let wide = ui::table_shape(&app, panel);
+        // Not `bars`, which the disk tab spends on its throughput columns,
+        // and not `user`: both processes here have the same owner, and a
+        // column whose every value is the same is folded into the title.
+        assert!(
+            wide.spark && wide.rss && wide.pid && wide.state,
+            "{view:?} dropped a column it could keep: {wide:?}"
+        );
+    }
+}
+
+#[test]
+fn a_process_the_kernel_would_not_describe_shows_dashes_not_zeros() {
+    // 0107. Another user's process on macOS comes back with no memory and no
+    // thread count, and the row said `0.0  0B` beside `—` for threads — a
+    // process using nothing, next to an admission of not knowing. Both are
+    // `—`: an unreadable process is not an idle one.
+    let mut s = sample(40.0);
+    let mut hidden = proc_named(400, "trustd", 0.0, 0);
+    hidden.threads = None;
+    hidden.user = std::sync::Arc::from("?");
+    s.procs = vec![proc_named(42, "postgres", 3.0, 512 << 20), hidden];
+    let mut app = App::new(60);
+    app.push(s);
+    let screen = rows(&app, 120, 30);
+    let row = screen.iter().find(|r| r.contains("trustd")).unwrap();
+    assert!(
+        !row.contains("0B"),
+        "an unreadable process showed zero memory: {row:?}"
+    );
+    assert!(
+        !row.contains("0.0"),
+        "an unreadable process showed zero CPU: {row:?}"
+    );
+    // And it sorts after one that is really idle, not among them.
+    let order: Vec<usize> = ["postgres", "trustd"]
+        .iter()
+        .map(|n| screen.iter().position(|r| r.contains(n)).unwrap())
+        .collect();
+    assert!(order[0] < order[1]);
+}
+
+#[test]
+fn the_history_column_is_drawn_when_something_moved_and_says_so_when_nothing_did() {
+    // 0110. Every row drew the same flat line: the CPU% column's level as a
+    // picture, ten columns wide, beside a command elided for want of room.
+    // The column is for change, so it is drawn when some process's history
+    // moves, and otherwise gives its width to the command and says why.
+    let quiet = |moving: bool| {
+        let mut app = App::new(600);
+        for i in 0..30 {
+            let mut s = sample_at(10.0, 30 - i);
+            s.procs = vec![
+                ProcSample {
+                    cmd: Some(std::sync::Arc::from(
+                        "postgres: checkpointer process for the main cluster",
+                    )),
+                    ..proc_named(1, "postgres", 3.0, 1 << 20)
+                },
+                proc_named(
+                    2,
+                    "nginx",
+                    if moving && i % 2 == 0 { 60.0 } else { 3.0 },
+                    1 << 20,
+                ),
+            ];
+            app.push(s);
+        }
+        rows(&app, 100, 30)
+    };
+    let flat = quiet(false);
+    let header = flat.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(
+        !header.contains("HIST"),
+        "a flat buffer drew the history: {header:?}"
+    );
+    assert!(
+        flat.iter().any(|r| r.contains("history flat")),
+        "the column went without saying why"
+    );
+    // The width went to the command: more of it is shown than beside a drawn
+    // history column.
+    let command = |screen: &[String]| {
+        let row = screen.iter().find(|r| r.contains("postgres")).unwrap();
+        row[row.find("postgres").unwrap()..]
+            .trim_end()
+            .chars()
+            .count()
+    };
+
+    let moving = quiet(true);
+    let header = moving.iter().find(|r| r.contains("CPU%")).unwrap();
+    assert!(
+        header.contains("HIST"),
+        "a moving history was not drawn: {header:?}"
+    );
+    assert!(!moving.iter().any(|r| r.contains("history flat")));
+    assert!(
+        command(&flat) > command(&moving),
+        "the history column's width did not go to the command"
+    );
+}
+
+#[test]
+fn exactly_one_row_is_marked_as_the_selection() {
+    // 0114. The selection was a dark grey background and bold, which is faint
+    // on most themes among rows that reorder every second. It is a ground of
+    // its own now — `Theme::selection_style`, which reverses where there is no
+    // colour to paint with — and what that item asked for is unchanged: one
+    // row marked, the row the reader chose, and nothing marked when nothing is
+    // chosen.
+    let mut app = App::new(60);
+    let mut s = sample(10.0);
+    s.procs = (0..6)
+        .map(|n| proc_named(100 + n, "proc", 90.0 - n as f32, 1 << 20))
+        .collect();
+    app.push(s);
+    let mut app = lit(app);
+    let (w, h) = (120u16, 30u16);
+    let panel = ui::panels(&app, ratatui::layout::Rect::new(0, 0, w, h)).table;
+    let first = ui::table_header_y(panel) + 1;
+    let sel = app.theme.selection_bg;
+    let marked = |app: &App| -> Vec<usize> {
+        let g = grounds(app, w, h);
+        (first as usize..h as usize)
+            .filter(|&y| g[y][4] == Some(sel))
+            .collect()
+    };
+
+    assert!(
+        marked(&app).is_empty(),
+        "a row was marked before anything was chosen"
+    );
+    crate::handle_key_for_test(&mut app, KeyCode::Down);
+    let rows = marked(&app);
+    assert_eq!(rows.len(), 1, "not exactly one marked row: {rows:?}");
+    let chosen = app.selected_name_for_test();
+    let line = &render_lines(&app, w, h)[rows[0]];
+    assert!(line.contains(&*chosen), "{line:?} is not {chosen}");
+
+    // And Escape lets go of it.
+    crate::handle_key_for_test(&mut app, KeyCode::Esc);
+    assert!(marked(&app).is_empty(), "the selection survived Escape");
+}
+fn with_links(links: &[(&str, u64, u64)]) -> Sample {
+    let mut s = sample(10.0);
+    s.net = Some(poptop_net(links));
+    s
+}
+
+fn poptop_net(links: &[(&str, u64, u64)]) -> crate::sample::NetStat {
+    crate::sample::NetStat {
+        links: links
+            .iter()
+            .map(|&(name, rx, tx)| crate::sample::Link {
+                name: std::sync::Arc::from(name),
+                rx,
+                tx,
+                rx_packets: 0,
+                tx_packets: 0,
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_header_names_one_real_interface_and_says_which_way_the_bytes_go() {
+    // 0108. The header picked the busiest interface each sample, loopback
+    // included: `lo0 14.4K/s 14.4K/s` in one run and `en0 46.4K/s 2.1M/s` in
+    // the next, with nothing saying which figure was received and which sent.
+    let mut app = App::new(600);
+    // en0 carries more over the minute, though en1 wins some single samples
+    // and lo0 out-carries both every time.
+    for i in 0..30 {
+        let (en0, en1) = if i % 3 == 0 {
+            (1_000, 5_000)
+        } else {
+            (40_000, 100)
+        };
+        app.push(with_links(&[
+            ("lo0", 900_000, 900_000),
+            ("en0", en0, 2_000),
+            ("en1", en1, 0),
+        ]));
+        // From the second sample: after the first, en1 really has carried
+        // more, and saying so is right. What must not happen is the choice
+        // following each sample once there is a minute to judge by.
+        if i > 0 {
+            assert_eq!(
+                app.headline_link().as_deref(),
+                Some("en0"),
+                "the headline moved at sample {i}"
+            );
+        }
+    }
+    // The figures row, found rather than counted from the top: the menu bar
+    // and the tab strip sit above it now.
+    let header = figures_line(&app, 160, 40);
+    let header = &header;
+    assert!(header.contains("en0"), "{header:?}");
+    assert!(
+        !header.contains("lo0"),
+        "loopback named as the network: {header:?}"
+    );
+    assert!(
+        header.contains('↓') && header.contains('↑'),
+        "unlabelled: {header:?}"
+    );
+
+    // A machine whose only interface is loopback has no network figure.
+    let mut app = App::new(600);
+    app.push(with_links(&[("lo", 5, 5)]));
+    assert_eq!(app.headline_link(), None);
+    assert!(!figures_line(&app, 160, 40).contains("lo "));
+}
+
+/// The machine the README's sample frame is of.
+///
+/// One fixture, shared by the test that checks the README against the renderer
+/// and by the ignored printer that regenerates it. Two would drift, and the
+/// drift is exactly what that test exists to catch: a README showing figures no
+/// version of poptop would draw.
+fn readme_fixture() -> App {
+    let mut app = App::new(600);
+    for i in (0..300).rev() {
+        // Twenty seconds busy, twenty idle, so the graphs and the history
+        // column both have something to show.
+        let busy = (i / 20) % 2 == 0;
+        let mut s = sample_at(if busy { 89.2 } else { 11.0 }, i as u64);
+        let k = if busy { 1.0 } else { 0.1 };
+        s.procs = vec![
+            ProcSample {
+                cpu: 88.4 * k,
+                rss: 512 << 20,
+                ..proc_named(824, "postgres", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 12.5 * k,
+                rss: 32 << 20,
+                ..proc_named(1190, "nginx", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 4.2 * k,
+                rss: 148 << 20,
+                ..proc_named(2077, "node", 0.0, 0)
+            },
+            ProcSample {
+                cpu: 0.1,
+                rss: 12 << 20,
+                ..proc_named(1, "systemd", 0.0, 0)
+            },
+        ];
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    // Paused, which is what the frame is captioned as and what poptop is for.
+    app.history.scrub(-18);
+    app
+}
+
+#[test]
+#[ignore = "prints the README's sample frame; run with --ignored --nocapture"]
+fn print_readme_frame() {
+    for l in rows(&readme_fixture(), 78, 24) {
+        println!("{}", l.trim_end());
+    }
 }

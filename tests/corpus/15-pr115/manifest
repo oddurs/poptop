@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=4ff7270c990d4a91da4489d7d0abee867fbf3a57
+subject=test(linux): the collector reads eight kernels' /proc, recorded or derived, not only CI's (#115)
+format=15
+store_samples=1
+log_samples=2
+cores=10
+mem_total=8393289728
+written_from=1789824844
+written_to=1789824849

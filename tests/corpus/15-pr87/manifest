@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=b9f5684bef4c9855582b2274e5c8e5b4e6f3b144
+subject=say when the OOM killer took something (#87)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824803
+written_to=1789824806

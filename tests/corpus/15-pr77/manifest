@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=681025c062e5d82740797f19f7b860050b623a3d
+subject=let a file describe itself, so an upgrade keeps the history (#77)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824733
+written_to=1789824735

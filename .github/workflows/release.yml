@@ -1,0 +1,137 @@
+name: release
+
+# A tag produces something you can run. poptop's whole argument is that it
+# needs nothing set up beforehand, and "install Rust first" is a strange way
+# to open that. RELEASING.md is the checklist that comes before the tag; this
+# is what happens after it.
+on:
+  push:
+    tags: ["v*"]
+  # For a dry run on a branch: builds and uploads the artifacts, publishes
+  # nothing.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Before spending four builds on it. A tag that disagrees with Cargo.toml
+  # produces a release whose binaries report a different version than the
+  # release names, and that is discovered by a person holding the wrong
+  # binary.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the tag and Cargo.toml agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"$/\1/')
+          if [ "$tag" != "$crate" ]; then
+            echo "tag v$tag but Cargo.toml says $crate" >&2
+            exit 1
+          fi
+          echo "v$tag"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          # A native arm64 Linux runner rather than a cross toolchain: poptop
+          # declares its FFI by hand, and a cross-compiled binary nobody ran
+          # is the one that finds out about a struct layout in production.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      # Run it. A release binary that cannot take one sample on the machine
+      # that built it is not worth publishing, and `--once` exercises the
+      # whole collector.
+      - name: the binary works
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: |
+          ./target/${{ matrix.target }}/release/poptop --version
+          ./target/${{ matrix.target }}/release/poptop --once | head -3
+      - name: name it for the platform
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/poptop \
+             dist/poptop-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: poptop-${{ matrix.target }}
+          path: dist/poptop-${{ matrix.target }}
+          if-no-files-found: error
+
+  # The line in the README, run against the tag that is about to become a
+  # release. It is the most important command in the repository and it was
+  # wrong at 0.1.0: `cargo install --git <repo>` searches the whole repository,
+  # finds `fuzz/` as a second package with binaries, and refuses to guess.
+  # Nothing tested it, because nothing here installs poptop the way a reader
+  # does. This runs before `publish`, so a broken install line stops a release
+  # rather than shipping in one.
+  install:
+    needs: version
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+      - name: the README's install line
+        run: |
+          cargo install --git "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --tag "$GITHUB_REF_NAME" poptop --locked
+          poptop --version
+          poptop --once | head -3
+
+  publish:
+    needs: [build, install]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # One file, so a reader can check every binary with one command:
+      #   sha256sum -c SHA256SUMS
+      - name: checksums
+        working-directory: dist
+        run: |
+          chmod +x poptop-*
+          sha256sum poptop-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md).
+
+          Verify a download against \`SHA256SUMS\`:
+
+          \`\`\`sh
+          sha256sum -c SHA256SUMS --ignore-missing
+          \`\`\`" \
+            dist/*

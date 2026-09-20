@@ -1,0 +1,38 @@
+# What this repository already is, written down so an editor can match it
+# without anybody finding out from `cargo fmt --check` in CI.
+# https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# rustfmt's defaults, which this crate takes unmodified — there is no
+# rustfmt.toml, deliberately: an argument about formatting is an argument
+# nobody wins, and the default is the one every Rust reader already knows.
+[*.rs]
+max_line_length = 100
+
+[*.{yml,yaml,toml,json}]
+indent_size = 2
+
+# The prose is hard-wrapped at 80 so that a diff of a paragraph is a diff of
+# the sentence that changed, not of the whole paragraph reflowed. Tables and
+# the captured terminal frames are wider, and are meant to be: a frame that
+# has been wrapped is not a frame.
+[*.md]
+indent_size = 2
+max_line_length = 80
+# A markdown line ending in two spaces is a line break. Rare here, but
+# stripping it silently changes the rendering.
+trim_trailing_whitespace = false
+
+# `check`, `validate/run` and the hooks are POSIX shell indented with four
+# spaces, the same as everything else here.
+[{check,validate/run,.githooks/*}]
+indent_size = 4

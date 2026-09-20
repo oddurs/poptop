@@ -1,0 +1,5 @@
+5:pids:/system.slice/ModemManager.service
+4:memory:/system.slice/ModemManager.service
+3:cpu,cpuacct:/system.slice/ModemManager.service
+2:blkio:/system.slice/ModemManager.service
+1:name=systemd:/system.slice/ModemManager.service

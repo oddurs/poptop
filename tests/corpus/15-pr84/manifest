@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=598ed00b60beea22678ea70f1dd97973e6fc5c37
+subject=give a process the fields that answer why it is slow (#84)
+format=15
+store_samples=1
+log_samples=0
+cores=10
+mem_total=8393289728
+written_from=1789824774
+written_to=1789824776

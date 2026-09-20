@@ -1,0 +1,5 @@
+5:pids:/system.slice/irqbalance.service
+4:memory:/system.slice/irqbalance.service
+3:cpu,cpuacct:/system.slice/irqbalance.service
+2:blkio:/system.slice/irqbalance.service
+1:name=systemd:/system.slice/irqbalance.service

@@ -1,0 +1,5 @@
+5:pids:/system.slice/system-serial\x2dgetty.slice/serial-getty@ttyS0.service
+4:memory:/system.slice/system-serial\x2dgetty.slice/serial-getty@ttyS0.service
+3:cpu,cpuacct:/system.slice/system-serial\x2dgetty.slice/serial-getty@ttyS0.service
+2:blkio:/system.slice/system-serial\x2dgetty.slice/serial-getty@ttyS0.service
+1:name=systemd:/system.slice/system-serial\x2dgetty.slice/serial-getty@ttyS0.service

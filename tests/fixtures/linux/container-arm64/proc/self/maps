@@ -1,0 +1,19 @@
+aaaaad300000-aaaaad30b000 r-xp 00000000 00:35 9247                       /usr/bin/cat
+aaaaad31f000-aaaaad320000 r--p 0000f000 00:35 9247                       /usr/bin/cat
+aaaaad320000-aaaaad321000 rw-p 00010000 00:35 9247                       /usr/bin/cat
+aaaaeb738000-aaaaeb759000 rw-p 00000000 00:00 0                          [heap]
+ffffa602e000-ffffa6070000 rw-p 00000000 00:00 0 
+ffffa6070000-ffffa620c000 r-xp 00000000 00:35 780337                     /usr/lib/aarch64-linux-gnu/libc.so.6
+ffffa620c000-ffffa621d000 ---p 0019c000 00:35 780337                     /usr/lib/aarch64-linux-gnu/libc.so.6
+ffffa621d000-ffffa6220000 r--p 0019d000 00:35 780337                     /usr/lib/aarch64-linux-gnu/libc.so.6
+ffffa6220000-ffffa6222000 rw-p 001a0000 00:35 780337                     /usr/lib/aarch64-linux-gnu/libc.so.6
+ffffa6222000-ffffa622f000 rw-p 00000000 00:00 0 
+ffffa6235000-ffffa625d000 r-xp 00000000 00:35 779949                     /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+ffffa6267000-ffffa6269000 rw-p 00000000 00:00 0 
+ffffa626b000-ffffa626d000 rw-p 00000000 00:00 0 
+ffffa626d000-ffffa6271000 r--p 00000000 00:00 0                          [vvar]
+ffffa6271000-ffffa6273000 r-xp 00000000 00:00 0                          [vdso]
+ffffa6273000-ffffa6275000 r--p 0002e000 00:35 779949                     /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+ffffa6275000-ffffa6276000 rw-p 00030000 00:35 779949                     /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+ffffa6276000-ffffa6277000 rw-p 00000000 00:00 0 
+fffff753f000-fffff7560000 rw-p 00000000 00:00 0                          [stack]

@@ -1,0 +1,19 @@
+poptop validation, 2026-09-19 10:14, Darwin 25.6.0 arm64
+poptop 0.1.0, window 3s
+
+metric                                       poptop        reference tolerance  verdict   why
+
+cores                                            10               10        0  ok        a count; nothing to round
+memory total, bytes                     17179869184      17179869184        0  ok        hw.memsize, the figure sysinfo reads
+memory available, bytes                  9173876736       9448928051       5%  ok        memory_pressure's free percentage, a whole percent
+swap used, bytes                         5998772224       5998777467 67108864  ok        vm.swapusage, rounded to 0.01M; 64 MiB
+uptime, s                                    916002           916002        5  ok        kern.boottime; read seconds apart
+processes                                       745              747       37  ok        5% or 3: processes come and go, and ps and its shell are two of them
+a busy loop, % of a core                   99.79774              100       15  ok        known: it never sleeps, and the machine had a core to spare
+the same loop, against top                 99.79774             90.7       15  ok        top's own interval, the same window
+CPU, whole machine %                      39.345985               42       10  ok        iostat, user + system, same window
+256 MiB held, bytes                       272007168        272007168       2%  ok        ps rss, a moment later
+256 MiB held, virtual at least                    1                1        0  ok        known: it read 256 MiB into one string
+loopback received, bytes/s                 52076424         58686966      30%  ok        the interface's own counter, over a window read to the second
+
+every metric agrees

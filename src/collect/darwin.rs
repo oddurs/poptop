@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use sysinfo::{Networks, ProcessesToUpdate, System, Users};
+use sysinfo::{CpuRefreshKind, Networks, ProcessesToUpdate, RefreshKind, System, Users};
 
 /// The fastest sysinfo can be sampled and still report the truth.
 ///
@@ -70,6 +70,14 @@ pub struct SysinfoCollector {
     /// [`Kinfo::probe`] recognises, in which case sysinfo's answer is used and
     /// the third of the table it cannot see has no identity — as before.
     kinfo: Option<Kinfo>,
+    /// pid -> (start time, minor faults, faults served from disk), cumulative
+    /// as `proc_taskinfo` reports them, so the next sample can report rates.
+    /// Keyed on the start time like `names`: a recycled pid must not inherit
+    /// the dead process's counters and read as a storm of faults.
+    faults: HashMap<i32, (Option<u64>, u32, u32)>,
+    /// When those counters were read, so a difference can be divided by
+    /// something. Same reason as `net_at`.
+    faults_at: Option<std::time::Instant>,
     /// pid -> (start time, command line). Keyed like `names`, and for the same
     /// reason.
     ///
@@ -89,22 +97,37 @@ impl SysinfoCollector {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             primed: false,
-            sys: System::new_all(),
+            sys: System::new_with_specifics(everything_but_frequency()),
             users: Users::new_with_refreshed_list(),
             names: HashMap::new(),
             nets: Networks::new_with_refreshed_list(),
             net_at: None,
             link_names: HashMap::new(),
             kinfo: Kinfo::probe(),
+            faults: HashMap::new(),
+            faults_at: None,
             cmds: HashMap::new(),
             tick: 0,
         })
     }
 }
 
+/// What `System::new_all` asks for, less the CPU's clock frequency.
+///
+/// poptop never reads the frequency, and asking for it is how sysinfo reaches
+/// `sysctlbyname("hw.cpufrequency".as_ptr(), …)` — a Rust literal with no NUL
+/// on the end, which the C function reads past until it finds one. Undefined
+/// behaviour on every macOS start, and the one report AddressSanitizer makes
+/// for the whole suite (0101). Not asking for it is the whole fix on this side;
+/// `refresh_cpu_usage` below, rather than `refresh_cpu_all`, keeps it that way
+/// after the first sample.
+fn everything_but_frequency() -> RefreshKind {
+    RefreshKind::everything().with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+}
+
 impl Collector for SysinfoCollector {
     fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
-        // `System::new_all` has already refreshed by the time this runs, and
+        // `System::new_with_specifics` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
         // needs between CPU refreshes. So the first sample's CPU figures are
         // exactly what the interval floor exists to refuse, and they would
@@ -117,7 +140,7 @@ impl Collector for SysinfoCollector {
         // frame arrive a fifth of a second late.
         let first = !self.primed;
         self.primed = true;
-        self.sys.refresh_cpu_all();
+        self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
 
@@ -203,8 +226,18 @@ impl Collector for SysinfoCollector {
             users,
             names,
             cmds,
+            faults,
+            faults_at,
             ..
         } = self;
+
+        // The window the fault counters are differenced over. Read here rather
+        // than per process: one instant for every process in the sample, as
+        // the `/proc` backend's `elapsed_secs` is.
+        let fault_now = std::time::Instant::now();
+        let fault_secs = faults_at
+            .replace(fault_now)
+            .map_or(0.0, |t| fault_now.duration_since(t).as_secs_f64());
 
         // Whose processes we can actually see the IO of.
         //
@@ -231,6 +264,7 @@ impl Collector for SysinfoCollector {
             .iter()
             .map(|(pid, p)| {
                 let id = pid.as_u32() as i32;
+                let task = procinfo::task(id);
                 let started = match &starts {
                     Some(table) => table.get(&id).copied(),
                     // No usable `kinfo_proc`. sysinfo counts whole seconds, so
@@ -244,6 +278,32 @@ impl Collector for SysinfoCollector {
                 let name = cached(names, id, started, || {
                     Arc::from(p.name().to_string_lossy().as_ref())
                 });
+                // Minor faults are every fault less the ones that went to
+                // disk: `pti_faults` counts them all, and `pti_pageins` is the
+                // subset the `/proc` backend calls major.
+                let (minor, major) = match task {
+                    Some(t) => {
+                        let now = (t.faults.saturating_sub(t.pageins), t.pageins);
+                        let before = faults
+                            .insert(id, (started, now.0, now.1))
+                            .filter(|(was, _, _)| *was == started && started.is_some());
+                        // Zero for a first sighting, as the `/proc` backend
+                        // does: a rate needs two readings, and its whole life
+                        // divided by one interval is not this interval's.
+                        let rate = |now: u32, before: Option<u32>| match before
+                            .filter(|_| fault_secs > 0.0)
+                        {
+                            Some(b) => (f64::from(now.saturating_sub(b)) / fault_secs) as u32,
+                            None => 0,
+                        };
+                        (
+                            Some(rate(now.0, before.map(|(_, m, _)| m))),
+                            Some(rate(now.1, before.map(|(_, _, p)| p))),
+                        )
+                    }
+                    // Not ours to read. An em dash, as everywhere else.
+                    None => (None, None),
+                };
                 ProcSample {
                     pid: id,
                     // sysinfo reports no parent for processes this user does not
@@ -262,8 +322,8 @@ impl Collector for SysinfoCollector {
                     // sysinfo exposes tasks only on Linux, so this is read
                     // directly — a flat `1` beside a CPU figure of several
                     // hundred percent was the table contradicting itself.
-                    threads: procinfo::threads(id),
-                    state: status_char(p.status()),
+                    threads: task.map(|t| t.threads),
+                    state: state_of(p.status(), task),
                     started,
                     // Free here: `refresh_processes` already reads `argv`, so
                     // unlike the `/proc` backend there is no extra syscall to
@@ -280,9 +340,18 @@ impl Collector for SysinfoCollector {
                     // diff here.
                     // macOS has no cgroups, so no container id to read.
                     container: None,
-                    minflt: None,
-                    majflt: None,
-                    vsize: None,
+                    // From the same `proc_taskinfo` as the thread count, as
+                    // rates over the interval — the columns are rates, and a
+                    // lifetime total rendered there would read as one (0103).
+                    // A process this user may not read has no counters, and
+                    // says so, as it does in every other column.
+                    minflt: minor,
+                    majflt: major,
+                    // From the same `proc_taskinfo` as the thread count.
+                    // It was `None` here, on a note that sysinfo publishes no
+                    // virtual size, until checking poptop against `ps` found
+                    // the figure already in hand.
+                    vsize: task.map(|t| t.vsize),
                     nice: None,
                     pss: None,
                     io: needs
@@ -311,6 +380,7 @@ impl Collector for SysinfoCollector {
             procs.iter().map(|p: &ProcSample| p.pid).collect();
         self.cmds.retain(|pid, _| live.contains(pid));
         self.names.retain(|pid, _| live.contains(pid));
+        self.faults.retain(|pid, _| live.contains(pid));
 
         let load = System::load_average();
 
@@ -373,6 +443,27 @@ impl Collector for SysinfoCollector {
             filesystems: procinfo::filesystems(),
             ..Sample::unknown()
         })
+    }
+}
+
+/// The single-letter state `ps` would print.
+///
+/// From the threads, not from sysinfo's status, which means different things
+/// on different releases of macOS. On one it is the BSD `p_stat` — `SRUN` for
+/// nearly every process, so the table said `R` for twenty rows in twenty-three
+/// while `ps` counted 730 sleeping. On another it said `Sleep` for a process
+/// spinning flat out, whose task reported a thread runnable (0106; the CI
+/// runner's log is on the item). `proc_taskinfo`'s count of runnable threads is
+/// right on both: `R` if any is, `S` if none is — which is how `ps` decides.
+/// Where the kernel will not say, `?`, not a guess. Stopped and zombie come
+/// from the process table, which is where those states live.
+fn state_of(s: sysinfo::ProcessStatus, task: Option<procinfo::Task>) -> char {
+    use sysinfo::ProcessStatus::{Stop, Zombie};
+    match (s, task) {
+        (Stop | Zombie, _) => status_char(s),
+        (_, Some(t)) if t.running > 0 => 'R',
+        (_, Some(_)) => 'S',
+        (_, None) => '?',
     }
 }
 
@@ -452,6 +543,161 @@ fn cached<T: Clone>(
 mod tests {
     use super::*;
 
+    /// Our own process's lifetime fault count, as `top` reports it.
+    fn top_faults(pid: i32) -> u64 {
+        let out = std::process::Command::new("top")
+            .args(["-l", "1", "-stats", "pid,faults", "-pid", &pid.to_string()])
+            .output()
+            .expect("top");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let row = text
+            .lines()
+            .rev()
+            .find(|l| l.trim_start().starts_with(&pid.to_string()))
+            .unwrap_or_else(|| panic!("no row for {pid} in top:\n{text}"));
+        row.split_whitespace()
+            .nth(1)
+            .and_then(|n| n.trim_end_matches('+').parse().ok())
+            .unwrap_or_else(|| panic!("no fault count in {row:?}"))
+    }
+
+    #[test]
+    fn the_fault_columns_are_rates_and_agree_with_top() {
+        // 0103. Both columns were em dashes on macOS, on a note that sysinfo
+        // publishes no fault counts — true of sysinfo, and beside the point:
+        // `proc_taskinfo`, already read for every process we own, carries
+        // them. Held against `top`, which counts the same faults.
+        let me = std::process::id() as i32;
+        let mut c = SysinfoCollector::new().unwrap();
+        // The first sample only primes the counters: a rate needs two.
+        let first = c.collect(Needs::default()).unwrap();
+        assert_eq!(
+            first.procs.iter().find(|p| p.pid == me).unwrap().minflt,
+            Some(0),
+            "a first sighting reported a lifetime total as an interval's rate"
+        );
+
+        // The window starts where poptop's does — at the first sample — so
+        // the rate it reports and the count `top` takes cover the same time.
+        let start = std::time::Instant::now();
+        let before = top_faults(me);
+        // Touch sixty-four mebibytes, a page at a time. Apple Silicon pages
+        // are sixteen kibibytes, so that is four thousand faults — well clear
+        // of the hundred or so a quiet process takes — and the step is the
+        // smaller page, so it holds on an Intel Mac too.
+        let mut pages = vec![0u8; 64 << 20];
+        for i in (0..pages.len()).step_by(4096) {
+            pages[i] = 1;
+        }
+        std::hint::black_box(&pages);
+        let s = c.collect(Needs::default()).unwrap();
+        let window = start.elapsed().as_secs_f64();
+        let after = top_faults(me);
+
+        let row = s.procs.iter().find(|p| p.pid == me).unwrap();
+        let minor = row.minflt.expect("no fault rate for our own process");
+        assert!(
+            row.majflt.is_some(),
+            "no major fault rate for our own process"
+        );
+        // The rate over the window against what top counted across it. Both
+        // ends of the band are wide: `top` is sampled twice around poptop's
+        // own window rather than exactly over it.
+        let counted = (after - before) as f64;
+        let ours = f64::from(minor) * window;
+        assert!(
+            counted > 3_000.0,
+            "top saw only {counted} faults from touching 64MiB"
+        );
+        assert!(
+            (counted / 5.0..counted * 5.0).contains(&ours),
+            "poptop says {ours:.0} faults over {window:.2}s where top counted {counted:.0}"
+        );
+
+        // A process this user cannot read has no counters, and says so.
+        let theirs = s.procs.iter().find(|p| p.threads.is_none());
+        if let Some(p) = theirs {
+            assert_eq!(p.minflt, None, "a fault rate for a process we cannot read");
+            assert_eq!(p.majflt, None);
+        }
+    }
+
+    #[test]
+    fn a_sleeping_process_is_not_reported_as_running() {
+        // 0106. sysinfo's status on macOS is the BSD `p_stat`, which is `SRUN`
+        // for nearly every process whether or not it is doing anything — the
+        // table said `R` for twenty rows in twenty-three while `ps` counted
+        // 730 sleeping and 5 running. A child blocked in `sleep` must read S,
+        // and one spinning must read R.
+        let mut sleeper = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut spinner = std::process::Command::new("/usr/bin/yes")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // Several samples, not one. A state is an instant, and on a loaded
+        // machine — a CI runner with three cores running the suite in parallel
+        // — a spinning process can be caught between time slices; one sample
+        // failed there that way. So the claims are the two that hold at any
+        // load: a sleeping process is never seen running, and a spinning one
+        // is seen running at least once.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut c = SysinfoCollector::new().unwrap();
+        let mut spinner_ran = false;
+        let mut seen = Vec::new();
+        for _ in 0..20 {
+            let s = c.collect(Needs::default()).unwrap();
+            let state = |pid: u32| {
+                s.procs
+                    .iter()
+                    .find(|p| p.pid == pid as i32)
+                    .map(|p| p.state)
+                    .unwrap_or_else(|| panic!("pid {pid} was not collected"))
+            };
+            assert_eq!(
+                state(sleeper.id()),
+                'S',
+                "a sleeping process read as running"
+            );
+            let spin = state(spinner.id());
+            // What the kernel said, so a failure on a machine this cannot be
+            // run on by hand explains itself.
+            let pid = sysinfo::Pid::from_u32(spinner.id());
+            seen.push(format!(
+                "{spin}: status {:?}, task {:?}, cpu {:?}",
+                c.sys.process(pid).map(sysinfo::Process::status),
+                procinfo::task(spinner.id() as i32),
+                c.sys.process(pid).map(sysinfo::Process::cpu_usage),
+            ));
+            if spin == 'R' {
+                spinner_ran = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = (sleeper.kill(), spinner.kill());
+        let _ = (sleeper.wait(), spinner.wait());
+        assert!(
+            spinner_ran,
+            "a spinning process never read as running in twenty samples:\n{}",
+            seen.join("\n")
+        );
+    }
+
+    #[test]
+    fn sysinfo_is_never_asked_for_the_cpu_frequency() {
+        // Asking is what reaches the unterminated `sysctlbyname` name in
+        // sysinfo (0101). The `asan` job on macOS catches the read itself;
+        // this says why, and catches the request before anything is run.
+        let kind = everything_but_frequency();
+        let cpu = kind.cpu().expect("CPU usage is no longer asked for");
+        assert!(cpu.cpu_usage(), "CPU usage is no longer asked for");
+        assert!(!cpu.frequency(), "the CPU frequency is asked for again");
+        assert!(kind.memory().is_some() && kind.processes().is_some());
+    }
+
     #[test]
     fn interface_counts_are_turned_into_rates() {
         // sysinfo counts bytes *since the last refresh*, and the two only
@@ -498,7 +744,13 @@ mod tests {
         let secs = opened.elapsed().as_secs_f64();
         let s = c.collect(Needs::default()).unwrap();
         let net = s.net.expect("no network");
-        let busiest = net.busiest().expect("no interface carried anything");
+        // Sent over 127.0.0.1, so it is loopback that carried it — found by
+        // name, since `busiest` rightly never names loopback.
+        let busiest = net
+            .links
+            .iter()
+            .find(|l| l.is_loopback())
+            .expect("no loopback interface");
 
         // Compared against a computed expectation rather than against the count
         // itself. TCP framing puts a few percent more on the wire than was
