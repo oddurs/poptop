@@ -796,7 +796,7 @@ fn percentage(v: &str) -> Result<f32, &'static str> {
 /// A bare number is seconds, because that is what someone typing `interval = 2`
 /// means, and guessing milliseconds there would silently sample five hundred
 /// times too fast.
-fn duration(v: &str) -> Result<Duration, &'static str> {
+pub fn duration(v: &str) -> Result<Duration, &'static str> {
     const EXPECTED: &str = "a span like `500ms`, `2s`, `10m` or `1h`";
     let (digits, scale) = match v {
         _ if v.ends_with("ms") => (&v[..v.len() - 2], 0.001),

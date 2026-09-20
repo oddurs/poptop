@@ -58,9 +58,13 @@ USAGE:
     poptop --read DATE
                     open a recorded day (YYYY-MM-DD) instead of live
     poptop --days     list the recorded days and their sizes
-    poptop --export=json|line [DATE]
+    poptop --export=json|line [DATE] [--follow [--for SPAN]]
                     every metric, by name, for a script. With a date, the whole
-                    of that recorded day rather than the machine now.
+                    of that recorded day rather than the machine now. --follow
+                    keeps going, a record an interval, flushed as it is taken,
+                    until it is stopped, the reader goes away, or --for SPAN
+                    has passed. Under --follow the line format writes its
+                    header block once, at the top of the stream.
     poptop --schema   what --export reports: every record, field, type and unit
     poptop --report [DATE]
                     summarise a recorded day: peak and sustained, and what was
@@ -410,9 +414,14 @@ enum Command {
     /// A config file of the current settings, at the config path.
     WriteConfig,
     /// `json` or `line`, of a recorded day or of the machine now.
+    ///
+    /// `follow` keeps sampling and writing one record an interval, until it is
+    /// stopped or `until` has gone by.
     Export {
         json: bool,
         day: Option<log::Date>,
+        follow: bool,
+        until: Option<Duration>,
     },
     Days,
     Bench,
@@ -461,9 +470,54 @@ fn command(args: &[String]) -> Result<Command, Usage> {
                 Some("line") => false,
                 _ => return Err(Usage("--export takes `json` or `line`".into())),
             };
+            // The date, then the modifiers. Taken here rather than by
+            // `config::resolve` because they say what this command does and
+            // not what poptop is: `--follow` means nothing to the TUI.
+            let (mut day, mut follow, mut until) = (None, false, None);
+            while let Some(word) = rest.next() {
+                let (word, inline) = match word.split_once('=') {
+                    Some((w, v)) if w.starts_with("--") => (w, Some(v)),
+                    _ => (word, None),
+                };
+                match word {
+                    "--follow" => follow = true,
+                    "--for" => {
+                        let Some(span) = inline.filter(|v| !v.is_empty()).or_else(|| rest.next())
+                        else {
+                            return Err(Usage("--for needs a span, as `30s`, `5m` or `2h`".into()));
+                        };
+                        until =
+                            Some(config::duration(span).map_err(|want| {
+                                Usage(format!("--for `{span}`: expected {want}"))
+                            })?);
+                    }
+                    _ if day.is_none() && !word.starts_with("--") => day = Some(date(word)?),
+                    _ => {
+                        return Err(Usage(format!(
+                            "--export does not take `{word}` — a date, --follow, or --for SPAN"
+                        )));
+                    }
+                }
+            }
+            if !follow {
+                // Refused rather than ignored, as everything else here is. A
+                // `--for` that quietly did nothing would read as a feed that
+                // stopped on time and printed one sample.
+                if until.is_some() {
+                    return Err(Usage(
+                        "--for is --follow's; there is no feed to stop".into(),
+                    ));
+                }
+            } else if day.is_some() {
+                return Err(Usage(
+                    "--follow reads the machine now — a recorded day does not grow".into(),
+                ));
+            }
             Command::Export {
                 json,
-                day: rest.next().map(date).transpose()?,
+                day,
+                follow,
+                until,
             }
         }
         "--read" => {
@@ -543,6 +597,92 @@ fn fail(warnings: &[config::Warning], why: impl std::fmt::Display, code: i32) ->
     flush(warnings);
     eprintln!("poptop: {why}");
     exit(code)
+}
+
+/// `--export --follow`: a record an interval, written as it is taken, until
+/// something stops it.
+///
+/// The difference from `--export` without it is not the sampling — that loop
+/// is the same one `--once` runs twice — but what happens between samples.
+/// Each record is written *and flushed*, because stdout is block-buffered when
+/// it is a pipe, and a feed that arrives 8 KB at a time is not a feed: the
+/// consumer sees nothing for a minute and then forty samples at once.
+///
+/// It ends on SIGTERM or SIGHUP, on `until` going by, or when the reader goes
+/// away — `poptop --export=json --follow | head -3` is a normal thing to type,
+/// and it exits 0, as every other output path does on a closed pipe.
+fn feed(
+    collector: &mut impl Collector,
+    json: bool,
+    interval: Duration,
+    until: Option<Duration>,
+) -> io::Result<()> {
+    // Every optional source, for the reason the one-shot path takes them all:
+    // a script asking for every metric by name means it.
+    let needs = Source::ALL.into_iter().fold(Needs::NONE, |n, s| n.with(s));
+    // A priming read. Every rate is a difference, so the first record can only
+    // be written once there are two readings to difference — which is why the
+    // feed's first line arrives one interval in and not at once.
+    collector.sample(needs)?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+        signal_hook::flag::register(sig, stop.clone())?;
+    }
+
+    let start = Instant::now();
+    // A fixed cadence, for the reason the interactive loop keeps one: timing
+    // the next sample from the end of the last adds the cost of collecting to
+    // every period, and a feed that claims a second and delivers 1.05 is one
+    // whose timestamps drift away from the rate it documents.
+    let mut next = start + interval;
+    let mut lines = export::Lines::default();
+    use std::io::Write as _;
+    let mut out = io::stdout().lock();
+    loop {
+        // In slices, so a signal is noticed within one rather than at the end
+        // of an interval that may be an hour.
+        while let Some(left) = next.checked_duration_since(Instant::now()) {
+            if stop.load(Ordering::Relaxed) || past(start, until, Instant::now()) {
+                return Ok(());
+            }
+            std::thread::sleep(left.min(STOP_CHECK));
+        }
+        let now = Instant::now();
+        if stop.load(Ordering::Relaxed) || past(start, until, now) {
+            return Ok(());
+        }
+        // Rebased on the clock rather than advanced from the last deadline:
+        // after a laptop sleeps for an hour, `next += interval` would spend
+        // that hour writing eighteen thousand records as fast as it could.
+        next = now + interval;
+
+        let s = collector.sample(needs)?;
+        let record = if json {
+            export::sample_json(&s)
+        } else {
+            // One stream, so the header block is written once — at the top,
+            // where a reader that has been there since the start sees it. A
+            // reader attaching to a feed already running gets rows and no
+            // header; that is what `--export=json` is for, and the guide says
+            // so.
+            lines.add(&s);
+            lines.take()
+        };
+        // The reader going away is not an error to report. Anything else is:
+        // a feed that swallowed a full disk would be a silent hole in a
+        // recording somebody is keeping.
+        match out.write_all(record.as_bytes()).and_then(|()| out.flush()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Whether `until` has gone by, counted from `start`.
+fn past(start: Instant, until: Option<Duration>, now: Instant) -> bool {
+    until.is_some_and(|d| now.duration_since(start) >= d)
 }
 
 /// A recorded day, or the reason there is none as the way out.
@@ -708,7 +848,26 @@ fn main() -> io::Result<()> {
             outln!("wrote {}", path.display());
             return Ok(());
         }
-        Command::Export { json, day } => {
+        Command::Export {
+            json,
+            day,
+            follow: true,
+            until,
+        } => {
+            debug_assert!(
+                day.is_none(),
+                "a day cannot be followed; the parser refuses it"
+            );
+            let mut collector = open_collector(&mut warnings)?;
+            flush(&warnings);
+            return feed(&mut collector, json, settings.interval, until);
+        }
+        Command::Export {
+            json,
+            day,
+            follow: false,
+            ..
+        } => {
             // A day, if one was named; otherwise the machine now. Reading
             // history is not a separate feature — it is the same output over a
             // different buffer, which is the whole reason the store carries a
@@ -2251,6 +2410,8 @@ mod tests {
                 Command::Export {
                     json: true,
                     day: None,
+                    follow: false,
+                    until: None,
                 },
             ),
             (
@@ -2258,6 +2419,8 @@ mod tests {
                 Command::Export {
                     json: false,
                     day: None,
+                    follow: false,
+                    until: None,
                 },
             ),
             (
@@ -2265,6 +2428,8 @@ mod tests {
                 Command::Export {
                     json: true,
                     day: date("2026-09-08"),
+                    follow: false,
+                    until: None,
                 },
             ),
             (
@@ -2272,6 +2437,35 @@ mod tests {
                 Command::Export {
                     json: false,
                     day: date("2026-09-08"),
+                    follow: false,
+                    until: None,
+                },
+            ),
+            (
+                "--export json --follow",
+                Command::Export {
+                    json: true,
+                    day: None,
+                    follow: true,
+                    until: None,
+                },
+            ),
+            (
+                "--export=line --follow --for 30s",
+                Command::Export {
+                    json: false,
+                    day: None,
+                    follow: true,
+                    until: Some(Duration::from_secs(30)),
+                },
+            ),
+            (
+                "--export json --for=5m --follow",
+                Command::Export {
+                    json: true,
+                    day: None,
+                    follow: true,
+                    until: Some(Duration::from_secs(300)),
                 },
             ),
             ("--days", Command::Days),
@@ -2302,6 +2496,17 @@ mod tests {
             ("--export", "--export takes `json` or `line`"),
             ("--export csv", "--export takes `json` or `line`"),
             ("--export json today", "`today` is not a date"),
+            ("--export json --for 30s", "--for is --follow's"),
+            ("--export json --follow --for", "--for needs a span"),
+            (
+                "--export json --follow --for=soon",
+                "--for `soon`: expected a span",
+            ),
+            (
+                "--export json --follow 2026-09-08",
+                "--follow reads the machine now",
+            ),
+            ("--export json --tail", "--export does not take `--tail`"),
             ("--check-theme", "--check-theme needs a theme name"),
             ("--frobnicate", "unrecognised option '--frobnicate'"),
             ("--store on", "unrecognised option '--store'"),

@@ -14,6 +14,7 @@ mod common;
 use common::{Home, log_a_sample, logged_day};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::process::Stdio;
 
 /// Just enough JSON to check poptop's output: no dependency for a test.
 #[derive(Clone, Debug, PartialEq)]
@@ -509,4 +510,186 @@ fn the_line_format_reads_back_to_what_the_json_says() {
         }
     }
     assert!(compared > 50, "only {compared} values compared");
+}
+
+// ── a live feed ───────────────────────────────────────────────────────────
+// `--export --follow` is the one output path with a clock in it, so these
+// read it as a consumer does: from the pipe, while it runs, and stopped the
+// three ways it can be stopped.
+
+/// Lines from a running feed, one at a time, with a bound on the wait.
+///
+/// A thread and a channel rather than a blocking read, so a feed that stops
+/// writing fails the test with what it had written instead of hanging until
+/// the harness gives up.
+struct Feed {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+impl Feed {
+    fn start(home: &Home, args: &[&str]) -> Feed {
+        let mut child = home
+            .cmd(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("cannot start poptop");
+        let out = child.stdout.take().unwrap();
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufRead::lines(std::io::BufReader::new(out)) {
+                let Ok(line) = line else { return };
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        Feed { child, lines }
+    }
+
+    /// The next line, or what the feed had done instead of writing one.
+    fn line(&mut self) -> String {
+        match self.lines.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(l) => l,
+            Err(_) => panic!("the feed stopped writing: {:?}", self.child.try_wait()),
+        }
+    }
+
+    /// The next line that is a row rather than a `#` header.
+    fn row(&mut self) -> String {
+        loop {
+            let l = self.line();
+            if !l.starts_with('#') {
+                return l;
+            }
+        }
+    }
+
+    fn signal(&self, sig: &str) {
+        let ok = std::process::Command::new("kill")
+            .args([sig, &self.child.id().to_string()])
+            .status()
+            .expect("cannot run kill")
+            .success();
+        assert!(ok, "kill {sig} failed");
+    }
+
+    /// Wait for it to end, and say how.
+    fn ends(&mut self) -> std::process::ExitStatus {
+        // Bounded, so a feed that ignores a signal is a failure rather than a
+        // test that never returns.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(s) = self.child.try_wait().unwrap() {
+                return s;
+            }
+            assert!(std::time::Instant::now() < until, "the feed did not end");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+#[test]
+fn a_live_feed_writes_a_record_an_interval_until_it_is_signalled() {
+    let home = Home::new();
+    let mut feed = Feed::start(&home, &["--export=json", "--follow", "--interval=200ms"]);
+    let at: Vec<f64> = (0..5)
+        .map(|_| {
+            let line = feed.line();
+            let s = Json::parse(&line);
+            // A record, not a fragment: whole, parseable JSON, flushed as it
+            // was taken rather than left in the buffer until 8 KB had piled up.
+            match s.get("at").expect("a record with no `at`") {
+                Json::Num(n) => n.parse().unwrap(),
+                other => panic!("`at` is {other:?}"),
+            }
+        })
+        .collect();
+    // The schedule it claims. Measured across the whole run rather than
+    // between neighbours: one late sample on a loaded runner is noise, and a
+    // cadence that drifts shows up in the total.
+    let each = (at[4] - at[0]) / 4.0;
+    assert!(
+        (0.15..0.45).contains(&each),
+        "200ms samples arrived {each:.3}s apart: {at:?}"
+    );
+    feed.signal("-TERM");
+    let s = feed.ends();
+    assert_eq!(s.code(), Some(0), "SIGTERM did not end the feed cleanly");
+}
+
+#[test]
+fn a_feed_ends_quietly_when_its_reader_goes_away() {
+    // `poptop --export=json --follow | head -3`, which is how anybody looks
+    // at a feed for the first time. The pipe closing is not an error.
+    let home = Home::new();
+    let mut feed = Feed::start(&home, &["--export=json", "--follow", "--interval=200ms"]);
+    for _ in 0..2 {
+        feed.line();
+    }
+    drop(std::mem::replace(
+        &mut feed.lines,
+        std::sync::mpsc::channel().1,
+    ));
+    let s = feed.ends();
+    assert_eq!(s.code(), Some(0), "a closed pipe was not a clean end");
+    let mut err = String::new();
+    std::io::Read::read_to_string(feed.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+    assert!(
+        err.is_empty(),
+        "it complained about the reader leaving:\n{err}"
+    );
+}
+
+#[test]
+fn a_feed_stops_itself_after_for() {
+    let home = Home::new();
+    let began = std::time::Instant::now();
+    let out = home
+        .cmd(&[
+            "--export=line",
+            "--follow",
+            "--interval=200ms",
+            "--for",
+            "1s",
+        ])
+        .output()
+        .expect("cannot start poptop");
+    let took = began.elapsed();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        (std::time::Duration::from_millis(900)..std::time::Duration::from_secs(20)).contains(&took),
+        "--for 1s took {took:?}"
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    let rows = text
+        .lines()
+        .filter(|l| l.starts_with("sample.cpu_per_core\t"))
+        .count();
+    assert!(
+        (2..=8).contains(&rows),
+        "{rows} records in a second:\n{text}"
+    );
+    // The header rule under `--follow`: once, at the top of the stream, as a
+    // recorded day writes it — not once a sample, which would be four copies
+    // of every header in a second and a reader with four column maps to
+    // choose between.
+    for label in ["#sample.cpu_per_core", "#sample.mem"] {
+        let n = text.lines().filter(|l| l.starts_with(label)).count();
+        assert_eq!(n, 1, "{n} copies of `{label}`");
+    }
+    let first = text.lines().next().unwrap();
+    assert!(first.starts_with('#'), "the stream opens with `{first}`");
+}
+
+#[test]
+fn a_feed_stops_on_hangup_too() {
+    // The terminal going away, which for a feed redirected to a file is the
+    // shell that started it exiting.
+    let home = Home::new();
+    let mut feed = Feed::start(&home, &["--export=line", "--follow", "--interval=200ms"]);
+    feed.row();
+    feed.signal("-HUP");
+    assert_eq!(feed.ends().code(), Some(0), "SIGHUP did not end it cleanly");
 }
