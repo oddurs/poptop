@@ -422,3 +422,11 @@ Good ideas without a date yet.
 - [x] `0102` Once a process is selected, nothing unselects it <sup>bug · p3 · review</sup>
 - [x] `0103` macOS fault counts are in proc_taskinfo, which poptop already reads <sup>feature · p3 · validation</sup>
 
+## Unscheduled
+
+`··········` 0% · 0 of 1 done
+
+### backlog
+
+- [ ] `0215` A day on a busy machine ends heavier than it started <sup>bug · p2</sup>
+
