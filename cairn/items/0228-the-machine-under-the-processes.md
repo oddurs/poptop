@@ -3,7 +3,7 @@ id: 228
 key: r9
 title: The machine under the processes
 type: milestone
-status: backlog
+status: done
 labels:
 - collect
 created: 2026-09-22
