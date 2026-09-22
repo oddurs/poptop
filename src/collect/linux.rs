@@ -990,12 +990,12 @@ impl ProcFs {
             // buy nothing. Skipped for the same reason the IO probe skips them,
             // one branch down.
             if !p.is_kernel_thread() {
-                p.cmd = cmdline(pid, p.started.unwrap_or(0), tick, cmds, path, buf);
+                p.cmd = cmdline(pid, p.started.get().unwrap_or(0), tick, cmds, path, buf);
                 // Same shape as the command line and one read cheaper: cached
                 // for the life of the process rather than re-read on a slot.
-                p.container = container_of(pid, p.started.unwrap_or(0), containers, path);
+                p.container = container_of(pid, p.started.get().unwrap_or(0), containers, path);
                 if needs.wants(Source::Pss) {
-                    p.pss = read_pss(pid, path, buf, &mut pss_denied);
+                    p.pss = read_pss(pid, path, buf, &mut pss_denied).into();
                 }
             }
             // Kernel threads are skipped rather than attempted and counted as
@@ -1005,13 +1005,13 @@ impl ProcFs {
             // exists to protect. Skipping also saves an open and a read each.
             if needs.wants(Source::Io) && *io_supported && !p.is_kernel_thread() {
                 match read_proc_io(pid, elapsed_secs, &mut seen_io, prev_proc_io, path, buf) {
-                    Ok(rates) => p.io = rates,
+                    Ok(rates) => p.io = rates.into(),
                     // Either way the row shows an em dash. Only one of them is
                     // something root would fix, and only that one is counted.
                     Err(why) => *denied += usize::from(why.counts()),
                 }
             }
-            if needs.wants(Source::Threads) && p.threads.unwrap_or(1) > 1 {
+            if needs.wants(Source::Threads) && p.threads.get().unwrap_or(1) > 1 {
                 read_tasks(
                     pid,
                     &p,
@@ -1587,11 +1587,11 @@ fn parse_proc_stat(
         user,
         cpu,
         rss: rss_pages.saturating_mul(ctx.page_size),
-        threads: Some(threads),
+        threads: Some(threads).into(),
         state,
-        started: Some(starttime),
+        started: Some(starttime).into(),
         cmd: None,
-        io: None,
+        io: None.into(),
         // Filled by the caller, which has the cache.
         container: None,
         // A rate needs two readings, and a process seen for the first time has
@@ -1601,17 +1601,19 @@ fn parse_proc_stat(
             minflt,
             ctx.prev_faults.get(&pid).map(|(m, _)| *m),
             elapsed_secs,
-        )),
+        ))
+        .into(),
         majflt: Some(rate(
             majflt,
             ctx.prev_faults.get(&pid).map(|(_, m)| *m),
             elapsed_secs,
-        )),
-        vsize: Some(vsize),
-        nice: Some(nice),
+        ))
+        .into(),
+        vsize: Some(vsize).into(),
+        nice: Some(nice).into(),
         // Filled by the caller when the source is on; `smaps_rollup` is a
         // second read and does not belong in a `stat` parser.
-        pss: None,
+        pss: None.into(),
     })
 }
 
@@ -2453,8 +2455,9 @@ impl Collector for ProcFs {
 /// The paths are resolved here, on the collector's thread, because a test's
 /// fixture root is a property of the thread that set it.
 fn read_hardware() -> impl FnMut() -> super::sensors::Hardware + Send + 'static {
-    let sys =
-        |p: &str| -> std::path::PathBuf { at(std::path::Path::new(p)).as_ref().to_path_buf() };
+    let sys = |p: &str| -> std::path::PathBuf {
+        AsRef::<std::path::Path>::as_ref(&at(std::path::Path::new(p))).to_path_buf()
+    };
     let (hwmon, supply, drm) = (
         sys("/sys/class/hwmon"),
         sys("/sys/class/power_supply"),
@@ -2874,13 +2877,17 @@ mod tests {
             &ctx(&pf),
         )
         .expect("the fixture did not parse");
-        assert_eq!(p.nice, Some(-5), "nice landed on the wrong field");
+        assert_eq!(p.nice, Some(-5).into(), "nice landed on the wrong field");
         assert_eq!(
             p.vsize,
-            Some(2_846_720_000),
+            Some(2_846_720_000).into(),
             "vsize landed on the wrong field"
         );
-        assert_eq!(p.threads, Some(8), "the fixture disagrees with the parser");
+        assert_eq!(
+            p.threads,
+            Some(8).into(),
+            "the fixture disagrees with the parser"
+        );
         // Cumulative counters carried forward, to become next sample's baseline.
         assert_eq!(seen_faults.get(&4021), Some(&(4210, 17)));
     }
@@ -3377,7 +3384,7 @@ mod tests {
         assert_eq!(p.ppid, 1);
         assert_eq!(
             p.threads,
-            Some(8),
+            Some(8).into(),
             "the thread count from /proc stat field 20"
         );
         assert_eq!(p.state, 'S');
@@ -3852,7 +3859,7 @@ mod tests {
             },
         )
         .expect("our own stat did not parse");
-        assert_eq!(start_of(me), row.started);
+        assert_eq!(start_of(me), row.started.get());
         assert_eq!(start_of(i32::MAX), None);
     }
 
@@ -4910,7 +4917,11 @@ mod mangled {
             let p = parse_comm(comm).unwrap_or_else(|| panic!("{comm:?} did not parse"));
             assert_eq!(p.name.as_bytes(), comm, "the name was misread");
             assert_eq!(p.ppid, 1, "{comm:?} moved the fields after it");
-            assert_eq!(p.nice, Some(-5), "{comm:?} moved the fields after it");
+            assert_eq!(
+                p.nice,
+                Some(-5).into(),
+                "{comm:?} moved the fields after it"
+            );
         }
     }
 
@@ -4926,7 +4937,7 @@ mod mangled {
             let p = parse_comm(comm).unwrap_or_else(|| panic!("{comm:?} hid the process"));
             assert!(p.name.contains('\u{fffd}'), "{:?}", p.name);
             assert_eq!(p.ppid, 1);
-            assert_eq!(p.nice, Some(-5));
+            assert_eq!(p.nice, Some(-5).into());
         }
     }
 
@@ -5119,7 +5130,12 @@ mod fixtures {
             for p in &s.procs {
                 let has = tree.join(format!("proc/{}/smaps_rollup", p.pid)).is_file();
                 if !has {
-                    assert_eq!(p.pss, None, "{name}: pid {} has a PSS from nowhere", p.pid);
+                    assert_eq!(
+                        p.pss,
+                        None.into(),
+                        "{name}: pid {} has a PSS from nowhere",
+                        p.pid
+                    );
                 }
             }
         }
