@@ -370,13 +370,12 @@ UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 
 ## r9 — The machine under the processes
 
-`##········` 17% · 1 of 6 done
+`####······` 33% · 2 of 6 done
 
 Hardware and cadence sprint. poptop reads the kernel's accounting closely and
 
 ### backlog
 
-- [ ] `0230` Samples land wherever poptop happened to start <sup>feature · p1 · collect</sup>
 - [ ] `0231` Nothing says how hot the machine is <sup>feature · p1 · collect</sup>
 - [ ] `0232` The disk panel is empty on macOS <sup>feature · p1 · collect</sup>
 - [ ] `0233` Nothing says whether the machine is on battery <sup>feature · p2 · collect</sup>
@@ -385,6 +384,7 @@ Hardware and cadence sprint. poptop reads the kernel's accounting closely and
 ### done
 
 - [x] `0229` Collection runs on the thread that reads keys <sup>bug · p0 · collect</sup>
+- [x] `0230` Samples land wherever poptop happened to start <sup>feature · p1 · collect</sup>
 
 ## v0.2 — Cheap enough to run
 

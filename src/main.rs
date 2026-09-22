@@ -44,7 +44,7 @@ use app::App;
 use collect::{Collector, Needs, Platform, Source};
 use command::Action;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use sampler::{Logging, Sampler};
+use sampler::{Logging, Sampler, Schedule};
 
 use std::io;
 use std::sync::Arc;
@@ -729,15 +729,19 @@ fn feed(
 
     let (stop, reopen) = signals()?;
     let start = Instant::now();
-    // A fixed cadence, for the reason the interactive loop keeps one: timing
+    // The interactive loop's schedule, for the reasons it keeps one: timing
     // the next sample from the end of the last adds the cost of collecting to
     // every period, and a feed that claims a second and delivers 1.05 is one
-    // whose timestamps drift away from the rate it documents.
-    let mut next = start + interval;
+    // whose timestamps drift away from the rate it documents. On the clock
+    // too, so a feed and the monitor beside it sample the same instants, and
+    // resynced rather than caught up after a laptop sleeps for an hour —
+    // which would otherwise spend that hour writing eighteen thousand records
+    // as fast as it could.
+    let mut schedule = Schedule::new(interval, start, std::time::SystemTime::now());
     loop {
         // In slices, so a signal is noticed within one rather than at the end
         // of an interval that may be an hour.
-        while let Some(left) = next.checked_duration_since(Instant::now()) {
+        while let Some(left) = schedule.next().checked_duration_since(Instant::now()) {
             if stop.load(Ordering::Relaxed) || past(start, until, Instant::now()) {
                 return Ok(());
             }
@@ -752,20 +756,18 @@ fn feed(
         if stop.load(Ordering::Relaxed) || past(start, until, now) {
             return Ok(());
         }
-        // Rebased on the clock rather than advanced from the last deadline:
-        // after a laptop sleeps for an hour, `next += interval` would spend
-        // that hour writing eighteen thousand records as fast as it could.
-        next = now + interval;
         if reopen.swap(false, Ordering::Relaxed) {
             said_nothing_to_reopen();
         }
+        let sample = collector.sample(needs)?;
+        schedule.advance(Instant::now(), std::time::SystemTime::now());
 
         // One stream for the line format, so the header block is written
         // once — at the top, where a reader that has been there since the
         // start sees it. A reader attaching to a feed already running gets
         // rows and no header; that is what `--export=json` is for, and the
         // guide says so.
-        if !records.write(&collector.sample(needs)?)? {
+        if !records.write(&sample)? {
             return Ok(());
         }
     }
