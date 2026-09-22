@@ -16708,3 +16708,31 @@ fn print_sensor_frames() {
         }
     }
 }
+
+#[test]
+#[ignore = "times a frame over a full buffer; run with --ignored --nocapture --release"]
+fn time_a_full_frame() {
+    let mut app = App::new(601);
+    for i in (0..601).rev() {
+        let mut s = sample_at(20.0 + (i % 7) as f32, i as u64);
+        s.procs = (0..600)
+            .map(|p| ProcSample {
+                cpu: ((p * 7 + i as usize) % 13) as f32,
+                rss: (p as u64 + 1) << 20,
+                ..proc_named(p as i32 + 1, "worker", 0.0, 0)
+            })
+            .collect();
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    for _ in 0..3 {
+        term.draw(|f| ui::draw(f, &app)).unwrap();
+    }
+    let n = 30;
+    let t0 = std::time::Instant::now();
+    for _ in 0..n {
+        term.draw(|f| ui::draw(f, &app)).unwrap();
+    }
+    eprintln!("frame: {:?}", t0.elapsed() / n);
+}
