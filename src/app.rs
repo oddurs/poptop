@@ -2610,7 +2610,10 @@ pub fn constraint_of(s: &Sample) -> Option<Constraint> {
     // answers "why is this slow" rather than by size, which is why a disk with
     // no idle time outranks a busy CPU — the CPU being busy is often the
     // machine working, and the disk having nothing left is not.
-    if s.busiest_disk().is_some_and(|d| d.util >= DISK_CONSTRAINED) {
+    if s.busiest_disk()
+        .and_then(|d| d.util)
+        .is_some_and(|u| u >= DISK_CONSTRAINED)
+    {
         return Some(Constraint::Disk);
     }
     // Memory is deliberately not decided here. The only platform that reaches

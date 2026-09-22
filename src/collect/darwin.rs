@@ -5,7 +5,7 @@
 //! laptop; the `/proc` backend is the one to read for how any of it works.
 
 use super::procinfo::{self, Kinfo};
-use super::{Collector, Needs, Source, sensors};
+use super::{Collector, Needs, Source, iokit, sensors};
 
 /// Every optional source this backend reads.
 ///
@@ -14,7 +14,7 @@ use super::{Collector, Needs, Source, sensors};
 /// implicit, so `y` cannot start a collection that will never produce a row and
 /// the budget cannot give up something that was never costing anything.
 pub const SUPPORTED: &[Source] = &[Source::Io, Source::Sensors];
-use crate::sample::{IoRates, Link, MemStat, NetStat, ProcSample, Sample};
+use crate::sample::{DiskStat, IoRates, Link, MemStat, NetStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -84,6 +84,11 @@ pub struct SysinfoCollector {
     /// walk of the HID services, so it is done once and each sample refreshes
     /// the readings.
     components: Option<Components>,
+    /// Each whole disk's cumulative counters at the last sample, and when, so
+    /// the next can report rates.
+    disks_prev: Option<(std::time::Instant, HashMap<String, iokit::DiskCounters>)>,
+    /// Interned disk names, for the reason `link_names` is.
+    disk_names: HashMap<String, Arc<str>>,
     /// pid -> (start time, command line). Keyed like `names`, and for the same
     /// reason.
     ///
@@ -113,6 +118,8 @@ impl SysinfoCollector {
             faults: HashMap::new(),
             faults_at: None,
             components: None,
+            disks_prev: None,
+            disk_names: HashMap::new(),
             cmds: HashMap::new(),
             tick: 0,
         })
@@ -494,8 +501,56 @@ impl SysinfoCollector {
             io_denied,
             net: Some(net),
             filesystems: procinfo::filesystems(),
+            disks: self.read_disks(),
             ..Sample::unknown()
         })
+    }
+
+    /// Each whole disk's traffic since the last sample, busiest first.
+    ///
+    /// From the storage drivers' own counters in the IO registry: bytes,
+    /// operations and the time spent servicing them, which gives throughput,
+    /// IOPS, mean service time and mean queue depth. Not utilisation, which
+    /// macOS does not count — see [`DiskStat::util`].
+    ///
+    /// `None` on the first sample, which has nothing to difference against,
+    /// and wherever the registry has no disks.
+    fn read_disks(&mut self) -> Option<Vec<DiskStat>> {
+        let now = std::time::Instant::now();
+        let counters: HashMap<String, iokit::DiskCounters> = iokit::disks().into_iter().collect();
+        let prev = self.disks_prev.replace((now, counters.clone()));
+        let (then, before) = prev?;
+        let secs = now.duration_since(then).as_secs_f64();
+        if secs <= 0.0 || counters.is_empty() {
+            return None;
+        }
+        let mut out: Vec<DiskStat> = counters
+            .iter()
+            .filter_map(|(name, c)| {
+                // A disk that appeared since the last sample has no rate yet.
+                let b = before.get(name)?;
+                let d = |now: u64, then: u64| now.saturating_sub(then) as f64;
+                let ops = d(c.reads, b.reads) + d(c.writes, b.writes);
+                let busy_ms = d(c.busy_ns, b.busy_ns) / 1e6;
+                let name = self
+                    .disk_names
+                    .entry(name.clone())
+                    .or_insert_with(|| Arc::from(name.as_str()))
+                    .clone();
+                Some(DiskStat {
+                    name,
+                    read: (d(c.read_bytes, b.read_bytes) / secs) as u64,
+                    write: (d(c.write_bytes, b.write_bytes) / secs) as u64,
+                    reads: (d(c.reads, b.reads) / secs) as u64,
+                    writes: (d(c.writes, b.writes) / secs) as u64,
+                    util: None,
+                    await_ms: (ops > 0.0).then(|| (busy_ms / ops) as f32),
+                    queue: Some((busy_ms / 1000.0 / secs) as f32),
+                })
+            })
+            .collect();
+        out.sort_by_key(|d| std::cmp::Reverse(d.read.saturating_add(d.write)));
+        Some(out)
     }
 }
 

@@ -26,6 +26,14 @@ process that wrote them:
   there is room, drawn from 20°C rather than zero; `FAN` while a fan is
   turning. Recorded, exported as `temps` and `fans` in `celsius` and `rpm`.
   Schema change, compatible: two optional fields and two records (0231).
+- **Disks on macOS.** Throughput, operations, mean service time and mean queue
+  depth for each whole disk, from the storage drivers' own counters in the IO
+  registry. In the header as what the disk is moving each way, and on the
+  timeline as a byte rate for one named disk. macOS does not count
+  utilisation, so `DiskStat.util` — and `queue`, for symmetry — are optional
+  now. Schema change, compatible: a field that becomes optional reads every
+  older recording's value as present, which the store now does by rule rather
+  than skipping it (0232).
 
 ### Fixed
 

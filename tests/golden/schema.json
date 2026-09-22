@@ -50,9 +50,9 @@
       {"name": "write", "type": "integer", "unit": "bytes_per_second", "optional": false},
       {"name": "reads", "type": "integer", "unit": "per_second", "optional": false},
       {"name": "writes", "type": "integer", "unit": "per_second", "optional": false},
-      {"name": "util", "type": "number", "unit": "percent", "optional": false},
+      {"name": "util", "type": "number", "unit": "percent", "optional": true},
       {"name": "await_ms", "type": "number", "unit": "milliseconds", "optional": true},
-      {"name": "queue", "type": "number", "unit": "count", "optional": false}
+      {"name": "queue", "type": "number", "unit": "count", "optional": true}
     ],
     "IoRates": [
       {"name": "read", "type": "integer", "unit": "bytes_per_second", "optional": false},

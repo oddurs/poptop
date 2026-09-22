@@ -2,7 +2,7 @@
 id: 232
 title: The disk panel is empty on macOS
 type: feature
-status: backlog
+status: done
 milestone: r9
 labels:
 - collect
@@ -27,6 +27,6 @@ stay absent rather than zero.
 
 ## Acceptance criteria
 
-- [ ] macOS disk read and write rates in the header, tab and timeline
-- [ ] One entry per device, not per mount
-- [ ] Figures macOS does not publish render as unknown
+- [x] macOS disk read and write rates in the header, tab and timeline
+- [x] One entry per device, not per mount
+- [x] Figures macOS does not publish render as unknown

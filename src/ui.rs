@@ -1612,11 +1612,23 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // Ranked immediately after `WAIT` for that reason — it is the answer to the
     // question the figure beside it raises, so the two should survive or go
     // together on a narrowing panel.
+    //
+    // Where utilisation is not published, what the disk is moving instead,
+    // each way — labelled, since two bare rates could be either way round.
     if let Some(d) = s.busiest_disk() {
-        let mut spans = vec![
-            Span::styled(format!("{} ", d.name), dim),
-            Span::styled(format!("{:>5.1}%", d.util), app.theme.figure_style(d.util)),
-        ];
+        let mut spans = vec![Span::styled(format!("{} ", d.name), dim)];
+        match d.util {
+            Some(u) => spans.push(Span::styled(
+                format!("{u:>5.1}%"),
+                app.theme.figure_style(u),
+            )),
+            None => spans.extend([
+                Span::styled("r ", dim),
+                Span::raw(fmt_rate(d.read)),
+                Span::styled(" w ", dim),
+                Span::raw(fmt_rate(d.write)),
+            ]),
+        }
         // Service time only when something completed. A mean of no operations
         // is not zero, and zero would read as an infinitely fast disk.
         if let Some(a) = d.await_ms {
@@ -1624,7 +1636,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         }
         figures.push(Figure {
             group: Group::Storage,
-            rank: 20,
+            // Saturation answers `WAIT` and goes with it. Throughput answers
+            // nothing on its own — it is context, like the network figure —
+            // so it is given up after memory rather than before it.
+            rank: if d.util.is_some() { 20 } else { 52 },
             spans,
         });
     }
@@ -2434,17 +2449,39 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // would have made every existing layout worse to add this one. It appears
     // when there is a fourth row to give it.
     //
-    // Present only where the platform reads disks at all, so macOS keeps the
-    // layout it already had rather than carrying an empty row.
-    if app.history.current().is_some_and(|s| s.disks.is_some()) {
-        candidates.push((
+    // Present only where the platform reads disks at all.
+    //
+    // Where utilisation is not published — macOS — the row is what the disk
+    // moved instead, in bytes a second, and from one named disk for the whole
+    // line as the network row does: busiest-per-sample by throughput would
+    // splice the boot disk into a backup drive wherever the two traded places.
+    match app.history.current().and_then(Sample::busiest_disk) {
+        Some(d) if d.util.is_some() => candidates.push((
             "DISK",
             window
                 .iter()
-                .map(|s| s.busiest_disk().map_or(0.0, |d| d.util))
+                .map(|s| s.busiest_disk().and_then(|d| d.util).unwrap_or(0.0))
                 .collect(),
             Unit::Percent,
-        ));
+        )),
+        Some(d) => {
+            let name = d.name.clone();
+            candidates.push((
+                "DISK",
+                window
+                    .iter()
+                    .map(|s| {
+                        s.disks
+                            .iter()
+                            .flatten()
+                            .find(|d| d.name == name)
+                            .map_or(0.0, |d| d.read.saturating_add(d.write) as f32)
+                    })
+                    .collect(),
+                Unit::Rate,
+            ));
+        }
+        None => {}
     }
 
     // And what the machine lost to waiting, which is not the same question as

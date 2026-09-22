@@ -31,7 +31,8 @@ publish (`src/collect/darwin.rs`).
 | Containers (cgroup v2) | yes | — |
 | Per-cgroup CPU and pressure (`C`) | cgroup v2 | — |
 | NUMA nodes | yes | — |
-| Disks and their saturation | yes | — |
+| Disks: throughput, IOPS, service time, queue depth | yes | yes |
+| Disk saturation (utilisation) | yes | — |
 | Filesystem capacity | yes | yes |
 | Network throughput | yes | yes |
 | Network errors, drops, retransmits | yes | errors only |

@@ -573,6 +573,8 @@ pub use linux::ProcFs as Platform;
 #[cfg(not(target_os = "linux"))]
 mod darwin;
 #[cfg(not(target_os = "linux"))]
+mod iokit;
+#[cfg(not(target_os = "linux"))]
 mod procinfo;
 #[cfg(not(target_os = "linux"))]
 use darwin as backend;

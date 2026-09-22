@@ -305,7 +305,9 @@ fn schema_notes(
                 // misreading it — which is right, and silent, which is not: the
                 // column would just empty out. This is the case a downgrade
                 // hits after a metric changes precision.
-                Some(w) if w.hash != f.hash => retyped.push(&f.name),
+                Some(w) if w.hash != f.hash && !crate::persist::widens(&w.ty, &f.ty) => {
+                    retyped.push(&f.name)
+                }
                 Some(_) => {}
             }
         }
@@ -556,9 +558,9 @@ mod tests {
                     write: 3 << 20,
                     reads: 40,
                     writes: 120,
-                    util: 62.5,
+                    util: Some(62.5),
                     await_ms: Some(7.75),
-                    queue: 3.25,
+                    queue: Some(3.25),
                 },
                 DiskStat {
                     name: Arc::from("sdb"),
@@ -566,9 +568,9 @@ mod tests {
                     write: 0,
                     reads: 0,
                     writes: 0,
-                    util: 0.0,
+                    util: None,
                     await_ms: None,
-                    queue: 0.0,
+                    queue: None,
                 },
             ]),
             iowait: Some(61.25),
