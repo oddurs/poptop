@@ -16,7 +16,12 @@ process that wrote them:
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **Keys waited for the sample.** Collection ran on the thread that reads
+  keys, so for as long as a sample took the screen froze and keys queued. It
+  runs on a thread of its own now, with the log writes, and the interface draws
+  a finished sample within a few milliseconds of it being ready (0229).
 
 ## [0.2.0] - 2026-09-20
 
