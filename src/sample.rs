@@ -6,6 +6,7 @@
 //! possible — the process table you see at t-40s is the real one from t-40s,
 //! not an interpolation.
 
+use crate::persist::Opt;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -72,17 +73,17 @@ impl Default for ProcSample {
             user: Arc::from(""),
             cpu: 0.0,
             rss: 0,
-            threads: None,
+            threads: None.into(),
             state: '?',
-            started: None,
+            started: None.into(),
             cmd: None,
-            io: None,
+            io: None.into(),
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         }
     }
 }
@@ -196,7 +197,7 @@ impl ProcSample {
     /// different programs. Better a process with no history than a history
     /// belonging to something else.
     pub fn key(&self) -> Option<(i32, u64)> {
-        Some((self.pid, self.started?))
+        Some((self.pid, self.started.get()?))
     }
 
     /// Whether this is a kernel thread rather than a program.
@@ -859,13 +860,28 @@ impl MemStat {
 }
 
 /// Disk throughput for one process over one interval, in bytes per second.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct IoRates {
     pub read: u64,
     pub write: u64,
 }
 
 crate::persist::codec! { IoRates { read: u64, write: u64 } }
+
+/// Absent as both halves at their maximum, which no process reads or writes
+/// in a second.
+impl crate::persist::Absent for IoRates {
+    const NONE: IoRates = IoRates {
+        read: u64::MAX,
+        write: u64::MAX,
+    };
+    fn nearest(self) -> IoRates {
+        IoRates {
+            read: u64::MAX - 1,
+            ..self
+        }
+    }
+}
 
 /// One process as it appeared in a single sample.
 #[derive(Debug, Clone)]
@@ -897,7 +913,7 @@ pub struct ProcSample {
     /// Always known on Linux, where `/proc/<pid>/stat` publishes it for every
     /// process. Known on macOS for processes this user owns, which in practice
     /// is every process busy enough for the figure to matter.
-    pub threads: Option<u32>,
+    pub threads: Opt<u32>,
     pub state: char,
     /// An opaque token, unique to one run of one process on this machine.
     ///
@@ -916,7 +932,7 @@ pub struct ProcSample {
     /// compares equal to another zero, so two unrelated processes sharing a
     /// recycled pid would be spliced into one line — the failure this field
     /// exists to prevent. See [`ProcSample::key`].
-    pub started: Option<u64>,
+    pub started: Opt<u64>,
     /// The command line, as the process was invoked, arguments joined by
     /// spaces.
     ///
@@ -936,7 +952,7 @@ pub struct ProcSample {
     /// cases are told apart by [`Sample::io_collected`], and neither is ever
     /// rendered as a zero: a fabricated zero is indistinguishable from a
     /// genuinely idle process.
-    pub io: Option<IoRates>,
+    pub io: Opt<IoRates>,
     /// The container this process is in, as a twelve-character id.
     ///
     /// `None` means it is in no container — not that poptop could not tell.
@@ -945,7 +961,7 @@ pub struct ProcSample {
     /// anybody's permission.
     pub container: Option<Arc<str>>,
     /// Minor faults in the interval — pages found in memory. Common and cheap.
-    pub minflt: Option<u32>,
+    pub minflt: Opt<u32>,
     /// **Major** faults in the interval: pages fetched from disk.
     ///
     /// The one that answers "why is this slow". A process taking major faults
@@ -954,12 +970,12 @@ pub struct ProcSample {
     ///
     /// A rate over the interval like every other counter here, not the
     /// lifetime total `/proc` publishes.
-    pub majflt: Option<u32>,
+    pub majflt: Opt<u32>,
     /// Virtual size. Against `rss` it is how much of what a process has
     /// reserved it is actually touching.
-    pub vsize: Option<u64>,
+    pub vsize: Opt<u64>,
     /// Scheduling niceness, -20 to 19.
-    pub nice: Option<i32>,
+    pub nice: Opt<i32>,
     /// Proportional set size: the process's share of the pages it holds, with
     /// shared pages divided among the processes sharing them.
     ///
@@ -970,7 +986,7 @@ pub struct ProcSample {
     ///
     /// `None` unless asked for: it needs `smaps_rollup`, a second read per
     /// process, which is why atop gates its own behind a key.
-    pub pss: Option<u64>,
+    pub pss: Opt<u64>,
 }
 
 crate::persist::codec! { ThreadSample { pid: i32, tid: i32, name: Arc<str>, state: char, cpu: f32 } }
@@ -979,7 +995,7 @@ crate::persist::codec! { CgroupStat { path: Arc<str>, depth: u32, cpu: Option<f3
 
 crate::persist::codec! { NodeStat { id: u32, total: u64, free: u64, file: Option<u64>, dirty: Option<u64>, shmem: Option<u64>, cpu: Option<f32> } }
 
-crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates>, container: Option<Arc<str>>, minflt: Option<u32>, majflt: Option<u32>, vsize: Option<u64>, nice: Option<i32>, pss: Option<u64> } }
+crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Opt<u32>, state: char, started: Opt<u64>, cmd: Option<Arc<str>>, io: Opt<IoRates>, container: Option<Arc<str>>, minflt: Opt<u32>, majflt: Opt<u32>, vsize: Opt<u64>, nice: Opt<i32>, pss: Opt<u64> } }
 
 /// A complete snapshot of the machine at one instant.
 #[derive(Debug, Clone)]
@@ -1380,6 +1396,20 @@ mod tests {
     }
 
     #[test]
+    fn a_process_row_stays_inside_its_budget() {
+        // Six hundred of these a sample and six hundred samples a buffer: every
+        // eight bytes here is three megabytes on an ordinary laptop. It was 192
+        // bytes, and 144 once its optional fields stopped paying for padding
+        // around a presence bit (0235). A field that needs more is a decision,
+        // and this is where it gets made.
+        assert!(
+            std::mem::size_of::<ProcSample>() <= 144,
+            "a process row is {} bytes",
+            std::mem::size_of::<ProcSample>()
+        );
+    }
+
+    #[test]
     fn a_sample_that_knows_nothing_claims_nothing() {
         // `unknown()` is the base every collector defaults through, so a value
         // fabricated here is fabricated on every platform that stays quiet
@@ -1496,18 +1526,18 @@ mod tests {
             user: Arc::from("root"),
             cpu: 0.0,
             rss: 0,
-            threads: Some(1),
+            threads: Some(1).into(),
             state: 'S',
-            started: Some(1),
+            started: Some(1).into(),
             cmd: None,
-            io: None,
+            io: None.into(),
 
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         };
         assert_eq!(p.command(), "[kworker/3:1]");
         p.cmd = Some(Arc::from("node server.js"));

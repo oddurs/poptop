@@ -579,10 +579,12 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
         ),
         pair(
             "threads",
-            p.threads.map_or_else(|| "—".into(), |n| n.to_string()),
+            p.threads
+                .get()
+                .map_or_else(|| "—".into(), |n| n.to_string()),
         ),
     ];
-    if let Some(n) = p.nice {
+    if let Some(n) = p.nice.get() {
         lines.push(pair("nice", n.to_string()));
     }
     if let Some(c) = p.container.as_deref() {
@@ -601,7 +603,7 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
         "memory",
         format!("{}   peak {}", fmt_bytes(p.rss), fmt_bytes(peak_rss)),
     ));
-    if let Some(io) = p.io.as_ref() {
+    if let Some(io) = p.io.get().as_ref() {
         lines.push(pair(
             "disk",
             format!(
@@ -4306,11 +4308,11 @@ pub fn totals(app: &App) -> Totals {
         out.cpu += r.proc.cpu;
         out.rss += r.proc.rss;
         out.groups += usize::from(r.members.is_some());
-        out.threads = match (out.threads, r.proc.threads) {
+        out.threads = match (out.threads, r.proc.threads.get()) {
             (Some(n), Some(t)) => Some(n + u64::from(t)),
             _ => None,
         };
-        out.disk = match (out.disk, r.proc.io) {
+        out.disk = match (out.disk, r.proc.io.get()) {
             (Some((r0, w0)), Some(io)) => Some((r0 + io.read, w0 + io.write)),
             _ => None,
         };
@@ -5042,14 +5044,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                 // An em dash, never a number we do not have. See
                 // `ProcSample::threads`: a fabricated `1` sits next to a CPU
                 // percentage that can openly contradict it.
-                cells.push(num(match p.threads {
+                cells.push(num(match p.threads.get() {
                     Some(n) => n.to_string(),
                     None => "—".into(),
                 }));
             }
             if show_io {
-                cells.push(io_cell(collected, p.io, false, &app.theme));
-                cells.push(io_cell(collected, p.io, true, &app.theme));
+                cells.push(io_cell(collected, p.io.get(), false, &app.theme));
+                cells.push(io_cell(collected, p.io.get(), true, &app.theme));
             }
             // Never a zero for any of these: a share nobody measured, a size
             // the platform does not publish and a fault count that was not
@@ -5057,19 +5059,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             // saying that. The column is there at all only where somebody
             // answers — see `App::mem_columns_available`.
             if shape.pss {
-                cells.push(num(match p.pss {
+                cells.push(num(match p.pss.get() {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
             }
             if shape.vsize {
-                cells.push(num(match p.vsize {
+                cells.push(num(match p.vsize.get() {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
             }
             if shape.majflt {
-                cells.push(match p.majflt {
+                cells.push(match p.majflt.get() {
                     // Coloured against a *fault* threshold, not through
                     // `heat_style`: that compares against the warn and critical
                     // *percentages*, so a process taking five faults a second —
@@ -5091,7 +5093,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                 // group's. Every other grouped figure either sums or collapses
                 // to an em dash; so does this.
                 let grew = (!r.is_group())
-                    .then(|| app.growth(p.pid, p.started))
+                    .then(|| app.growth(p.pid, p.started.get()))
                     .flatten();
                 cells.push(match grew {
                     Some(d) => num(fmt_growth(d)),

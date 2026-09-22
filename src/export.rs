@@ -516,9 +516,9 @@ mod tests {
             user: Arc::from("root"),
             cpu: 3.5,
             rss: 1 << 20,
-            threads: Some(4),
+            threads: Some(4).into(),
             state: 'S',
-            started: Some(7),
+            started: Some(7).into(),
             ..ProcSample::default()
         }];
         s
@@ -640,7 +640,9 @@ mod tests {
                 pid: 40 + i,
                 name: Arc::from("p"),
                 user: Arc::from("root"),
-                io: (i != 1).then_some(crate::sample::IoRates { read: 1, write: 2 }),
+                io: (i != 1)
+                    .then_some(crate::sample::IoRates { read: 1, write: 2 })
+                    .into(),
                 ..ProcSample::default()
             })
             .collect();
@@ -688,7 +690,9 @@ mod tests {
                 name: Arc::from("p"),
                 user: Arc::from("root"),
                 // Present on some, absent on others, in one table.
-                io: (i % 2 == 0).then_some(crate::sample::IoRates { read: 1, write: 2 }),
+                io: (i % 2 == 0)
+                    .then_some(crate::sample::IoRates { read: 1, write: 2 })
+                    .into(),
                 ..ProcSample::default()
             })
             .collect();
@@ -782,7 +786,7 @@ mod tests {
             pid: 43,
             name: Arc::from("q"),
             user: Arc::from("root"),
-            io: Some(crate::sample::IoRates { read: 1, write: 2 }),
+            io: Some(crate::sample::IoRates { read: 1, write: 2 }).into(),
             ..ProcSample::default()
         });
         let out = lines_of(std::slice::from_ref(&s), None);

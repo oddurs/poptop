@@ -1986,7 +1986,7 @@ fn once(
     for p in top.iter().take(10) {
         // A dash, never a zero: this process could not be read, which is not
         // the same as it doing no IO.
-        let (r, w) = match p.io {
+        let (r, w) = match p.io.get() {
             Some(io) => (human(io.read), human(io.write)),
             None => ("—".into(), "—".into()),
         };
@@ -3083,7 +3083,7 @@ mod tests {
         s.procs = vec![sample::ProcSample {
             pid: i32::MAX,
             name: "nobody".into(),
-            started: Some(1),
+            started: Some(1).into(),
             ..Default::default()
         }];
         a.push(s);

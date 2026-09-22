@@ -354,7 +354,7 @@ fn findings(samples: &[Sample], span: &Span, warn: f32, asked: Duration) -> Vec<
             peak: peak_of(
                 samples,
                 |s| s.iowait,
-                |s| top_by(s, |p| p.io.map_or(0, |i| i.read + i.write)),
+                |s| top_by(s, |p| p.io.get().map_or(0, |i| i.read + i.write)),
             ),
             sustained: sustained_of(
                 samples,
@@ -362,7 +362,7 @@ fn findings(samples: &[Sample], span: &Span, warn: f32, asked: Duration) -> Vec<
                 warn,
                 window,
                 |s| s.iowait,
-                |s| top_by(s, |p| p.io.map_or(0, |i| i.read + i.write)),
+                |s| top_by(s, |p| p.io.get().map_or(0, |i| i.read + i.write)),
             ),
             threshold: warn,
             window,

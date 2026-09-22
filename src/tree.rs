@@ -181,7 +181,7 @@ fn subtree_totals(
     let own: fn(&ProcSample, &crate::app::Smoothing) -> Option<f64> = match sort {
         Sort::Cpu => |p, sm| Some(f64::from(sm.cpu(p))),
         Sort::Mem => |p, sm| Some(sm.rss(p) as f64),
-        Sort::Disk => |p, _| p.io.map(|io| (io.read + io.write) as f64),
+        Sort::Disk => |p, _| p.io.get().map(|io| (io.read + io.write) as f64),
         Sort::Pid | Sort::Name => return HashMap::new(),
     };
 
@@ -312,17 +312,17 @@ mod tests {
             user: Arc::from("root"),
             cpu,
             rss: 1024,
-            threads: Some(1),
+            threads: Some(1).into(),
             state: 'S',
-            started: Some(0),
+            started: Some(0).into(),
             cmd: None,
-            io: None,
+            io: None.into(),
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         }
     }
 
@@ -405,8 +405,8 @@ mod tests {
             p(2, 0, "quiet", 0.0),
             p(3, 2, "quiet-child", 0.0),
         ];
-        procs[1].io = io(0);
-        procs[2].io = io(4096);
+        procs[1].io = io(0).into();
+        procs[2].io = io(4096).into();
         let rows = build(
             &refs(&procs),
             Sort::Disk,

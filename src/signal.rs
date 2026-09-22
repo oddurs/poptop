@@ -102,7 +102,7 @@ impl Pending {
     pub fn new(p: &ProcSample, signal: Signal) -> Pending {
         Pending {
             pid: p.pid,
-            started: p.started,
+            started: p.started.get(),
             name: p.name.clone(),
             cmd: p.cmd.clone(),
             signal,
@@ -267,7 +267,7 @@ pub fn check(
     match live.procs.iter().find(|q| q.pid == p.pid) {
         // The identity poptop uses everywhere: pid alone is a number the kernel
         // hands out again.
-        Some(q) if q.started == Some(started) => Ok(()),
+        Some(q) if q.started == Some(started).into() => Ok(()),
         Some(q) => Err(Refused::Recycled(q.name.clone())),
         None => Err(Refused::Gone),
     }
@@ -420,7 +420,7 @@ mod tests {
             pid,
             name: Arc::from(name),
             user: Arc::from("root"),
-            started,
+            started: started.into(),
             ..ProcSample::default()
         }
     }
