@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=74b35c288f33b4e7ede12d7c94aaeca6fd6e1230
+subject=feat(sensors): how hot the machine is, and its fans
+format=15
+store_samples=1
+log_samples=2
+cores=10
+mem_total=8393289728
+written_from=1790052170
+written_to=1790052175
