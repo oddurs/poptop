@@ -37,10 +37,10 @@ the graphs sit under the table because they are how it got there.
 ── processes (4) · all root ! io: panel too narrow ───────────────────────────
  4 shown · CPU 105.2% · MEM 704.0M (4%) · 4 threads
  ▾CPU%            RSS      S   THR HIST ≤100%     PID COMMAND
-  54.0 ██▏     512.0M ▏    S     1 ⠀⣿⣇⣸⣿⣀⣿⣇⣸⣿     824 postgres
-   7.6 ▎        32.0M      S     1 ⠀⣀⣀⣀⣀⣀⣀⣀⣀⣀    1190 nginx
-   2.6 ▏       148.0M      S     1 ⠀⣀⣀⣀⣀⣀⣀⣀⣀⣀    2077 node
-   0.1          12.0M      S     1 ⠀⣀⣀⣀⣀⣀⣀⣀⣀⣀       1 systemd
+  54.0 ██▏     512.0M ▏    S     1 ⢀⣿⣇⣸⣿⣀⣿⣇⣸⣿     824 postgres
+   7.6 ▎        32.0M      S     1 ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀    1190 nginx
+   2.6 ▏       148.0M      S     1 ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀    2077 node
+   0.1          12.0M      S     1 ⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀       1 systemd
 
 
 

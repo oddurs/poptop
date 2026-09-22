@@ -143,6 +143,13 @@ string itself.
 - **A poptop whose terminal went away span at 100% forever** (0115).
 - **The sparkline and the timeline were drawn over different spans**, side by
   side, with nothing saying so. One clock for both pictures.
+- **The graphs did not scroll together.** A braille cell was one bar at the
+  peak of its two samples, and a sample met a new neighbour every second, so
+  every cell was worked out again on every push: memory, which barely moves,
+  scrolled cleanly while CPU and the network seemed to lag and catch up. Each
+  dot column is now its own sample. Zoomed out, slots are cut on fixed
+  positions in the recording rather than counted back from the newest sample,
+  so the newest column fills and the rest only ever scroll.
 - **`sysinfo` was raised past the stated compiler floor** by a dependency bump
   that edited the root manifest while updating only the fuzz lockfile. Held at
   the version `rust-version = "1.88"` can build, and `./check` now builds

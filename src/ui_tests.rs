@@ -2515,10 +2515,13 @@ fn the_cursor_stays_over_its_own_column_once_the_gutter_exists() {
     let spc = app.glyphs.samples_per_cell();
     let slots = graph_w * spc;
     let zoom = crate::app::effective_zoom(app.zoom(), n, slots);
-    let shown = (slots * zoom).min(n);
+    let full = (slots * zoom).min(n);
+    let lead = crate::history::lead(app.history.ordinal(app.history.len()), zoom);
+    let over = (full + lead).saturating_sub(slots * zoom);
+    let shown = full - over;
     let dropped = app.history.len() - shown;
     let idx = app.history.cursor_index() - dropped;
-    let slot = crate::history::slot_of_index(idx, shown, zoom, slots);
+    let slot = crate::history::slot_of_index(idx, shown, zoom, lead, slots);
     let expected = gutter as u16 + (slot / spc) as u16;
 
     assert_eq!(
@@ -2851,13 +2854,16 @@ fn the_readout_never_pushes_the_marker_off_its_column() {
             let spc = app.glyphs.samples_per_cell();
             let slots = graph_w * spc;
             let zoom = crate::app::effective_zoom(app.zoom(), n, slots);
-            let shown = (slots * zoom).min(n);
+            let full = (slots * zoom).min(n);
+            let lead = crate::history::lead(app.history.ordinal(app.history.len()), zoom);
+            let over = (full + lead).saturating_sub(slots * zoom);
+            let shown = full - over;
             let dropped = app.history.len() - shown;
             if app.history.cursor_index() < dropped {
                 continue; // off-window: covered by its own test
             }
             let idx = app.history.cursor_index() - dropped;
-            let slot = crate::history::slot_of_index(idx, shown, zoom, slots);
+            let slot = crate::history::slot_of_index(idx, shown, zoom, lead, slots);
             let expected = m + gutter as u16 + (slot / spc) as u16;
 
             assert_eq!(
@@ -5341,7 +5347,7 @@ fn zooming_out_cannot_erase_a_gap() {
     for pos in 0..4 {
         let mut flags = vec![false; 8];
         flags[pos] = true;
-        let slots = crate::history::any_slots(&flags, 4, 2);
+        let slots = crate::history::any_slots(&flags, 4, 0, 2);
         assert_eq!(
             slots,
             vec![true, false],
@@ -12238,7 +12244,9 @@ fn the_sparkline_and_the_timeline_are_drawn_over_the_same_span() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     let r = ui::timeline_rows_range(h);
-    let (start, shown, _) = ui::shown_window(
+    let ui::Shown {
+        start, len: shown, ..
+    } = ui::shown_window(
         &app,
         ratatui::layout::Rect::new(0, r.start, w, r.end - r.start),
     );
@@ -13099,7 +13107,9 @@ fn clicking_the_timeline_scrubs_to_that_moment() {
     let (w, h) = (100u16, 26u16);
     let r = ui::timeline_rows_range(h);
     let timeline = ratatui::layout::Rect::new(0, r.start, w, r.end - r.start);
-    let (start, shown, _) = ui::shown_window(&app, timeline);
+    let ui::Shown {
+        start, len: shown, ..
+    } = ui::shown_window(&app, timeline);
     assert!(shown > 4, "no window to click in");
 
     // The left edge of the graph is the oldest sample on screen.
@@ -16515,40 +16525,116 @@ fn print_density_differences() {
     }
 }
 
+/// Height of each braille dot column in the timeline, left to right, data
+/// only.
+fn dot_columns(app: &App) -> Vec<u32> {
+    let (w, h) = (60u16, 14u16);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw_timeline_for_test(f, f.area(), app))
+        .unwrap();
+    let buf = term.backend().buffer();
+    // Height of each dot column, summed down the panel.
+    let mut out = vec![0u32; w as usize * 2];
+    for y in 0..h {
+        for x in 0..w {
+            let cell = &buf[(x, y)];
+            let c = cell.symbol().chars().next().unwrap_or(' ');
+            // Data only. The warn and critical rules are drawn in chrome at
+            // fixed places, a grid the data scrolls under, and counting
+            // them would report the grid standing still as the data moving.
+            if !('\u{2800}'..='\u{28ff}').contains(&c) || cell.fg == app.theme.chrome {
+                continue;
+            }
+            let bits = c as u32 - 0x2800;
+            let left = [0x40, 0x04, 0x02, 0x01]
+                .iter()
+                .filter(|&&d| bits & d != 0)
+                .count();
+            let right = [0x80, 0x20, 0x10, 0x08]
+                .iter()
+                .filter(|&&d| bits & d != 0)
+                .count();
+            out[x as usize * 2] += left as u32;
+            out[x as usize * 2 + 1] += right as u32;
+        }
+    }
+    out
+}
+
 #[test]
-fn a_level_is_drawn_over_the_interval_the_rates_beside_it_cover() {
-    // Memory is the timeline's only level; every other row is a figure for the
-    // interval ending at its sample. Drawn in the same column they disagree by
-    // half an interval — a span's centre of mass sits half an interval before
-    // an instant's — and at the live edge that reads as memory stepping first
-    // and CPU and the network catching up on the next sample, over and over.
-    let s = |used_pct: f32| {
-        let mut s = sample(0.0);
-        s.mem.used = (s.mem.total as f64 * f64::from(used_pct) / 100.0) as u64;
-        s
-    };
-    let steady: Vec<Sample> = (0..4).map(|_| s(40.0)).collect();
-    let refs: Vec<&Sample> = steady.iter().collect();
+fn a_drawn_column_only_ever_scrolls() {
+    // Every series stays in step when each sample owns one column of the
+    // picture from the moment it is drawn until it scrolls off. A braille cell
+    // was drawn as one bar at the peak of its two samples; cells are fixed
+    // pairs of positions and samples move one position a push, so each sample
+    // met a new neighbour every second and every cell was worked out again. A
+    // steady series looks the same however it is paired, so memory scrolled
+    // cleanly while CPU and the network — which vary — seemed to lag and then
+    // catch up, over and over.
+    //
+    // So: decode each frame into its dot columns, push one sample, and the new
+    // frame's columns must be the old ones moved one to the left, with only the
+    // newest column new.
+    let mut app = App::new(600);
+    // A series that varies every sample — the case that used to be redrawn
+    // under the reader.
+    let level = |i: usize| [10.0, 70.0, 25.0, 90.0, 40.0, 5.0][i % 6];
+    for i in 0..20 {
+        app.push(sample_at(level(i), (40 - i) as u64));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let before = dot_columns(&app);
+    app.push(sample_at(level(20), 20));
+    let after = dot_columns(&app);
 
-    // A level that does not move is unchanged by this: nothing is invented.
-    let flat = ui::level_over_intervals(&refs, None, |s| s.mem.used_pct());
+    // Everything but the newest column is the previous frame, one to the left.
+    // The gutter and the rules sit at fixed positions and are left out by
+    // comparing only the columns that held ink on both sides.
+    let n = before.len();
+    let moved: Vec<(usize, u32, u32)> = (1..n - 1)
+        .filter(|&i| before[i] > 0 && after[i - 1] > 0)
+        .map(|i| (i, before[i], after[i - 1]))
+        .filter(|(_, b, a)| b != a)
+        .collect();
     assert!(
-        flat.iter().all(|v| (v - 40.0).abs() < 0.5),
-        "a steady level was not left alone: {flat:?}"
+        moved.is_empty(),
+        "columns changed height instead of scrolling: {moved:?}"
     );
+}
 
-    // A step lands half in the interval it happened during and half in the
-    // next, which is where a rate covering the same second puts it.
-    let stepped = [s(10.0), s(10.0), s(80.0), s(80.0)];
-    let refs: Vec<&Sample> = stepped.iter().collect();
-    let v = ui::level_over_intervals(&refs, None, |s| s.mem.used_pct());
-    assert!((v[1] - 10.0).abs() < 0.5, "before the step: {v:?}");
-    assert!((v[2] - 45.0).abs() < 1.0, "the step is not spread: {v:?}");
-    assert!((v[3] - 80.0).abs() < 0.5, "after the step: {v:?}");
+#[test]
+fn a_zoomed_column_only_ever_fills_or_scrolls() {
+    // The same promise at zoom > 1, where a slot holds several samples. Slots
+    // used to be counted back from the newest sample, so every push moved every
+    // slot's boundary by one: each slot lost its oldest sample and gained its
+    // neighbour's, its peak changed, and the whole graph reshaped once a
+    // second. Cut on absolute positions instead, a push either adds to the
+    // newest column or starts a new one and scrolls the rest — never anything
+    // else.
+    let mut app = App::new(600);
+    let level = |i: usize| [10.0, 70.0, 25.0, 90.0, 40.0, 5.0, 60.0][i % 7];
+    for i in 0..500 {
+        app.push(sample_at(level(i), (1000 - i) as u64));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(app.set_zoom(4), "zoom 4 is not a level");
 
-    // With a sample before the window, the leftmost column gets a real
-    // interval too rather than standing for itself.
-    let earlier = s(10.0);
-    let v = ui::level_over_intervals(&refs, Some(&earlier), |s| s.mem.used_pct());
-    assert!((v[0] - 10.0).abs() < 0.5, "{v:?}");
+    let mut scrolled = 0;
+    for i in 500..508 {
+        let before = dot_columns(&app);
+        app.push(sample_at(level(i), (1000 - i) as u64));
+        let after = dot_columns(&app);
+        let n = before.len();
+        let inked = |i: usize, j: usize| before[i] > 0 && after[j] > 0;
+        let stayed = (0..n - 1).all(|i| !inked(i, i) || before[i] == after[i]);
+        let shifted = (1..n - 1).all(|i| !inked(i, i - 1) || before[i] == after[i - 1]);
+        assert!(
+            stayed || shifted,
+            "push {i}: finished columns changed height:\n {before:?}\n {after:?}"
+        );
+        if !stayed {
+            scrolled += 1;
+        }
+    }
+    assert_eq!(scrolled, 2, "eight pushes at zoom 4 should start two slots");
 }

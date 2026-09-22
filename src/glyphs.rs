@@ -256,6 +256,23 @@ impl GlyphSet {
         }
     }
 
+    /// Whether this set draws each half of a cell from its own sample.
+    ///
+    /// Braille can, at no cost: its two dot columns are independent, and each
+    /// fills from the bottom to its own level with the same four steps a
+    /// full-width bar has. So every sample owns one column of the picture from
+    /// the moment it is drawn until it scrolls off, and the graph moves by one
+    /// column a sample.
+    ///
+    /// The others cannot without losing something worth more. Block's paired
+    /// form is quadrants — two steps a column where its bar has eight — and
+    /// ASCII and box drawing have no part-cell forms at all. They draw a cell
+    /// as one bar at its peak and step a cell every other sample, which is the
+    /// trade their alphabets make.
+    pub fn pairs_in_a_cell(self) -> bool {
+        matches!(self, Self::Braille)
+    }
+
     /// One cell of a bar, given how much of this row the value fills.
     ///
     /// `level` runs 0 (nothing) to [`sub_rows`] (the whole cell).
@@ -265,9 +282,10 @@ impl GlyphSet {
             Self::Block => [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][k],
             Self::Ascii => [' ', '_', '-', '#'][k],
             Self::Braille => {
-                // Both dot columns: a full-width bar rather than a half-width
-                // tick. The paired form, which puts two samples in one cell, is
-                // `glyph` below.
+                // Both dot columns at one level. What the timeline draws is the
+                // paired form, `glyph` below, one sample to a column — see
+                // `pairs_in_a_cell` for why. This stays for a cell that has only
+                // one value to show at full width.
                 const UP: [u8; 4] = [0x40 | 0x80, 0x04 | 0x20, 0x02 | 0x10, 0x01 | 0x08];
                 let bits = UP[..k].iter().fold(0u8, |acc, d| acc | d);
                 char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' ')

@@ -2199,6 +2199,21 @@ pub fn draw_timeline_for_test(f: &mut Frame, area: Rect, app: &App) {
     draw_timeline(f, area, app);
 }
 
+/// The span of history the timeline is showing, and how it is cut into slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown {
+    /// Index of the first sample drawn.
+    pub start: usize,
+    /// Samples drawn.
+    pub len: usize,
+    /// Samples a slot aggregates.
+    pub zoom: usize,
+    /// How many samples the newest slot is still waiting for: [`history::lead`].
+    pub lead: usize,
+    /// Display slots across the graph.
+    pub slots: usize,
+}
+
 /// The span of history the timeline is showing: first sample, sample count, and
 /// the zoom those samples are aggregated at.
 ///
@@ -2209,14 +2224,20 @@ pub fn draw_timeline_for_test(f: &mut Frame, area: Rect, app: &App) {
 ///
 /// Derived rather than stored, like `window_start` itself: it depends on panel
 /// width and zoom, both of which are render-time facts.
-pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
+pub fn shown_window(app: &App, area: Rect) -> Shown {
     // The drawn width, margin included, or the window the table's sparklines
     // are aggregated over would not be the window the graph shows.
     let area = content(app, area);
     let inner_w = area.width as usize;
     let inner_h = area.height.saturating_sub(1) as usize;
     if inner_w == 0 || inner_h == 0 {
-        return (0, 0, 1);
+        return Shown {
+            start: 0,
+            len: 0,
+            zoom: 1,
+            lead: 0,
+            slots: 0,
+        };
     }
     let graph_rows = inner_h.saturating_sub(1).max(1);
     let gutter = if inner_w >= MIN_WIDTH_FOR_GUTTER && graph_rows >= MIN_ROWS_FOR_AXIS {
@@ -2228,7 +2249,19 @@ pub fn shown_window(app: &App, area: Rect) -> (usize, usize, usize) {
     let len = app.history.len();
     let zoom = app::effective_zoom(app.zoom(), len, slots);
     let shown = (slots * zoom).min(len);
-    (window_start(&app.history, shown), shown, zoom)
+    let start = window_start(&app.history, shown);
+    let lead = history::lead(app.history.ordinal(start + shown), zoom);
+    // The newest slot is `lead` short, so a full panel has that much room
+    // fewer. Trimmed from the oldest end, so the window is exactly the samples
+    // drawn — the sparklines and a click on the graph read it as that.
+    let over = (shown + lead).saturating_sub(slots * zoom);
+    Shown {
+        start: start + over,
+        len: shown - over,
+        zoom,
+        lead,
+        slots,
+    }
 }
 
 /// The scrubable timeline, oldest on the left.
@@ -2279,7 +2312,13 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // From the shared computation, not a second copy of it: the table's
     // sparklines are drawn on this window too, and two derivations of the same
     // window drift the moment either is touched.
-    let (window_start, shown, zoom) = shown_window(app, area);
+    let Shown {
+        start: window_start,
+        len: shown,
+        zoom,
+        lead,
+        ..
+    } = shown_window(app, area);
     // Text-editor scrolling. The window stays anchored to the live edge while
     // the cursor is inside it, and follows only once the cursor would leave —
     // so the live view never shuffles, and scrubbing never takes you somewhere
@@ -2320,11 +2359,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     }
     candidates.push((
         "MEM",
-        level_over_intervals(
-            window,
-            samples.get(window_start.wrapping_sub(1)).copied(),
-            |s| s.mem.used_pct(),
-        ),
+        window.iter().map(|s| s.mem.used_pct()).collect(),
         Unit::Percent,
     ));
 
@@ -2423,7 +2458,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // are drawn from them.
     let slotted: Vec<Vec<Option<f32>>> = candidates
         .iter()
-        .map(|(_, raw, _)| history::peak_slots(raw, zoom, slots))
+        .map(|(_, raw, _)| history::peak_slots(raw, zoom, lead, slots))
         .collect();
 
     // One ceiling per unit, not one per panel.
@@ -2484,8 +2519,12 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // way tells the reader that postgres was absent for the ten minutes their
     // laptop was asleep — when in fact the tool was not looking and postgres
     // ran throughout.
-    let record_gaps =
-        history::any_slots(&all_gaps[window_start..window_start + shown], zoom, slots);
+    let record_gaps = history::any_slots(
+        &all_gaps[window_start..window_start + shown],
+        zoom,
+        lead,
+        slots,
+    );
     // Where the process was not running, drawn as a gap rather than as zero. A
     // process that did not exist did not use no CPU — it used none of anything
     // because it was not there, and a flat line at the bottom says the
@@ -2493,7 +2532,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // they are the one thing this panel must not smooth over.
     let absent_slots = subject
         .as_ref()
-        .map(|s| history::any_slots(&s.absent, zoom, slots))
+        .map(|s| history::any_slots(&s.absent, zoom, lead, slots))
         .unwrap_or_default();
     let or_into = |a: &[bool], b: &[bool]| -> Vec<bool> {
         (0..slots)
@@ -2558,7 +2597,10 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         };
         // A figure this row could not read joins the gaps, for this row only.
         let row_gaps = match subject.as_ref().and_then(|s| s.rows.get(i)) {
-            Some(r) => or_into(&gap_slots, &history::any_slots(&r.unknown, zoom, slots)),
+            Some(r) => or_into(
+                &gap_slots,
+                &history::any_slots(&r.unknown, zoom, lead, slots),
+            ),
             None => gap_slots.clone(),
         };
         for row in 0..rows {
@@ -2698,6 +2740,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 len: window.len(),
                 start: window_start,
                 zoom,
+                lead,
                 slots,
                 spc,
                 graph_w,
@@ -2776,7 +2819,7 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Placed against `area`, the content rect the rows are drawn in, so the
     // margin is counted once: the rows carry it as padding and this carries it
     // in its origin.
-    let used = shown.div_ceil(zoom).div_ceil(spc);
+    let used = (shown + lead).div_ceil(zoom).div_ceil(spc);
     let empty = graph_w.saturating_sub(used);
     if window_start == 0
         && let Some(first) = window.first()
@@ -2811,51 +2854,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
 /// tool must never do.
 fn finite(v: f32) -> Option<f32> {
     v.is_finite().then_some(v)
-}
-
-/// A level series put on the same footing as the rates drawn beside it.
-///
-/// Memory is the one series in the timeline that is a *level* rather than a
-/// rate. Every other row — CPU, WAIT, DISK, STALL, NET — is a figure for the
-/// interval that ends at its sample: what the machine did during that second.
-/// A level is a state at the instant the sample was taken.
-///
-/// Drawn in the same column the two disagree by half an interval, because a
-/// span's centre of mass sits half an interval before an instant's — and on a
-/// braille row half an interval is half a cell. At the live edge it reads as
-/// memory stepping first and the rest catching up on the next sample, over and
-/// over, which is exactly what it is.
-///
-/// So a level is drawn as the mean of each interval's endpoints. That puts its
-/// centre of mass where every other series already has one, and it invents
-/// nothing: both endpoints were measured, and it is the same arithmetic a rate
-/// does implicitly when it divides a delta by the time it took.
-///
-/// `before` is the sample preceding the window, where the buffer has one: the
-/// leftmost column is as entitled to a real interval as any other. Without it
-/// the first value stands for itself, which is the only honest answer when
-/// there is no interval to average over.
-///
-/// The header's `MEM` figure is untouched. It answers "how full is this machine
-/// *now*", a question about an instant; this row answers "what was it doing
-/// then", a question about a span.
-#[cfg_attr(test, allow(dead_code))]
-pub fn level_over_intervals(
-    window: &[&Sample],
-    before: Option<&Sample>,
-    of: impl Fn(&Sample) -> f32,
-) -> Vec<f32> {
-    window
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let prev = if i > 0 { Some(window[i - 1]) } else { before };
-            match prev {
-                Some(p) => (of(p) + of(s)) / 2.0,
-                None => of(s),
-            }
-        })
-        .collect()
 }
 
 /// One row of graph. `row` counts from the top of a `rows`-tall graph.
@@ -2954,6 +2952,33 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
                 set.draws()
             };
             let glyph = match draws {
+                // One sample to a dot column, each filled to its own height.
+                //
+                // Not one bar at the cell's peak, which is what this did. A
+                // cell is a fixed pair of positions and samples move one
+                // position left on every push, so each sample met a different
+                // neighbour every second and every cell's peak was worked out
+                // again. A steady series is the same whichever way it is
+                // paired, so memory scrolled cleanly; a series that varies was
+                // redrawn across the whole panel on every sample, and CPU and
+                // the network seemed to lag and catch up. Nothing was late —
+                // the picture was being re-aggregated under the reader.
+                //
+                // With one sample to a column nothing is ever re-aggregated.
+                // The graph is a strip that scrolls by one column a sample,
+                // every series in step, and the only column that changes is
+                // the newest.
+                glyphs::Draw::Bars if set.pairs_in_a_cell() => {
+                    let level = |v: Option<f32>| {
+                        v.map_or(0, |v| {
+                            glyphs::fill_in_row(scale.frac(v), row, rows, set.sub_rows())
+                        })
+                    };
+                    set.glyph(
+                        level(cell.first().copied().flatten()),
+                        level(cell.get(1).copied().flatten()),
+                    )
+                }
                 // A bar from the baseline to the value. Every cell below the
                 // value is full, the cell the value lands in is part-full, and
                 // everything above is empty — the shape a sparkline has always
@@ -3335,6 +3360,7 @@ struct Window<'a> {
     /// Index of the first sample drawn.
     start: usize,
     zoom: usize,
+    lead: usize,
     slots: usize,
     /// Samples per character cell.
     spc: usize,
@@ -3388,8 +3414,9 @@ fn axis_with_caption(caption: &str, width: usize, theme: &Theme) -> Line<'static
 /// When a cell holds two samples the marker picks the correct half, so packing
 /// never costs cursor precision.
 fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
-    let (n_values, window_start, zoom, slots, spc, graph_w, gutter) =
-        (w.len, w.start, w.zoom, w.slots, w.spc, w.graph_w, w.gutter);
+    let (n_values, window_start, zoom, lead, slots, spc, graph_w, gutter) = (
+        w.len, w.start, w.zoom, w.lead, w.slots, w.spc, w.graph_w, w.gutter,
+    );
     let pad = " ".repeat(gutter);
     // Live is handled by `axis_with_caption`; this stays for the empty buffer,
     // where there is no cursor to place and no span to caption.
@@ -3429,7 +3456,7 @@ fn cursor_row(app: &App, w: Window<'_>) -> Line<'static> {
     }
 
     let idx = app.history.cursor_index() - window_start;
-    let slot = history::slot_of_index(idx, n_values, zoom, slots);
+    let slot = history::slot_of_index(idx, n_values, zoom, lead, slots);
 
     let cell = (slot / spc).min(graph_w.saturating_sub(1));
     let marker = app.glyphs.cursor_marker();
@@ -4550,7 +4577,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
     // reader has to know which span each is drawn over before either can be
     // read against the other. Same window, same zoom, same cursor — the same
     // rule the detail view already follows.
-    let (spark_start, spark_shown, _) = shown_window(app, timeline);
+    let Shown {
+        start: spark_start,
+        len: spark_shown,
+        ..
+    } = shown_window(app, timeline);
     let series = history::series_in(&app.history, &keys, spark_start, spark_shown);
     // Same span, harder compression. Ten cells against the timeline's hundred
     // means each one covers ten times as much, so the sparkline needs its own
@@ -4558,6 +4589,10 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
     // about the span, not the stride.
     let spark_slots = SPARK_W * app.glyphs.spark_samples_per_cell();
     let spark_zoom = spark_shown.div_ceil(spark_slots.max(1)).max(1);
+    // Cut on the same absolute positions as the timeline's slots, for the same
+    // reason: a row whose finished cells change every second is a row that
+    // looks busy while nothing is happening.
+    let spark_lead = history::lead(app.history.ordinal(spark_start + spark_shown), spark_zoom);
 
     // One ceiling across every row. Scaling each sparkline to its own peak
     // makes a flat 12% process look exactly like one spiking to 90%, which
@@ -4814,6 +4849,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                         p.key().and_then(|k| series.get(&k)).map(Vec::as_slice),
                         app.glyphs,
                         spark_zoom,
+                        spark_lead,
                         spark_ceiling,
                     ))
                     .style(app.theme.dim_style()),
@@ -5306,14 +5342,20 @@ pub const SPARK_W: usize = 10;
 /// A process absent from a sample leaves a gap rather than a zero. "It was not
 /// running" and "it was running and idle" are different facts, and a graph that
 /// conflates them invents history.
-fn sparkline(series: Option<&[Option<f32>]>, set: GlyphSet, zoom: usize, ceiling: f32) -> String {
+fn sparkline(
+    series: Option<&[Option<f32>]>,
+    set: GlyphSet,
+    zoom: usize,
+    lead: usize,
+    ceiling: f32,
+) -> String {
     let Some(series) = series else {
         return " ".repeat(SPARK_W);
     };
     let spc = set.spark_samples_per_cell();
     let slots = SPARK_W * spc;
     let values: Vec<f32> = series.iter().map(|v| v.unwrap_or(0.0)).collect();
-    let agg = history::peak_slots(&values, zoom.max(1), slots);
+    let agg = history::peak_slots(&values, zoom.max(1), lead, slots);
     if spc == 1 {
         // The eighths ramp: one sample a cell, nine heights.
         return agg
