@@ -2,7 +2,7 @@
 id: 229
 title: Collection runs on the thread that reads keys
 type: bug
-status: backlog
+status: done
 milestone: r9
 labels:
 - collect
@@ -29,7 +29,7 @@ a key that opens a panel changes what the *next* sample gathers.
 
 ## Acceptance criteria
 
-- [ ] No collector call on the thread that draws
-- [ ] A key is answered while a slow sample is being taken (a test with a collector that sleeps)
-- [ ] The budget and the logging path see the same samples and costs as before
-- [ ] Quitting does not wait for a sample in flight to finish
+- [x] No collector call on the thread that draws
+- [x] A key is answered while a slow sample is being taken (a test with a collector that sleeps)
+- [x] The budget and the logging path see the same samples and costs as before
+- [x] Quitting does not wait for a sample in flight to finish
