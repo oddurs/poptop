@@ -388,7 +388,12 @@ macro_rules! codec {
                 'field: for f in fields {
                     $(
                         if &*f.name == stringify!($field) {
-                            if f.hash == <$ty as $crate::persist::Typed>::HASH {
+                            if f.hash == <$ty as $crate::persist::Typed>::HASH
+                                || $crate::persist::widens(
+                                    &<$ty as $crate::persist::Typed>::ty(),
+                                    &f.ty,
+                                )
+                            {
                                 out.$field =
                                     <$ty as $crate::persist::Codec>::read(&f.ty, reg, r)?;
                             } else {
@@ -873,11 +878,28 @@ impl<T: Codec + Default> Codec for Option<T> {
         Some(present.then_some(v))
     }
     fn read(ty: &Ty, reg: &Registry, r: &mut In<'_>) -> Option<Self> {
-        let Ty::Opt(inner) = ty else { return None };
+        let Ty::Opt(inner) = ty else {
+            // Written before this field could be absent: every value in the
+            // file was present, so each reads as present. See [`widens`].
+            return widens(&Self::ty(), ty).then(|| T::read(ty, reg, r).map(Some))?;
+        };
         let present = bool::read_exact(reg, r)?;
         let v = T::read(inner, reg, r)?;
         Some(present.then_some(v))
     }
+}
+
+/// Whether a field this build declares as `want` can read one a file wrote as
+/// `got` without losing or inventing anything.
+///
+/// One rule, and deliberately only one: `T` becoming `Option<T>`. A figure
+/// every platform used to supply turns out to be one some platform cannot —
+/// disk utilisation, which macOS does not publish — and the honest type for it
+/// is optional. Every value an older file holds was measured, so reading each
+/// as present is exact. Any other change of type is still a different
+/// measurement and is skipped, and said.
+pub fn widens(want: &Ty, got: &Ty) -> bool {
+    matches!(want, Ty::Opt(inner) if **inner == *got)
 }
 
 impl<T: Typed> Typed for Vec<T> {
@@ -1197,6 +1219,25 @@ mod tests {
             <Vec<u8> as Codec>::read(&Ty::List(Box::new(Ty::U8)), &reg, &mut r).is_none(),
             "the merge path accepted a length no file could satisfy"
         );
+    }
+
+    #[test]
+    fn a_field_that_became_optional_reads_what_was_written_as_present() {
+        let mut out = Out::default();
+        Codec::write(&62.5f32, &mut out);
+        let reg = Registry::default();
+        let mut r = In::new(&out.bytes, 0, Vec::new());
+        assert_eq!(
+            <Option<f32> as Codec>::read(&Ty::F32, &reg, &mut r),
+            Some(Some(62.5))
+        );
+        assert!(widens(&Ty::Opt(Box::new(Ty::F32)), &Ty::F32));
+        // Only that one change. A narrower or different type is a different
+        // measurement, and nothing may read it as this one.
+        assert!(!widens(&Ty::Opt(Box::new(Ty::F64)), &Ty::F32));
+        assert!(!widens(&Ty::F32, &Ty::Opt(Box::new(Ty::F32))));
+        let mut r = In::new(&out.bytes, 0, Vec::new());
+        assert_eq!(<Option<f64> as Codec>::read(&Ty::F32, &reg, &mut r), None);
     }
 
     #[test]

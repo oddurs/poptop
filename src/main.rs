@@ -1712,13 +1712,19 @@ fn once(
         outln!("stall   {pct:.1}%  of the last 10s with every task stopped, on {what}");
     }
     if let Some(d) = s.busiest_disk() {
-        match d.await_ms {
-            Some(a) => outln!(
-                "disk    {:.1}%  {} utilised, {a:.1}ms per operation",
-                d.util,
-                d.name
+        let service = d
+            .await_ms
+            .map(|a| format!(", {a:.1}ms per operation"))
+            .unwrap_or_default();
+        match d.util {
+            Some(u) => outln!("disk    {u:.1}%  {} utilised{service}", d.name),
+            // Where utilisation is not published, what the disk moved.
+            None => outln!(
+                "disk    {}  {} read, {} written{service}",
+                d.name,
+                ui::fmt_rate(d.read).trim_start(),
+                ui::fmt_rate(d.write).trim_start()
             ),
-            None => outln!("disk    {:.1}%  {} utilised", d.util, d.name),
         }
     }
     // The counter that says the network is unhealthy, which no other line here

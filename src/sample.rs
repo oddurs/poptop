@@ -680,7 +680,13 @@ pub struct DiskStat {
     /// Not a hard ceiling on modern hardware: an SSD that serves requests in
     /// parallel can be at 100% and still have capacity, which is why `queue`
     /// and `await` sit beside it rather than behind it.
-    pub util: f32,
+    ///
+    /// `None` where the platform does not publish it. macOS counts bytes,
+    /// operations and time spent servicing them, and not the time a device
+    /// had anything in flight — which is a different number whenever requests
+    /// overlap, so it is not derived from the others. Always present before
+    /// 0232, and read back from older recordings as present.
+    pub util: Option<f32>,
     /// Mean milliseconds a completed operation spent in the device, or `None`
     /// when none completed.
     ///
@@ -688,11 +694,14 @@ pub struct DiskStat {
     /// zero here would read as an infinitely fast disk, the most flattering
     /// possible lie about the figure most worth trusting.
     pub await_ms: Option<f32>,
-    /// Mean requests in flight across the interval.
-    pub queue: f32,
+    /// Mean requests in flight across the interval: time spent servicing
+    /// requests, summed over requests, divided by the interval — Little's law,
+    /// which is exactly what both platforms publish the parts of. `None` where
+    /// neither is published.
+    pub queue: Option<f32>,
 }
 
-crate::persist::codec! { DiskStat { name: Arc<str>, read: u64, write: u64, reads: u64, writes: u64, util: f32, await_ms: Option<f32>, queue: f32 } }
+crate::persist::codec! { DiskStat { name: Arc<str>, read: u64, write: u64, reads: u64, writes: u64, util: Option<f32>, await_ms: Option<f32>, queue: Option<f32> } }
 
 impl Sample {
     /// The filesystem closest to full, if any is known.
@@ -725,11 +734,18 @@ impl Sample {
     /// where the collector meant `nvme0n1`. A figure that names a device is
     /// read as "this is the disk poptop is watching", so which one it picks
     /// matters even when the number does not.
+    ///
+    /// Busiest by utilisation where the platform publishes it, and by bytes
+    /// moved where it does not — the one measure of load macOS gives.
     pub fn busiest_disk(&self) -> Option<&DiskStat> {
+        let load = |d: &DiskStat| {
+            d.util
+                .map_or(d.read.saturating_add(d.write) as f64, f64::from)
+        };
         let mut it = self.disks.as_ref()?.iter();
         let mut best = it.next()?;
         for d in it {
-            if d.util > best.util {
+            if load(d) > load(best) {
                 best = d;
             }
         }

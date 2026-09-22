@@ -572,7 +572,7 @@ impl ProcFs {
         // Busiest first, so a table that can only show two rows shows the two
         // that matter. Utilisation rather than throughput, for the reason in
         // `DiskStat::util`.
-        out.sort_by(|a, b| b.util.total_cmp(&a.util));
+        out.sort_by(|a, b| b.util.unwrap_or(0.0).total_cmp(&a.util.unwrap_or(0.0)));
         out
     }
 
@@ -1887,9 +1887,9 @@ fn rates(name: &Arc<str>, prev: &DiskTimes, now: &DiskTimes, secs: f64) -> DiskS
         writes: (writes / secs) as u64,
         // Clamped: the counter is in whole milliseconds and `secs` is measured,
         // so rounding can put a fully busy device a hair over 100.
-        util: ((d(now.io_ms, prev.io_ms) / 10.0 / secs) as f32).min(100.0),
+        util: Some(((d(now.io_ms, prev.io_ms) / 10.0 / secs) as f32).min(100.0)),
         await_ms: (ops > 0.0).then(|| (service / ops) as f32),
-        queue: (d(now.weighted_ms, prev.weighted_ms) / 1000.0 / secs) as f32,
+        queue: Some((d(now.weighted_ms, prev.weighted_ms) / 1000.0 / secs) as f32),
     }
 }
 
@@ -3680,7 +3680,11 @@ mod tests {
         assert_eq!(d.read, 81_920, "read bytes/s");
         assert_eq!(d.write, 245_760, "write bytes/s");
         // 500ms busy in 2s of wall clock.
-        assert!((d.util - 25.0).abs() < 0.01, "util was {}", d.util);
+        assert!(
+            (d.util.unwrap() - 25.0).abs() < 0.01,
+            "util was {:?}",
+            d.util
+        );
     }
 
     #[test]
@@ -3707,7 +3711,7 @@ mod tests {
         let prev = DiskTimes::parse(&disk_line(0, 0, 0));
         let now = DiskTimes::parse(&disk_line(1, 1, 1100));
         let d = rates(&Arc::from("vda"), &prev, &now, 1.0);
-        assert_eq!(d.util, 100.0, "util ran past a full interval");
+        assert_eq!(d.util, Some(100.0), "util ran past a full interval");
     }
 
     #[test]
@@ -4282,12 +4286,16 @@ auto /net autofs rw,fd=7 0 0\n\
                 .find(|l| l.split_whitespace().nth(2) == Some(&*d.name))
                 .unwrap_or_else(|| panic!("device not in the file: {}", d.name));
             assert!(
-                (0.0..=100.0).contains(&d.util),
-                "{} util {}",
+                d.util.is_some_and(|u| (0.0..=100.0).contains(&u)),
+                "{} util {:?}",
                 d.name,
                 d.util
             );
-            assert!(d.queue >= 0.0, "{} negative queue", d.name);
+            assert!(
+                d.queue.is_some_and(|q| q >= 0.0),
+                "{} negative queue",
+                d.name
+            );
 
             // Every reported device has actually done something. This container
             // publishes forty-odd whole devices — `ram0..15`, `loop0..7`,

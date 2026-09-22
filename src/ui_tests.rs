@@ -4494,9 +4494,9 @@ fn with_disk(util: f32, await_ms: Option<f32>) -> Sample {
         write: 2 << 20,
         reads: 40,
         writes: 90,
-        util,
+        util: Some(util),
         await_ms,
-        queue: 4.5,
+        queue: Some(4.5),
     }]);
     s
 }
@@ -5019,9 +5019,9 @@ fn an_idle_machine_names_the_device_the_collector_meant() {
         write: 0,
         reads: 0,
         writes: 0,
-        util: 0.0,
+        util: Some(0.0),
         await_ms: None,
-        queue: 0.0,
+        queue: Some(0.0),
     };
     let mut s = sample(10.0);
     s.disks = Some(vec![idle("nvme0n1"), idle("loop3"), idle("sdb")]);
@@ -5040,9 +5040,9 @@ fn the_busiest_device_is_the_one_reported() {
         write: 0,
         reads: 1,
         writes: 1,
-        util,
+        util: Some(util),
         await_ms: Some(1.0),
-        queue: 0.0,
+        queue: Some(0.0),
     };
     let mut s = sample(10.0);
     s.disks = Some(vec![d("sda", 2.0), d("nvme0n1", 97.0), d("sdb", 40.0)]);
