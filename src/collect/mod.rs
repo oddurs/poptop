@@ -78,16 +78,27 @@ pub enum Source {
     /// policy the figure entirely; rescanning every sample is a directory walk
     /// for an answer that changes about once a day.
     ClockPolicies,
+    /// Temperatures and fans: `/sys/class/hwmon` on Linux, the HID sensor
+    /// services on macOS.
+    ///
+    /// Cheap in CPU and not in time. A few dozen small reads on Linux; on a
+    /// Mac about 1.4ms of CPU but 45ms of waiting on the sensor service, which
+    /// the backend overlaps with the rest of the sample rather than adding.
+    /// Not something the budget gives up — it would save a millisecond — and
+    /// asked for always, since a temperature is only worth having if it was
+    /// being recorded before somebody thought to look.
+    Sensors,
 }
 
 impl Source {
-    pub const ALL: [Source; 6] = [
+    pub const ALL: [Source; 7] = [
         Source::Cgroups,
         Source::Pss,
         Source::Io,
         Source::Threads,
         Source::ClockPolicies,
         Source::Exited,
+        Source::Sensors,
     ];
 
     /// What to call it when poptop has to say it stopped reading it.
@@ -99,6 +110,7 @@ impl Source {
             Source::Cgroups => "cgroups",
             Source::Exited => "exited processes",
             Source::ClockPolicies => "clock policies",
+            Source::Sensors => "temperatures and fans",
         }
     }
 
@@ -126,6 +138,8 @@ impl Source {
             Source::Cgroups => 30_000,
             Source::Exited => 500,
             Source::ClockPolicies => 200_000,
+            // CPU time, measured on macOS; the wait is overlapped.
+            Source::Sensors => 1_500_000,
         }
     }
 
@@ -142,7 +156,7 @@ impl Source {
     pub fn scales(self) -> bool {
         match self {
             Source::Io | Source::Threads | Source::Exited | Source::Cgroups | Source::Pss => true,
-            Source::ClockPolicies => false,
+            Source::ClockPolicies | Source::Sensors => false,
         }
     }
 
@@ -154,7 +168,7 @@ impl Source {
             Source::Exited => size.exited,
             Source::Cgroups => size.cgroups,
             Source::Pss => size.procs,
-            Source::ClockPolicies => 1,
+            Source::ClockPolicies | Source::Sensors => 1,
         };
         self.nanos_each().saturating_mul(units)
     }
@@ -170,7 +184,7 @@ impl Source {
     pub fn restorable(self) -> bool {
         match self {
             Source::Io | Source::Threads | Source::Cgroups | Source::Pss => true,
-            Source::Exited | Source::ClockPolicies => false,
+            Source::Exited | Source::ClockPolicies | Source::Sensors => false,
         }
     }
 
@@ -185,7 +199,7 @@ impl Source {
             // because the cheap tick in between reset the strike count and the
             // odd tick reported no cgroups to charge for. The gate that makes
             // this affordable is the view being open, not the cadence.
-            Source::Io | Source::Threads | Source::Exited | Source::Pss => 1,
+            Source::Io | Source::Threads | Source::Exited | Source::Pss | Source::Sensors => 1,
             Source::Cgroups => 1,
             Source::ClockPolicies => 60,
         }
@@ -540,6 +554,7 @@ pub mod cgroups;
 mod linux;
 #[cfg(target_os = "linux")]
 pub mod nfs;
+pub mod sensors;
 #[cfg(target_os = "linux")]
 pub mod taskstats;
 #[cfg(target_os = "linux")]

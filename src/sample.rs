@@ -177,7 +177,7 @@ pub struct NodeStat {
 // `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
     MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ThreadSample,
-    CgroupStat, NodeStat, NfsMount, NfsStat, ProcSample, Sample
+    CgroupStat, NodeStat, NfsMount, NfsStat, Temp, Fan, ProcSample, Sample
 }
 
 // The wire order for each retained struct, listed beside it. The list cannot
@@ -464,6 +464,53 @@ pub struct NetStat {
 }
 
 crate::persist::codec! { NetStat { links: Vec<Link>, errors: Option<u64>, drops: Option<u64>, retrans: Option<u64>, listen_drops: Option<u64> } }
+
+/// The hottest reading in one group of temperature sensors.
+///
+/// A group, not a sensor, because the sensors are not a reading anyone can
+/// use: the Mac this was written on publishes forty of them, labelled like
+/// `PMU tdie6`, and a Linux desktop a dozen split across four drivers. What a
+/// reader wants to know is how hot the CPU is, the GPU, the drives — so that is
+/// what is kept, with the name of the sensor that set it so the figure can be
+/// traced. Kept per group rather than per sensor for the log's sake too: forty
+/// temperatures a second is most of a day file.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Temp {
+    /// What the group is about: `cpu`, `gpu`, `storage`, `memory`, `battery`
+    /// or `board`. See [`crate::collect::sensors`].
+    pub group: Arc<str>,
+    /// Degrees Celsius.
+    pub celsius: f32,
+    /// The sensor the reading came from, as the platform names it.
+    pub sensor: Arc<str>,
+    /// Where the hardware says that sensor becomes critical, if it says.
+    pub crit: Option<f32>,
+}
+
+crate::persist::codec! { Temp { group: Arc<str>, celsius: f32, sensor: Arc<str>, crit: Option<f32> } }
+
+impl Temp {
+    /// How close to critical, as a percentage, for heat colouring. Against the
+    /// sensor's own critical point where it publishes one, and 100°C where it
+    /// does not — roughly where every CPU and drive made in the last decade
+    /// starts protecting itself.
+    pub fn heat(&self) -> f32 {
+        let crit = self.crit.filter(|c| *c > 0.0).unwrap_or(100.0);
+        (self.celsius / crit * 100.0).clamp(0.0, 100.0)
+    }
+}
+
+/// One fan's speed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fan {
+    /// As the platform names it: `cpu_fan`, `Processor Fan`, `thinkpad fan1`.
+    pub label: Arc<str>,
+    /// Revolutions a minute. Zero is a fan that is stopped, which on a machine
+    /// that spins its fans down when cool is a reading, not a fault.
+    pub rpm: u32,
+}
+
+crate::persist::codec! { Fan { label: Arc<str>, rpm: u32 } }
 
 /// One NFS mount over the last interval.
 ///
@@ -1087,6 +1134,11 @@ pub struct Sample {
     /// say: a box with one node spends no space announcing that it has one, and
     /// the figures for it are the whole-machine figures already on screen.
     pub nodes: Option<Vec<NodeStat>>,
+    /// The hottest sensor in each group, hottest group first, or `None` where
+    /// the platform publishes no temperatures or they were not read.
+    pub temps: Option<Vec<Temp>>,
+    /// Every fan the platform reports, or `None` where it reports none.
+    pub fans: Option<Vec<Fan>>,
 }
 
 impl Sample {
@@ -1152,13 +1204,15 @@ impl Sample {
             exited: None,
             cgroups: None,
             nodes: None,
+            temps: None,
+            fans: None,
             nfs: None,
             notes: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat>, notes: Option<Vec<Arc<str>>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat>, notes: Option<Vec<Arc<str>>>, temps: Option<Vec<Temp>>, fans: Option<Vec<Fan>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
@@ -1294,6 +1348,8 @@ mod tests {
             ("oom_kills", s.oom_kills.is_some()),
             ("net", s.net.is_some()),
             ("filesystems", s.filesystems.is_some()),
+            ("temps", s.temps.is_some()),
+            ("fans", s.fans.is_some()),
             ("mem.free", s.mem.free.is_some()),
             // Not an `Option`, but it is the flag that decides whether the IO
             // columns render at all. Defaulting it to `true` would put a zero

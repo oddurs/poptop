@@ -1460,6 +1460,11 @@ fn short_mount(mount: &str) -> String {
 /// all would be the figure that taught everyone to ignore it.
 pub const CLOCK_NOMINAL: f32 = 99.0;
 
+/// How close to critical a temperature has to be before the header treats it
+/// as news rather than context: 85°C against the 100°C most parts publish,
+/// which is where laptops start shedding clock.
+pub const HOT: f32 = 85.0;
+
 /// A per-second count, shortened once it stops being readable in full.
 ///
 /// A busy box switches a hundred thousand times a second, and `103847/s` is six
@@ -1552,6 +1557,38 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                     app.theme.figure_style(steal_heat(steal, &app.theme)),
                 ),
             ],
+        });
+    }
+
+    // How hot, from whichever group is nearest its critical point — which is
+    // the CPU on an ordinary day, and the drive on the day the drive is the
+    // problem. Named when it is not the CPU, since `TEMP 71°C` on its own
+    // would be read as the processor.
+    //
+    // Two ranks. An ordinary temperature is context, and goes early when the
+    // header runs out of room; one within sight of critical qualifies the CPU
+    // figure the way `CLK` does — the processor may be about to slow itself
+    // down — and is kept as long as the clock ceiling is.
+    if let Some(t) = s
+        .temps
+        .iter()
+        .flatten()
+        .max_by(|a, b| a.heat().total_cmp(&b.heat()))
+    {
+        let mut spans = vec![
+            Span::styled("TEMP ", dim),
+            Span::styled(
+                format!("{:>3.0}°C", t.celsius),
+                app.theme.figure_style(t.heat()),
+            ),
+        ];
+        if &*t.group != "cpu" {
+            spans.push(Span::styled(format!(" {}", t.group), dim));
+        }
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: if t.heat() >= HOT { 7 } else { 35 },
+            spans,
         });
     }
 
@@ -1887,6 +1924,30 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                     format!("{:>5.1}%", s.mem.swap_pct()),
                     app.theme.heat_style(s.mem.swap_pct()),
                 ),
+            ],
+        });
+    }
+
+    // The fastest fan, and only while one is turning: a machine that parks
+    // its fans when cool has nothing to say about them, and says it best by
+    // saying nothing. With the machine's other facts rather than beside the
+    // temperature, because a speed without the curve that set it is context,
+    // not diagnosis.
+    if let Some(rpm) = s
+        .fans
+        .iter()
+        .flatten()
+        .map(|f| f.rpm)
+        .max()
+        .filter(|r| *r > 0)
+    {
+        figures.push(Figure {
+            group: Group::Machine,
+            rank: 85,
+            spans: vec![
+                Span::styled("FAN ", dim),
+                Span::raw(format!("{rpm}")),
+                Span::styled("rpm", dim),
             ],
         });
     }
@@ -2439,6 +2500,36 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
+    // How hot the machine is, from the group the header leads with — the CPU
+    // wherever it publishes a temperature. Last, so it takes a row only once
+    // every other series has one: a temperature explains a slow machine less
+    // often than any of them, and when it does the header says so first.
+    //
+    // One group for the whole line, as the network row keeps one interface,
+    // so the line cannot splice the CPU into the drive where one reading was
+    // missing.
+    if let Some(group) = app
+        .history
+        .current()
+        .and_then(|s| s.temps.as_ref()?.first())
+        .map(|t| t.group.clone())
+    {
+        candidates.push((
+            "TEMP",
+            window
+                .iter()
+                .map(|s| {
+                    s.temps
+                        .iter()
+                        .flatten()
+                        .find(|t| t.group == group)
+                        .map_or(0.0, |t| t.celsius)
+                })
+                .collect(),
+            Unit::Celsius,
+        ));
+    }
+
     // Swapped wholesale rather than merged: a panel showing one process's CPU
     // beside the machine's memory would be two subjects in one graph. Before
     // the split, because the split is derived from how many series there are.
@@ -2576,7 +2667,14 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             .flatten()
             .copied()
             .fold(f32::INFINITY, f32::min);
-        let scale = glyphs::Scale::pick(trough, peak, unit_ceiling(*unit), app.axis);
+        let scale = match unit.floor(trough) {
+            Some(floor) => glyphs::Scale {
+                floor,
+                ceiling: unit_ceiling(*unit),
+                fitted: true,
+            },
+            None => glyphs::Scale::pick(trough, peak, unit_ceiling(*unit), app.axis),
+        };
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
@@ -3069,7 +3167,7 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
 /// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
 /// silently rendered as `STAL` for exactly as long as the width was a hand-
 /// maintained number with a comment claiming `WAIT` was the longest.
-pub const SERIES_NAMES: [&str; 7] = ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "THR"];
+pub const SERIES_NAMES: [&str; 8] = ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "TEMP", "THR"];
 
 const fn widest(names: &[&str]) -> usize {
     let (mut max, mut i) = (0, 0);
@@ -3169,6 +3267,9 @@ pub enum Unit {
     Rate,
     /// A plain count, like threads. An axis, and no rules for the same reason.
     Count,
+    /// Degrees Celsius. No rules: the warn and critical percentages are
+    /// shares of a whole, and 50°C is not half of anything.
+    Celsius,
 }
 
 impl Unit {
@@ -3178,6 +3279,7 @@ impl Unit {
             Unit::Percent => 0,
             Unit::Rate => 1,
             Unit::Count => 2,
+            Unit::Celsius => 3,
         }
     }
 }
@@ -3200,6 +3302,7 @@ impl Unit {
     fn axis(self, ceiling: f32) -> String {
         match self {
             Unit::Percent | Unit::Count => format!("{ceiling:.0}"),
+            Unit::Celsius => format!("{ceiling:.0}°"),
             Unit::Rate => axis_bytes(ceiling as u64),
         }
     }
@@ -3231,7 +3334,29 @@ impl Unit {
                 }
                 c
             }
+            // A hundred, which nearly every CPU and drive treats as the edge
+            // of safe, so the top of the row means something on its own; in
+            // steps of twenty-five past it for the GPU junctions that run
+            // hotter by design.
+            Unit::Celsius => {
+                let mut c = 100.0;
+                while c <= peak {
+                    c += 25.0;
+                }
+                c
+            }
         }
+    }
+
+    /// Where this unit's axis starts when it does not start at zero.
+    ///
+    /// Only temperature. Nothing inside a running computer is colder than the
+    /// room it is in, so a 0°C floor spends the bottom fifth of the row on
+    /// readings that cannot happen — the pinned-to-zero waste 0190 is about,
+    /// on the one series where the floor is known in advance.
+    fn floor(self, trough: f32) -> Option<f32> {
+        const ROOM: f32 = 20.0;
+        (self == Unit::Celsius && trough >= ROOM).then_some(ROOM)
     }
 }
 

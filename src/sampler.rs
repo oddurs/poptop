@@ -75,7 +75,12 @@ impl Sampler {
         let (tx, rx) = mpsc::channel();
         let needs = Arc::new(Mutex::new(needs));
         let stop = Arc::new(AtomicBool::new(false));
-        let mut schedule = Schedule::new(interval, Instant::now(), SystemTime::now());
+        let mut schedule = Schedule::new(
+            interval,
+            Instant::now(),
+            SystemTime::now(),
+            crate::collect::MIN_INTERVAL,
+        );
         let due = Arc::new(Mutex::new(schedule.next));
         let (t_needs, t_due, t_stop) = (needs.clone(), due.clone(), stop.clone());
 
@@ -220,16 +225,29 @@ pub struct Schedule {
 }
 
 impl Schedule {
-    /// The first boundary at least an interval away. Not the nearest: the
-    /// sample before it was taken just now, and a rate over the few
-    /// milliseconds to the next boundary is noise — on macOS, below the floor
-    /// where sysinfo's CPU figures are simply wrong.
-    pub fn new(interval: Duration, now: Instant, wall: SystemTime) -> Self {
-        let early = past_boundary(wall + interval, interval);
-        let wait = if early > 0 {
-            interval + interval.saturating_sub(Duration::from_nanos(early as u64))
+    /// The first boundary at least half an interval away, and never closer
+    /// than `floor`.
+    ///
+    /// Not the nearest boundary: the sample before it was taken just now, and
+    /// a rate over the few milliseconds to it is noise — on macOS, below the
+    /// floor where sysinfo's CPU figures are simply wrong, which is what
+    /// `floor` is for. Not a whole interval away either: that put the first
+    /// gap anywhere up to two intervals, which is where the timeline starts
+    /// calling time missing, and every session opened on a seam.
+    pub fn new(interval: Duration, now: Instant, wall: SystemTime, floor: Duration) -> Self {
+        let lead = (interval / 2).max(floor);
+        let iv = interval.as_nanos();
+        let wait = if iv == 0 {
+            lead
         } else {
-            interval + Duration::from_nanos(early.unsigned_abs() as u64)
+            // How far past a boundary the wall clock will be once `lead` has
+            // passed, and so how much further the next boundary is.
+            let since = (wall + lead)
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let past = since % iv;
+            let to_next = if past == 0 { 0 } else { iv - past };
+            lead + Duration::from_nanos(to_next as u64)
         };
         Schedule {
             interval,
@@ -317,14 +335,16 @@ mod tests {
 
     #[test]
     fn a_slow_sample_does_not_hold_up_the_caller() {
-        let (asked, _) = mpsc::channel();
+        let (asked, heard) = mpsc::channel();
         let slow = Slow {
             took: Duration::from_millis(300),
             asked,
         };
         let s = Sampler::start(slow, Duration::from_millis(20), Needs::at(0), None);
-        // Past the start of the first sample and well inside its 300ms.
-        std::thread::sleep(Duration::from_millis(60));
+        // Inside the first sample's 300ms.
+        heard
+            .recv_timeout(Duration::from_secs(2))
+            .expect("never started");
         assert!(s.due() <= Instant::now(), "the sample should be under way");
         let t0 = Instant::now();
         assert!(s.try_recv().is_none());
@@ -390,9 +410,11 @@ mod tests {
     #[test]
     fn ticks_fall_on_the_second() {
         let t = Instant::now();
-        let s = Schedule::new(Duration::from_secs(1), t, wall(1000, 618));
-        // At least an interval away, then onto the next whole second.
+        let s = Schedule::new(Duration::from_secs(1), t, wall(1000, 618), Duration::ZERO);
+        // At least half an interval away, then onto the next whole second.
         assert_eq!(wall_at(&s, t, wall(1000, 618)), wall(1002, 0));
+        let s = Schedule::new(Duration::from_secs(1), t, wall(1000, 300), Duration::ZERO);
+        assert_eq!(wall_at(&s, t, wall(1000, 300)), wall(1001, 0));
 
         let mut s = s;
         let later = s.next + Duration::from_millis(40);
@@ -401,10 +423,33 @@ mod tests {
     }
 
     #[test]
+    fn the_first_gap_is_never_long_enough_to_read_as_time_missing() {
+        // Wherever in the second poptop starts, the gap from the sample taken
+        // at startup to the first tick is at least the floor and well inside
+        // the two intervals `gap_limit` calls missing.
+        let iv = Duration::from_secs(1);
+        let floor = Duration::from_millis(200);
+        for ms in (0..1000).step_by(37) {
+            let t = Instant::now();
+            let s = Schedule::new(iv, t, wall(1000, ms), floor);
+            let gap = s.next - t;
+            assert!(gap >= iv / 2 && gap >= floor, "{ms}ms: {gap:?}");
+            assert!(
+                gap < crate::history::gap_limit(iv) * 3 / 4,
+                "{ms}ms: {gap:?}"
+            );
+        }
+        // A short interval: the floor wins over half of it.
+        let t = Instant::now();
+        let s = Schedule::new(Duration::from_millis(250), t, wall(1000, 10), floor);
+        assert!(s.next - t >= floor);
+    }
+
+    #[test]
     fn an_interval_that_does_not_divide_a_minute_still_ticks_evenly() {
         let t = Instant::now();
         let iv = Duration::from_secs(7);
-        let mut s = Schedule::new(iv, t, wall(1000, 0));
+        let mut s = Schedule::new(iv, t, wall(1000, 0), Duration::ZERO);
         let mut prev = s.next;
         for _ in 0..20 {
             let now = s.next + Duration::from_millis(5);
@@ -420,7 +465,7 @@ mod tests {
         // The wall clock running 2ms fast since the last tick: the next tick
         // comes 2ms early, not an interval off.
         let t = Instant::now();
-        let mut s = Schedule::new(Duration::from_secs(1), t, wall(1000, 0));
+        let mut s = Schedule::new(Duration::from_secs(1), t, wall(1000, 0), Duration::ZERO);
         let now = s.next;
         s.advance(now, wall(1002, 2));
         assert_eq!(s.next - now, Duration::from_millis(998));
@@ -431,7 +476,7 @@ mod tests {
         let iv = Duration::from_secs(1);
         for step_ms in [3_600_000i64, -3_600_000, 400, -400, 600, -600, 999, -999] {
             let t = Instant::now();
-            let mut s = Schedule::new(iv, t, wall(10_000, 0));
+            let mut s = Schedule::new(iv, t, wall(10_000, 0), Duration::ZERO);
             let now = s.next;
             let w = if step_ms >= 0 {
                 wall(10_002, 0) + Duration::from_millis(step_ms as u64)
@@ -453,7 +498,7 @@ mod tests {
     fn a_schedule_that_fell_behind_resyncs_rather_than_bursting() {
         let t = Instant::now();
         let iv = Duration::from_secs(1);
-        let mut s = Schedule::new(iv, t, wall(1000, 0));
+        let mut s = Schedule::new(iv, t, wall(1000, 0), Duration::ZERO);
         // Five seconds late: the next tick is about an interval from now, not
         // five in a row.
         let now = s.next + Duration::from_secs(5);

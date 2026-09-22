@@ -40,6 +40,10 @@ pub enum Unit {
     Milliseconds,
     /// Seconds since the epoch.
     Epoch,
+    /// Degrees Celsius.
+    Celsius,
+    /// Revolutions a minute.
+    Rpm,
     /// Text, or something with no dimension at all.
     None,
 }
@@ -55,6 +59,8 @@ impl Unit {
             Unit::Seconds => "seconds",
             Unit::Milliseconds => "milliseconds",
             Unit::Epoch => "epoch_seconds",
+            Unit::Celsius => "celsius",
+            Unit::Rpm => "rpm",
             Unit::None => "none",
         }
     }
@@ -115,7 +121,7 @@ pub fn unit_of(record: &str, field: &str) -> Option<Unit> {
         ("NetStat", "links")
         | ("NfsStat", "mounts")
         | ("Sample", "mem" | "disks" | "pressure" | "net" | "filesystems")
-        | ("Sample", "tasks" | "exited" | "cgroups" | "nodes" | "nfs")
+        | ("Sample", "tasks" | "exited" | "cgroups" | "nodes" | "nfs" | "temps" | "fans")
         | ("ProcSample", "io")
         | ("CgroupStat", "pressure") => Some(None),
         // Pressure's three are the resource each stall is about.
@@ -128,6 +134,9 @@ pub fn unit_of(record: &str, field: &str) -> Option<Unit> {
         ("Sample", "cpu_per_core") => Some(Percent),
         ("CgroupStat", "depth") => Some(Count),
         ("NodeStat", "cpu") => Some(Percent),
+        ("Temp", "celsius" | "crit") => Some(Celsius),
+        ("Temp", "group" | "sensor") | ("Fan", "label") => Some(None),
+        ("Fan", "rpm") => Some(Rpm),
         _ => by_name(field),
     }
 }

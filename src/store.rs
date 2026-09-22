@@ -626,6 +626,25 @@ mod tests {
                     cpu: None,
                 },
             ]),
+            // A critical point on one and not the other, for the same reason.
+            temps: Some(vec![
+                crate::sample::Temp {
+                    group: "cpu".into(),
+                    celsius: 77.25,
+                    sensor: "Package id 0".into(),
+                    crit: Some(100.0),
+                },
+                crate::sample::Temp {
+                    group: "storage".into(),
+                    celsius: 41.0,
+                    sensor: "nvme Composite".into(),
+                    crit: None,
+                },
+            ]),
+            fans: Some(vec![crate::sample::Fan {
+                label: "cpu_fan".into(),
+                rpm: 2350,
+            }]),
             procs: (0..procs).map(|i| proc_of(i as i32, "postgres")).collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(4242),
@@ -669,6 +688,8 @@ mod tests {
         assert_eq!(a.net, b.net);
         assert_eq!(a.filesystems, b.filesystems);
         assert_eq!(a.nodes, b.nodes);
+        assert_eq!(a.temps, b.temps);
+        assert_eq!(a.fans, b.fans);
         assert_eq!(a.nfs, b.nfs);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
@@ -1545,6 +1566,8 @@ pub(crate) mod tests_support {
             exited: None,
             cgroups: None,
             nodes: None,
+            temps: None,
+            fans: None,
             nfs: None,
             procs: (0..procs)
                 .map(|i| ProcSample {

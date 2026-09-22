@@ -737,7 +737,12 @@ fn feed(
     // resynced rather than caught up after a laptop sleeps for an hour —
     // which would otherwise spend that hour writing eighteen thousand records
     // as fast as it could.
-    let mut schedule = Schedule::new(interval, start, std::time::SystemTime::now());
+    let mut schedule = Schedule::new(
+        interval,
+        start,
+        std::time::SystemTime::now(),
+        collect::MIN_INTERVAL,
+    );
     loop {
         // In slices, so a signal is noticed within one rather than at the end
         // of an interval that may be an hour.
