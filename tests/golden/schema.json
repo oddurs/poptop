@@ -106,6 +106,16 @@
       {"name": "server_misses", "type": "integer", "unit": "per_second", "optional": true},
       {"name": "server_badauth", "type": "integer", "unit": "per_second", "optional": true}
     ],
+    "Temp": [
+      {"name": "group", "type": "string", "unit": "none", "optional": false},
+      {"name": "celsius", "type": "number", "unit": "celsius", "optional": false},
+      {"name": "sensor", "type": "string", "unit": "none", "optional": false},
+      {"name": "crit", "type": "number", "unit": "celsius", "optional": true}
+    ],
+    "Fan": [
+      {"name": "label", "type": "string", "unit": "none", "optional": false},
+      {"name": "rpm", "type": "integer", "unit": "rpm", "optional": false}
+    ],
     "ProcSample": [
       {"name": "pid", "type": "integer", "unit": "count", "optional": false},
       {"name": "ppid", "type": "integer", "unit": "count", "optional": false},
@@ -161,7 +171,9 @@
       {"name": "cgroups", "type": "[CgroupStat]", "unit": "none", "optional": true},
       {"name": "nodes", "type": "[NodeStat]", "unit": "none", "optional": true},
       {"name": "nfs", "type": "NfsStat", "unit": "none", "optional": true},
-      {"name": "notes", "type": "[string]", "unit": "none", "optional": true}
+      {"name": "notes", "type": "[string]", "unit": "none", "optional": true},
+      {"name": "temps", "type": "[Temp]", "unit": "none", "optional": true},
+      {"name": "fans", "type": "[Fan]", "unit": "none", "optional": true}
     ]
   }
 }

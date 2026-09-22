@@ -11,6 +11,7 @@ every one with today's code.
 | `15-pr77` … `15-pr91` | each merge that changed what a sample holds, from the schema block's arrival (#77) to NFS (#91) |
 | `15-pr92` | the first day log (#92), from before entries carried a checksum |
 | `15-pr115` | today's store and day log, with checksums |
+| `15-pr159`, `15-pr167` | later additions to a sample: #167 is temperatures and fans |
 
 Each has `history` (a store holding one sample), `log/` where that version had
 a day log (two samples), and `manifest`: the commit, the format number, what
