@@ -5,7 +5,7 @@
 //! laptop; the `/proc` backend is the one to read for how any of it works.
 
 use super::procinfo::{self, Kinfo};
-use super::{Collector, Needs, Source};
+use super::{Collector, Needs, Source, sensors};
 
 /// Every optional source this backend reads.
 ///
@@ -13,13 +13,15 @@ use super::{Collector, Needs, Source};
 /// `task_threads` — which would — is not called here. Declared rather than left
 /// implicit, so `y` cannot start a collection that will never produce a row and
 /// the budget cannot give up something that was never costing anything.
-pub const SUPPORTED: &[Source] = &[Source::Io];
+pub const SUPPORTED: &[Source] = &[Source::Io, Source::Sensors];
 use crate::sample::{IoRates, Link, MemStat, NetStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use sysinfo::{CpuRefreshKind, Networks, ProcessesToUpdate, RefreshKind, System, Users};
+use sysinfo::{
+    Components, CpuRefreshKind, Networks, ProcessesToUpdate, RefreshKind, System, Users,
+};
 
 /// The fastest sysinfo can be sampled and still report the truth.
 ///
@@ -78,6 +80,10 @@ pub struct SysinfoCollector {
     /// When those counters were read, so a difference can be divided by
     /// something. Same reason as `net_at`.
     faults_at: Option<std::time::Instant>,
+    /// The temperature sensors, listed on first use. Listing them is a 50ms
+    /// walk of the HID services, so it is done once and each sample refreshes
+    /// the readings.
+    components: Option<Components>,
     /// pid -> (start time, command line). Keyed like `names`, and for the same
     /// reason.
     ///
@@ -106,6 +112,7 @@ impl SysinfoCollector {
             kinfo: Kinfo::probe(),
             faults: HashMap::new(),
             faults_at: None,
+            components: None,
             cmds: HashMap::new(),
             tick: 0,
         })
@@ -132,6 +139,47 @@ impl Collector for SysinfoCollector {
         // took past it — forty milliseconds and more once the sensors are read
         // — and the schedule's alignment to the clock never showed.
         let at = SystemTime::now();
+        if !needs.wants(Source::Sensors) {
+            return self.collect_rest(needs, at);
+        }
+        // Alongside the rest of the sample rather than after it. Refreshing
+        // forty sensors costs about 1.4ms of CPU and 45ms of waiting on the
+        // HID services, measured; overlapped, the wait costs the sample
+        // nothing, where in series it was most of it.
+        let components = self.components.take();
+        let (sample, components) = std::thread::scope(|scope| {
+            let sensors = scope.spawn(move || match components {
+                Some(mut c) => {
+                    c.refresh(false);
+                    c
+                }
+                None => Components::new_with_refreshed_list(),
+            });
+            let sample = self.collect_rest(needs, at);
+            (sample, sensors.join().ok())
+        });
+        let mut sample = sample?;
+        if let Some(c) = &components {
+            let temps = sensors::hottest(c.iter().filter_map(|c| {
+                Some(sensors::Reading {
+                    group: sensors::label_group(c.label())?,
+                    sensor: c.label(),
+                    celsius: c.temperature()?,
+                    crit: c.critical(),
+                })
+            }));
+            sample.temps = (!temps.is_empty()).then_some(temps);
+        }
+        // A sensor thread that panicked is a reading lost, not a sampler lost:
+        // the next sample lists the sensors again.
+        self.components = components;
+        Ok(sample)
+    }
+}
+
+impl SysinfoCollector {
+    /// Everything but the sensors.
+    fn collect_rest(&mut self, needs: Needs, at: SystemTime) -> io::Result<Sample> {
         // `System::new_with_specifics` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
         // needs between CPU refreshes. So the first sample's CPU figures are

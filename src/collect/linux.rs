@@ -15,6 +15,7 @@ pub const SUPPORTED: &[Source] = &[
     Source::Exited,
     Source::Cgroups,
     Source::Pss,
+    Source::Sensors,
 ];
 use crate::sample::{
     CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, NfsStat, NodeStat, Pressure,
@@ -2371,6 +2372,11 @@ impl Collector for ProcFs {
         let was_ctxt = stat.ctxt.and_then(|n| self.prev_ctxt.replace(n));
         let was_intr = stat.intr.and_then(|n| self.prev_intr.replace(n));
         let nfs = self.read_nfs(elapsed);
+        let (temps, fans) = if needs.wants(Source::Sensors) {
+            super::sensors::hwmon(at(std::path::Path::new("/sys/class/hwmon")).as_ref())
+        } else {
+            (None, None)
+        };
         Ok(Sample {
             at: now,
             nfs,
@@ -2424,6 +2430,8 @@ impl Collector for ProcFs {
             // From the per-core figures already collected, so the CPU half of
             // this costs no read at all.
             nodes,
+            temps,
+            fans,
         })
     }
 }

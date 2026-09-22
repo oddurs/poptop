@@ -224,13 +224,13 @@ const BUDGET_STRIKES: u32 = 3;
 /// is not a smaller graph but a wrong one, and falls only once the peak has
 /// stayed under it for [`SETTLE`]. A burst no longer leaves a cliff behind it.
 ///
-/// Three slots, one per [`crate::ui::Unit`], doubled: the machine's panels and
+/// Four slots, one per [`crate::ui::Unit`], doubled: the machine's panels and
 /// one process's panels are different subjects and must not inherit each
 /// other's scale. Held in a `Cell` because drawing takes `&App` everywhere and
 /// this is the one fact about a frame that has to outlive it — a ceiling
 /// recomputed from scratch every frame is exactly the flicker being fixed.
 #[derive(Clone, Debug, Default)]
-pub struct HeldCeilings(std::cell::Cell<[(f32, Option<std::time::SystemTime>); 6]>);
+pub struct HeldCeilings(std::cell::Cell<[(f32, Option<std::time::SystemTime>); 8]>);
 
 /// How long a graph's ceiling stays up after the data stops needing it.
 ///
@@ -813,7 +813,11 @@ impl App {
             // value is that the record is there when you scrub back to the
             // spike — a ratchet would mean the burst you are looking for
             // happened before you thought to ask.
-            .with(Source::Exited);
+            .with(Source::Exited)
+            // Always, like exit records, and for the same reason: a
+            // temperature is worth having when it was being recorded before
+            // anyone thought to look.
+            .with(Source::Sensors);
         if self.io_ratchet {
             n = n.with(Source::Io);
         }
@@ -1465,7 +1469,7 @@ impl App {
                     // Neither has a view to turn off: exit records go into the
                     // table beside live rows, and the clock ceiling is a header
                     // figure. The withheld clause is what says they stopped.
-                    Source::Exited | Source::ClockPolicies => {}
+                    Source::Exited | Source::ClockPolicies | Source::Sensors => {}
                 }
                 self.withheld.push(worst);
             }

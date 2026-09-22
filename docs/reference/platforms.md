@@ -37,6 +37,8 @@ publish (`src/collect/darwin.rs`).
 | Network errors, drops, retransmits | yes | errors only |
 | NFS client and server | yes | — |
 | CPU throttling | `cpufreq` | — |
+| Temperatures, hottest in each group | `hwmon` | the HID sensor services |
+| Fan speeds | `hwmon` | — |
 
 ## What you can read without root
 

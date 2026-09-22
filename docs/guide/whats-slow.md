@@ -19,6 +19,11 @@ Four things worth knowing about it:
   distinguish from a healthy busy machine. `STALL`, `WAIT`, `BLOCKED` and
   `steal` work the same way. A quiet header is a machine with nothing to
   report, not a poptop that is not looking.
+- **`TEMP` is the hottest part of the machine, named when it is not the
+  CPU.** `TEMP 71°C storage` is a drive. Within fifteen degrees of critical
+  it moves up beside `CPU` and keeps its place however narrow the terminal:
+  a processor that hot is about to slow itself down, and `CPU 100%` alone
+  cannot say so.
 - **`CPU 99%` with ten cores at `████ ████ ██`** is ten busy cores. `CPU
   99%` with `█▁▁▁ ▁▁▁▁ ▁▁` is one core busy and nine idle, which is a
   single-threaded bottleneck, and the per-core strip is the only thing on

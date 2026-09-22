@@ -16,6 +16,17 @@ process that wrote them:
 
 ## [Unreleased]
 
+### Added
+
+- **Temperatures and fans.** The hottest sensor in each group — CPU, GPU,
+  storage, memory, battery, board — from `hwmon` on Linux and the HID sensor
+  services on macOS, where forty sensors labelled like `PMU tdie6` become
+  three figures a person can read. `TEMP` in the header, beside `CPU` once it
+  is within fifteen degrees of critical; a `TEMP` row on the timeline when
+  there is room, drawn from 20°C rather than zero; `FAN` while a fan is
+  turning. Recorded, exported as `temps` and `fans` in `celsius` and `rpm`.
+  Schema change, compatible: two optional fields and two records (0231).
+
 ### Fixed
 
 - **Keys waited for the sample.** Collection ran on the thread that reads

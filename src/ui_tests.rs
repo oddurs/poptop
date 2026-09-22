@@ -83,6 +83,8 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         exited: None,
         cgroups: None,
         nodes: None,
+        temps: None,
+        fans: None,
         nfs: None,
         pressure: None,
         net: None,
@@ -16637,4 +16639,58 @@ fn a_zoomed_column_only_ever_fills_or_scrolls() {
         }
     }
     assert_eq!(scrolled, 2, "eight pushes at zoom 4 should start two slots");
+}
+
+/// The README machine with sensors: the die heating while it is busy and
+/// cooling while it is not, a drive, and a fan that follows the die.
+fn sensor_fixture(hot: bool) -> App {
+    let mut app = readme_fixture();
+    app.history.goto_live();
+    let mut samples: Vec<Sample> = app.history.iter().cloned().collect();
+    let mut t = 55.0_f32;
+    for s in &mut samples {
+        let target = if s.cpu_total > 50.0 { 82.0 } else { 52.0 };
+        t += (target - t) * 0.15;
+        let die = if hot { t + 16.0 } else { t };
+        s.temps = Some(vec![
+            crate::sample::Temp {
+                group: "cpu".into(),
+                celsius: die,
+                sensor: "coretemp Package id 0".into(),
+                crit: Some(100.0),
+            },
+            crate::sample::Temp {
+                group: "storage".into(),
+                celsius: 41.0,
+                sensor: "nvme Composite".into(),
+                crit: Some(84.85),
+            },
+        ]);
+        s.fans = Some(vec![crate::sample::Fan {
+            label: "cpu_fan".into(),
+            rpm: (1200.0 + (die - 50.0) * 60.0) as u32,
+        }]);
+    }
+    let mut out = App::new(600);
+    for s in samples {
+        out.push(s);
+    }
+    out.theme = app.theme;
+    out
+}
+
+#[test]
+#[ignore = "prints the sensor frames; run with --ignored --nocapture"]
+fn print_sensor_frames() {
+    for (w, h, hot) in [
+        (80u16, 30u16, false),
+        (120, 30, false),
+        (160, 40, false),
+        (80, 30, true),
+    ] {
+        println!("--- {w}x{h}{}", if hot { " hot" } else { "" });
+        for l in rows(&sensor_fixture(hot), w, h) {
+            println!("{}", l.trim_end());
+        }
+    }
 }

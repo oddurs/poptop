@@ -2,7 +2,7 @@
 id: 231
 title: Nothing says how hot the machine is
 type: feature
-status: backlog
+status: done
 milestone: r9
 labels:
 - collect
@@ -34,8 +34,8 @@ anything to show; nothing at all on a machine that publishes nothing.
 
 ## Acceptance criteria
 
-- [ ] Linux: hwmon temperatures and fans, with labels and critical thresholds where published
-- [ ] macOS: component temperatures, grouped
-- [ ] The hottest CPU temperature in the header and on the timeline
-- [ ] Recorded, exported, and absent (not zero) where unreadable
-- [ ] Read on its own cadence and charged to the budget
+- [x] Linux: hwmon temperatures and fans, with labels and critical thresholds where published
+- [x] macOS: component temperatures, grouped
+- [x] The hottest CPU temperature in the header and on the timeline
+- [x] Recorded, exported, and absent (not zero) where unreadable
+- [x] Read on its own cadence and charged to the budget
