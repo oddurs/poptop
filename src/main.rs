@@ -1571,6 +1571,9 @@ fn bench(collector: &mut impl Collector) -> io::Result<()> {
             needs.asked(Source::Cgroups),
         ) {
             (false, ..) if needs.asked(Source::Pss) => "pss only (one extra read a process)      ",
+            (false, ..) if needs.asked(Source::Sensors) => {
+                "sensors (read in the background)         "
+            }
             (false, ..) => "io off, threads off, exits off, cgroups off",
             (true, false, ..) => "io on,  threads off, exits off, cgroups off",
             (true, true, false, _) => "io on,  threads on,  exits off, cgroups off",

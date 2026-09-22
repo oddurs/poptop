@@ -80,10 +80,9 @@ pub struct SysinfoCollector {
     /// When those counters were read, so a difference can be divided by
     /// something. Same reason as `net_at`.
     faults_at: Option<std::time::Instant>,
-    /// The temperature sensors, listed on first use. Listing them is a 50ms
-    /// walk of the HID services, so it is done once and each sample refreshes
-    /// the readings.
-    components: Option<Components>,
+    /// The sensors, the battery and the GPU, read on a thread of their own
+    /// once somebody asks for them. See [`sensors::Background`].
+    hardware: Option<sensors::Background>,
     /// Each whole disk's cumulative counters at the last sample, and when, so
     /// the next can report rates.
     disks_prev: Option<(std::time::Instant, HashMap<String, iokit::DiskCounters>)>,
@@ -117,7 +116,7 @@ impl SysinfoCollector {
             kinfo: Kinfo::probe(),
             faults: HashMap::new(),
             faults_at: None,
-            components: None,
+            hardware: None,
             disks_prev: None,
             disk_names: HashMap::new(),
             cmds: HashMap::new(),
@@ -146,58 +145,56 @@ impl Collector for SysinfoCollector {
         // took past it — forty milliseconds and more once the sensors are read
         // — and the schedule's alignment to the clock never showed.
         let at = SystemTime::now();
-        if !needs.wants(Source::Sensors) {
-            return self.collect_rest(needs, at);
+        let mut sample = self.collect_rest(needs, at)?;
+        if needs.wants(Source::Sensors) {
+            if self.hardware.is_none() {
+                self.hardware = sensors::Background::start(read_hardware());
+            }
+            if let Some(h) = self.hardware.as_ref().and_then(sensors::Background::take) {
+                sample.temps = h.temps;
+                sample.fans = h.fans;
+                sample.power = h.power;
+                sample.gpus = h.gpus;
+            }
         }
-        // Alongside the rest of the sample rather than after it. Refreshing
-        // forty sensors costs about 1.4ms of CPU and 45ms of waiting on the
-        // HID services, measured; overlapped, the wait costs the sample
-        // nothing, where in series it was most of it.
-        let components = self.components.take();
-        let (sample, hardware) = std::thread::scope(|scope| {
-            let sensors = scope.spawn(move || {
-                let components = match components {
-                    Some(mut c) => {
-                        c.refresh(false);
-                        c
-                    }
-                    None => Components::new_with_refreshed_list(),
-                };
-                // The battery and the GPU are registry reads of a few hundred
-                // microseconds, done here only because this is where the
-                // hardware is read.
-                (components, iokit::battery(), iokit::gpus())
-            });
-            let sample = self.collect_rest(needs, at);
-            (sample, sensors.join().ok())
-        });
-        let mut sample = sample?;
-        let (components, power, gpus) = match hardware {
-            Some((c, p, g)) => (Some(c), p, g),
-            None => (None, None, None),
-        };
-        sample.power = power;
-        sample.gpus = gpus;
-        if let Some(c) = &components {
-            let temps = sensors::hottest(c.iter().filter_map(|c| {
-                Some(sensors::Reading {
-                    group: sensors::label_group(c.label())?,
-                    sensor: c.label(),
-                    celsius: c.temperature()?,
-                    crit: c.critical(),
-                })
-            }));
-            sample.temps = (!temps.is_empty()).then_some(temps);
-        }
-        // A sensor thread that panicked is a reading lost, not a sampler lost:
-        // the next sample lists the sensors again.
-        self.components = components;
         Ok(sample)
     }
 }
 
+/// A Mac's hardware in one reading: the HID temperature sensors through
+/// sysinfo, and the battery and GPU from the IO registry.
+///
+/// The sensors are listed once — a 50ms walk of the HID services — and
+/// refreshed on every later reading.
+fn read_hardware() -> impl FnMut() -> sensors::Hardware + Send + 'static {
+    let mut components: Option<Components> = None;
+    move || {
+        let c = match components.as_mut() {
+            Some(c) => {
+                c.refresh(false);
+                c
+            }
+            None => components.insert(Components::new_with_refreshed_list()),
+        };
+        let temps = sensors::hottest(c.iter().filter_map(|c| {
+            Some(sensors::Reading {
+                group: sensors::label_group(c.label())?,
+                sensor: c.label(),
+                celsius: c.temperature()?,
+                crit: c.critical(),
+            })
+        }));
+        sensors::Hardware {
+            temps: (!temps.is_empty()).then_some(temps),
+            fans: None,
+            power: iokit::battery(),
+            gpus: iokit::gpus(),
+        }
+    }
+}
+
 impl SysinfoCollector {
-    /// Everything but the sensors.
+    /// Everything but the hardware sensors.
     fn collect_rest(&mut self, needs: Needs, at: SystemTime) -> io::Result<Sample> {
         // `System::new_with_specifics` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo

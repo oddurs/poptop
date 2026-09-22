@@ -308,6 +308,70 @@ pub fn drm(root: &Path) -> Option<Vec<Gpu>> {
     (!gpus.is_empty()).then_some(gpus)
 }
 
+/// Everything the hardware reports in one reading.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hardware {
+    pub temps: Option<Vec<Temp>>,
+    pub fans: Option<Vec<Fan>>,
+    pub power: Option<Power>,
+    pub gpus: Option<Vec<Gpu>>,
+}
+
+/// The hardware, read on a thread of its own so no sample waits for it.
+///
+/// A sample takes the latest finished reading and asks for another, which is
+/// taken while the machine gets on with everything else. Reading forty
+/// sensors on a Mac is 1.4ms of CPU and 45ms of waiting on the sensor
+/// service; a hwmon attribute backed by a drive's SMART log can take longer.
+/// Temperatures, a battery and a GPU's load all move over seconds, so a
+/// reading one interval old is the right trade for a sample that never waits
+/// — and for the budget never seeing a wait it can do nothing about.
+///
+/// At most one reading a second, however short the interval, and only when
+/// asked, so a poptop sampling once a minute reads once a minute.
+pub struct Background {
+    latest: std::sync::Arc<std::sync::Mutex<Option<Hardware>>>,
+    ask: std::sync::mpsc::SyncSender<()>,
+}
+
+/// The shortest gap between two readings.
+const READ_AT_MOST: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl Background {
+    /// Start the reader. The thread ends when this is dropped.
+    pub fn start(mut read: impl FnMut() -> Hardware + Send + 'static) -> Option<Self> {
+        let latest = std::sync::Arc::new(std::sync::Mutex::new(None));
+        // One slot: a request made while one is pending is the same request.
+        let (ask, asked) = std::sync::mpsc::sync_channel::<()>(1);
+        let into = latest.clone();
+        std::thread::Builder::new()
+            .name("sensors".into())
+            .spawn(move || {
+                let mut last: Option<std::time::Instant> = None;
+                for () in asked {
+                    if last.is_some_and(|t| t.elapsed() < READ_AT_MOST) {
+                        continue;
+                    }
+                    last = Some(std::time::Instant::now());
+                    let h = read();
+                    *into.lock().unwrap_or_else(|p| p.into_inner()) = Some(h);
+                }
+            })
+            .ok()?;
+        Some(Background { latest, ask })
+    }
+
+    /// The latest finished reading, if there has been one, and a request for
+    /// the next.
+    pub fn take(&self) -> Option<Hardware> {
+        let _ = self.ask.try_send(());
+        self.latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
+
 /// `N` from `{kind}N_input`.
 fn attr<'a>(file: &'a str, kind: &str) -> Option<&'a str> {
     let n = file.strip_prefix(kind)?.strip_suffix("_input")?;
@@ -360,6 +424,40 @@ mod tests {
         ]);
         assert_eq!(t.len(), 1);
         assert_eq!(&*t[0].sensor, "c");
+    }
+
+    #[test]
+    fn a_slow_reading_never_holds_up_a_sample() {
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = reads.clone();
+        let bg = Background::start(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            Hardware {
+                fans: Some(vec![Fan {
+                    label: "f".into(),
+                    rpm: 1,
+                }]),
+                ..Hardware::default()
+            }
+        })
+        .expect("no thread");
+        let t0 = std::time::Instant::now();
+        // Nothing yet, and asking did not wait for the 200ms read.
+        assert_eq!(bg.take(), None);
+        assert!(t0.elapsed() < std::time::Duration::from_millis(50));
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let got = loop {
+            if let Some(h) = bg.take() {
+                break h;
+            }
+            assert!(std::time::Instant::now() < end, "no reading arrived");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(got.fans.is_some());
+        // Asked dozens of times in that loop, read once or twice: at most
+        // once a second.
+        assert!(reads.load(std::sync::atomic::Ordering::Relaxed) <= 2);
     }
 
     #[test]

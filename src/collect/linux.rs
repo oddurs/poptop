@@ -284,6 +284,9 @@ pub struct ProcFs {
     io_supported: bool,
     /// The last NFS reading, so cumulative counters become intervals.
     prev_nfs: nfs::Prev,
+    /// The sensors, the battery and the GPU, read on a thread of their own
+    /// once somebody asks for them. See [`super::sensors::Background`].
+    hardware: Option<super::sensors::Background>,
     /// Which NUMA nodes exist and which cores each owns, walked once.
     ///
     /// Static in the way `Source::ClockPolicies` is static: a socket does not
@@ -335,6 +338,7 @@ impl ProcFs {
             io_supported,
             numa: Topology::new(),
             prev_nfs: None,
+            hardware: None,
             prev_total: None,
             prev_cores: Vec::new(),
             prev_disks: HashMap::new(),
@@ -2372,19 +2376,17 @@ impl Collector for ProcFs {
         let was_ctxt = stat.ctxt.and_then(|n| self.prev_ctxt.replace(n));
         let was_intr = stat.intr.and_then(|n| self.prev_intr.replace(n));
         let nfs = self.read_nfs(elapsed);
-        let hardware = needs.wants(Source::Sensors);
-        let sys = |p: &str| at(std::path::Path::new(p));
-        let (temps, fans) = if hardware {
-            super::sensors::hwmon(sys("/sys/class/hwmon").as_ref())
+        let hardware = if needs.wants(Source::Sensors) {
+            if self.hardware.is_none() {
+                self.hardware = super::sensors::Background::start(read_hardware());
+            }
+            self.hardware
+                .as_ref()
+                .and_then(super::sensors::Background::take)
+                .unwrap_or_default()
         } else {
-            (None, None)
+            super::sensors::Hardware::default()
         };
-        let power = hardware
-            .then(|| super::sensors::power_supply(sys("/sys/class/power_supply").as_ref()))
-            .flatten();
-        let gpus = hardware
-            .then(|| super::sensors::drm(sys("/sys/class/drm").as_ref()))
-            .flatten();
         Ok(Sample {
             at: now,
             nfs,
@@ -2438,11 +2440,34 @@ impl Collector for ProcFs {
             // From the per-core figures already collected, so the CPU half of
             // this costs no read at all.
             nodes,
+            temps: hardware.temps,
+            fans: hardware.fans,
+            power: hardware.power,
+            gpus: hardware.gpus,
+        })
+    }
+}
+
+/// The hardware in one reading, from sysfs.
+///
+/// The paths are resolved here, on the collector's thread, because a test's
+/// fixture root is a property of the thread that set it.
+fn read_hardware() -> impl FnMut() -> super::sensors::Hardware + Send + 'static {
+    let sys =
+        |p: &str| -> std::path::PathBuf { at(std::path::Path::new(p)).as_ref().to_path_buf() };
+    let (hwmon, supply, drm) = (
+        sys("/sys/class/hwmon"),
+        sys("/sys/class/power_supply"),
+        sys("/sys/class/drm"),
+    );
+    move || {
+        let (temps, fans) = super::sensors::hwmon(&hwmon);
+        super::sensors::Hardware {
             temps,
             fans,
-            power,
-            gpus,
-        })
+            power: super::sensors::power_supply(&supply),
+            gpus: super::sensors::drm(&drm),
+        }
     }
 }
 
