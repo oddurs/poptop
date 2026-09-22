@@ -889,6 +889,115 @@ impl<T: Codec + Default> Codec for Option<T> {
     }
 }
 
+/// A value that might be absent, in the space of the value itself.
+///
+/// `Option<u64>` is sixteen bytes: eight for the number and eight more, after
+/// alignment, for one bit saying whether it is there. A process row carried
+/// eight of them, and a ten-minute buffer holds six hundred samples of six
+/// hundred rows — tens of megabytes spent on padding around presence bits.
+/// This spends one value of the type instead: the one no real reading can
+/// take. (0235)
+///
+/// Exactly an `Option<T>` everywhere but memory. Its type and hash are
+/// `Option<T>`'s and it writes the same bytes, so the store, the day log and
+/// the export schema cannot tell the two apart; and `get` hands back the
+/// `Option` every reader already works with.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Opt<T: Absent>(T);
+
+/// A type with one value set aside to mean "not there".
+pub trait Absent: Copy + PartialEq {
+    /// The value that means absent. Chosen to be one no platform reports:
+    /// the maximum of an unsigned count, the minimum of a signed one.
+    const NONE: Self;
+    /// The nearest value that is not [`Absent::NONE`], for the reading that
+    /// really is the maximum — kept one short rather than read back as absent.
+    fn nearest(self) -> Self;
+}
+
+impl Absent for u32 {
+    const NONE: u32 = u32::MAX;
+    fn nearest(self) -> u32 {
+        u32::MAX - 1
+    }
+}
+impl Absent for u64 {
+    const NONE: u64 = u64::MAX;
+    fn nearest(self) -> u64 {
+        u64::MAX - 1
+    }
+}
+impl Absent for i32 {
+    const NONE: i32 = i32::MIN;
+    fn nearest(self) -> i32 {
+        i32::MIN + 1
+    }
+}
+
+impl<T: Absent> Opt<T> {
+    pub const NONE: Self = Opt(T::NONE);
+
+    pub fn get(self) -> Option<T> {
+        (self.0 != T::NONE).then_some(self.0)
+    }
+
+    pub fn is_some(self) -> bool {
+        self.0 != T::NONE
+    }
+
+    pub fn is_none(self) -> bool {
+        self.0 == T::NONE
+    }
+}
+
+impl<T: Absent> From<Option<T>> for Opt<T> {
+    fn from(v: Option<T>) -> Self {
+        match v {
+            Some(v) if v == T::NONE => Opt(v.nearest()),
+            Some(v) => Opt(v),
+            None => Opt(T::NONE),
+        }
+    }
+}
+
+impl<T: Absent> Default for Opt<T> {
+    fn default() -> Self {
+        Opt(T::NONE)
+    }
+}
+
+impl<T: Absent + std::fmt::Debug> std::fmt::Debug for Opt<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
+impl<T: Absent + Typed> Typed for Opt<T> {
+    const HASH: u64 = <Option<T> as Typed>::HASH;
+    fn ty() -> Ty {
+        <Option<T> as Typed>::ty()
+    }
+}
+
+impl<T: Absent + Codec + Default> Codec for Opt<T> {
+    fn write(&self, out: &mut Out) {
+        self.get().write(out);
+    }
+    fn read_exact(reg: &Registry, r: &mut In<'_>) -> Option<Self> {
+        <Option<T> as Codec>::read_exact(reg, r).map(Opt::from)
+    }
+    fn read(ty: &Ty, reg: &Registry, r: &mut In<'_>) -> Option<Self> {
+        <Option<T> as Codec>::read(ty, reg, r).map(Opt::from)
+    }
+}
+
+impl<T: Absent + Emit> Emit for Opt<T> {
+    const NESTED: bool = T::NESTED;
+    fn emit(&self, name: &str, v: &mut dyn Visit) {
+        self.get().emit(name, v);
+    }
+}
+
 /// Whether a field this build declares as `want` can read one a file wrote as
 /// `got` without losing or inventing anything.
 ///
@@ -1219,6 +1328,28 @@ mod tests {
             <Vec<u8> as Codec>::read(&Ty::List(Box::new(Ty::U8)), &reg, &mut r).is_none(),
             "the merge path accepted a length no file could satisfy"
         );
+    }
+
+    #[test]
+    fn a_compact_optional_is_an_option_to_everything_but_memory() {
+        assert_eq!(<Opt<u64> as Typed>::HASH, <Option<u64> as Typed>::HASH);
+        assert_eq!(<Opt<u64> as Typed>::ty(), <Option<u64> as Typed>::ty());
+        assert_eq!(std::mem::size_of::<Opt<u64>>(), 8);
+        for v in [None, Some(0u64), Some(7), Some(u64::MAX - 1)] {
+            let (mut a, mut b) = (Out::default(), Out::default());
+            Codec::write(&v, &mut a);
+            Codec::write(&Opt::from(v), &mut b);
+            assert_eq!(a.bytes, b.bytes, "{v:?} is written differently");
+            let reg = Registry::default();
+            let mut r = In::new(&a.bytes, 0, Vec::new());
+            assert_eq!(
+                <Opt<u64> as Codec>::read_exact(&reg, &mut r).map(Opt::get),
+                Some(v)
+            );
+        }
+        // The one value it cannot hold is kept one short, not lost.
+        assert_eq!(Opt::from(Some(u64::MAX)).get(), Some(u64::MAX - 1));
+        assert_eq!(Opt::from(Some(i32::MIN)).get(), Some(i32::MIN + 1));
     }
 
     #[test]

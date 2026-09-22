@@ -391,9 +391,9 @@ impl SysinfoCollector {
                     // sysinfo exposes tasks only on Linux, so this is read
                     // directly — a flat `1` beside a CPU figure of several
                     // hundred percent was the table contradicting itself.
-                    threads: task.map(|t| t.threads),
+                    threads: task.map(|t| t.threads).into(),
                     state: state_of(p.status(), task),
-                    started,
+                    started: started.into(),
                     // Free here: `refresh_processes` already reads `argv`, so
                     // unlike the `/proc` backend there is no extra syscall to
                     // pay for and nothing to cache against. Interned all the
@@ -414,15 +414,15 @@ impl SysinfoCollector {
                     // lifetime total rendered there would read as one (0103).
                     // A process this user may not read has no counters, and
                     // says so, as it does in every other column.
-                    minflt: minor,
-                    majflt: major,
+                    minflt: minor.into(),
+                    majflt: major.into(),
                     // From the same `proc_taskinfo` as the thread count.
                     // It was `None` here, on a note that sysinfo publishes no
                     // virtual size, until checking poptop against `ps` found
                     // the figure already in hand.
-                    vsize: task.map(|t| t.vsize),
-                    nice: None,
-                    pss: None,
+                    vsize: task.map(|t| t.vsize).into(),
+                    nice: None.into(),
+                    pss: None.into(),
                     io: needs
                         .wants(Source::Io)
                         .then(|| {
@@ -436,7 +436,8 @@ impl SysinfoCollector {
                                 write: d.written_bytes,
                             })
                         })
-                        .flatten(),
+                        .flatten()
+                        .into(),
                 }
             })
             .collect();
@@ -690,7 +691,7 @@ mod tests {
         let first = c.collect(Needs::default()).unwrap();
         assert_eq!(
             first.procs.iter().find(|p| p.pid == me).unwrap().minflt,
-            Some(0),
+            Some(0).into(),
             "a first sighting reported a lifetime total as an interval's rate"
         );
 
@@ -712,7 +713,7 @@ mod tests {
         let after = top_faults(me);
 
         let row = s.procs.iter().find(|p| p.pid == me).unwrap();
-        let minor = row.minflt.expect("no fault rate for our own process");
+        let minor = row.minflt.get().expect("no fault rate for our own process");
         assert!(
             row.majflt.is_some(),
             "no major fault rate for our own process"
@@ -734,8 +735,12 @@ mod tests {
         // A process this user cannot read has no counters, and says so.
         let theirs = s.procs.iter().find(|p| p.threads.is_none());
         if let Some(p) = theirs {
-            assert_eq!(p.minflt, None, "a fault rate for a process we cannot read");
-            assert_eq!(p.majflt, None);
+            assert_eq!(
+                p.minflt,
+                None.into(),
+                "a fault rate for a process we cannot read"
+            );
+            assert_eq!(p.majflt, None.into());
         }
     }
 

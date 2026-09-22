@@ -419,7 +419,7 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
     let before: std::collections::HashMap<(i32, u64), u32> = prev
         .procs
         .iter()
-        .filter_map(|p| Some((p.key()?, p.threads?)))
+        .filter_map(|p| Some((p.key()?, p.threads.get()?)))
         .collect();
     // Keyed on pid *and* start time, like `series_for`: on pid alone a
     // recycled pid looks like a process that was here all along, and its
@@ -436,7 +436,7 @@ pub fn churn(prev: &Sample, now: &Sample) -> Option<Churn> {
         // counts publishes, so the two never meet. On Linux, where `unseen` is
         // real, every process has a count.
         .map(
-            |p| match (p.threads, p.key().and_then(|k| before.get(&k))) {
+            |p| match (p.threads.get(), p.key().and_then(|k| before.get(&k))) {
                 (Some(now), Some(&was)) => u64::from(now.saturating_sub(was)),
                 (Some(now), _) => u64::from(now),
                 (None, _) => 0,

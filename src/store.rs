@@ -444,20 +444,21 @@ mod tests {
             user: Arc::from("oddurs"),
             cpu: 12.5,
             rss: 4 << 20,
-            threads: Some(3),
+            threads: Some(3).into(),
             state: 'S',
-            started: Some(987),
+            started: Some(987).into(),
             cmd: None,
             io: Some(IoRates {
                 read: 100,
                 write: 200,
-            }),
+            })
+            .into(),
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         }
     }
 
@@ -719,8 +720,8 @@ mod tests {
             assert_eq!(x.state, y.state);
             assert_eq!(x.started, y.started);
             assert_eq!(
-                x.io.map(|i| (i.read, i.write)),
-                y.io.map(|i| (i.read, i.write))
+                x.io.get().map(|i| (i.read, i.write)),
+                y.io.get().map(|i| (i.read, i.write))
             );
         }
     }
@@ -767,14 +768,15 @@ mod tests {
         // Restoring `1` for a process whose count was never known would put the
         // fabricated figure back on screen, one restart later.
         let mut s = sample_of(1.0, 2);
-        s.procs[0].threads = None;
-        s.procs[1].threads = Some(36);
+        s.procs[0].threads = None.into();
+        s.procs[1].threads = Some(36).into();
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(
-            back[0].procs[0].threads, None,
+            back[0].procs[0].threads,
+            None.into(),
             "a thread count was invented"
         );
-        assert_eq!(back[0].procs[1].threads, Some(36));
+        assert_eq!(back[0].procs[1].threads, Some(36).into());
     }
 
     #[test]
@@ -784,16 +786,17 @@ mod tests {
         // processes on a recycled pid get spliced into one line. A store that
         // flattened one into the other would reintroduce that on restore.
         let mut s = sample_of(1.0, 2);
-        s.procs[0].started = None;
-        s.procs[1].started = Some(0);
+        s.procs[0].started = None.into();
+        s.procs[1].started = Some(0).into();
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(
-            back[0].procs[0].started, None,
+            back[0].procs[0].started,
+            None.into(),
             "an unknown start time was invented"
         );
         assert_eq!(
             back[0].procs[1].started,
-            Some(0),
+            Some(0).into(),
             "a real zero was discarded"
         );
     }
@@ -821,7 +824,7 @@ mod tests {
         s.iowait = None;
         s.running = None;
         s.blocked = None;
-        s.procs[0].io = None;
+        s.procs[0].io = None.into();
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(back[0].forks, None);
         assert_eq!(back[0].iowait, None);
@@ -1595,18 +1598,18 @@ pub(crate) mod tests_support {
                     user: Arc::from(if i % 3 == 0 { "root" } else { "oddurs" }),
                     cpu: 1.0,
                     rss: 1 << 20,
-                    threads: Some(4),
+                    threads: Some(4).into(),
                     state: 'S',
-                    started: Some(i as u64),
+                    started: Some(i as u64).into(),
                     cmd: None,
-                    io: None,
+                    io: None.into(),
 
                     container: None,
-                    minflt: None,
-                    majflt: None,
-                    vsize: None,
-                    nice: None,
-                    pss: None,
+                    minflt: None.into(),
+                    majflt: None.into(),
+                    vsize: None.into(),
+                    nice: None.into(),
+                    pss: None.into(),
                 })
                 .collect(),
             uptime: Duration::from_secs(90_000),
