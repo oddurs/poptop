@@ -5,7 +5,7 @@
 //! reading anyone can use as it stands. This is where the vocabulary becomes
 //! six groups, and forty sensors become the hottest in each.
 
-use crate::sample::{Fan, Temp};
+use crate::sample::{Fan, Gpu, Power, Temp};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -180,6 +180,134 @@ pub fn hwmon(root: &Path) -> (Option<Vec<Temp>>, Option<Vec<Fan>>) {
     )
 }
 
+/// The battery, from a `power_supply` tree: `/sys/class/power_supply` on a
+/// machine, a directory of fixtures in a test.
+///
+/// Every supply whose `type` is `Battery`, combined by energy where the driver
+/// publishes it, so a ThinkPad's two cells read as one battery at their true
+/// combined charge rather than as the first one. Peripherals — a mouse, a
+/// headset — publish batteries too and say so in `scope`; they are not the
+/// machine's.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn power_supply(root: &Path) -> Option<Power> {
+    let read = |p: &Path| {
+        std::fs::read_to_string(p)
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let num = |p: &Path| read(p)?.parse::<f64>().ok();
+    let mut dirs: Vec<_> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    dirs.sort();
+    let cells: Vec<_> = dirs
+        .into_iter()
+        .filter(|d| read(&d.join("type")).as_deref() == Some("Battery"))
+        .filter(|d| read(&d.join("scope")).as_deref() != Some("Device"))
+        .filter(|d| read(&d.join("present")).as_deref() != Some("0"))
+        .collect();
+    let first = cells.first()?;
+
+    // Energy in µWh, or charge in µAh — whichever the driver keeps.
+    let pair = |d: &Path, now: &str, full: &str| Some((num(&d.join(now))?, num(&d.join(full))?));
+    let stored = |d: &Path| {
+        pair(d, "energy_now", "energy_full").or_else(|| pair(d, "charge_now", "charge_full"))
+    };
+    let (now, full) = cells
+        .iter()
+        .map(|d| stored(d))
+        .collect::<Option<Vec<_>>>()
+        .map(|v| v.iter().fold((0.0, 0.0), |(n, f), (a, b)| (n + a, f + b)))
+        .unwrap_or((0.0, 0.0));
+    let charge = if full > 0.0 {
+        (now / full * 100.0) as f32
+    } else {
+        num(&first.join("capacity"))? as f32
+    };
+
+    let status = |d: &Path| read(&d.join("status")).unwrap_or_default();
+    let state = if cells.iter().any(|d| status(d) == "Charging") {
+        "charging"
+    } else if cells.iter().any(|d| status(d) == "Discharging") {
+        "discharging"
+    } else {
+        "charged"
+    };
+
+    // µW, or µA × µV. Drivers disagree about the sign; poptop's is fixed by
+    // the state instead.
+    let draw = |d: &Path| {
+        num(&d.join("power_now"))
+            .or_else(|| Some(num(&d.join("current_now"))? * num(&d.join("voltage_now"))? / 1e6))
+    };
+    // Summed over the cells that publish one: an idle second cell often
+    // publishes nothing, and that is not an unknown draw for the pair.
+    let draws: Vec<f64> = cells.iter().filter_map(|d| draw(d)).map(f64::abs).collect();
+    let micro_w = (!draws.is_empty()).then(|| draws.iter().sum::<f64>());
+    let watts = micro_w.filter(|w| *w > 0.0 && state != "charged").map(|w| {
+        let w = (w / 1e6) as f32;
+        if state == "charging" { -w } else { w }
+    });
+    // Hours are stored ÷ drawn, when both are in energy; charge units would
+    // need the voltage and are left to the platform's own estimate, which
+    // sysfs does not publish.
+    let minutes = match (micro_w, full > 0.0 && stored(first).is_some()) {
+        (Some(w), true) if w > 0.0 && state != "charged" => {
+            let left = if state == "charging" { full - now } else { now };
+            Some((left / w * 60.0) as u32)
+        }
+        _ => None,
+    };
+    Some(Power {
+        charge: charge.clamp(0.0, 100.0),
+        state: Arc::from(state),
+        watts,
+        minutes,
+    })
+}
+
+/// GPU load from a `drm` tree: `/sys/class/drm` on a machine.
+///
+/// Only what the kernel publishes to an ordinary reader. amdgpu does, as
+/// `gpu_busy_percent` beside its VRAM counters; i915 and nouveau do not, and
+/// NVIDIA's needs its own library — so those machines report no GPU rather
+/// than a GPU at zero.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn drm(root: &Path) -> Option<Vec<Gpu>> {
+    let read = |p: &Path| {
+        std::fs::read_to_string(p)
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let mut cards: Vec<_> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        // `card0`, not its connectors `card0-DP-1`.
+        .filter(|n| {
+            n.strip_prefix("card")
+                .is_some_and(|r| r.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    cards.sort();
+    let gpus: Vec<Gpu> = cards
+        .into_iter()
+        .filter_map(|card| {
+            let dev = root.join(&card).join("device");
+            let util = read(&dev.join("gpu_busy_percent"))?.parse::<f32>().ok()?;
+            Some(Gpu {
+                name: Arc::from(card),
+                util: util.clamp(0.0, 100.0),
+                mem_used: read(&dev.join("mem_info_vram_used")).and_then(|v| v.parse().ok()),
+                mem_total: read(&dev.join("mem_info_vram_total")).and_then(|v| v.parse().ok()),
+            })
+        })
+        .collect();
+    (!gpus.is_empty()).then_some(gpus)
+}
+
 /// `N` from `{kind}N_input`.
 fn attr<'a>(file: &'a str, kind: &str) -> Option<&'a str> {
     let n = file.strip_prefix(kind)?.strip_suffix("_input")?;
@@ -308,5 +436,93 @@ mod tests {
 
         assert_eq!(hwmon(&root.join("absent")), (None, None));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn tree(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("poptop-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (f, v) in files {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(p, v).expect("write");
+        }
+        root
+    }
+
+    #[test]
+    fn two_cells_read_as_one_battery_at_their_combined_charge() {
+        let root = tree(
+            "ps",
+            &[
+                ("AC/type", "Mains\n"),
+                ("AC/online", "0\n"),
+                ("BAT0/type", "Battery\n"),
+                ("BAT0/status", "Discharging\n"),
+                ("BAT0/energy_now", "20000000\n"),
+                ("BAT0/energy_full", "40000000\n"),
+                ("BAT0/power_now", "10000000\n"),
+                ("BAT1/type", "Battery\n"),
+                ("BAT1/status", "Unknown\n"),
+                ("BAT1/energy_now", "20000000\n"),
+                ("BAT1/energy_full", "20000000\n"),
+                // A mouse, which is not the machine's battery.
+                ("hidpp_battery_0/type", "Battery\n"),
+                ("hidpp_battery_0/scope", "Device\n"),
+                ("hidpp_battery_0/capacity", "5\n"),
+            ],
+        );
+        let p = power_supply(&root).expect("no battery");
+        assert!((p.charge - 66.67).abs() < 0.01, "{p:?}");
+        assert_eq!(&*p.state, "discharging");
+        assert_eq!(p.watts, Some(10.0));
+        // 40Wh left at 10W.
+        assert_eq!(p.minutes, Some(240));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_charging_battery_draws_negative_and_a_desktop_has_none() {
+        let root = tree(
+            "ps2",
+            &[
+                ("BAT0/type", "Battery\n"),
+                ("BAT0/status", "Charging\n"),
+                ("BAT0/capacity", "71\n"),
+                ("BAT0/current_now", "2000000\n"),
+                ("BAT0/voltage_now", "12000000\n"),
+            ],
+        );
+        let p = power_supply(&root).expect("no battery");
+        assert_eq!(p.charge, 71.0);
+        assert_eq!(p.watts, Some(-24.0));
+        assert_eq!(p.minutes, None, "charge units carry no time estimate");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let desk = tree("ps3", &[("AC/type", "Mains\n")]);
+        assert_eq!(power_supply(&desk), None);
+        let _ = std::fs::remove_dir_all(&desk);
+    }
+
+    #[test]
+    fn only_a_gpu_that_publishes_its_load_is_reported() {
+        let root = tree(
+            "drm",
+            &[
+                ("card0/device/gpu_busy_percent", "37\n"),
+                ("card0/device/mem_info_vram_used", "1073741824\n"),
+                ("card0/device/mem_info_vram_total", "8589934592\n"),
+                ("card0-DP-1/status", "connected\n"),
+                // An Intel card: no load published, so not reported at zero.
+                ("card1/device/vendor", "0x8086\n"),
+            ],
+        );
+        let g = drm(&root).expect("no gpu");
+        assert_eq!(g.len(), 1);
+        assert_eq!((&*g[0].name, g[0].util), ("card0", 37.0));
+        assert_eq!(g[0].mem_total, Some(8 << 30));
+        let _ = std::fs::remove_dir_all(&root);
+        let none = tree("drm2", &[("card0/device/vendor", "0x8086\n")]);
+        assert_eq!(drm(&none), None);
+        let _ = std::fs::remove_dir_all(&none);
     }
 }

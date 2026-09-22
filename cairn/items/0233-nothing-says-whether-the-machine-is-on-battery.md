@@ -2,7 +2,7 @@
 id: 233
 title: Nothing says whether the machine is on battery
 type: feature
-status: backlog
+status: done
 milestone: r9
 labels:
 - collect
@@ -25,6 +25,6 @@ sources API on macOS. Nothing shown on a machine with no battery.
 
 ## Acceptance criteria
 
-- [ ] Charge, state and draw where published, on both platforms
-- [ ] Absent on a desktop, not zero
-- [ ] Recorded, so a day shows when the machine was unplugged
+- [x] Charge, state and draw where published, on both platforms
+- [x] Absent on a desktop, not zero
+- [x] Recorded, so a day shows when the machine was unplugged

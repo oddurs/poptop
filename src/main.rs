@@ -1549,6 +1549,7 @@ fn bench(collector: &mut impl Collector) -> io::Result<()> {
             .with(Source::Exited)
             .with(Source::Cgroups),
         Needs::NONE.with(Source::Pss),
+        Needs::NONE.with(Source::Sensors),
     ] {
         collector.sample(needs)?;
         let t0 = std::time::Instant::now();
@@ -1647,7 +1648,8 @@ fn once(
     let needs = Needs::NONE
         .with(Source::Io)
         .with(Source::Exited)
-        .with(Source::Cgroups);
+        .with(Source::Cgroups)
+        .with(Source::Sensors);
     let priming = collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
@@ -1800,6 +1802,49 @@ fn once(
         );
     }
     outln!("load    {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]);
+    // The hardware, each group's hottest in the order the header weighs them.
+    match s.temps.as_deref() {
+        Some(t) if !t.is_empty() => outln!(
+            "temp    {}",
+            t.iter()
+                .map(|t| format!("{:.0}°C {}", t.celsius, t.group))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => outln!("temp    —  not published here"),
+    }
+    match s.fans.as_deref() {
+        Some(f) if !f.is_empty() => outln!(
+            "fan     {}",
+            f.iter()
+                .map(|f| format!("{}rpm {}", f.rpm, f.label))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => outln!("fan     —  not published here"),
+    }
+    for g in s.gpus.iter().flatten() {
+        match g.mem_used {
+            Some(m) => outln!("gpu     {:.0}%  {}, {} in use", g.util, g.name, human(m)),
+            None => outln!("gpu     {:.0}%  {}", g.util, g.name),
+        }
+    }
+    match &s.power {
+        Some(p) => {
+            let draw = p
+                .watts
+                .map(|w| format!(", {:.1}W", w.abs()))
+                .unwrap_or_default();
+            let left = p
+                .minutes
+                .map(|m| format!(", {}h{:02}m to go", m / 60, m % 60))
+                .unwrap_or_default();
+            outln!("battery {:.0}%  {}{draw}{left}", p.charge, p.state);
+        }
+        // Said, because "no battery" and "could not read one" are the same
+        // absence here and only one of them is true on a desktop.
+        None => outln!("battery —  none, or not published here"),
+    }
     // The CPU line's other classes, each absent rather than zero where the
     // platform does not publish it. `steal` first: on a cloud instance it is
     // the difference between a busy box and a box that is not being given one.

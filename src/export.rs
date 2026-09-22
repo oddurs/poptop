@@ -44,6 +44,10 @@ pub enum Unit {
     Celsius,
     /// Revolutions a minute.
     Rpm,
+    /// Watts.
+    Watts,
+    /// Minutes.
+    Minutes,
     /// Text, or something with no dimension at all.
     None,
 }
@@ -61,6 +65,8 @@ impl Unit {
             Unit::Epoch => "epoch_seconds",
             Unit::Celsius => "celsius",
             Unit::Rpm => "rpm",
+            Unit::Watts => "watts",
+            Unit::Minutes => "minutes",
             Unit::None => "none",
         }
     }
@@ -122,6 +128,7 @@ pub fn unit_of(record: &str, field: &str) -> Option<Unit> {
         | ("NfsStat", "mounts")
         | ("Sample", "mem" | "disks" | "pressure" | "net" | "filesystems")
         | ("Sample", "tasks" | "exited" | "cgroups" | "nodes" | "nfs" | "temps" | "fans")
+        | ("Sample", "power" | "gpus")
         | ("ProcSample", "io")
         | ("CgroupStat", "pressure") => Some(None),
         // Pressure's three are the resource each stall is about.
@@ -137,6 +144,11 @@ pub fn unit_of(record: &str, field: &str) -> Option<Unit> {
         ("Temp", "celsius" | "crit") => Some(Celsius),
         ("Temp", "group" | "sensor") | ("Fan", "label") => Some(None),
         ("Fan", "rpm") => Some(Rpm),
+        ("Power", "charge") | ("Gpu", "util") => Some(Percent),
+        ("Power", "state") | ("Gpu", "name") => Some(None),
+        ("Power", "watts") => Some(Watts),
+        ("Power", "minutes") => Some(Minutes),
+        ("Gpu", "mem_used" | "mem_total") => Some(Bytes),
         _ => by_name(field),
     }
 }

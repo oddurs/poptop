@@ -1465,6 +1465,14 @@ pub const CLOCK_NOMINAL: f32 = 99.0;
 /// which is where laptops start shedding clock.
 pub const HOT: f32 = 85.0;
 
+/// How busy a GPU has to be before the header treats it as news.
+pub const GPU_BUSY: f32 = 50.0;
+
+/// Below this, a battery running the machine is the most urgent thing on the
+/// header: a fifth is where every OS starts warning, and where a laptop being
+/// used for real work has well under an hour.
+pub const BATTERY_LOW: f32 = 20.0;
+
 /// A per-second count, shortened once it stops being readable in full.
 ///
 /// A busy box switches a hundred thousand times a second, and `103847/s` is six
@@ -1589,6 +1597,26 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
             group: Group::Compute,
             rank: if t.heat() >= HOT { 7 } else { 35 },
             spans,
+        });
+    }
+
+    // The busiest GPU, on the same two ranks as the temperature: context at
+    // an ordinary load, news once it is doing half of what it can — the point
+    // where "the machine is slow" is as likely to be the GPU as the CPU, and
+    // nothing else on the header would say so.
+    if let Some(g) = s
+        .gpus
+        .iter()
+        .flatten()
+        .max_by(|a, b| a.util.total_cmp(&b.util))
+    {
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: if g.util >= GPU_BUSY { 8 } else { 58 },
+            spans: vec![
+                Span::styled("GPU ", dim),
+                Span::styled(format!("{:>3.0}%", g.util), app.theme.figure_style(g.util)),
+            ],
         });
     }
 
@@ -1940,6 +1968,42 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                     app.theme.heat_style(s.mem.swap_pct()),
                 ),
             ],
+        });
+    }
+
+    // The battery, on a machine with one. Context while it is charging or
+    // charged, and while it has plenty; the first thing on the header once it
+    // is running the machine and nearly empty, because at that point it is
+    // the most important fact about the machine and the one most easily
+    // missed in a full-screen terminal that has hidden the menu bar.
+    //
+    // Which way the energy is going as an arrow, and at what rate only while
+    // it is leaving: a charge rate is the charger's business.
+    if let Some(p) = &s.power {
+        let ascii = app.glyphs == crate::glyphs::GlyphSet::Ascii;
+        let discharging = &*p.state == "discharging";
+        let low = discharging && p.charge < BATTERY_LOW;
+        // Heated on what is missing, and only while it matters: a laptop on
+        // its charger at 30% is not an alarm.
+        let heat = if discharging { 100.0 - p.charge } else { 0.0 };
+        let mut spans = vec![
+            Span::styled("BAT ", dim),
+            Span::styled(format!("{:>3.0}%", p.charge), app.theme.figure_style(heat)),
+        ];
+        match &*p.state {
+            "charging" => spans.push(Span::styled(if ascii { " +" } else { " ↑" }, dim)),
+            "discharging" => {
+                spans.push(Span::styled(if ascii { " -" } else { " ↓" }, dim));
+                if let Some(w) = p.watts {
+                    spans.push(Span::styled(format!("{:.0}W", w.abs()), dim));
+                }
+            }
+            _ => {}
+        }
+        figures.push(Figure {
+            group: if low { Group::Compute } else { Group::Machine },
+            rank: if low { 1 } else { 75 },
+            spans,
         });
     }
 
@@ -2534,6 +2598,37 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 })
                 .collect(),
             Unit::Rate,
+        ));
+    }
+
+    // The busiest GPU's load, where one publishes it. After the network and
+    // before temperature: it explains a slow machine less often than the
+    // rows above it, and more often than how warm the machine is. One device
+    // for the whole line, as for the network and the disk.
+    if let Some(name) = app
+        .history
+        .current()
+        .and_then(|s| {
+            s.gpus
+                .as_ref()?
+                .iter()
+                .max_by(|a, b| a.util.total_cmp(&b.util))
+        })
+        .map(|g| g.name.clone())
+    {
+        candidates.push((
+            "GPU",
+            window
+                .iter()
+                .map(|s| {
+                    s.gpus
+                        .iter()
+                        .flatten()
+                        .find(|g| g.name == name)
+                        .map_or(0.0, |g| g.util)
+                })
+                .collect(),
+            Unit::Percent,
         ));
     }
 
@@ -3204,7 +3299,9 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
 /// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
 /// silently rendered as `STAL` for exactly as long as the width was a hand-
 /// maintained number with a comment claiming `WAIT` was the longest.
-pub const SERIES_NAMES: [&str; 8] = ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "TEMP", "THR"];
+pub const SERIES_NAMES: [&str; 9] = [
+    "CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "GPU", "TEMP", "THR",
+];
 
 const fn widest(names: &[&str]) -> usize {
     let (mut max, mut i) = (0, 0);

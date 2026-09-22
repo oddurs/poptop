@@ -116,6 +116,18 @@
       {"name": "label", "type": "string", "unit": "none", "optional": false},
       {"name": "rpm", "type": "integer", "unit": "rpm", "optional": false}
     ],
+    "Power": [
+      {"name": "charge", "type": "number", "unit": "percent", "optional": false},
+      {"name": "state", "type": "string", "unit": "none", "optional": false},
+      {"name": "watts", "type": "number", "unit": "watts", "optional": true},
+      {"name": "minutes", "type": "integer", "unit": "minutes", "optional": true}
+    ],
+    "Gpu": [
+      {"name": "name", "type": "string", "unit": "none", "optional": false},
+      {"name": "util", "type": "number", "unit": "percent", "optional": false},
+      {"name": "mem_used", "type": "integer", "unit": "bytes", "optional": true},
+      {"name": "mem_total", "type": "integer", "unit": "bytes", "optional": true}
+    ],
     "ProcSample": [
       {"name": "pid", "type": "integer", "unit": "count", "optional": false},
       {"name": "ppid", "type": "integer", "unit": "count", "optional": false},
@@ -173,7 +185,9 @@
       {"name": "nfs", "type": "NfsStat", "unit": "none", "optional": true},
       {"name": "notes", "type": "[string]", "unit": "none", "optional": true},
       {"name": "temps", "type": "[Temp]", "unit": "none", "optional": true},
-      {"name": "fans", "type": "[Fan]", "unit": "none", "optional": true}
+      {"name": "fans", "type": "[Fan]", "unit": "none", "optional": true},
+      {"name": "power", "type": "Power", "unit": "none", "optional": true},
+      {"name": "gpus", "type": "[Gpu]", "unit": "none", "optional": true}
     ]
   }
 }

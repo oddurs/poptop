@@ -177,7 +177,7 @@ pub struct NodeStat {
 // `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
     MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ThreadSample,
-    CgroupStat, NodeStat, NfsMount, NfsStat, Temp, Fan, ProcSample, Sample
+    CgroupStat, NodeStat, NfsMount, NfsStat, Temp, Fan, Power, Gpu, ProcSample, Sample
 }
 
 // The wire order for each retained struct, listed beside it. The list cannot
@@ -511,6 +511,42 @@ pub struct Fan {
 }
 
 crate::persist::codec! { Fan { label: Arc<str>, rpm: u32 } }
+
+/// The battery, on a machine that has one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Power {
+    /// Percent of full charge.
+    pub charge: f32,
+    /// `charging`, `discharging`, or `charged` — plugged in and not charging,
+    /// whether because it is full or because the OS is holding it below full
+    /// to spare the cell.
+    pub state: Arc<str>,
+    /// Watts leaving the battery: positive while it runs the machine, negative
+    /// while it is being charged. `None` where the platform does not say.
+    pub watts: Option<f32>,
+    /// The platform's own estimate of minutes to empty, or to full while
+    /// charging. `None` while it is still estimating.
+    pub minutes: Option<u32>,
+}
+
+crate::persist::codec! { Power { charge: f32, state: Arc<str>, watts: Option<f32>, minutes: Option<u32> } }
+
+/// One GPU's load.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Gpu {
+    /// As the platform names it: `Apple M4`, `card0`.
+    pub name: Arc<str>,
+    /// Percent of the interval the device was busy.
+    pub util: f32,
+    /// Bytes of memory in use by the GPU. On a Mac this is unified memory the
+    /// GPU has claimed, already inside the memory figure; on a discrete card,
+    /// its own VRAM.
+    pub mem_used: Option<u64>,
+    /// The card's own memory, where it has any.
+    pub mem_total: Option<u64>,
+}
+
+crate::persist::codec! { Gpu { name: Arc<str>, util: f32, mem_used: Option<u64>, mem_total: Option<u64> } }
 
 /// One NFS mount over the last interval.
 ///
@@ -1155,6 +1191,11 @@ pub struct Sample {
     pub temps: Option<Vec<Temp>>,
     /// Every fan the platform reports, or `None` where it reports none.
     pub fans: Option<Vec<Fan>>,
+    /// The battery, or `None` on a machine without one — never a battery at
+    /// zero, which is what a desktop Mac's registry claims to have.
+    pub power: Option<Power>,
+    /// Every GPU whose load the platform publishes, or `None` where none does.
+    pub gpus: Option<Vec<Gpu>>,
 }
 
 impl Sample {
@@ -1222,13 +1263,15 @@ impl Sample {
             nodes: None,
             temps: None,
             fans: None,
+            power: None,
+            gpus: None,
             nfs: None,
             notes: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat>, notes: Option<Vec<Arc<str>>>, temps: Option<Vec<Temp>>, fans: Option<Vec<Fan>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat>, notes: Option<Vec<Arc<str>>>, temps: Option<Vec<Temp>>, fans: Option<Vec<Fan>>, power: Option<Power>, gpus: Option<Vec<Gpu>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
@@ -1366,6 +1409,8 @@ mod tests {
             ("filesystems", s.filesystems.is_some()),
             ("temps", s.temps.is_some()),
             ("fans", s.fans.is_some()),
+            ("power", s.power.is_some()),
+            ("gpus", s.gpus.is_some()),
             ("mem.free", s.mem.free.is_some()),
             // Not an `Option`, but it is the flag that decides whether the IO
             // columns render at all. Defaulting it to `true` would put a zero

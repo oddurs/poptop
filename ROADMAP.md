@@ -370,14 +370,12 @@ UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 
 ## r9 — The machine under the processes
 
-`######····` 57% · 4 of 7 done
+`#########·` 86% · 6 of 7 done
 
 Hardware and cadence sprint. poptop reads the kernel's accounting closely and
 
 ### backlog
 
-- [ ] `0233` Nothing says whether the machine is on battery <sup>feature · p2 · collect</sup>
-- [ ] `0234` The GPU is invisible <sup>feature · p2 · collect</sup>
 - [ ] `0235` poptop costs more than it should to watch the machine <sup>bug · p0 · collect · perf</sup>
 
 ### done
@@ -386,6 +384,8 @@ Hardware and cadence sprint. poptop reads the kernel's accounting closely and
 - [x] `0230` Samples land wherever poptop happened to start <sup>feature · p1 · collect</sup>
 - [x] `0231` Nothing says how hot the machine is <sup>feature · p1 · collect</sup>
 - [x] `0232` The disk panel is empty on macOS <sup>feature · p1 · collect</sup>
+- [x] `0233` Nothing says whether the machine is on battery <sup>feature · p2 · collect</sup>
+- [x] `0234` The GPU is invisible <sup>feature · p2 · collect</sup>
 
 ## v0.2 — Cheap enough to run
 

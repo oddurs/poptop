@@ -78,8 +78,9 @@ pub enum Source {
     /// policy the figure entirely; rescanning every sample is a directory walk
     /// for an answer that changes about once a day.
     ClockPolicies,
-    /// Temperatures and fans: `/sys/class/hwmon` on Linux, the HID sensor
-    /// services on macOS.
+    /// The hardware's own sensors: temperatures and fans, the battery, and
+    /// GPU load. `/sys/class/{hwmon,power_supply,drm}` on Linux; the HID
+    /// sensor services and the IO registry on macOS.
     ///
     /// Cheap in CPU and not in time. A few dozen small reads on Linux; on a
     /// Mac about 1.4ms of CPU but 45ms of waiting on the sensor service, which
@@ -110,7 +111,7 @@ impl Source {
             Source::Cgroups => "cgroups",
             Source::Exited => "exited processes",
             Source::ClockPolicies => "clock policies",
-            Source::Sensors => "temperatures and fans",
+            Source::Sensors => "hardware sensors",
         }
     }
 

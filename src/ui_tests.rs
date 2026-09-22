@@ -85,6 +85,8 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         nodes: None,
         temps: None,
         fans: None,
+        power: None,
+        gpus: None,
         nfs: None,
         pressure: None,
         net: None,
@@ -16669,6 +16671,18 @@ fn sensor_fixture(hot: bool) -> App {
         s.fans = Some(vec![crate::sample::Fan {
             label: "cpu_fan".into(),
             rpm: (1200.0 + (die - 50.0) * 60.0) as u32,
+        }]);
+        s.power = Some(crate::sample::Power {
+            charge: if hot { 14.0 } else { 83.0 },
+            state: if hot { "discharging" } else { "charging" }.into(),
+            watts: Some(if hot { 18.4 } else { -30.0 }),
+            minutes: None,
+        });
+        s.gpus = Some(vec![crate::sample::Gpu {
+            name: "Apple M4".into(),
+            util: if hot { 72.0 } else { s.cpu_total / 6.0 },
+            mem_used: Some(600 << 20),
+            mem_total: None,
         }]);
     }
     let mut out = App::new(600);

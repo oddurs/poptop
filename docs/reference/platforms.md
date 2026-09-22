@@ -40,6 +40,8 @@ publish (`src/collect/darwin.rs`).
 | CPU throttling | `cpufreq` | — |
 | Temperatures, hottest in each group | `hwmon` | the HID sensor services |
 | Fan speeds | `hwmon` | — |
+| Battery: charge, direction, draw | `power_supply` | the smart battery, in the IO registry |
+| GPU load | amdgpu, in `drm` | the accelerator's statistics, in the IO registry |
 
 ## What you can read without root
 
