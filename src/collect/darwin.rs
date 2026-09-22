@@ -154,18 +154,30 @@ impl Collector for SysinfoCollector {
         // HID services, measured; overlapped, the wait costs the sample
         // nothing, where in series it was most of it.
         let components = self.components.take();
-        let (sample, components) = std::thread::scope(|scope| {
-            let sensors = scope.spawn(move || match components {
-                Some(mut c) => {
-                    c.refresh(false);
-                    c
-                }
-                None => Components::new_with_refreshed_list(),
+        let (sample, hardware) = std::thread::scope(|scope| {
+            let sensors = scope.spawn(move || {
+                let components = match components {
+                    Some(mut c) => {
+                        c.refresh(false);
+                        c
+                    }
+                    None => Components::new_with_refreshed_list(),
+                };
+                // The battery and the GPU are registry reads of a few hundred
+                // microseconds, done here only because this is where the
+                // hardware is read.
+                (components, iokit::battery(), iokit::gpus())
             });
             let sample = self.collect_rest(needs, at);
             (sample, sensors.join().ok())
         });
         let mut sample = sample?;
+        let (components, power, gpus) = match hardware {
+            Some((c, p, g)) => (Some(c), p, g),
+            None => (None, None, None),
+        };
+        sample.power = power;
+        sample.gpus = gpus;
         if let Some(c) = &components {
             let temps = sensors::hottest(c.iter().filter_map(|c| {
                 Some(sensors::Reading {

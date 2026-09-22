@@ -2372,11 +2372,19 @@ impl Collector for ProcFs {
         let was_ctxt = stat.ctxt.and_then(|n| self.prev_ctxt.replace(n));
         let was_intr = stat.intr.and_then(|n| self.prev_intr.replace(n));
         let nfs = self.read_nfs(elapsed);
-        let (temps, fans) = if needs.wants(Source::Sensors) {
-            super::sensors::hwmon(at(std::path::Path::new("/sys/class/hwmon")).as_ref())
+        let hardware = needs.wants(Source::Sensors);
+        let sys = |p: &str| at(std::path::Path::new(p));
+        let (temps, fans) = if hardware {
+            super::sensors::hwmon(sys("/sys/class/hwmon").as_ref())
         } else {
             (None, None)
         };
+        let power = hardware
+            .then(|| super::sensors::power_supply(sys("/sys/class/power_supply").as_ref()))
+            .flatten();
+        let gpus = hardware
+            .then(|| super::sensors::drm(sys("/sys/class/drm").as_ref()))
+            .flatten();
         Ok(Sample {
             at: now,
             nfs,
@@ -2432,6 +2440,8 @@ impl Collector for ProcFs {
             nodes,
             temps,
             fans,
+            power,
+            gpus,
         })
     }
 }

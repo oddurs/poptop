@@ -2,7 +2,7 @@
 id: 234
 title: The GPU is invisible
 type: feature
-status: backlog
+status: done
 milestone: r9
 labels:
 - collect
@@ -25,6 +25,6 @@ the timeline when a GPU reports; nothing on a machine where none does.
 
 ## Acceptance criteria
 
-- [ ] macOS device utilisation from the IO registry
-- [ ] Linux amdgpu `gpu_busy_percent` and VRAM
-- [ ] Absent, not zero, everywhere else
+- [x] macOS device utilisation from the IO registry
+- [x] Linux amdgpu `gpu_busy_percent` and VRAM
+- [x] Absent, not zero, everywhere else

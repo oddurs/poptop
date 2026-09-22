@@ -34,6 +34,15 @@ process that wrote them:
   now. Schema change, compatible: a field that becomes optional reads every
   older recording's value as present, which the store now does by rule rather
   than skipping it (0232).
+- **The battery and the GPU.** Charge, which way it is going and at what
+  rate, from `/sys/class/power_supply` and the Mac's smart battery — absent
+  on a desktop, which a Mac's registry otherwise reports as a battery at zero.
+  GPU load from amdgpu's sysfs counters and the Apple GPU's own statistics.
+  Each is context in the header until it is news: `BAT` jumps to the front
+  once it is running the machine below a fifth, `GPU` beside `CPU` past half
+  load. A `GPU` row on the timeline, and both in `--once` and exports.
+  Schema change, compatible: two optional fields and two records (0233,
+  0234).
 
 ### Fixed
 

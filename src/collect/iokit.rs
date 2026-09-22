@@ -112,6 +112,13 @@ impl Value {
         }
     }
 
+    pub fn bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     pub fn str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
@@ -306,6 +313,79 @@ pub fn disks() -> Vec<(String, DiskCounters)> {
         .collect()
 }
 
+/// The battery, or `None` on a Mac without one.
+///
+/// A desktop Mac publishes an `AppleSmartBattery` anyway, every figure zero
+/// and `BatteryInstalled` false — which is the check, so a Mac Studio does not
+/// report a battery at 0% and discharging.
+pub fn battery() -> Option<crate::sample::Power> {
+    let b = services(c"AppleSmartBattery").into_iter().next()?;
+    let p = |k: &str| b.property(k, &[]);
+    if p("BatteryInstalled").and_then(|v| v.bool()) != Some(true) {
+        return None;
+    }
+    let current = p("CurrentCapacity")?.int()?;
+    let max = p("MaxCapacity")?.int().filter(|m| *m > 0)?;
+    let charging = p("IsCharging").and_then(|v| v.bool()).unwrap_or(false);
+    let plugged = p("ExternalConnected")
+        .and_then(|v| v.bool())
+        .unwrap_or(false);
+    let state = match (charging, plugged) {
+        (true, _) => "charging",
+        (false, true) => "charged",
+        (false, false) => "discharging",
+    };
+    // Millivolts and milliamps, the current negative while discharging. The
+    // instantaneous figure where the firmware has one: `Amperage` is a
+    // minute's average and lags a load that just started.
+    let mv = p("Voltage").and_then(|v| v.int());
+    let ma = p("InstantAmperage")
+        .or_else(|| p("Amperage"))
+        .and_then(|v| v.int());
+    let watts = mv
+        .zip(ma)
+        .map(|(v, a)| -(v as f64 * a as f64 / 1e6) as f32)
+        .filter(|w| *w != 0.0 && state != "charged");
+    // `65535` is the firmware's "still estimating".
+    let minutes = p("TimeRemaining")
+        .and_then(|v| v.int())
+        .filter(|m| (1..65535).contains(m) && state != "charged")
+        .map(|m| m as u32);
+    Some(crate::sample::Power {
+        charge: (current as f32 / max as f32 * 100.0).clamp(0.0, 100.0),
+        state: std::sync::Arc::from(state),
+        watts,
+        minutes,
+    })
+}
+
+/// Every GPU that publishes its load: the accelerator's performance
+/// statistics, which the Apple GPU keeps and any user may read.
+pub fn gpus() -> Option<Vec<crate::sample::Gpu>> {
+    const KEYS: [&str; 2] = ["Device Utilization %", "In use system memory"];
+    let out: Vec<crate::sample::Gpu> = services(c"IOAccelerator")
+        .into_iter()
+        .filter_map(|a| {
+            let stats = a.property("PerformanceStatistics", &KEYS)?;
+            let util = stats.get("Device Utilization %")?.int()?;
+            let name = a
+                .property("model", &[])
+                .and_then(|v| v.str().map(str::to_string))
+                .unwrap_or_else(|| "GPU".to_string());
+            Some(crate::sample::Gpu {
+                name: std::sync::Arc::from(name),
+                util: (util as f32).clamp(0.0, 100.0),
+                mem_used: stats
+                    .get("In use system memory")
+                    .and_then(Value::int)
+                    .map(|b| b.max(0) as u64),
+                mem_total: None,
+            })
+        })
+        .collect();
+    (!out.is_empty()).then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +400,13 @@ mod tests {
         assert_eq!(name, "disk0");
         // A running machine has read its own boot disk.
         assert!(c.read_bytes > 0 && c.reads > 0, "{c:?}");
+    }
+
+    #[test]
+    fn this_macs_gpu_publishes_its_load() {
+        let g = gpus().expect("no GPU in the registry");
+        assert!((0.0..=100.0).contains(&g[0].util), "{g:?}");
+        assert_ne!(&*g[0].name, "GPU", "the model was not read");
     }
 
     #[test]

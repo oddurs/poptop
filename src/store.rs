@@ -647,6 +647,18 @@ mod tests {
                 label: "cpu_fan".into(),
                 rpm: 2350,
             }]),
+            power: Some(crate::sample::Power {
+                charge: 83.5,
+                state: "discharging".into(),
+                watts: Some(12.25),
+                minutes: None,
+            }),
+            gpus: Some(vec![crate::sample::Gpu {
+                name: "Apple M4".into(),
+                util: 18.0,
+                mem_used: Some(644_907_008),
+                mem_total: None,
+            }]),
             procs: (0..procs).map(|i| proc_of(i as i32, "postgres")).collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(4242),
@@ -692,6 +704,8 @@ mod tests {
         assert_eq!(a.nodes, b.nodes);
         assert_eq!(a.temps, b.temps);
         assert_eq!(a.fans, b.fans);
+        assert_eq!(a.power, b.power);
+        assert_eq!(a.gpus, b.gpus);
         assert_eq!(a.nfs, b.nfs);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
@@ -965,7 +979,7 @@ mod tests {
         // the file's schema for that record type to know how wide each element
         // is. A scalar alone lets a broken `skip` pass.
         sample.1.push(Field {
-            name: "gpus".into(),
+            name: "tape_drives".into(),
             hash: <Option<Vec<DiskStat>> as Typed>::HASH,
             ty: <Option<Vec<DiskStat>> as Typed>::ty(),
         });
@@ -1116,7 +1130,7 @@ mod tests {
         assert_eq!(
             notes,
             vec![
-                "the stored history has fields this poptop does not read: cosmic_rays, gpus"
+                "the stored history has fields this poptop does not read: cosmic_rays, tape_drives"
                     .to_string()
             ],
             "the skipped field was not reported"
@@ -1570,6 +1584,8 @@ pub(crate) mod tests_support {
             nodes: None,
             temps: None,
             fans: None,
+            power: None,
+            gpus: None,
             nfs: None,
             procs: (0..procs)
                 .map(|i| ProcSample {
