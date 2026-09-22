@@ -2,7 +2,7 @@
 id: 230
 title: Samples land wherever poptop happened to start
 type: feature
-status: backlog
+status: done
 milestone: r9
 labels:
 - collect
@@ -31,6 +31,6 @@ more than an interval.
 
 ## Acceptance criteria
 
-- [ ] At a one-second interval every sample's `at` is within a few milliseconds after a whole second
-- [ ] Intervals that do not divide a minute still tick evenly
-- [ ] A wall clock stepped by an hour neither stalls sampling nor bursts it
+- [x] At a one-second interval every sample's `at` is within a few milliseconds after a whole second
+- [x] Intervals that do not divide a minute still tick evenly
+- [x] A wall clock stepped by an hour neither stalls sampling nor bursts it

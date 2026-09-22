@@ -127,6 +127,11 @@ fn everything_but_frequency() -> RefreshKind {
 
 impl Collector for SysinfoCollector {
     fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
+        // When the reading began, as the `/proc` backend stamps it. Taken at
+        // the end, a sample on the second was stamped however long collection
+        // took past it — forty milliseconds and more once the sensors are read
+        // — and the schedule's alignment to the clock never showed.
+        let at = SystemTime::now();
         // `System::new_with_specifics` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
         // needs between CPU refreshes. So the first sample's CPU figures are
@@ -406,7 +411,7 @@ impl Collector for SysinfoCollector {
         // none of it" are opposite answers, and a fabricated zero would quietly
         // promise the table is complete.
         Ok(Sample {
-            at: SystemTime::now(),
+            at,
             cpu_total,
             cpu_per_core,
             mem: MemStat {

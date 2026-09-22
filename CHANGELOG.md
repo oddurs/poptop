@@ -22,6 +22,13 @@ process that wrote them:
   keys, so for as long as a sample took the screen froze and keys queued. It
   runs on a thread of its own now, with the log writes, and the interface draws
   a finished sample within a few milliseconds of it being ready (0229).
+- **Samples fell wherever poptop happened to start.** They land on wall-clock
+  multiples of the interval now — at one second, on the second — so two
+  poptops, a feed and the monitor beside it, and one day and the next all
+  sample the same instants. A clock that steps or slews costs one interval
+  slightly short or long, never a stall or a burst. The feed kept its own
+  schedule and restarted it from each wake-up, which drifted; it shares this
+  one (0230).
 
 ## [0.2.0] - 2026-09-20
 
