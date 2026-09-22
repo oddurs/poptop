@@ -2104,7 +2104,15 @@ fn run(
                     // key. A click is a question about the layout the last
                     // frame drew, and the frame is still on screen — the
                     // redraw at the top of the loop is what shows the answer.
-                    Event::Mouse(m) => {
+                    //
+                    // Only what the mouse can change something with. The
+                    // capture reports every motion over the window, and each
+                    // one used to redraw the whole screen for nothing — a
+                    // pointer drifting across poptop is sixty to a hundred
+                    // events a second, which at three milliseconds a frame is
+                    // a fifth of a core spent redrawing a picture that had not
+                    // changed.
+                    Event::Mouse(m) if mouse_acts(m.kind) => {
                         handle_mouse(app, m, terminal.get_frame().area());
                         break None;
                     }
@@ -2172,6 +2180,16 @@ fn run(
             return Ok(());
         }
     }
+}
+
+/// Whether a mouse event is one poptop does anything with: a press, a drag or
+/// the wheel. Motion and releases change nothing, so they draw nothing.
+fn mouse_acts(kind: event::MouseEventKind) -> bool {
+    use event::MouseEventKind::*;
+    matches!(
+        kind,
+        Down(_) | Drag(_) | ScrollUp | ScrollDown | ScrollLeft | ScrollRight
+    )
 }
 
 /// How often a wait for input looks at the stop flag.
