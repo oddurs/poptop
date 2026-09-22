@@ -75,6 +75,7 @@ pub fn hwmon_group(driver: &str) -> &'static str {
 /// device sensors `tdev*`, which are the board. Intel Macs publish SMC names
 /// like `CPU Proximity` and `GPU Die`. `tcal` is a calibration constant rather
 /// than a temperature and is left out.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub fn label_group(label: &str) -> Option<&'static str> {
     let l = label.to_ascii_lowercase();
     if l.contains("tcal") {
