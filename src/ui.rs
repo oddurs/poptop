@@ -2320,7 +2320,11 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     }
     candidates.push((
         "MEM",
-        window.iter().map(|s| s.mem.used_pct()).collect(),
+        level_over_intervals(
+            window,
+            samples.get(window_start.wrapping_sub(1)).copied(),
+            |s| s.mem.used_pct(),
+        ),
         Unit::Percent,
     ));
 
@@ -2807,6 +2811,51 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
 /// tool must never do.
 fn finite(v: f32) -> Option<f32> {
     v.is_finite().then_some(v)
+}
+
+/// A level series put on the same footing as the rates drawn beside it.
+///
+/// Memory is the one series in the timeline that is a *level* rather than a
+/// rate. Every other row — CPU, WAIT, DISK, STALL, NET — is a figure for the
+/// interval that ends at its sample: what the machine did during that second.
+/// A level is a state at the instant the sample was taken.
+///
+/// Drawn in the same column the two disagree by half an interval, because a
+/// span's centre of mass sits half an interval before an instant's — and on a
+/// braille row half an interval is half a cell. At the live edge it reads as
+/// memory stepping first and the rest catching up on the next sample, over and
+/// over, which is exactly what it is.
+///
+/// So a level is drawn as the mean of each interval's endpoints. That puts its
+/// centre of mass where every other series already has one, and it invents
+/// nothing: both endpoints were measured, and it is the same arithmetic a rate
+/// does implicitly when it divides a delta by the time it took.
+///
+/// `before` is the sample preceding the window, where the buffer has one: the
+/// leftmost column is as entitled to a real interval as any other. Without it
+/// the first value stands for itself, which is the only honest answer when
+/// there is no interval to average over.
+///
+/// The header's `MEM` figure is untouched. It answers "how full is this machine
+/// *now*", a question about an instant; this row answers "what was it doing
+/// then", a question about a span.
+#[cfg_attr(test, allow(dead_code))]
+pub fn level_over_intervals(
+    window: &[&Sample],
+    before: Option<&Sample>,
+    of: impl Fn(&Sample) -> f32,
+) -> Vec<f32> {
+    window
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let prev = if i > 0 { Some(window[i - 1]) } else { before };
+            match prev {
+                Some(p) => (of(p) + of(s)) / 2.0,
+                None => of(s),
+            }
+        })
+        .collect()
 }
 
 /// One row of graph. `row` counts from the top of a `rows`-tall graph.

@@ -16368,17 +16368,6 @@ fn print_readme_frame() {
 }
 
 #[test]
-#[ignore = "prints the frame at a size; run with --ignored --nocapture"]
-fn print_frame_sizes() {
-    for (w, h) in [(80u16, 24u16), (60, 20), (100, 40), (46, 16), (120, 30)] {
-        println!("── {w}x{h} {}", "─".repeat(60));
-        for l in rows(&readme_fixture(), w, h) {
-            println!("|{}|", l.trim_end());
-        }
-    }
-}
-
-#[test]
 #[ignore = "prints the first-run guide's frame; run with --ignored --nocapture"]
 fn print_guide_frame() {
     let mut app = App::new(600);
@@ -16527,82 +16516,39 @@ fn print_density_differences() {
 }
 
 #[test]
-#[ignore = "diagnostic: show the density diff; --ignored --nocapture"]
-fn print_density_diff_lines() {
-    let (w, h) = (100u16, 30u16);
-    let frame = |d| {
-        let mut app = readme_fixture();
-        app.density = d;
-        rows(&app, w, h)
+fn a_level_is_drawn_over_the_interval_the_rates_beside_it_cover() {
+    // Memory is the timeline's only level; every other row is a figure for the
+    // interval ending at its sample. Drawn in the same column they disagree by
+    // half an interval — a span's centre of mass sits half an interval before
+    // an instant's — and at the live edge that reads as memory stepping first
+    // and CPU and the network catching up on the next sample, over and over.
+    let s = |used_pct: f32| {
+        let mut s = sample(0.0);
+        s.mem.used = (s.mem.total as f64 * f64::from(used_pct) / 100.0) as u64;
+        s
     };
-    let a = frame(ui::Density::Compact);
-    let c = frame(ui::Density::Spacious);
-    for (i, (x, y)) in a.iter().zip(&c).enumerate() {
-        if x != y {
-            println!("row {i}:");
-            println!("  compact  |{}|", x.trim_end());
-            println!("  spacious |{}|", y.trim_end());
-        }
-    }
-}
+    let steady: Vec<Sample> = (0..4).map(|_| s(40.0)).collect();
+    let refs: Vec<&Sample> = steady.iter().collect();
 
-#[test]
-#[ignore = "diagnostic; --ignored --nocapture"]
-fn print_density_gaps() {
-    for h in [18u16, 20, 24, 30, 40] {
-        let g: Vec<u16> = ui::Density::ALL.iter().map(|d| d.panel_gap(h)).collect();
-        println!("h={h:3}  panel gap by density: {g:?}");
-    }
-}
+    // A level that does not move is unchanged by this: nothing is invented.
+    let flat = ui::level_over_intervals(&refs, None, |s| s.mem.used_pct());
+    assert!(
+        flat.iter().all(|v| (v - 40.0).abs() < 0.5),
+        "a steady level was not left alone: {flat:?}"
+    );
 
-#[test]
-#[ignore = "diagnostic; --ignored --nocapture"]
-fn print_margin_table() {
-    for w in [100u16, 102, 104, 106, 110, 114, 118, 120] {
-        let m: Vec<u16> = ui::Density::ALL.iter().map(|d| d.margin(w)).collect();
-        println!("w={w:4}  margins {m:?}");
-    }
-}
+    // A step lands half in the interval it happened during and half in the
+    // next, which is where a rate covering the same second puts it.
+    let stepped = [s(10.0), s(10.0), s(80.0), s(80.0)];
+    let refs: Vec<&Sample> = stepped.iter().collect();
+    let v = ui::level_over_intervals(&refs, None, |s| s.mem.used_pct());
+    assert!((v[1] - 10.0).abs() < 0.5, "before the step: {v:?}");
+    assert!((v[2] - 45.0).abs() < 1.0, "the step is not spread: {v:?}");
+    assert!((v[3] - 80.0).abs() < 0.5, "after the step: {v:?}");
 
-#[test]
-#[ignore = "diagnostic: what a row's figure does over time; --ignored --nocapture"]
-fn print_smoothing_trace() {
-    // A process that spikes once, on an otherwise flat machine.
-    let mut app = App::new(600);
-    for i in (0..24).rev() {
-        let mut s = sample_at(10.0, i as u64);
-        let cpu = if (12..15).contains(&(23 - i)) {
-            90.0
-        } else {
-            5.0
-        };
-        s.procs = vec![ProcSample {
-            cpu,
-            started: Some(1),
-            ..proc_named(42, "spiky", 0.0, 1 << 20)
-        }];
-        app.push(s);
-    }
-    println!("sample  raw   shown");
-    for back in (0..12).rev() {
-        let mut a = App::new(600);
-        for i in (0..24 - back).rev() {
-            let mut s = sample_at(10.0, (i + back) as u64);
-            let cpu = if (12..15).contains(&(23 - back - i)) {
-                90.0
-            } else {
-                5.0
-            };
-            s.procs = vec![ProcSample {
-                cpu,
-                started: Some(1),
-                ..proc_named(42, "spiky", 0.0, 1 << 20)
-            }];
-            a.push(s);
-        }
-        let raw = a.history.current().unwrap().procs[0].cpu;
-        let sm = a.smoothing();
-        let shown = sm.cpu(&a.history.current().unwrap().procs[0]);
-        println!("{:6}  {raw:5.1}  {shown:5.1}", 24 - back);
-    }
+    // With a sample before the window, the leftmost column gets a real
+    // interval too rather than standing for itself.
+    let earlier = s(10.0);
+    let v = ui::level_over_intervals(&refs, Some(&earlier), |s| s.mem.used_pct());
+    assert!((v[0] - 10.0).abs() < 0.5, "{v:?}");
 }
