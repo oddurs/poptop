@@ -44,6 +44,21 @@ process that wrote them:
   Schema change, compatible: two optional fields and two records (0233,
   0234).
 
+### Performance
+
+- **Moving the pointer over poptop cost a fifth of a core.** Mouse capture
+  reports every motion, and each one redrew the whole screen for nothing:
+  100Hz of motion took 1.70s of CPU in ten seconds, and takes 0.18s now, which
+  is sampling alone. Presses, drags and the wheel still redraw.
+- **A process row is 144 bytes, not 192.** Most of poptop's memory is six
+  hundred samples of every process, and a quarter of each row was padding
+  around presence bits. Optional fields now spend one impossible value on
+  absence instead; the store, the log and exports are byte-for-byte unchanged
+  (0235).
+- **No sample waits for the hardware.** Sensors, the battery and the GPU are
+  read on a thread of their own, at most once a second, so a sample on a Mac
+  takes 4.5ms rather than the 46ms the sensor service makes a reader wait.
+
 ### Fixed
 
 - **Keys waited for the sample.** Collection ran on the thread that reads
