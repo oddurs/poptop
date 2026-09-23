@@ -346,7 +346,7 @@ Activity Monitor is the best-designed process monitor there is, and almost none
 
 ## r8 — The table earns its width
 
-`#·········` 8% · 1 of 12 done
+`#·········` 10% · 1 of 10 done
 
 UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 
@@ -355,10 +355,8 @@ UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 - [ ] `0217` The action bar names a process by its first word <sup>bug · p2 · ui</sup>
 - [ ] `0218` One glyph means both "not collected" and "no change" <sup>bug · p2 · ui</sup>
 - [ ] `0219` A folded row puts a count in the PID column <sup>bug · p3 · ui</sup>
-- [ ] `0220` The row count is stated three times in three consecutive rows <sup>bug · p3 · ui</sup>
 - [ ] `0221` The disk columns hold twenty columns of noughts while the command is elided <sup>feature · p1 · ui</sup>
 - [ ] `0222` The history column draws the same picture in every row <sup>feature · p1 · ui</sup>
-- [ ] `0223` Chrome outweighs the table on the commonest terminal there is <sup>feature · p1 · ui</sup>
 - [ ] `0224` The container column costs thirteen columns on every row for one container <sup>feature · p3 · ui</sup>
 - [ ] `0225` Eliding the middle removes the part of a command that identifies it <sup>feature · p1 · ui</sup>
 - [ ] `0226` The memory tab is the CPU tab with fewer columns where the platform cannot fill it <sup>feature · p2 · ui</sup>
@@ -383,6 +381,23 @@ Hardware and cadence sprint. poptop reads the kernel's accounting closely and
 - [x] `0233` Nothing says whether the machine is on battery <sup>feature · p2 · collect</sup>
 - [x] `0234` The GPU is invisible <sup>feature · p2 · collect</sup>
 - [x] `0235` poptop costs more than it should to watch the machine <sup>bug · p0 · collect · perf</sup>
+
+## r10 — One screen, one voice
+
+`··········` 0% · 0 of 8 done
+
+UI sprint. Not new features and not the table's columns — r8 has those. This
+
+### backlog
+
+- [ ] `0220` The row count is stated three times in three consecutive rows <sup>bug · p3 · ui</sup>
+- [ ] `0223` Chrome outweighs the table on the commonest terminal there is <sup>feature · p1 · ui</sup>
+- [ ] `0237` The loudest ink on the screen is furniture <sup>feature · p0 · ui</sup>
+- [ ] `0238` The column header speaks three vocabularies <sup>feature · p1 · ui</sup>
+- [ ] `0239` The buffer explains itself across the middle of a graph <sup>bug · p2 · ui</sup>
+- [ ] `0240` Every kind of row starts in a different column <sup>bug · p2 · ui</sup>
+- [ ] `0241` The key bar says everything, always <sup>feature · p2 · ui</sup>
+- [ ] `0242` The overlays are sharp where the rest is soft <sup>feature · p3 · ui</sup>
 
 ## v0.2 — Cheap enough to run
 
