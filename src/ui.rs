@@ -532,6 +532,55 @@ fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
 ///
 /// The peaks are the part Activity Monitor cannot do. They come from the
 /// buffer, and they are the answer to "is this normal for it".
+/// One surface for everything that floats: the inspector, the key list, and
+/// anything after them.
+///
+/// The box is the glyph set's — rounded where it has the glyphs, square where
+/// it does not — the title sits in the top edge in the same ink every time,
+/// the dismissal sits in the bottom edge, and the body is inset by a column so
+/// the text does not touch the border (0242).
+fn framed_surface(
+    app: &App,
+    title: &str,
+    dismiss: &str,
+    body: Vec<Line<'static>>,
+    w: usize,
+    h: usize,
+) -> Vec<Line<'static>> {
+    let b = app.glyphs.box_parts();
+    let chrome = app.theme.chrome_style();
+    let edge = |text: &str, left: char, right: char| {
+        let text = elide_middle(text, w);
+        let bar = String::from(b.h).repeat(w.saturating_sub(cols(&text)));
+        Line::from(vec![
+            Span::styled(format!("{left}"), chrome),
+            Span::styled(text, app.theme.title_style()),
+            Span::styled(format!("{bar}{right}"), chrome),
+        ])
+    };
+    let mut out = vec![edge(title, b.tl, b.tr)];
+    // One column of air inside the border, either side.
+    let inner = w.saturating_sub(2);
+    for l in body.into_iter().take(h.saturating_sub(2)) {
+        let mut spans = vec![Span::styled(format!("{} ", b.v), chrome)];
+        let mut used = 0usize;
+        for span in l.spans {
+            let room = inner.saturating_sub(used);
+            if room == 0 {
+                break;
+            }
+            let text = elide_middle(&span.content, room);
+            used += cols(&text);
+            spans.push(Span::styled(text, span.style));
+        }
+        spans.push(Span::raw(" ".repeat(inner.saturating_sub(used) + 1)));
+        spans.push(Span::styled(b.v.to_string(), chrome));
+        out.push(Line::from(spans));
+    }
+    out.push(edge(dismiss, b.bl, b.br));
+    out
+}
+
 fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
     if !app.inspecting {
         return;
@@ -619,12 +668,15 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
 
-    let w = lines
+    // Plus the column of air either side of the body, so the box holds as
+    // much command line as it did before the padding (0242).
+    let w = (lines
         .iter()
         .map(|l| l.spans.iter().map(|s| cols(&s.content)).sum::<usize>())
         .max()
         .unwrap_or(20)
-        .clamp(24, area.width.saturating_sub(4) as usize);
+        + 2)
+    .clamp(24, area.width.saturating_sub(4) as usize);
     let h = (lines.len() + 2).min(area.height.saturating_sub(2) as usize);
     // Centred in the panel it is over, which means the panel's own origin: a
     // box positioned in frame coordinates lands on whatever is at the top of
@@ -636,37 +688,14 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, box_area);
     f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
 
-    // Both ends of the box are drawn by this function, so both have to be
-    // measured by it. A line wider than `w` used to be laid down whole and
-    // clipped by the terminal, which ate the right border and left the command
-    // running into whatever was behind the box — on a full command line, which
-    // is most of them, the panel simply had no right-hand side.
-    let title = elide_middle(&format!(" {} · {} ", p.name, p.pid), w);
-    let bar = "─".repeat(w.saturating_sub(cols(&title)));
-    let mut framed = vec![Line::from(Span::styled(
-        format!("╭{title}{bar}╮"),
-        app.theme.chrome_style(),
-    ))];
-    for l in lines.into_iter().take(h.saturating_sub(2)) {
-        let mut spans = vec![Span::styled("│", app.theme.chrome_style())];
-        let mut used = 0usize;
-        for span in l.spans {
-            let room = w - used;
-            if room == 0 {
-                break;
-            }
-            let text = elide_middle(&span.content, room);
-            used += cols(&text);
-            spans.push(Span::styled(text, span.style));
-        }
-        spans.push(Span::raw(" ".repeat(w - used)));
-        spans.push(Span::styled("│", app.theme.chrome_style()));
-        framed.push(Line::from(spans));
-    }
-    framed.push(Line::from(Span::styled(
-        format!("╰{}╯", "─".repeat(w)),
-        app.theme.chrome_style(),
-    )));
+    let framed = framed_surface(
+        app,
+        &format!(" {} · {} ", p.name, p.pid),
+        " Esc closes ",
+        lines,
+        w,
+        h,
+    );
     f.render_widget(Paragraph::new(framed), box_area);
 }
 
@@ -736,16 +765,19 @@ fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Block::default().style(app.theme.raised_style()), box_area);
 
     let inner = w.saturating_sub(2);
+    // The same box the other floating surfaces are drawn with (0242).
+    let b = app.glyphs.box_parts();
     // A rule, with a mark on it when there is more list in that direction. In
     // the border rather than on a row of its own: the reason the list is being
     // scrolled is that rows are scarce.
     let rule = |left: char, right: char, more: bool| {
-        let mut mid = "─".repeat(inner);
+        let mut mid = String::from(b.h).repeat(inner);
         if more && inner >= 3 {
             mid = format!(
-                "{}{}─",
-                "─".repeat(inner - 2),
-                if left == '╭' { '↑' } else { '↓' }
+                "{}{}{}",
+                String::from(b.h).repeat(inner - 2),
+                if left == b.tl { '↑' } else { '↓' },
+                b.h
             );
         }
         Line::from(Span::styled(
@@ -755,11 +787,11 @@ fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
     };
     let shown = (h as usize).saturating_sub(2);
     let offset = dropdown_offset(app, area);
-    let mut lines = vec![rule('╭', '╮', offset > 0)];
+    let mut lines = vec![rule(b.tl, b.tr, offset > 0)];
     for (i, item) in title.items.iter().enumerate().skip(offset).take(shown) {
         lines.push(match item {
             crate::menu::Item::Rule => Line::from(Span::styled(
-                format!("├{}┤", "─".repeat(inner)),
+                format!("{}{}{}", b.tee_l, String::from(b.h).repeat(inner), b.tee_r),
                 app.theme.chrome_style(),
             )),
             crate::menu::Item::Do(label, key, _) => {
@@ -781,15 +813,15 @@ fn draw_dropdown(f: &mut Frame, area: Rect, app: &App) {
                     app.theme.dim_style()
                 };
                 Line::from(vec![
-                    Span::styled("│", app.theme.chrome_style()),
+                    Span::styled(b.v.to_string(), app.theme.chrome_style()),
                     Span::styled(cut(&text, inner), style),
-                    Span::styled("│", app.theme.chrome_style()),
+                    Span::styled(b.v.to_string(), app.theme.chrome_style()),
                 ])
             }
         });
     }
     if lines.len() < h as usize {
-        lines.push(rule('╰', '╯', offset + shown < title.items.len()));
+        lines.push(rule(b.bl, b.br, offset + shown < title.items.len()));
     }
     f.render_widget(Paragraph::new(lines), box_area);
 }
@@ -5993,7 +6025,7 @@ fn draw_help(f: &mut Frame, area: Rect, app: &App) {
         actions
     } else {
         Line::from(Span::styled(
-            fit_hints(KEY_HINTS, area.width),
+            fit_hints(&hints_now(app), area.width),
             app.theme.dim_style(),
         ))
     };
@@ -6012,6 +6044,42 @@ pub fn fit_hints_for_test(width: u16) -> String {
     fit_hints(KEY_HINTS, width)
 }
 
+/// The keys that act on what is in front of the reader, most relevant first.
+///
+/// The bar named eleven keys every frame, whatever the reader was doing: the
+/// same line while scrubbing through history, while choosing a process, and
+/// while looking at a filtered table. It was the second busiest line on the
+/// screen and most of it was inert (0241).
+///
+/// The ladder below it is unchanged — the tail is still what a narrow terminal
+/// loses — so this reorders rather than hides: every key is still named by the
+/// menu and by `?`, and the keys that do something *now* are the ones that
+/// survive the width.
+fn hints_now(app: &App) -> Vec<&'static str> {
+    let mut out = vec!["q quit", "F10 menu"];
+    if app.history.is_live() {
+        // Live: the timeline is the thing to reach into.
+        out.extend(["←/→ scrub", "b jump", "+/- zoom"]);
+    } else {
+        // Scrubbed back: getting to now is what the reader wants first, and
+        // it is the key nothing else on the screen suggests.
+        out.extend(["Space live", "←/→ scrub", "b jump", "+/- zoom"]);
+    }
+    // What the table is: arranging it comes before the niche views of it.
+    out.extend(["↑/↓ select", "s sort", "/ filter", "Tab tabs"]);
+    // Only with a row to act on. The action bar names `⏎ inspect` and the
+    // signal keys beside the process itself, so they are not repeated here.
+    if app.selected.is_some() {
+        out.extend(["d detail", "y threads"]);
+    } else {
+        out.push("x signal");
+    }
+    out.extend(["t tree", "g group", "C cgroups", "K kernel", "S constraint"]);
+    out
+}
+
+/// Every key the bar can name, in the order it gives them up. The one list the
+/// menu and `--help` are checked against.
 pub const KEY_HINTS: &[&str] = &[
     "q quit",
     // Second, because it is the one hint that leads to all the others: the bar
@@ -6148,14 +6216,16 @@ fn draw_key_list(f: &mut Frame, app: &App) {
         )));
     }
     f.render_widget(ratatui::widgets::Clear, rect);
-    f.render_widget(
-        Paragraph::new(lines).block(
-            ratatui::widgets::Block::bordered()
-                .title(" keys — any key closes ")
-                .border_style(app.theme.border_style()),
-        ),
-        rect,
+    f.render_widget(Block::default().style(app.theme.raised_style()), rect);
+    let framed = framed_surface(
+        app,
+        " keys ",
+        " any key closes ",
+        lines,
+        rect.width.saturating_sub(2) as usize,
+        rect.height as usize,
     );
+    f.render_widget(Paragraph::new(framed), rect);
 }
 
 /// Where the footer points when it could not show every key.

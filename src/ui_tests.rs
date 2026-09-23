@@ -4489,7 +4489,6 @@ fn the_sparkline_column_states_its_own_scale() {
 
     for (cpu, want) in [(500.0f32, "≤800%"), (40.0, "≤50%")] {
         let ls = frame(cpu);
-        let ls = ls;
         let header = find(&ls, "PID");
         assert!(
             header.contains(want),

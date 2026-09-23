@@ -2,7 +2,7 @@
 id: 241
 title: The key bar says everything, always
 type: feature
-status: backlog
+status: done
 milestone: r10
 labels:
 - ui
@@ -29,6 +29,6 @@ The ladder already drops keys by width — this drops them by relevance first.
 
 ## Acceptance criteria
 
-- [ ] The bar names fewer keys, and the ones it names are the ones that act now
-- [ ] Nothing becomes unreachable: `?` and the menu still name everything
-- [ ] The bar does not change width as the state changes, so the screen does not jitter
+- [x] The bar names fewer keys, and the ones it names are the ones that act now
+- [x] Nothing becomes unreachable: `?` and the menu still name everything
+- [x] The bar does not change width as the state changes, so the screen does not jitter

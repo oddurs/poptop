@@ -2,7 +2,7 @@
 id: 242
 title: The overlays are sharp where the rest is soft
 type: feature
-status: backlog
+status: done
 milestone: r10
 labels:
 - ui
@@ -26,5 +26,5 @@ the same ink on every one of them, and the same dismissal line.
 
 ## Acceptance criteria
 
-- [ ] Every floating surface is drawn by one function, with one style
-- [ ] The ASCII glyph set still gets square corners and looks deliberate
+- [x] Every floating surface is drawn by one function, with one style
+- [x] The ASCII glyph set still gets square corners and looks deliberate
