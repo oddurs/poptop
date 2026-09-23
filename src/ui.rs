@@ -187,11 +187,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     // contrast figure `--check-theme` reports becomes a measurement rather
     // than an assumption about somebody else's configuration.
     f.render_widget(Block::default().style(app.theme.surface_style()), f.area());
-    // Panels one step up, so the bands of the screen are visible without a
-    // border spending a row and a column on saying where they are.
-    for panel in [p.timeline, p.table] {
-        f.render_widget(Block::default().style(app.theme.panel_style()), panel);
-    }
+    // The table one step up, so the band is visible without a border spending
+    // a row and a column on saying where it is — and the timeline left on the
+    // ground, so the two bands are told apart by the step between them rather
+    // than by a rule drawn across the screen (0237). The table is the raised
+    // one because it is the mass of the data; the graphs are how it got there.
+    f.render_widget(Block::default().style(app.theme.panel_style()), p.table);
+    f.render_widget(
+        Block::default().style(app.theme.surface_style()),
+        p.timeline,
+    );
     f.render_widget(Block::default().style(app.theme.raised_style()), p.menu);
 
     let Some(sample) = app.history.current() else {
@@ -2371,7 +2376,9 @@ pub fn shown_window(app: &App, area: Rect) -> Shown {
     // are aggregated over would not be the window the graph shows.
     let area = content(app, area);
     let inner_w = area.width as usize;
-    let inner_h = area.height.saturating_sub(1) as usize;
+    // Minus the rule, where one is drawn. Where the panel's own ground says
+    // where it starts, that row belongs to the graphs (0237).
+    let inner_h = area.height.saturating_sub(rule_height(app)) as usize;
     if inner_w == 0 || inner_h == 0 {
         return Shown {
             start: 0,
@@ -2419,7 +2426,9 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     let full = area;
     let area = content(app, area);
     let inner_w = area.width as usize;
-    let inner_h = area.height.saturating_sub(1) as usize;
+    // Minus the rule, where one is drawn. Where the panel's own ground says
+    // where it starts, that row belongs to the graphs (0237).
+    let inner_h = area.height.saturating_sub(rule_height(app)) as usize;
     if inner_w == 0 || inner_h == 0 {
         return;
     }
@@ -2945,11 +2954,49 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
         // in full in the footer of every frame — a reminder that is always on
         // screen twice is not a reminder, it is noise charged against the row
         // it shares.
-        [
-            format!("{ident}{span} shown, {per_slot}/slot{gap_note}"),
-            format!("{ident}{span} shown"),
-            ident.trim_end_matches([' ', '—']).trim_end().to_string(),
-        ]
+        // What the panel rule used to say, where the rule is not drawn: whose
+        // history this is, and how much of the buffer it is. The axis row is
+        // already the line about the span on screen, so the two belong
+        // together — and a region whose ground is painted does not need a rule
+        // to say where it starts (0237).
+        let cap = fmt_lag(app.interval * app.history.capacity().saturating_sub(1) as u32);
+        let whose = match &subject {
+            Some(_) => app
+                .selected
+                .as_ref()
+                .map_or_else(String::new, |w| format!("{} — ", w.name())),
+            None => ident.clone(),
+        };
+        // While the buffer is still filling, what the empty half of the panel
+        // is. It used to be printed across the middle of a graph row, where it
+        // read as a corrupted row of data (0239). A clause on the span rather
+        // than a caption of its own: the scale is what this row is for, and
+        // the empty end is a correction to it.
+        let filling = if window_start == 0 && shown + lead < slots * zoom {
+            " · fills from the right"
+        } else {
+            ""
+        };
+        let mut rungs = vec![
+            format!("{whose}{span} shown of {cap}{filling} · {per_slot}/slot{gap_note}"),
+            format!("{whose}{span} shown of {cap}{filling} · {per_slot}/slot"),
+            format!("{whose}{span} shown of {cap} · {per_slot}/slot"),
+            format!("{whose}{span} shown · {per_slot}/slot{gap_note}"),
+            format!("{whose}{span} shown · {per_slot}/slot"),
+            format!("{whose}{span} shown"),
+            // Identification is the last thing to go: `whose` is non-empty
+            // only when the gutter could not label the rows, which is exactly
+            // when it is the only thing naming them. So no rung drops it and
+            // keeps the span.
+            whose.trim_end_matches([' ', '—']).trim_end().to_string(),
+        ];
+        // Strictly narrowing, whatever the parts turn out to measure: the
+        // ladder is read by taking the first rung that fits, so a rung shorter
+        // than the one after it would make a caption reappear on a narrower
+        // panel — which `every_element_yields_monotonically` is about.
+        rungs.sort_by_key(|r| std::cmp::Reverse(cols(r)));
+        rungs.dedup();
+        rungs
     };
     // The widest rung that fits. While live that is a straight width test;
     // while scrubbing the row also carries the cursor, and how much room is
@@ -3027,7 +3074,10 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
 
     let m = (full.width - area.width) / 2;
     let pad = " ".repeat(m as usize);
-    let mut all = vec![divider(&title, full.width, &app.theme)];
+    let mut all = Vec::new();
+    if rule_height(app) > 0 {
+        all.push(divider(&title, full.width, &app.theme));
+    }
     all.extend(lines.into_iter().map(|l| {
         let mut spans = vec![Span::raw(pad.clone())];
         spans.extend(l.spans);
@@ -3051,32 +3101,6 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // Placed against `area`, the content rect the rows are drawn in, so the
     // margin is counted once: the rows carry it as padding and this carries it
     // in its origin.
-    let used = (shown + lead).div_ceil(zoom).div_ceil(spc);
-    let empty = graph_w.saturating_sub(used);
-    if window_start == 0
-        && let Some(first) = window.first()
-    {
-        let since = crate::log::clock_string(first.at);
-        let label = [
-            format!("no history before {since} — it fills from the right"),
-            format!("no history before {since}"),
-            format!("before {since}"),
-        ]
-        .into_iter()
-        .find(|l| cols(l) + 4 <= empty);
-        if let Some(label) = label {
-            let w = cols(&label);
-            f.render_widget(
-                Paragraph::new(Span::styled(label, app.theme.dim_style())),
-                Rect {
-                    x: area.x + (gutter + (empty - w) / 2) as u16,
-                    y: area.y + 1 + (graph_rows / 2) as u16,
-                    width: w as u16,
-                    height: 1,
-                },
-            );
-        }
-    }
 }
 
 /// A peak that is a value, or `None` for a cell no sample landed in.
@@ -4237,11 +4261,24 @@ fn draw_cgroups(f: &mut Frame, area: Rect, app: &App) {
             crate::collect::CGROUP_DEPTH
         ),
     };
-    let title = vec![Span::styled(title, app.theme.title_style())];
-    f.render_widget(
-        Paragraph::new(divider_of(title, area.width, &app.theme)),
-        Rect { height: 1, ..area },
-    );
+    // The same heading the process table draws: a rule only where the panel
+    // has no ground of its own, and the detail on a line of its own either
+    // way (0237).
+    let heading = Span::styled(title, app.theme.title_style());
+    if heading_is_rule(app) {
+        f.render_widget(
+            Paragraph::new(divider_of(vec![heading], area.width, &app.theme)),
+            Rect { height: 1, ..area },
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(heading)),
+            Rect {
+                height: 1,
+                ..content(app, area)
+            },
+        );
+    }
     f.render_widget(
         Table::new(rows, widths).header(header),
         Rect {
@@ -4321,7 +4358,13 @@ pub fn totals(app: &App) -> Totals {
 }
 
 /// The summary strip, drawn between the panel title and the column headers.
-fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>> {
+/// What the rows on screen add up to: the magnitudes nothing else states.
+///
+/// Its own ladder, given up from the least diagnostic end. No count: the strip
+/// above the table says how many processes there are, and a number stated
+/// three times in three consecutive rows was the loudest thing this panel did
+/// (0220).
+fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<String> {
     let t = totals(app);
     if t.procs == 0 {
         return None;
@@ -4358,29 +4401,39 @@ fn summary_line(app: &App, total_mem: u64, width: usize) -> Option<Line<'static>
     // them.
     let mut rungs = Vec::new();
     if let Some(thr) = t.threads {
-        rungs.push(format!(
-            " {} shown · {} · {thr} threads",
-            t.procs,
-            lead.join(" · ")
-        ));
+        rungs.push(format!("{} · {thr} threads", lead.join(" · ")));
     }
-    rungs.extend([
-        format!(" {} shown · {}", t.procs, lead.join(" · ")),
-        format!(" {}", lead.join(" · ")),
-        format!(" {}", lead[0]),
-    ]);
+    rungs.extend([lead.join(" · "), lead[0].clone()]);
     let text = rungs.into_iter().find(|r| cols(r) <= width)?;
-    let mut spans = vec![Span::styled(text, dim)];
     // Only when something is folded, because otherwise it is a fact about
     // nothing: an ungrouped table has as many rows as processes and saying so
     // is noise.
-    if t.groups > 0 {
-        let note = format!("  ({} groups)", t.groups);
-        if cols(&note) + spans.iter().map(|s| cols(&s.content)).sum::<usize>() <= width {
-            spans.push(Span::styled(note, dim));
-        }
-    }
-    Some(Line::from(spans))
+    let groups = match t.groups {
+        0 => String::new(),
+        n => format!(" ({n} groups)"),
+    };
+    let _ = dim;
+    Some(format!("{text}{groups}"))
+}
+
+/// Whether a region's heading is drawn as a rule across the panel.
+///
+/// The panels paint grounds of their own, so on a terminal that shows them the
+/// boundary is already on the screen and a rule is the loudest ink there in
+/// service of the least. Where there is no ground to paint — monochrome, or
+/// `surface = off` — the rule is what separates one region from the next, and
+/// it stays.
+///
+/// The table's heading is one row either way; only its skin changes. The
+/// timeline's rule was a row of its own above the graphs, so there the band
+/// gives that row back (0237).
+pub fn heading_is_rule(app: &App) -> bool {
+    !app.theme.paints_bands()
+}
+
+/// Rows the timeline spends on a rule: one, or none where the band says it.
+pub fn rule_height(app: &App) -> u16 {
+    u16::from(heading_is_rule(app))
 }
 
 /// The part of a panel its content is drawn in.
@@ -4403,18 +4456,10 @@ pub fn content(app: &App, area: Rect) -> Rect {
 /// bug this milestone has already had twice.
 pub fn table_body(app: &App, area: Rect) -> Rect {
     Rect {
-        y: area.y + 1 + summary_height(area),
-        height: area.height.saturating_sub(1 + summary_height(area)),
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
         ..content(app, area)
     }
-}
-
-/// Whether the summary strip is drawn, for a table panel of this height.
-///
-/// Given up before the table drops below its floor, the same way the tab strip
-/// is: a summary of rows you cannot see is worth less than the rows.
-pub fn summary_height(table: Rect) -> u16 {
-    u16::from(table.height > PROCS_FLOOR_H + 3)
 }
 
 /// The row the column headers are drawn on.
@@ -4423,7 +4468,7 @@ pub fn summary_height(table: Rect) -> u16 {
 /// the table needs it to draw them — and an off-by-one between those two is a
 /// click that sorts by the column above the one under the pointer.
 pub fn table_header_y(table: Rect) -> u16 {
-    table.y + 1 + summary_height(table)
+    table.y + 1
 }
 
 /// Which of the table's optional columns are on, for a table drawn in `area`.
@@ -5491,8 +5536,36 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             },
         ]
     };
+    // What the rows add up to, first on the line and given up late: these are
+    // the magnitudes, and nothing else on the screen states them.
+    // A third of the row, so the clauses beside it keep theirs: this line
+    // carries the totals *and* everything poptop has to say about the table,
+    // and the totals have their own ladder to give up from.
+    let figures = summary_line(
+        app,
+        app.history.current().map_or(0, |s| s.mem.total),
+        area.width as usize / 3,
+    )
+    .map_or(String::new(), |f| format!(" {f}"));
     let parts = [
-        (0u8, format!(" processes ({})", shown_procs), plain),
+        // The region names itself only where the heading is a rule: structure
+        // has to say what it is separating. Where the band says it, the row
+        // starts with the figures.
+        (
+            0u8,
+            match (heading_is_rule(app), strip) {
+                // The strip above says the scope and the count. Said here too,
+                // it was the same number in three consecutive rows (0220).
+                (true, true) => " processes".to_string(),
+                (true, false) => format!(" processes ({shown_procs})"),
+                (false, true) => String::new(),
+                (false, false) => format!(" {shown_procs} processes"),
+            },
+            plain,
+        ),
+        // After the warnings and before the settings: a source poptop could
+        // not read explains a column of dashes, and the totals do not.
+        (34u8, figures, plain),
         (5, absent, plain),
         (7, bad_filter, app.theme.warning_style()),
         (10, all_one, plain),
@@ -5549,33 +5622,29 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             },
         ),
     ];
-    let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
-
     let (widths, sorts) = table_columns(&shape);
     let _ = &sorts;
 
-    f.render_widget(
-        Paragraph::new(divider_of(title, area.width, &app.theme)),
-        Rect { height: 1, ..area },
-    );
-    // Between the title and the column headers: the title says which processes
-    // these are, this says what they add up to, and the headers name the
-    // columns. Each row is one step closer to the figures.
-    let summary = summary_height(area);
-    if summary > 0
-        && let Some(line) = summary_line(
-            app,
-            app.history.current().map_or(0, |s| s.mem.total),
-            area.width as usize,
-        )
-    {
+    // One row above the column headers, where there were two. It carries what
+    // the rows add up to and anything poptop has to say about them — a source
+    // it could not read, a crowd worth folding, a filter that did not parse —
+    // in the ink each of those deserves. Where the panel has no ground of its
+    // own, a rule above it says where the region starts.
+    let body = table_body(app, area);
+    if heading_is_rule(app) {
+        let title = fit_title(&parts, (area.width as usize).saturating_sub(4));
         f.render_widget(
-            Paragraph::new(line).style(app.theme.panel_style()),
+            Paragraph::new(divider_of(title, area.width, &app.theme)),
+            Rect { height: 1, ..area },
+        );
+    } else {
+        let context = fit_title(&parts, body.width as usize);
+        f.render_widget(
+            Paragraph::new(Line::from(context)).style(app.theme.panel_style()),
             Rect {
-                y: area.y + 1,
+                y: area.y,
                 height: 1,
-                x: table_body(app, area).x,
-                width: table_body(app, area).width,
+                ..body
             },
         );
     }

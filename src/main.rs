@@ -2558,7 +2558,7 @@ fn title_at(x: u16) -> Option<usize> {
 /// The table row under `y`, as an action.
 fn row_at(table: ratatui::layout::Rect, y: u16) -> Option<Action> {
     // One past the column headers, wherever they turned out to be — which
-    // depends on whether the summary strip took a row.
+    // depends on whether this terminal draws the panel rule.
     let first = ui::table_header_y(table) + 1;
     (y >= first).then(|| Action::SelectRow((y - first) as usize))
 }

@@ -2,7 +2,7 @@
 id: 239
 title: The buffer explains itself across the middle of a graph
 type: bug
-status: backlog
+status: done
 milestone: r10
 labels:
 - ui

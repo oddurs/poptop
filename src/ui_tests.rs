@@ -2984,7 +2984,7 @@ fn the_caption_moves_aside_rather_than_being_written_through() {
             "the caption was written through at -{back}: {row:?}"
         );
         let marker = row.find(ui::MARK).unwrap();
-        let caption = row.find("shown,").expect("caption missing");
+        let caption = row.find("shown").expect("caption missing");
         assert_ne!(marker, caption, "the marker landed inside the caption");
     }
 }
@@ -3988,14 +3988,25 @@ fn the_empty_start_of_the_timeline_says_what_it_is() {
         app.push(sample_at(30.0, age));
     }
     let screen = rows(&app, 120, 40);
+    // On the axis row, which is already the line about the span on screen —
+    // not across the middle of a graph row, where it read as a corrupted row
+    // of data (0239).
     let line = screen
         .iter()
-        .find(|r| r.contains("no history before"))
+        .find(|r| r.contains("fills from the right"))
         .unwrap_or_else(|| panic!("the empty timeline says nothing:\n{}", screen.join("\n")));
-    // Left of the data, never over it: twenty samples fill ten braille cells
-    // at the right edge.
-    let at = line.find("no history before").unwrap();
-    assert!(line[..at].chars().count() < 120 - 12, "{line:?}");
+    assert!(
+        line.contains("past") && line.contains("now"),
+        "the note is not on the axis row: {line:?}"
+    );
+    let graphs: Vec<&String> = screen
+        .iter()
+        .filter(|r| r.contains('⣿') || r.contains('⣤'))
+        .collect();
+    assert!(
+        graphs.iter().all(|r| !r.contains("fills")),
+        "a graph row carries the note: {graphs:?}"
+    );
 
     let mut full = App::new(600);
     for age in (0..600).rev() {
@@ -4480,7 +4491,7 @@ fn the_sparkline_column_states_its_own_scale() {
             header.contains(want),
             "{want} not in the header: {header:?}"
         );
-        let title = find(&ls, "processes (");
+        let title = find(&ls, "── processes");
         assert!(
             !title.contains('≤'),
             "the scale is still in the section title as well: {title:?}"
@@ -5380,7 +5391,7 @@ fn the_caption_reports_real_time_not_sample_count() {
     history_with_gap(&mut app, 40, 300, 40);
     let caption = render_lines(&app, 100, 40)
         .into_iter()
-        .find(|l| l.contains(" shown, "))
+        .find(|l| l.contains(" shown"))
         .expect("the timeline captions its span");
     // Taken from around " shown", not from the start of the line: the caption
     // is centred between the `past` and `now` anchors now, so the first token
@@ -5417,7 +5428,7 @@ fn the_legend_degrades_rather_than_truncating_a_word() {
     for w in 30..=110u16 {
         let legend = render_lines(&app, w, 40)
             .into_iter()
-            .find(|l| l.contains(" shown, "))
+            .find(|l| l.contains(" shown"))
             .unwrap_or_default();
         assert!(
             !legend.contains('←') || legend.contains("+/- zoom"),
@@ -7716,7 +7727,7 @@ fn a_table_crowded_by_one_program_offers_to_fold_it() {
     let title = |app: &App| {
         rows(app, 160, 30)
             .into_iter()
-            .find(|r| r.contains("processes ("))
+            .find(|r| r.starts_with("── processes"))
             .unwrap()
     };
     let crowded = fixture(8);
@@ -7909,7 +7920,7 @@ fn the_title_gives_up_whole_clauses_and_keeps_the_io_message() {
             assert!(!text.ends_with(tail), "clipped mid-clause at {w}: {text:?}");
         }
         assert!(
-            text.contains("processes ("),
+            text.contains(" processes"),
             "the panel lost its own name at {w}: {text:?}"
         );
         // Wide enough for the warning, and it is there — reading as a warning
@@ -8068,7 +8079,7 @@ fn a_warning_in_the_title_does_not_look_like_a_legend() {
         buf[(col, y)].style()
     };
     let warned = style_at("io: 7/9 need root");
-    let plain = style_at("processes (");
+    let plain = style_at(" processes");
     assert_ne!(
         warned, plain,
         "the warning is drawn exactly like the count beside it"
@@ -8097,7 +8108,7 @@ fn a_warning_in_the_title_does_not_look_like_a_legend() {
     clean.theme = Theme::new(Palette::Safe, Tier::TrueColor);
     let title = rows(&clean, 150, 20)
         .into_iter()
-        .find(|l| l.contains("processes ("))
+        .find(|l| l.starts_with("── processes"))
         .unwrap();
     assert!(
         !title.contains("io") && !title.contains('!'),
@@ -8184,7 +8195,7 @@ fn the_readme_shows_the_table_this_version_draws() {
     );
 
     for pat in [
-        "processes (",
+        " processes",
         "CPU%",
         "824 postgres",
         "1190 nginx",
@@ -8686,7 +8697,7 @@ fn the_panel_names_the_constraint_but_never_applies_it() {
     let before = app.sort;
     let title = rows(&app, 140, 20)
         .into_iter()
-        .find(|l| l.contains("processes ("))
+        .find(|l| l.starts_with("── processes"))
         .unwrap();
     assert!(
         title.contains("disk is the constraint"),
@@ -8704,7 +8715,7 @@ fn the_panel_names_the_constraint_but_never_applies_it() {
     // …and once accepted there is nothing left to suggest.
     let title = rows(&app, 140, 20)
         .into_iter()
-        .find(|l| l.contains("processes ("))
+        .find(|l| l.starts_with("── processes"))
         .unwrap();
     assert!(
         !title.contains("is the constraint"),
@@ -8724,7 +8735,7 @@ fn nothing_is_claimed_when_no_resource_is_constrained() {
     // frame, so searching the whole thing finds that instead.
     let title = rows(&app, 140, 20)
         .into_iter()
-        .find(|l| l.contains("processes ("))
+        .find(|l| l.starts_with("── processes"))
         .unwrap();
     assert!(
         !title.contains("constraint"),
@@ -8851,7 +8862,7 @@ fn a_disk_constraint_is_not_suggested_when_there_are_no_disk_figures() {
     );
     let title = rows(&app, 140, 20)
         .into_iter()
-        .find(|l| l.contains("processes ("))
+        .find(|l| l.starts_with("── processes"))
         .unwrap();
     assert!(!title.contains("constraint"), "{title:?}");
 
@@ -9177,7 +9188,7 @@ fn the_title_counts_processes_even_when_a_row_stands_for_six() {
     let title_of = |app: &App| {
         rows(app, 130, 16)
             .into_iter()
-            .find(|l| l.contains("processes ("))
+            .find(|l| l.starts_with("── processes"))
             .expect("no title")
     };
     assert!(
@@ -9365,7 +9376,7 @@ fn a_malformed_query_hides_nothing_and_says_why() {
     app.editing_filter = false;
     let title = rows(&app, 160, 20)
         .into_iter()
-        .find(|l| l.contains("processes ("))
+        .find(|l| l.starts_with("── processes"))
         .unwrap();
     assert!(title.contains("filter:"), "{title:?}");
 }
@@ -9660,7 +9671,7 @@ fn where_the_process_was_absent_is_marked_rather_than_drawn_as_zero() {
     let frame = rows(&app, 110, 24);
     let caption = frame
         .iter()
-        .find(|l| l.contains("shown,"))
+        .find(|l| l.contains("shown"))
         .expect("no caption");
     assert!(
         caption.contains("not running"),
@@ -9888,7 +9899,7 @@ fn a_sampling_gap_is_not_reported_as_the_process_being_absent() {
 
     let caption = rows(&app, 110, 24)
         .into_iter()
-        .find(|l| l.contains("shown,"))
+        .find(|l| l.contains("shown"))
         .expect("no caption");
     assert!(
         caption.contains("time missing"),
@@ -10368,9 +10379,16 @@ fn the_title_counts_processes_and_not_the_threads_under_them() {
     app.select_delta(1);
     app.toggle_threads();
     let frame = render(&app, 120, 20);
+    // Four rows are drawn — a process and its three threads — and the scope
+    // strip above the table counts the processes among them.
     assert!(
-        frame.contains("processes (2)"),
-        "the thread rows were counted as processes:\n{frame}"
+        ui::scope_text(&app, 80).contains(" 2"),
+        "the thread rows were counted as processes: {:?}",
+        ui::scope_text(&app, 80)
+    );
+    assert!(
+        frame.contains("walwriter"),
+        "the threads are not drawn:\n{frame}"
     );
 }
 
@@ -11419,7 +11437,7 @@ fn the_panel_names_the_view_when_it_is_not_the_default() {
     let rule = |app: &App| {
         rows(app, 140, 26)
             .into_iter()
-            .find(|l| l.contains("processes ("))
+            .find(|l| l.starts_with("── processes"))
             .expect("no rule")
     };
     assert!(
@@ -13580,7 +13598,7 @@ fn a_terminal_too_short_for_the_strip_says_the_settings_in_the_rule() {
     let rule = |h: u16| {
         rows(&app, 140, h)
             .into_iter()
-            .find(|l| l.contains("processes ("))
+            .find(|l| l.starts_with("── processes"))
             .expect("no rule")
     };
     assert!(
@@ -14115,7 +14133,8 @@ fn clicking_a_header_sorts_by_that_column() {
         if want == crate::app::Sort::Cpu {
             app.sort = crate::app::Sort::Pid;
         }
-        click(&mut app, at as u16 + 1, ui::table_header_y(table), w, h);
+        let header_y = ui::table_header_y(table);
+        click(&mut app, at as u16 + 1, header_y, w, h);
         assert_eq!(
             app.sort, want,
             "clicking the caret column at {at} gave {:?}",
@@ -14147,7 +14166,8 @@ fn clicking_a_column_that_sorts_by_nothing_does_nothing() {
         .expect("no sparkline header");
 
     app.sort = crate::app::Sort::Pid;
-    click(&mut app, at as u16 + 1, ui::table_header_y(table), w, h);
+    let header_y = ui::table_header_y(table);
+    click(&mut app, at as u16 + 1, header_y, w, h);
     assert_eq!(
         app.sort,
         crate::app::Sort::Pid,
@@ -14845,10 +14865,19 @@ fn a_mixed_table(app: &mut App) {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 }
 
+/// The table's heading row: what the rows add up to, and anything poptop has
+/// to say about them. One row, whichever skin it is drawn in (0223).
 fn strip_of(app: &App) -> String {
     let (w, h) = (140u16, 30u16);
     let panel = ui::panels(app, ratatui::layout::Rect::new(0, 0, w, h)).table;
-    rows(app, w, h)[(panel.y + 1) as usize].trim().to_string()
+    // The rule's own decoration is not what this row says.
+    rows(app, w, h)[panel.y as usize]
+        .trim()
+        .trim_matches('─')
+        .trim()
+        .trim_start_matches("processes")
+        .trim()
+        .to_string()
 }
 
 #[test]
@@ -14858,7 +14887,13 @@ fn the_strip_says_what_the_rows_on_screen_add_up_to() {
     let mut app = App::new(600);
     a_mixed_table(&mut app);
     let all = strip_of(&app);
-    assert!(all.contains("8 shown"), "{all:?}");
+    // The count is not here: the scope strip above says how many rows there
+    // are, and saying it again was the same number in three consecutive rows
+    // (0220). This row is the magnitudes.
+    assert!(
+        !all.contains("8 shown"),
+        "the count is stated twice: {all:?}"
+    );
     // Four at 10% and four at 5%.
     assert!(
         all.contains("60.0%"),
@@ -14887,7 +14922,6 @@ fn the_strip_follows_the_filter() {
     app.filter = "postgres".into();
     let after = strip_of(&app);
     assert_ne!(before, after, "filtering did not change the strip");
-    assert!(after.contains("4 shown"), "{after:?}");
     assert!(
         after.contains("40.0%"),
         "the CPU total is still the machine's: {after:?}"
@@ -14921,7 +14955,7 @@ fn the_strip_follows_the_grouping_and_says_how_many_groups() {
     );
     // And the totals are the same processes, however they are folded.
     assert!(
-        grouped.contains("8 shown") && grouped.contains("60.0%"),
+        grouped.contains("60.0%"),
         "folding changed what the rows cost: {grouped:?}"
     );
 }
@@ -14945,18 +14979,36 @@ fn the_strip_and_the_scope_line_count_the_same_processes() {
 }
 
 #[test]
-fn the_strip_gives_up_its_row_before_the_table_does() {
-    // A summary of rows you cannot see is worth less than the rows.
+fn a_panel_with_a_ground_of_its_own_draws_no_rule() {
+    // The rule and the band say the same thing, and the band costs no row.
+    // Where there is no ground to paint, the rule is the only thing that
+    // separates the regions and it comes back (0237).
+    let table = ratatui::layout::Rect::new(0, 0, 100, 30);
+    let mut app = App::new(600);
+
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(Some([26, 26, 29]));
+    assert!(!ui::heading_is_rule(&app), "a banded panel drew a rule");
     assert_eq!(
-        ui::summary_height(ratatui::layout::Rect::new(0, 0, 100, 30)),
-        1,
-        "a tall table has no strip"
-    );
-    assert_eq!(
-        ui::summary_height(ratatui::layout::Rect::new(0, 0, 100, 3)),
+        ui::rule_height(&app),
         0,
-        "a table at its floor kept the strip"
+        "the timeline spent a row on a rule"
     );
+
+    // `surface = off`, or a terminal that would not say what it is drawing on.
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(ui::heading_is_rule(&app), "no ground, and no rule either");
+    assert_eq!(ui::rule_height(&app), 1);
+
+    // Monochrome has no grounds to step between, whatever the terminal says.
+    app.theme = Theme::new(Palette::Safe, Tier::Mono).with_surfaces(Some([26, 26, 29]));
+    assert!(ui::heading_is_rule(&app));
+
+    // Either way the table spends exactly one row on its heading: the band
+    // pays for the rule, not for the row (0223).
+    for surfaces in [None, Some([26u8, 26, 29])] {
+        app.theme = Theme::new(Palette::Safe, Tier::TrueColor).with_surfaces(surfaces);
+        assert_eq!(ui::table_header_y(table), table.y + 1, "{surfaces:?}");
+    }
 }
 
 #[test]
@@ -15016,10 +15068,7 @@ fn a_thread_total_nobody_can_supply_is_left_out_rather_than_dashed() {
     );
     assert!(!strip.contains('—'), "a dash stood in for it: {strip:?}");
     // The magnitudes it *can* give are still there.
-    assert!(
-        strip.contains("15.0%") && strip.contains("2 shown"),
-        "{strip:?}"
-    );
+    assert!(strip.contains("15.0%"), "{strip:?}");
 }
 
 // ── a header that holds still ───────────────────────────────────────────────
@@ -15210,7 +15259,8 @@ fn a_click_lands_on_the_column_the_air_moved() {
         .find("PID")
         .map(|b| head[..b].chars().count())
         .expect("no pid header");
-    click(&mut app, at as u16 + 1, ui::table_header_y(panel), w, h);
+    let header_y = ui::table_header_y(panel);
+    click(&mut app, at as u16 + 1, header_y, w, h);
     assert_eq!(
         app.sort,
         crate::app::Sort::Pid,
@@ -15985,10 +16035,13 @@ fn the_summary_leads_with_whatever_the_tab_is_about() {
     app.push(s);
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
+    // The row leads with whatever the tab is about.
     let first = |app: &App| {
-        let s = strip_of(app);
-        // The clause after the count.
-        s.split(" · ").nth(1).unwrap_or_default().to_string()
+        strip_of(app)
+            .split(" · ")
+            .next()
+            .unwrap_or_default()
+            .to_string()
     };
 
     app.view = crate::app::View::Cpu;

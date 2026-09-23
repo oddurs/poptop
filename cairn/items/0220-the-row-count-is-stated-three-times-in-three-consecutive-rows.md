@@ -2,7 +2,7 @@
 id: 220
 title: The row count is stated three times in three consecutive rows
 type: bug
-status: backlog
+status: done
 milestone: r10
 labels:
 - ui

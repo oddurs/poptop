@@ -2,7 +2,7 @@
 id: 237
 title: The loudest ink on the screen is furniture
 type: feature
-status: backlog
+status: done
 milestone: r10
 labels:
 - ui
@@ -41,7 +41,7 @@ Everything else it was carrying goes where it belongs:
 
 ## Acceptance criteria
 
-- [ ] A divider holds a label and nothing else
-- [ ] Notices appear only when there is something to say, and read as messages rather than as structure
-- [ ] Nothing that was being said is lost — each has a stated new home
-- [ ] The rule is drawn in dim, not in the panel's foreground
+- [x] A divider holds a label and nothing else
+- [x] Notices appear only when there is something to say, and read as messages rather than as structure
+- [x] Nothing that was being said is lost — each has a stated new home
+- [x] The rule is drawn in dim, not in the panel's foreground
