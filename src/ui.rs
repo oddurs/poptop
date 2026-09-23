@@ -5613,8 +5613,11 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
         // because a column that comes and goes unexplained reads as a bug.
         // Under the averaging note, which is about a figure on every row
         // rather than about a column that is not there.
+        // Above the totals, with the other clauses that explain something
+        // missing: a column that comes and goes unexplained reads as a bug,
+        // and the magnitudes do not explain it.
         (
-            36,
+            32,
             if shape.flat {
                 " · history flat".to_string()
             } else {
