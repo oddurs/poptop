@@ -3,11 +3,11 @@ id: 177
 title: Nothing can be zoomed into
 type: feature
 status: backlog
-milestone: v5.0
+milestone: r13
 depends_on:
-- 149
+- 254
 created: 2026-09-13
-updated: 2026-09-13
+updated: 2026-09-23
 priority: p0
 area: ui
 ---

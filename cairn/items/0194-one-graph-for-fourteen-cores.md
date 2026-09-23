@@ -3,13 +3,13 @@ id: 194
 title: One graph for fourteen cores
 type: feature
 status: backlog
-milestone: v3.5
+milestone: r12
+depends_on:
+- 244
 created: 2026-09-14
-updated: 2026-09-14
+updated: 2026-09-23
 priority: p2
 area: ui
-depends_on:
-- 196
 ---
 
 ## Problem

@@ -3,9 +3,9 @@ id: 190
 title: A graph pinned to zero wastes the panel on a high flat series
 type: bug
 status: backlog
-milestone: v3.5
+milestone: r12
 created: 2026-09-14
-updated: 2026-09-14
+updated: 2026-09-23
 priority: p0
 area: ui
 ---
