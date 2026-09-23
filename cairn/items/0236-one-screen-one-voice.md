@@ -3,7 +3,7 @@ id: 236
 key: r10
 title: One screen, one voice
 type: milestone
-status: backlog
+status: done
 labels:
 - ui
 created: 2026-09-23
