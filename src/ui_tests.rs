@@ -4435,7 +4435,9 @@ fn scrolling_the_list_does_not_rescale_everybody_else_history() {
             .find(|l| l.contains("PID"))
             .and_then(|l| {
                 let i = l.find('≤')? + '≤'.len_utf8();
-                Some(l[i..].split('%').next()?.to_string())
+                // Up to the space: the scale is a percentage below ten cores
+                // and a core count above it, and neither ends the line.
+                Some(l[i..].split_whitespace().next()?.to_string())
             })
             .expect("no axis label")
     };
@@ -4449,7 +4451,7 @@ fn scrolling_the_list_does_not_rescale_everybody_else_history() {
     let scrolled = axis_of(&app);
     assert_eq!(
         at_top, scrolled,
-        "the history axis moved from {at_top}% to {scrolled}% just from scrolling"
+        "the history axis moved from {at_top} to {scrolled} just from scrolling"
     );
 }
 
@@ -4461,11 +4463,12 @@ fn the_sparkline_column_states_its_own_scale() {
     // 10 / 25 / 50 / 100, a tenfold swing that one process touching 60% is
     // enough to cause.
     //
-    // In the column header, not the section title. A legend belongs with the
-    // thing it explains, and the title was three metres to the left of it. Read
-    // per line with `rows`, not `render` — `render` returns the whole frame as
-    // one string with no newlines, so `.lines()` on it yields a single blob and
-    // any two facts from anywhere in the frame appear to share a line.
+    // In the column header, where the shapes it explains are: a legend three
+    // metres to the left is not a legend. Read per line with `rows`, not
+    // `render` — `render` returns the whole
+    // frame as one string with no newlines, so `.lines()` on it yields a
+    // single blob and any two facts from anywhere in the frame appear to share
+    // a line.
     let frame = |cpu: f32| {
         let mut app = App::new(60);
         let mut s = sample(10.0);
@@ -4486,15 +4489,16 @@ fn the_sparkline_column_states_its_own_scale() {
 
     for (cpu, want) in [(500.0f32, "≤800%"), (40.0, "≤50%")] {
         let ls = frame(cpu);
+        let ls = ls;
         let header = find(&ls, "PID");
         assert!(
             header.contains(want),
             "{want} not in the header: {header:?}"
         );
-        let title = find(&ls, "── processes");
+        let heading = find(&ls, "── processes");
         assert!(
-            !title.contains('≤'),
-            "the scale is still in the section title as well: {title:?}"
+            !heading.contains('≤'),
+            "the scale is on the heading row as well: {heading:?}"
         );
     }
 }
@@ -8117,29 +8121,29 @@ fn a_warning_in_the_title_does_not_look_like_a_legend() {
 }
 
 #[test]
-fn the_sparkline_column_keeps_its_name_on_a_many_core_box() {
+fn the_sparkline_column_keeps_one_name_whatever_the_machine() {
     // The ceiling doubles past one core, so a busy process on a sixteen-core
-    // box gives 1600 and `HIST ≤1600%` is eleven columns against ten. Falling
-    // straight back to the bare scale left nothing on screen saying that column
-    // was history — on exactly the machines where the sparkline matters most,
-    // and the section title no longer says it either.
+    // box gives 1600 where an idle laptop gives 50. With the scale in the
+    // header the label was a different width on each of them, and on the wide
+    // ones the name was dropped to fit it — on exactly the machines where the
+    // sparkline matters most. The header is the name; the scale is a fact
+    // about the table and is stated on the row above it (0238).
     for ceiling in [10.0f32, 50.0, 100.0, 200.0, 800.0, 1600.0, 3200.0, 12800.0] {
-        let h = ui::spark_header_for_test(ceiling);
+        let h = ui::spark_header(ceiling);
         assert!(
             h.chars().count() <= ui::SPARK_W,
-            "the header overflows its column at {ceiling}: {h:?} is {} wide",
-            h.chars().count()
+            "the header overflows its column at {ceiling}: {h:?}"
         );
         assert!(
-            h.contains(&format!("{ceiling:.0}")) || ceiling >= 10000.0,
-            "the scale is missing at {ceiling}: {h:?}"
+            h.starts_with("HIST "),
+            "the column lost its name at {ceiling}: {h:?}"
         );
-        if ceiling <= 3200.0 {
-            assert!(
-                h.starts_with('H'),
-                "the column lost its name at {ceiling}: {h:?}"
-            );
-        }
+        let said = if ceiling < 1000.0 {
+            format!("{ceiling:.0}%")
+        } else {
+            format!("{:.0}c", ceiling / 100.0)
+        };
+        assert!(h.ends_with(&said), "the scale is wrong at {ceiling}: {h:?}");
     }
 }
 

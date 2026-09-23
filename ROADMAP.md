@@ -384,13 +384,12 @@ Hardware and cadence sprint. poptop reads the kernel's accounting closely and
 
 ## r10 — One screen, one voice
 
-`#####·····` 50% · 4 of 8 done
+`#######···` 63% · 5 of 8 done
 
 UI sprint. Not new features and not the table's columns — r8 has those. This
 
 ### backlog
 
-- [ ] `0238` The column header speaks three vocabularies <sup>feature · p1 · ui</sup>
 - [ ] `0240` Every kind of row starts in a different column <sup>bug · p2 · ui</sup>
 - [ ] `0241` The key bar says everything, always <sup>feature · p2 · ui</sup>
 - [ ] `0242` The overlays are sharp where the rest is soft <sup>feature · p3 · ui</sup>
@@ -400,6 +399,7 @@ UI sprint. Not new features and not the table's columns — r8 has those. This
 - [x] `0220` The row count is stated three times in three consecutive rows <sup>bug · p3 · ui</sup>
 - [x] `0223` Chrome outweighs the table on the commonest terminal there is <sup>feature · p1 · ui</sup>
 - [x] `0237` The loudest ink on the screen is furniture <sup>feature · p0 · ui</sup>
+- [x] `0238` The column header speaks three vocabularies <sup>feature · p1 · ui</sup>
 - [x] `0239` The buffer explains itself across the middle of a graph <sup>bug · p2 · ui</sup>
 
 ## v0.2 — Cheap enough to run

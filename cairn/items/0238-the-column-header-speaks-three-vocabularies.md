@@ -2,7 +2,7 @@
 id: 238
 title: The column header speaks three vocabularies
 type: feature
-status: backlog
+status: done
 milestone: r10
 labels:
 - ui
@@ -31,6 +31,6 @@ the header and into the gutter the graphs already use for scales.
 
 ## Acceptance criteria
 
-- [ ] The header is one vocabulary, and the widths do not change with the data
-- [ ] The sparkline's scale is still stated, somewhere it does not move
-- [ ] The sorted column is still obvious at a glance
+- [x] The header is one vocabulary, and the widths do not change with the data
+- [x] The sparkline's scale is still stated, somewhere it does not move
+- [x] The sorted column is still obvious at a glance

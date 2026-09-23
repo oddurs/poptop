@@ -3953,30 +3953,18 @@ const CID_W: u16 = 12;
 /// because one process briefly touched 60%, has changed every shape in it with
 /// nothing said.
 ///
-/// Named as well as scaled when both fit in [`SPARK_W`], and scaled alone when
-/// they do not — the scale is the part that cannot be guessed from a column of
-/// braille.
-#[cfg(test)]
-pub fn spark_header_for_test(ceiling: f32) -> String {
-    spark_header(ceiling)
-}
-
-fn spark_header(ceiling: f32) -> String {
-    let scale = format!("≤{ceiling:.0}%");
-    // Three tiers, because the ceiling doubles past one core and the name is
-    // the part that runs out of room first. On a sixteen-core box a busy
-    // process gives a ceiling of 1600, and `HIST ≤1600%` is eleven columns
-    // against ten — which used to leave the bare scale and nothing anywhere on
-    // screen saying that column was history, on exactly the machines where the
-    // sparkline matters most. `H` is a stub, but it is a stub of a name.
-    for candidate in [format!("HIST {scale}"), format!("H {scale}"), scale] {
-        if cols(&candidate) <= SPARK_W {
-            return candidate;
-        }
-    }
-    // A ceiling wide enough to crowd out even `≤N%` would need a machine with
-    // hundreds of cores and a process using all of them.
-    format!("≤{:.0}", ceiling / 100.0)
+/// Named *and* scaled at every ceiling, in one shape. `HIST ≤1600%` is eleven
+/// columns against ten, and the old ladder answered that by dropping the name
+/// — so the column was `HIST ≤50%` on a laptop and `≤1600%` on a server, two
+/// labels for one column and neither the same width (0238). Past ten cores the
+/// scale is said in cores, which is what a four-digit percentage means anyway.
+pub fn spark_header(ceiling: f32) -> String {
+    let scale = if ceiling < 1000.0 {
+        format!("≤{ceiling:.0}%")
+    } else {
+        format!("≤{:.0}c", ceiling / 100.0)
+    };
+    format!("HIST {scale}")
 }
 
 /// Width of the `USER` column, and the width `COMMAND` gets back when it is
