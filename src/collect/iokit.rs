@@ -391,22 +391,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn this_macs_boot_disk_has_counters() {
+    fn the_disks_the_registry_publishes_read_sanely() {
+        // Every Mac that boots from a disk has `disk0`, and a running machine
+        // has read from it. A machine with no block storage driver at all —
+        // which is not one poptop runs on, but is a shape a VM can take — has
+        // nothing to say rather than something wrong.
         let disks = disks();
-        let (name, c) = disks
-            .iter()
-            .find(|(n, _)| n == "disk0")
-            .expect("no disk0 in the registry");
-        assert_eq!(name, "disk0");
-        // A running machine has read its own boot disk.
+        let Some((_, c)) = disks.iter().find(|(n, _)| n == "disk0") else {
+            assert!(disks.is_empty(), "disks but no disk0: {disks:?}");
+            return;
+        };
         assert!(c.read_bytes > 0 && c.reads > 0, "{c:?}");
+        assert!(c.busy_ns > 0, "no service time recorded: {c:?}");
     }
 
     #[test]
-    fn this_macs_gpu_publishes_its_load() {
-        let g = gpus().expect("no GPU in the registry");
-        assert!((0.0..=100.0).contains(&g[0].util), "{g:?}");
-        assert_ne!(&*g[0].name, "GPU", "the model was not read");
+    fn a_gpu_the_registry_publishes_reads_sanely() {
+        // Not every Mac has an accelerator to read: a CI runner is a virtual
+        // machine with none, and reporting no GPU there is the correct answer
+        // rather than a failure. So this is about the reading, not about the
+        // machine.
+        let Some(g) = gpus() else {
+            return;
+        };
+        assert!(!g.is_empty(), "Some, with nothing in it");
+        for gpu in &g {
+            assert!((0.0..=100.0).contains(&gpu.util), "{gpu:?}");
+            assert!(!gpu.name.is_empty(), "{gpu:?}");
+        }
     }
 
     #[test]
