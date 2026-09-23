@@ -111,13 +111,13 @@ poptop can show you any instant and it makes you do the joining. The buffer
 
 ### backlog
 
-- [ ] `0139` The timeline fills, where it should draw a line <sup>bug · p0</sup>
-- [ ] `0140` Nothing says why the worst moment was the worst <sup>feature · p0</sup>
-- [ ] `0141` Two moments cannot be compared <sup>feature · p1</sup>
-- [ ] `0142` Nothing knows what normal looks like for this machine <sup>feature · p1</sup>
-- [ ] `0143` A finding cannot leave the terminal it was found in <sup>feature · p2</sup>
-- [ ] `0149` The layout is three fixed stacks, not a dashboard <sup>feature · p0</sup>
-- [ ] `0150` Nothing can be zoomed into <sup>feature · p0</sup>
+- [ ] `0166` The timeline fills, where it should draw a line <sup>bug · p0</sup>
+- [ ] `0167` Nothing says why the worst moment was the worst <sup>feature · p0</sup>
+- [ ] `0168` Two moments cannot be compared <sup>feature · p1</sup>
+- [ ] `0169` Nothing knows what normal looks like for this machine <sup>feature · p1</sup>
+- [ ] `0170` A finding cannot leave the terminal it was found in <sup>feature · p2</sup>
+- [ ] `0176` The layout is three fixed stacks, not a dashboard <sup>feature · p0</sup>
+- [ ] `0177` Nothing can be zoomed into <sup>feature · p0</sup>
 
 ## v5.1 — It knows why
 
@@ -127,11 +127,11 @@ The layer under the one above. poptop can name the process; it cannot say what
 
 ### backlog
 
-- [ ] `0144` A blocked process is a dead end <sup>feature · p1</sup>
+- [ ] `0171` A blocked process is a dead end <sup>feature · p1</sup>
 
 ### done
 
-- [x] `0145` Why a process is hot needs a different tool <sup>feature · p2</sup>
+- [x] `0172` Why a process is hot needs a different tool <sup>feature · p2</sup>
 
 ## v5.2 — It is navigable
 
@@ -141,9 +141,9 @@ Six hundred samples are retained and the only ways through them are one arrow
 
 ### backlog
 
-- [ ] `0146` The buffer can be addressed but not searched <sup>feature · p1</sup>
-- [ ] `0147` One machine at a time <sup>feature · p2</sup>
-- [ ] `0148` The first run teaches nothing <sup>feature · p3</sup>
+- [ ] `0173` The buffer can be addressed but not searched <sup>feature · p1</sup>
+- [ ] `0174` One machine at a time <sup>feature · p2</sup>
+- [ ] `0175` The first run teaches nothing <sup>feature · p3</sup>
 
 ## v6.0 — It recognises
 
@@ -291,6 +291,28 @@ Presentation sprint. The documentation is now a companion to the program, and
 - [x] `0132` The colour work is the part nobody can see without running it <sup>docs · p2 · repo</sup>
 - [x] `0133` The repository has a two-line .gitignore and no .editorconfig <sup>chore · p3 · repo</sup>
 
+## r8 — The table earns its width
+
+`#·········` 10% · 1 of 10 done
+
+UI sprint, from a critique of the process table alone: the 0.2.0 build on a
+
+### backlog
+
+- [ ] `0217` The action bar names a process by its first word <sup>bug · p2 · ui</sup>
+- [ ] `0218` One glyph means both "not collected" and "no change" <sup>bug · p2 · ui</sup>
+- [ ] `0219` A folded row puts a count in the PID column <sup>bug · p3 · ui</sup>
+- [ ] `0221` The disk columns hold twenty columns of noughts while the command is elided <sup>feature · p1 · ui</sup>
+- [ ] `0222` The history column draws the same picture in every row <sup>feature · p1 · ui</sup>
+- [ ] `0224` The container column costs thirteen columns on every row for one container <sup>feature · p3 · ui</sup>
+- [ ] `0225` Eliding the middle removes the part of a command that identifies it <sup>feature · p1 · ui</sup>
+- [ ] `0226` The memory tab is the CPU tab with fewer columns where the platform cannot fill it <sup>feature · p2 · ui</sup>
+- [ ] `0227` The table is a spreadsheet, and poptop's one advantage barely reaches it <sup>feature · p2 · ui</sup>
+
+### done
+
+- [x] `0216` The sorted column does not descend <sup>bug · p0 · ui</sup>
+
 ## v3.5 — Graphs that spend every row on something that varies
 
 `··········` 0% · 0 of 7 done
@@ -343,28 +365,6 @@ Activity Monitor is the best-designed process monitor there is, and almost none
 - [x] `0212` Nothing says what the rows on screen cost <sup>feature · p1</sup>
 - [x] `0213` A table you cannot read because it will not hold still <sup>feature · p1</sup>
 - [x] `0214` The layout is tight and you cannot say otherwise <sup>feature · p2</sup>
-
-## r8 — The table earns its width
-
-`#·········` 10% · 1 of 10 done
-
-UI sprint, from a critique of the process table alone: the 0.2.0 build on a
-
-### backlog
-
-- [ ] `0217` The action bar names a process by its first word <sup>bug · p2 · ui</sup>
-- [ ] `0218` One glyph means both "not collected" and "no change" <sup>bug · p2 · ui</sup>
-- [ ] `0219` A folded row puts a count in the PID column <sup>bug · p3 · ui</sup>
-- [ ] `0221` The disk columns hold twenty columns of noughts while the command is elided <sup>feature · p1 · ui</sup>
-- [ ] `0222` The history column draws the same picture in every row <sup>feature · p1 · ui</sup>
-- [ ] `0224` The container column costs thirteen columns on every row for one container <sup>feature · p3 · ui</sup>
-- [ ] `0225` Eliding the middle removes the part of a command that identifies it <sup>feature · p1 · ui</sup>
-- [ ] `0226` The memory tab is the CPU tab with fewer columns where the platform cannot fill it <sup>feature · p2 · ui</sup>
-- [ ] `0227` The table is a spreadsheet, and poptop's one advantage barely reaches it <sup>feature · p2 · ui</sup>
-
-### done
-
-- [x] `0216` The sorted column does not descend <sup>bug · p0 · ui</sup>
 
 ## r9 — The machine under the processes
 
