@@ -2,7 +2,7 @@
 id: 248
 title: A line is drawn with corners, not with coverage
 type: bug
-status: backlog
+status: done
 milestone: r11
 labels:
 - ui

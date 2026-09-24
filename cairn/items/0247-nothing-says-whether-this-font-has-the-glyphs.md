@@ -2,7 +2,7 @@
 id: 247
 title: Nothing says whether this font has the glyphs
 type: feature
-status: backlog
+status: done
 milestone: r11
 labels:
 - ui
@@ -32,6 +32,6 @@ card is `block`, and the card is what the first-run guide points at.
 
 ## Acceptance criteria
 
-- [ ] `--check-glyphs` prints every set, the same series in each, and the setting that selects it
-- [ ] It runs without a terminal takeover, like `--check-theme`, so it can be piped
-- [ ] The first-run guide names it where it explains the graph
+- [x] `--check-glyphs` prints every set, the same series in each, and the setting that selects it
+- [x] It runs without a terminal takeover, like `--check-theme`, so it can be piped
+- [x] The first-run guide names it where it explains the graph

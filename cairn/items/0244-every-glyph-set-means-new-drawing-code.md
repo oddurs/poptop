@@ -2,7 +2,7 @@
 id: 244
 title: Every glyph set means new drawing code
 type: chore
-status: backlog
+status: done
 milestone: r11
 labels:
 - ui
@@ -45,7 +45,7 @@ and the surface says what it can draw.
 
 ## Acceptance criteria
 
-- [ ] One rasterizer, one fitting step; no drawing code branches on the set
-- [ ] Existing sets render the same picture they do today, held by the current tests
-- [ ] A new set is a table, not a branch — proved by adding two in the next item
-- [ ] Anti-aliasing by level choice where the set has levels, and never where it would invent a value
+- [x] One rasterizer, one fitting step; no drawing code branches on the set
+- [x] Existing sets render the same picture they do today, held by the current tests
+- [x] A new set is a table, not a branch — proved by adding two in the next item
+- [x] Anti-aliasing by level choice where the set has levels, and never where it would invent a value

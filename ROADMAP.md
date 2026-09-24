@@ -392,17 +392,21 @@ UI sprint. Not new features and not the table's columns — r8 has those. This
 
 ## r11 — The engine draws, the surface fits
 
-`··········` 0% · 0 of 5 done
+`#########·` 83% · 5 of 6 done
 
 The first of five milestones behind one idea: **poptop rasterizes into subcell
 
 ### backlog
 
-- [ ] `0244` Every glyph set means new drawing code <sup>chore · p0 · ui · graph</sup>
-- [ ] `0245` A filled area is drawn with dots <sup>feature · p0 · ui · graph</sup>
-- [ ] `0246` A glyph set is code, and a set is all or nothing <sup>feature · p1 · ui · graph</sup>
-- [ ] `0247` Nothing says whether this font has the glyphs <sup>feature · p1 · ui · graph</sup>
-- [ ] `0248` A line is drawn with corners, not with coverage <sup>bug · p2 · ui · graph</sup>
+- [ ] `0263` The octant table needs Unicode data poptop cannot see <sup>feature · p2 · ui · graph</sup>
+
+### done
+
+- [x] `0244` Every glyph set means new drawing code <sup>chore · p0 · ui · graph</sup>
+- [x] `0245` A filled area is drawn with dots <sup>feature · p0 · ui · graph</sup>
+- [x] `0246` A glyph set is code, and a set is all or nothing <sup>feature · p1 · ui · graph</sup>
+- [x] `0247` Nothing says whether this font has the glyphs <sup>feature · p1 · ui · graph</sup>
+- [x] `0248` A line is drawn with corners, not with coverage <sup>bug · p2 · ui · graph</sup>
 
 ## r12 — A column that says what it is hiding
 

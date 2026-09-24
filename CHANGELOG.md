@@ -16,7 +16,24 @@ process that wrote them:
 
 ## [Unreleased]
 
+### Added
+
+- **Two solid glyph sets, and a card to choose one with.** `--graph=sextant`
+  draws two samples a cell in solid 2×3 blocks and `--graph=quadrant` in 2×2,
+  where braille draws dots with gaps between them — which is what made a filled
+  area read as texture rather than as a surface. `poptop --check-glyphs` draws
+  every set with the same series, because font coverage cannot be queried and
+  choosing a default for a reader is guessing with their screen. The default is
+  unchanged (0245, 0247).
+
 ### Changed
+
+- **The graphs are drawn by one engine.** A mark is rasterized into subcell
+  coverage and a surface fits a glyph to it, so nothing that draws branches on
+  which set it is, the tables are derived rather than transcribed, and a set
+  that cannot carry a mark hands it to one that can. A stroke is coverage too,
+  so a set with subcells strokes with them: braille has eight to a cell where
+  box drawing has one level a row (0244, 0246, 0248).
 
 - **Structure is quiet, and each thing is said once.** On a 120×24 terminal —
   the size most open at — ten of the twenty-four rows were furniture, and the

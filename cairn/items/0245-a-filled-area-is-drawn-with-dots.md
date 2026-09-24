@@ -2,7 +2,7 @@
 id: 245
 title: A filled area is drawn with dots
 type: feature
-status: backlog
+status: done
 milestone: r11
 labels:
 - ui
@@ -37,7 +37,11 @@ lines and scatter keep braille, which is what dots are good at.
 
 ## Acceptance criteria
 
-- [ ] Sextant and octant surfaces, added as tables under the engine from the item above
-- [ ] Filled marks default to the best solid set the font is known to have
-- [ ] Braille stays the default for line and scatter marks
-- [ ] Every set still degrades to ascii, and `--graph=` still names the set explicitly
+- [x] Sextant and octant surfaces, added as tables under the engine from the item above
+- [x] Filled marks default to the best solid set the font is known to have
+- [x] Braille stays the default for line and scatter marks
+- [x] Every set still degrades to ascii, and `--graph=` still names the set explicitly
+
+## 2026-09-23
+
+Landed: sextants (2x3, Unicode 13) and quadrants (2x2), both solid and both carrying two samples a cell. Octants did not, and the reason is worth keeping: they are Unicode 16, and nothing on this machine can say what their codepoints are -- the Python unicodedata available here is 15.1, which does not know the block. The sextant table was derived from the numbering Unicode gave those glyphs and checked against it; an octant table would have been my memory of a layout, which is how a set ships tofu. It is a table now rather than code, so it lands the day the data is at hand. Filed as its own item.

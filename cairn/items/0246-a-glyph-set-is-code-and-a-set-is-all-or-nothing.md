@@ -2,7 +2,7 @@
 id: 246
 title: A glyph set is code, and a set is all or nothing
 type: feature
-status: backlog
+status: done
 milestone: r11
 labels:
 - ui
@@ -32,6 +32,6 @@ joints carries areas and hands lines to the next set down.
 
 ## Acceptance criteria
 
-- [ ] Built-in sets are tables, not arms
-- [ ] A set declares the marks it can carry, and an unsupported mark falls to the next set rather than rendering wrong
-- [ ] A set whose glyphs are not one column wide is refused at load, with the offending pattern named
+- [x] Built-in sets are tables, not arms
+- [x] A set declares the marks it can carry, and an unsupported mark falls to the next set rather than rendering wrong
+- [x] A set whose glyphs are not one column wide is refused at load, with the offending pattern named
