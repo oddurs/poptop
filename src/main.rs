@@ -27,6 +27,7 @@ mod persist;
 mod query;
 mod report;
 mod sample;
+mod sampler;
 mod signal;
 mod store;
 mod term;
@@ -43,6 +44,7 @@ use app::App;
 use collect::{Collector, Needs, Platform, Source};
 use command::Action;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use sampler::{Logging, Sampler, Schedule};
 
 use std::io;
 use std::sync::Arc;
@@ -727,15 +729,24 @@ fn feed(
 
     let (stop, reopen) = signals()?;
     let start = Instant::now();
-    // A fixed cadence, for the reason the interactive loop keeps one: timing
+    // The interactive loop's schedule, for the reasons it keeps one: timing
     // the next sample from the end of the last adds the cost of collecting to
     // every period, and a feed that claims a second and delivers 1.05 is one
-    // whose timestamps drift away from the rate it documents.
-    let mut next = start + interval;
+    // whose timestamps drift away from the rate it documents. On the clock
+    // too, so a feed and the monitor beside it sample the same instants, and
+    // resynced rather than caught up after a laptop sleeps for an hour —
+    // which would otherwise spend that hour writing eighteen thousand records
+    // as fast as it could.
+    let mut schedule = Schedule::new(
+        interval,
+        start,
+        std::time::SystemTime::now(),
+        collect::MIN_INTERVAL,
+    );
     loop {
         // In slices, so a signal is noticed within one rather than at the end
         // of an interval that may be an hour.
-        while let Some(left) = next.checked_duration_since(Instant::now()) {
+        while let Some(left) = schedule.next().checked_duration_since(Instant::now()) {
             if stop.load(Ordering::Relaxed) || past(start, until, Instant::now()) {
                 return Ok(());
             }
@@ -750,20 +761,18 @@ fn feed(
         if stop.load(Ordering::Relaxed) || past(start, until, now) {
             return Ok(());
         }
-        // Rebased on the clock rather than advanced from the last deadline:
-        // after a laptop sleeps for an hour, `next += interval` would spend
-        // that hour writing eighteen thousand records as fast as it could.
-        next = now + interval;
         if reopen.swap(false, Ordering::Relaxed) {
             said_nothing_to_reopen();
         }
+        let sample = collector.sample(needs)?;
+        schedule.advance(Instant::now(), std::time::SystemTime::now());
 
         // One stream for the line format, so the header block is written
         // once — at the top, where a reader that has been there since the
         // start sees it. A reader attaching to a feed already running gets
         // rows and no header; that is what `--export=json` is for, and the
         // guide says so.
-        if !records.write(&collector.sample(needs)?)? {
+        if !records.write(&sample)? {
             return Ok(());
         }
     }
@@ -1448,8 +1457,8 @@ fn main() -> io::Result<()> {
     let result = run(
         &mut terminal,
         &mut app,
-        &mut collector,
-        logging.as_ref(),
+        collector,
+        logging,
         replaying,
         &mut said,
     );
@@ -1540,6 +1549,7 @@ fn bench(collector: &mut impl Collector) -> io::Result<()> {
             .with(Source::Exited)
             .with(Source::Cgroups),
         Needs::NONE.with(Source::Pss),
+        Needs::NONE.with(Source::Sensors),
     ] {
         collector.sample(needs)?;
         let t0 = std::time::Instant::now();
@@ -1561,6 +1571,9 @@ fn bench(collector: &mut impl Collector) -> io::Result<()> {
             needs.asked(Source::Cgroups),
         ) {
             (false, ..) if needs.asked(Source::Pss) => "pss only (one extra read a process)      ",
+            (false, ..) if needs.asked(Source::Sensors) => {
+                "sensors (read in the background)         "
+            }
             (false, ..) => "io off, threads off, exits off, cgroups off",
             (true, false, ..) => "io on,  threads off, exits off, cgroups off",
             (true, true, false, _) => "io on,  threads on,  exits off, cgroups off",
@@ -1638,7 +1651,8 @@ fn once(
     let needs = Needs::NONE
         .with(Source::Io)
         .with(Source::Exited)
-        .with(Source::Cgroups);
+        .with(Source::Cgroups)
+        .with(Source::Sensors);
     let priming = collector.sample(needs)?;
     std::thread::sleep(interval);
     let s = collector.sample(needs)?;
@@ -1703,13 +1717,19 @@ fn once(
         outln!("stall   {pct:.1}%  of the last 10s with every task stopped, on {what}");
     }
     if let Some(d) = s.busiest_disk() {
-        match d.await_ms {
-            Some(a) => outln!(
-                "disk    {:.1}%  {} utilised, {a:.1}ms per operation",
-                d.util,
-                d.name
+        let service = d
+            .await_ms
+            .map(|a| format!(", {a:.1}ms per operation"))
+            .unwrap_or_default();
+        match d.util {
+            Some(u) => outln!("disk    {u:.1}%  {} utilised{service}", d.name),
+            // Where utilisation is not published, what the disk moved.
+            None => outln!(
+                "disk    {}  {} read, {} written{service}",
+                d.name,
+                ui::fmt_rate(d.read).trim_start(),
+                ui::fmt_rate(d.write).trim_start()
             ),
-            None => outln!("disk    {:.1}%  {} utilised", d.util, d.name),
         }
     }
     // The counter that says the network is unhealthy, which no other line here
@@ -1785,6 +1805,49 @@ fn once(
         );
     }
     outln!("load    {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]);
+    // The hardware, each group's hottest in the order the header weighs them.
+    match s.temps.as_deref() {
+        Some(t) if !t.is_empty() => outln!(
+            "temp    {}",
+            t.iter()
+                .map(|t| format!("{:.0}°C {}", t.celsius, t.group))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => outln!("temp    —  not published here"),
+    }
+    match s.fans.as_deref() {
+        Some(f) if !f.is_empty() => outln!(
+            "fan     {}",
+            f.iter()
+                .map(|f| format!("{}rpm {}", f.rpm, f.label))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => outln!("fan     —  not published here"),
+    }
+    for g in s.gpus.iter().flatten() {
+        match g.mem_used {
+            Some(m) => outln!("gpu     {:.0}%  {}, {} in use", g.util, g.name, human(m)),
+            None => outln!("gpu     {:.0}%  {}", g.util, g.name),
+        }
+    }
+    match &s.power {
+        Some(p) => {
+            let draw = p
+                .watts
+                .map(|w| format!(", {:.1}W", w.abs()))
+                .unwrap_or_default();
+            let left = p
+                .minutes
+                .map(|m| format!(", {}h{:02}m to go", m / 60, m % 60))
+                .unwrap_or_default();
+            outln!("battery {:.0}%  {}{draw}{left}", p.charge, p.state);
+        }
+        // Said, because "no battery" and "could not read one" are the same
+        // absence here and only one of them is true on a desktop.
+        None => outln!("battery —  none, or not published here"),
+    }
     // The CPU line's other classes, each absent rather than zero where the
     // platform does not publish it. `steal` first: on a cloud instance it is
     // the difference between a busy box and a box that is not being given one.
@@ -1923,7 +1986,7 @@ fn once(
     for p in top.iter().take(10) {
         // A dash, never a zero: this process could not be read, which is not
         // the same as it doing no IO.
-        let (r, w) = match p.io {
+        let (r, w) = match p.io.get() {
             Some(io) => (human(io.read), human(io.write)),
             None => ("—".into(), "—".into()),
         };
@@ -1958,22 +2021,11 @@ fn human(b: u64) -> String {
 /// misses the incident that resolved itself before anyone was paged.
 const REPORT_WINDOW: Duration = Duration::from_secs(300);
 
-/// Where and how often the log is written, when it is written at all.
-///
-/// `None` is the default and the whole point: poptop logs if it is left running
-/// and works if it was not, so the ordinary run writes nothing.
-pub struct Logging {
-    pub dir: std::path::PathBuf,
-    pub every: Duration,
-    pub days: u32,
-    pub bytes: u64,
-}
-
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    collector: &mut impl Collector,
-    logging: Option<&Logging>,
+    collector: impl Collector + Send + 'static,
+    logging: Option<Logging>,
     // Whether the buffer holds a recorded day rather than live history.
     //
     // Sampling continues either way — the log keeps being written, and the
@@ -1986,20 +2038,7 @@ fn run(
     notes: &mut Vec<String>,
 ) -> io::Result<()> {
     let interval = app.interval;
-    // The first sample reaches the log immediately rather than one logging
-    // interval in. A poptop left running for nine minutes and killed would
-    // otherwise have recorded nothing at all, which is the case somebody who
-    // asked for a log is least willing to forgive.
-    let mut next_log = Instant::now();
-    let mut last_pruned: Option<log::Date> = None;
-    // A fixed cadence, not "one interval after the last sample finished".
-    //
-    // Restarting the clock after collection adds the collect and draw time to
-    // every period, so the timestamps drift steadily away from the rate they
-    // claim — on a box with thousands of processes, far enough that the gap
-    // detector would see a missed tick on every single cell and paint the
-    // whole graph as seams. The interval is a schedule, so schedule against it.
-    let mut next_sample = Instant::now() + interval;
+    let sampler = Sampler::start(collector, interval, app.needs(), logging);
 
     // SIGTERM is how a service manager or `kill` asks a program to stop, and
     // SIGHUP is the terminal going away. Either used to end the process on
@@ -2014,6 +2053,7 @@ fn run(
     // debug build, so no release binary has a way to be told to die.
     #[cfg(debug_assertions)]
     let mut forced = std::env::var_os("POPTOP_PANIC_AFTER_FIRST_FRAME").is_some();
+    let mut ticks = Vec::new();
     loop {
         // A terminal that has gone away is a request to quit, like the
         // hangup signal that comes with it — not an error to report on it.
@@ -2025,36 +2065,60 @@ fn run(
             panic!("forced by POPTOP_PANIC_AFTER_FIRST_FRAME");
         }
 
-        // Wait for a key until the next sample is due, in slices short enough
-        // to notice a stop request: the signal handler only sets a flag, and
-        // the poll underneath is restarted rather than interrupted by it.
+        // Wait for a key or a sample, whichever comes first, in slices short
+        // enough to notice a stop request: the signal handler only sets a
+        // flag, and the poll underneath is restarted rather than interrupted
+        // by it.
+        //
+        // The sampler cannot interrupt a wait for input, so the wait is cut to
+        // when the next sample starts, and to a few milliseconds while one is
+        // being taken. A sample is on screen within that of being finished,
+        // and a key pressed during a slow one is answered straight away
+        // instead of after it (0229).
         let key = loop {
             if stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            let left = next_sample.saturating_duration_since(Instant::now());
-            let Some(ready) = while_attached(event::poll(left.min(STOP_CHECK)))? else {
+            while let Some(t) = sampler.try_recv() {
+                ticks.push(t);
+            }
+            if !ticks.is_empty() {
+                break None;
+            }
+            let left = sampler.due().saturating_duration_since(Instant::now());
+            let wait = if left.is_zero() {
+                SAMPLE_CHECK
+            } else {
+                left.min(STOP_CHECK)
+            };
+            let Some(ready) = while_attached(event::poll(wait))? else {
                 return Ok(());
             };
             if ready {
                 let Some(event) = while_attached(event::read())? else {
                     return Ok(());
                 };
-                break match event {
-                    Event::Key(k) if k.kind == KeyEventKind::Press => Some(k),
+                match event {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => break Some(k),
                     // Answered here rather than carried out of the loop like a
                     // key. A click is a question about the layout the last
                     // frame drew, and the frame is still on screen — the
                     // redraw at the top of the loop is what shows the answer.
-                    Event::Mouse(m) => {
+                    //
+                    // Only what the mouse can change something with. The
+                    // capture reports every motion over the window, and each
+                    // one used to redraw the whole screen for nothing — a
+                    // pointer drifting across poptop is sixty to a hundred
+                    // events a second, which at three milliseconds a frame is
+                    // a fifth of a core spent redrawing a picture that had not
+                    // changed.
+                    Event::Mouse(m) if mouse_acts(m.kind) => {
                         handle_mouse(app, m, terminal.get_frame().area());
-                        None
+                        break None;
                     }
-                    _ => None,
-                };
-            }
-            if left <= STOP_CHECK {
-                break None;
+                    Event::Resize(..) => break None,
+                    _ => {}
+                }
             }
         };
         if let Some(key) = key {
@@ -2063,36 +2127,17 @@ fn run(
             }
         }
 
-        if Instant::now() >= next_sample {
-            // Sampling continues while paused — that is the whole point. The
-            // cursor stays put, the buffer keeps filling behind it.
+        for tick in ticks.drain(..) {
+            let s = tick.sample?;
             // Timed, so collection that has grown past its share of the
-            // interval gives something up rather than quietly becoming part of
-            // the load it is measuring. See `App::spent`.
-            let t0 = Instant::now();
-            let s = collector.sample(app.needs())?;
-            app.spent(t0.elapsed(), interval);
-            // Logged before the buffer takes it, so what is written is one
-            // sample rather than however many the buffer happens to hold.
-            if let Some(cfg) = logging.filter(|_| Instant::now() >= next_log) {
-                let at = s.at;
+            // interval gives something up rather than quietly becoming part
+            // of the load it is measuring. See `App::spent`.
+            app.spent(tick.took, interval);
+            if let Some(said) = tick.logged {
                 // Onto the panel while it is true, as well as into the lines
                 // printed at exit. A disk that filled at 10:00 is something
                 // the reader needs at 10:00; a message they see when they quit
                 // is one they see after it stopped mattering.
-                let said = match log::append(&cfg.dir, at, &[&s], cfg.bytes) {
-                    Ok(log::Appended::Wrote) => None,
-                    // Said while it is true, as the old "no longer being
-                    // written to" was: the log is still being written, and
-                    // what the reader needs to know is that history is now
-                    // being given up at the other end.
-                    Ok(log::Appended::Trimmed(said)) => Some(said),
-                    Ok(log::Appended::Full) => Some(
-                        "log-bytes will not hold one entry, so the log is not being written"
-                            .to_string(),
-                    ),
-                    Err(e) => Some(format!("could not write the log: {e}")),
-                };
                 app.log_note = said.clone();
                 // Once in the exit lines. A disk that filled would otherwise
                 // add one every logging interval until the tool is closed, and
@@ -2100,18 +2145,8 @@ fn run(
                 if let Some(said) = said.filter(|s| !notes.contains(s)) {
                     notes.push(said);
                 }
-                next_log = Instant::now() + cfg.every;
-                // Retention is applied when the date changes, not on a timer:
-                // the rule is about days, and a poptop left running over
-                // midnight is exactly the one that needs it applied.
-                let today = log::date_of(at);
-                if today.is_some() && today != last_pruned {
-                    last_pruned = today;
-                    if let Some(d) = today {
-                        notes.extend(log::prune(&cfg.dir, cfg.days, cfg.bytes, d));
-                    }
-                }
             }
+            notes.extend(tick.pruned);
             // What the collector had to assume, kept for the lines printed
             // at exit. The panel shows the cursor's own, which is a different
             // question: this is "what did this session assume", and that is
@@ -2121,6 +2156,8 @@ fn run(
                     notes.push(note.to_string());
                 }
             }
+            // Sampling continues while paused — that is the whole point. The
+            // cursor stays put, the buffer keeps filling behind it.
             if !replaying {
                 app.push(s);
             }
@@ -2133,18 +2170,11 @@ fn run(
             {
                 command::reload_theme(app);
             }
-            next_sample += interval;
-            // Falling a whole interval behind means the host cannot sustain
-            // the rate. Resync rather than catch up: catching up would sample
-            // flat out until the backlog cleared, which is the worst thing to
-            // do to the loaded box that caused the backlog. The samples really
-            // are further apart than the nominal rate, and the timeline says
-            // so — that is what the seam is for.
-            let now = Instant::now();
-            if next_sample <= now {
-                next_sample = now + interval;
-            }
         }
+        // After keys and samples both, since either can change it: a key that
+        // opens a panel, a push that moves the tick, a budget that gave
+        // something up.
+        sampler.set_needs(app.needs());
 
         if app.should_quit {
             return Ok(());
@@ -2152,8 +2182,22 @@ fn run(
     }
 }
 
+/// Whether a mouse event is one poptop does anything with: a press, a drag or
+/// the wheel. Motion and releases change nothing, so they draw nothing.
+fn mouse_acts(kind: event::MouseEventKind) -> bool {
+    use event::MouseEventKind::*;
+    matches!(
+        kind,
+        Down(_) | Drag(_) | ScrollUp | ScrollDown | ScrollLeft | ScrollRight
+    )
+}
+
 /// How often a wait for input looks at the stop flag.
 const STOP_CHECK: Duration = Duration::from_millis(100);
+
+/// How often a wait for input looks for a sample while one is being taken:
+/// the most a finished sample can wait to be drawn.
+const SAMPLE_CHECK: Duration = Duration::from_millis(4);
 
 /// How long a lone Esc waits for the rest of an escape sequence.
 ///
@@ -3039,7 +3083,7 @@ mod tests {
         s.procs = vec![sample::ProcSample {
             pid: i32::MAX,
             name: "nobody".into(),
-            started: Some(1),
+            started: Some(1).into(),
             ..Default::default()
         }];
         a.push(s);

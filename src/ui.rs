@@ -579,10 +579,12 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
         ),
         pair(
             "threads",
-            p.threads.map_or_else(|| "—".into(), |n| n.to_string()),
+            p.threads
+                .get()
+                .map_or_else(|| "—".into(), |n| n.to_string()),
         ),
     ];
-    if let Some(n) = p.nice {
+    if let Some(n) = p.nice.get() {
         lines.push(pair("nice", n.to_string()));
     }
     if let Some(c) = p.container.as_deref() {
@@ -601,7 +603,7 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &App) {
         "memory",
         format!("{}   peak {}", fmt_bytes(p.rss), fmt_bytes(peak_rss)),
     ));
-    if let Some(io) = p.io.as_ref() {
+    if let Some(io) = p.io.get().as_ref() {
         lines.push(pair(
             "disk",
             format!(
@@ -1460,6 +1462,19 @@ fn short_mount(mount: &str) -> String {
 /// all would be the figure that taught everyone to ignore it.
 pub const CLOCK_NOMINAL: f32 = 99.0;
 
+/// How close to critical a temperature has to be before the header treats it
+/// as news rather than context: 85°C against the 100°C most parts publish,
+/// which is where laptops start shedding clock.
+pub const HOT: f32 = 85.0;
+
+/// How busy a GPU has to be before the header treats it as news.
+pub const GPU_BUSY: f32 = 50.0;
+
+/// Below this, a battery running the machine is the most urgent thing on the
+/// header: a fifth is where every OS starts warning, and where a laptop being
+/// used for real work has well under an hour.
+pub const BATTERY_LOW: f32 = 20.0;
+
 /// A per-second count, shortened once it stops being readable in full.
 ///
 /// A busy box switches a hundred thousand times a second, and `103847/s` is six
@@ -1555,6 +1570,58 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         });
     }
 
+    // How hot, from whichever group is nearest its critical point — which is
+    // the CPU on an ordinary day, and the drive on the day the drive is the
+    // problem. Named when it is not the CPU, since `TEMP 71°C` on its own
+    // would be read as the processor.
+    //
+    // Two ranks. An ordinary temperature is context, and goes early when the
+    // header runs out of room; one within sight of critical qualifies the CPU
+    // figure the way `CLK` does — the processor may be about to slow itself
+    // down — and is kept as long as the clock ceiling is.
+    if let Some(t) = s
+        .temps
+        .iter()
+        .flatten()
+        .max_by(|a, b| a.heat().total_cmp(&b.heat()))
+    {
+        let mut spans = vec![
+            Span::styled("TEMP ", dim),
+            Span::styled(
+                format!("{:>3.0}°C", t.celsius),
+                app.theme.figure_style(t.heat()),
+            ),
+        ];
+        if &*t.group != "cpu" {
+            spans.push(Span::styled(format!(" {}", t.group), dim));
+        }
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: if t.heat() >= HOT { 7 } else { 35 },
+            spans,
+        });
+    }
+
+    // The busiest GPU, on the same two ranks as the temperature: context at
+    // an ordinary load, news once it is doing half of what it can — the point
+    // where "the machine is slow" is as likely to be the GPU as the CPU, and
+    // nothing else on the header would say so.
+    if let Some(g) = s
+        .gpus
+        .iter()
+        .flatten()
+        .max_by(|a, b| a.util.total_cmp(&b.util))
+    {
+        figures.push(Figure {
+            group: Group::Compute,
+            rank: if g.util >= GPU_BUSY { 8 } else { 58 },
+            spans: vec![
+                Span::styled("GPU ", dim),
+                Span::styled(format!("{:>3.0}%", g.util), app.theme.figure_style(g.util)),
+            ],
+        });
+    }
+
     // The figure that separates "nothing to do" from "cannot get on with
     // anything". Absent on a platform that will not say, rather than zero.
     if let Some(iowait) = s.iowait {
@@ -1575,11 +1642,23 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
     // Ranked immediately after `WAIT` for that reason — it is the answer to the
     // question the figure beside it raises, so the two should survive or go
     // together on a narrowing panel.
+    //
+    // Where utilisation is not published, what the disk is moving instead,
+    // each way — labelled, since two bare rates could be either way round.
     if let Some(d) = s.busiest_disk() {
-        let mut spans = vec![
-            Span::styled(format!("{} ", d.name), dim),
-            Span::styled(format!("{:>5.1}%", d.util), app.theme.figure_style(d.util)),
-        ];
+        let mut spans = vec![Span::styled(format!("{} ", d.name), dim)];
+        match d.util {
+            Some(u) => spans.push(Span::styled(
+                format!("{u:>5.1}%"),
+                app.theme.figure_style(u),
+            )),
+            None => spans.extend([
+                Span::styled("r ", dim),
+                Span::raw(fmt_rate(d.read)),
+                Span::styled(" w ", dim),
+                Span::raw(fmt_rate(d.write)),
+            ]),
+        }
         // Service time only when something completed. A mean of no operations
         // is not zero, and zero would read as an infinitely fast disk.
         if let Some(a) = d.await_ms {
@@ -1587,7 +1666,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
         }
         figures.push(Figure {
             group: Group::Storage,
-            rank: 20,
+            // Saturation answers `WAIT` and goes with it. Throughput answers
+            // nothing on its own — it is context, like the network figure —
+            // so it is given up after memory rather than before it.
+            rank: if d.util.is_some() { 20 } else { 52 },
             spans,
         });
     }
@@ -1887,6 +1969,66 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, s: &Sample) {
                     format!("{:>5.1}%", s.mem.swap_pct()),
                     app.theme.heat_style(s.mem.swap_pct()),
                 ),
+            ],
+        });
+    }
+
+    // The battery, on a machine with one. Context while it is charging or
+    // charged, and while it has plenty; the first thing on the header once it
+    // is running the machine and nearly empty, because at that point it is
+    // the most important fact about the machine and the one most easily
+    // missed in a full-screen terminal that has hidden the menu bar.
+    //
+    // Which way the energy is going as an arrow, and at what rate only while
+    // it is leaving: a charge rate is the charger's business.
+    if let Some(p) = &s.power {
+        let ascii = app.glyphs == crate::glyphs::GlyphSet::Ascii;
+        let discharging = &*p.state == "discharging";
+        let low = discharging && p.charge < BATTERY_LOW;
+        // Heated on what is missing, and only while it matters: a laptop on
+        // its charger at 30% is not an alarm.
+        let heat = if discharging { 100.0 - p.charge } else { 0.0 };
+        let mut spans = vec![
+            Span::styled("BAT ", dim),
+            Span::styled(format!("{:>3.0}%", p.charge), app.theme.figure_style(heat)),
+        ];
+        match &*p.state {
+            "charging" => spans.push(Span::styled(if ascii { " +" } else { " ↑" }, dim)),
+            "discharging" => {
+                spans.push(Span::styled(if ascii { " -" } else { " ↓" }, dim));
+                if let Some(w) = p.watts {
+                    spans.push(Span::styled(format!("{:.0}W", w.abs()), dim));
+                }
+            }
+            _ => {}
+        }
+        figures.push(Figure {
+            group: if low { Group::Compute } else { Group::Machine },
+            rank: if low { 1 } else { 75 },
+            spans,
+        });
+    }
+
+    // The fastest fan, and only while one is turning: a machine that parks
+    // its fans when cool has nothing to say about them, and says it best by
+    // saying nothing. With the machine's other facts rather than beside the
+    // temperature, because a speed without the curve that set it is context,
+    // not diagnosis.
+    if let Some(rpm) = s
+        .fans
+        .iter()
+        .flatten()
+        .map(|f| f.rpm)
+        .max()
+        .filter(|r| *r > 0)
+    {
+        figures.push(Figure {
+            group: Group::Machine,
+            rank: 85,
+            spans: vec![
+                Span::styled("FAN ", dim),
+                Span::raw(format!("{rpm}")),
+                Span::styled("rpm", dim),
             ],
         });
     }
@@ -2373,17 +2515,39 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
     // would have made every existing layout worse to add this one. It appears
     // when there is a fourth row to give it.
     //
-    // Present only where the platform reads disks at all, so macOS keeps the
-    // layout it already had rather than carrying an empty row.
-    if app.history.current().is_some_and(|s| s.disks.is_some()) {
-        candidates.push((
+    // Present only where the platform reads disks at all.
+    //
+    // Where utilisation is not published — macOS — the row is what the disk
+    // moved instead, in bytes a second, and from one named disk for the whole
+    // line as the network row does: busiest-per-sample by throughput would
+    // splice the boot disk into a backup drive wherever the two traded places.
+    match app.history.current().and_then(Sample::busiest_disk) {
+        Some(d) if d.util.is_some() => candidates.push((
             "DISK",
             window
                 .iter()
-                .map(|s| s.busiest_disk().map_or(0.0, |d| d.util))
+                .map(|s| s.busiest_disk().and_then(|d| d.util).unwrap_or(0.0))
                 .collect(),
             Unit::Percent,
-        ));
+        )),
+        Some(d) => {
+            let name = d.name.clone();
+            candidates.push((
+                "DISK",
+                window
+                    .iter()
+                    .map(|s| {
+                        s.disks
+                            .iter()
+                            .flatten()
+                            .find(|d| d.name == name)
+                            .map_or(0.0, |d| d.read.saturating_add(d.write) as f32)
+                    })
+                    .collect(),
+                Unit::Rate,
+            ));
+        }
+        None => {}
     }
 
     // And what the machine lost to waiting, which is not the same question as
@@ -2436,6 +2600,67 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
                 })
                 .collect(),
             Unit::Rate,
+        ));
+    }
+
+    // The busiest GPU's load, where one publishes it. After the network and
+    // before temperature: it explains a slow machine less often than the
+    // rows above it, and more often than how warm the machine is. One device
+    // for the whole line, as for the network and the disk.
+    if let Some(name) = app
+        .history
+        .current()
+        .and_then(|s| {
+            s.gpus
+                .as_ref()?
+                .iter()
+                .max_by(|a, b| a.util.total_cmp(&b.util))
+        })
+        .map(|g| g.name.clone())
+    {
+        candidates.push((
+            "GPU",
+            window
+                .iter()
+                .map(|s| {
+                    s.gpus
+                        .iter()
+                        .flatten()
+                        .find(|g| g.name == name)
+                        .map_or(0.0, |g| g.util)
+                })
+                .collect(),
+            Unit::Percent,
+        ));
+    }
+
+    // How hot the machine is, from the group the header leads with — the CPU
+    // wherever it publishes a temperature. Last, so it takes a row only once
+    // every other series has one: a temperature explains a slow machine less
+    // often than any of them, and when it does the header says so first.
+    //
+    // One group for the whole line, as the network row keeps one interface,
+    // so the line cannot splice the CPU into the drive where one reading was
+    // missing.
+    if let Some(group) = app
+        .history
+        .current()
+        .and_then(|s| s.temps.as_ref()?.first())
+        .map(|t| t.group.clone())
+    {
+        candidates.push((
+            "TEMP",
+            window
+                .iter()
+                .map(|s| {
+                    s.temps
+                        .iter()
+                        .flatten()
+                        .find(|t| t.group == group)
+                        .map_or(0.0, |t| t.celsius)
+                })
+                .collect(),
+            Unit::Celsius,
         ));
     }
 
@@ -2576,7 +2801,14 @@ fn draw_timeline(f: &mut Frame, area: Rect, app: &App) {
             .flatten()
             .copied()
             .fold(f32::INFINITY, f32::min);
-        let scale = glyphs::Scale::pick(trough, peak, unit_ceiling(*unit), app.axis);
+        let scale = match unit.floor(trough) {
+            Some(floor) => glyphs::Scale {
+                floor,
+                ceiling: unit_ceiling(*unit),
+                fitted: true,
+            },
+            None => glyphs::Scale::pick(trough, peak, unit_ceiling(*unit), app.axis),
+        };
         // Both thresholds, not just critical. The warn boundary is the one the
         // roadmap actually asked for, and leaving it hue-only kept it invisible
         // to the commonest colour vision deficiency and on any mono terminal.
@@ -3069,7 +3301,9 @@ pub fn sections(graph_rows: usize, candidates: usize, gutter: usize) -> Vec<usiz
 /// Written down so [`GUTTER_W`] can be derived from it. `STALL` was added and
 /// silently rendered as `STAL` for exactly as long as the width was a hand-
 /// maintained number with a comment claiming `WAIT` was the longest.
-pub const SERIES_NAMES: [&str; 7] = ["CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "THR"];
+pub const SERIES_NAMES: [&str; 9] = [
+    "CPU", "WAIT", "MEM", "DISK", "STALL", "NET", "GPU", "TEMP", "THR",
+];
 
 const fn widest(names: &[&str]) -> usize {
     let (mut max, mut i) = (0, 0);
@@ -3169,6 +3403,9 @@ pub enum Unit {
     Rate,
     /// A plain count, like threads. An axis, and no rules for the same reason.
     Count,
+    /// Degrees Celsius. No rules: the warn and critical percentages are
+    /// shares of a whole, and 50°C is not half of anything.
+    Celsius,
 }
 
 impl Unit {
@@ -3178,6 +3415,7 @@ impl Unit {
             Unit::Percent => 0,
             Unit::Rate => 1,
             Unit::Count => 2,
+            Unit::Celsius => 3,
         }
     }
 }
@@ -3200,6 +3438,7 @@ impl Unit {
     fn axis(self, ceiling: f32) -> String {
         match self {
             Unit::Percent | Unit::Count => format!("{ceiling:.0}"),
+            Unit::Celsius => format!("{ceiling:.0}°"),
             Unit::Rate => axis_bytes(ceiling as u64),
         }
     }
@@ -3231,7 +3470,29 @@ impl Unit {
                 }
                 c
             }
+            // A hundred, which nearly every CPU and drive treats as the edge
+            // of safe, so the top of the row means something on its own; in
+            // steps of twenty-five past it for the GPU junctions that run
+            // hotter by design.
+            Unit::Celsius => {
+                let mut c = 100.0;
+                while c <= peak {
+                    c += 25.0;
+                }
+                c
+            }
         }
+    }
+
+    /// Where this unit's axis starts when it does not start at zero.
+    ///
+    /// Only temperature. Nothing inside a running computer is colder than the
+    /// room it is in, so a 0°C floor spends the bottom fifth of the row on
+    /// readings that cannot happen — the pinned-to-zero waste 0190 is about,
+    /// on the one series where the floor is known in advance.
+    fn floor(self, trough: f32) -> Option<f32> {
+        const ROOM: f32 = 20.0;
+        (self == Unit::Celsius && trough >= ROOM).then_some(ROOM)
     }
 }
 
@@ -4047,11 +4308,11 @@ pub fn totals(app: &App) -> Totals {
         out.cpu += r.proc.cpu;
         out.rss += r.proc.rss;
         out.groups += usize::from(r.members.is_some());
-        out.threads = match (out.threads, r.proc.threads) {
+        out.threads = match (out.threads, r.proc.threads.get()) {
             (Some(n), Some(t)) => Some(n + u64::from(t)),
             _ => None,
         };
-        out.disk = match (out.disk, r.proc.io) {
+        out.disk = match (out.disk, r.proc.io.get()) {
             (Some((r0, w0)), Some(io)) => Some((r0 + io.read, w0 + io.write)),
             _ => None,
         };
@@ -4783,14 +5044,14 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                 // An em dash, never a number we do not have. See
                 // `ProcSample::threads`: a fabricated `1` sits next to a CPU
                 // percentage that can openly contradict it.
-                cells.push(num(match p.threads {
+                cells.push(num(match p.threads.get() {
                     Some(n) => n.to_string(),
                     None => "—".into(),
                 }));
             }
             if show_io {
-                cells.push(io_cell(collected, p.io, false, &app.theme));
-                cells.push(io_cell(collected, p.io, true, &app.theme));
+                cells.push(io_cell(collected, p.io.get(), false, &app.theme));
+                cells.push(io_cell(collected, p.io.get(), true, &app.theme));
             }
             // Never a zero for any of these: a share nobody measured, a size
             // the platform does not publish and a fault count that was not
@@ -4798,19 +5059,19 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
             // saying that. The column is there at all only where somebody
             // answers — see `App::mem_columns_available`.
             if shape.pss {
-                cells.push(num(match p.pss {
+                cells.push(num(match p.pss.get() {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
             }
             if shape.vsize {
-                cells.push(num(match p.vsize {
+                cells.push(num(match p.vsize.get() {
                     Some(b) => fmt_bytes(b),
                     None => "—".into(),
                 }));
             }
             if shape.majflt {
-                cells.push(match p.majflt {
+                cells.push(match p.majflt.get() {
                     // Coloured against a *fault* threshold, not through
                     // `heat_style`: that compares against the warn and critical
                     // *percentages*, so a process taking five faults a second —
@@ -4832,7 +5093,7 @@ fn draw_procs(f: &mut Frame, area: Rect, app: &App, timeline: Rect, strip: bool)
                 // group's. Every other grouped figure either sums or collapses
                 // to an em dash; so does this.
                 let grew = (!r.is_group())
-                    .then(|| app.growth(p.pid, p.started))
+                    .then(|| app.growth(p.pid, p.started.get()))
                     .flatten();
                 cells.push(match grew {
                     Some(d) => num(fmt_growth(d)),

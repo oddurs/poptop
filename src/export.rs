@@ -40,6 +40,14 @@ pub enum Unit {
     Milliseconds,
     /// Seconds since the epoch.
     Epoch,
+    /// Degrees Celsius.
+    Celsius,
+    /// Revolutions a minute.
+    Rpm,
+    /// Watts.
+    Watts,
+    /// Minutes.
+    Minutes,
     /// Text, or something with no dimension at all.
     None,
 }
@@ -55,6 +63,10 @@ impl Unit {
             Unit::Seconds => "seconds",
             Unit::Milliseconds => "milliseconds",
             Unit::Epoch => "epoch_seconds",
+            Unit::Celsius => "celsius",
+            Unit::Rpm => "rpm",
+            Unit::Watts => "watts",
+            Unit::Minutes => "minutes",
             Unit::None => "none",
         }
     }
@@ -115,7 +127,8 @@ pub fn unit_of(record: &str, field: &str) -> Option<Unit> {
         ("NetStat", "links")
         | ("NfsStat", "mounts")
         | ("Sample", "mem" | "disks" | "pressure" | "net" | "filesystems")
-        | ("Sample", "tasks" | "exited" | "cgroups" | "nodes" | "nfs")
+        | ("Sample", "tasks" | "exited" | "cgroups" | "nodes" | "nfs" | "temps" | "fans")
+        | ("Sample", "power" | "gpus")
         | ("ProcSample", "io")
         | ("CgroupStat", "pressure") => Some(None),
         // Pressure's three are the resource each stall is about.
@@ -128,6 +141,14 @@ pub fn unit_of(record: &str, field: &str) -> Option<Unit> {
         ("Sample", "cpu_per_core") => Some(Percent),
         ("CgroupStat", "depth") => Some(Count),
         ("NodeStat", "cpu") => Some(Percent),
+        ("Temp", "celsius" | "crit") => Some(Celsius),
+        ("Temp", "group" | "sensor") | ("Fan", "label") => Some(None),
+        ("Fan", "rpm") => Some(Rpm),
+        ("Power", "charge") | ("Gpu", "util") => Some(Percent),
+        ("Power", "state") | ("Gpu", "name") => Some(None),
+        ("Power", "watts") => Some(Watts),
+        ("Power", "minutes") => Some(Minutes),
+        ("Gpu", "mem_used" | "mem_total") => Some(Bytes),
         _ => by_name(field),
     }
 }
@@ -495,9 +516,9 @@ mod tests {
             user: Arc::from("root"),
             cpu: 3.5,
             rss: 1 << 20,
-            threads: Some(4),
+            threads: Some(4).into(),
             state: 'S',
-            started: Some(7),
+            started: Some(7).into(),
             ..ProcSample::default()
         }];
         s
@@ -619,7 +640,9 @@ mod tests {
                 pid: 40 + i,
                 name: Arc::from("p"),
                 user: Arc::from("root"),
-                io: (i != 1).then_some(crate::sample::IoRates { read: 1, write: 2 }),
+                io: (i != 1)
+                    .then_some(crate::sample::IoRates { read: 1, write: 2 })
+                    .into(),
                 ..ProcSample::default()
             })
             .collect();
@@ -667,7 +690,9 @@ mod tests {
                 name: Arc::from("p"),
                 user: Arc::from("root"),
                 // Present on some, absent on others, in one table.
-                io: (i % 2 == 0).then_some(crate::sample::IoRates { read: 1, write: 2 }),
+                io: (i % 2 == 0)
+                    .then_some(crate::sample::IoRates { read: 1, write: 2 })
+                    .into(),
                 ..ProcSample::default()
             })
             .collect();
@@ -761,7 +786,7 @@ mod tests {
             pid: 43,
             name: Arc::from("q"),
             user: Arc::from("root"),
-            io: Some(crate::sample::IoRates { read: 1, write: 2 }),
+            io: Some(crate::sample::IoRates { read: 1, write: 2 }).into(),
             ..ProcSample::default()
         });
         let out = lines_of(std::slice::from_ref(&s), None);

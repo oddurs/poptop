@@ -15,6 +15,7 @@ pub const SUPPORTED: &[Source] = &[
     Source::Exited,
     Source::Cgroups,
     Source::Pss,
+    Source::Sensors,
 ];
 use crate::sample::{
     CgroupStat, DiskStat, FsStat, IoRates, Link, MemStat, NetStat, NfsStat, NodeStat, Pressure,
@@ -283,6 +284,9 @@ pub struct ProcFs {
     io_supported: bool,
     /// The last NFS reading, so cumulative counters become intervals.
     prev_nfs: nfs::Prev,
+    /// The sensors, the battery and the GPU, read on a thread of their own
+    /// once somebody asks for them. See [`super::sensors::Background`].
+    hardware: Option<super::sensors::Background>,
     /// Which NUMA nodes exist and which cores each owns, walked once.
     ///
     /// Static in the way `Source::ClockPolicies` is static: a socket does not
@@ -334,6 +338,7 @@ impl ProcFs {
             io_supported,
             numa: Topology::new(),
             prev_nfs: None,
+            hardware: None,
             prev_total: None,
             prev_cores: Vec::new(),
             prev_disks: HashMap::new(),
@@ -571,7 +576,7 @@ impl ProcFs {
         // Busiest first, so a table that can only show two rows shows the two
         // that matter. Utilisation rather than throughput, for the reason in
         // `DiskStat::util`.
-        out.sort_by(|a, b| b.util.total_cmp(&a.util));
+        out.sort_by(|a, b| b.util.unwrap_or(0.0).total_cmp(&a.util.unwrap_or(0.0)));
         out
     }
 
@@ -985,12 +990,12 @@ impl ProcFs {
             // buy nothing. Skipped for the same reason the IO probe skips them,
             // one branch down.
             if !p.is_kernel_thread() {
-                p.cmd = cmdline(pid, p.started.unwrap_or(0), tick, cmds, path, buf);
+                p.cmd = cmdline(pid, p.started.get().unwrap_or(0), tick, cmds, path, buf);
                 // Same shape as the command line and one read cheaper: cached
                 // for the life of the process rather than re-read on a slot.
-                p.container = container_of(pid, p.started.unwrap_or(0), containers, path);
+                p.container = container_of(pid, p.started.get().unwrap_or(0), containers, path);
                 if needs.wants(Source::Pss) {
-                    p.pss = read_pss(pid, path, buf, &mut pss_denied);
+                    p.pss = read_pss(pid, path, buf, &mut pss_denied).into();
                 }
             }
             // Kernel threads are skipped rather than attempted and counted as
@@ -1000,13 +1005,13 @@ impl ProcFs {
             // exists to protect. Skipping also saves an open and a read each.
             if needs.wants(Source::Io) && *io_supported && !p.is_kernel_thread() {
                 match read_proc_io(pid, elapsed_secs, &mut seen_io, prev_proc_io, path, buf) {
-                    Ok(rates) => p.io = rates,
+                    Ok(rates) => p.io = rates.into(),
                     // Either way the row shows an em dash. Only one of them is
                     // something root would fix, and only that one is counted.
                     Err(why) => *denied += usize::from(why.counts()),
                 }
             }
-            if needs.wants(Source::Threads) && p.threads.unwrap_or(1) > 1 {
+            if needs.wants(Source::Threads) && p.threads.get().unwrap_or(1) > 1 {
                 read_tasks(
                     pid,
                     &p,
@@ -1582,11 +1587,11 @@ fn parse_proc_stat(
         user,
         cpu,
         rss: rss_pages.saturating_mul(ctx.page_size),
-        threads: Some(threads),
+        threads: Some(threads).into(),
         state,
-        started: Some(starttime),
+        started: Some(starttime).into(),
         cmd: None,
-        io: None,
+        io: None.into(),
         // Filled by the caller, which has the cache.
         container: None,
         // A rate needs two readings, and a process seen for the first time has
@@ -1596,17 +1601,19 @@ fn parse_proc_stat(
             minflt,
             ctx.prev_faults.get(&pid).map(|(m, _)| *m),
             elapsed_secs,
-        )),
+        ))
+        .into(),
         majflt: Some(rate(
             majflt,
             ctx.prev_faults.get(&pid).map(|(_, m)| *m),
             elapsed_secs,
-        )),
-        vsize: Some(vsize),
-        nice: Some(nice),
+        ))
+        .into(),
+        vsize: Some(vsize).into(),
+        nice: Some(nice).into(),
         // Filled by the caller when the source is on; `smaps_rollup` is a
         // second read and does not belong in a `stat` parser.
-        pss: None,
+        pss: None.into(),
     })
 }
 
@@ -1886,9 +1893,9 @@ fn rates(name: &Arc<str>, prev: &DiskTimes, now: &DiskTimes, secs: f64) -> DiskS
         writes: (writes / secs) as u64,
         // Clamped: the counter is in whole milliseconds and `secs` is measured,
         // so rounding can put a fully busy device a hair over 100.
-        util: ((d(now.io_ms, prev.io_ms) / 10.0 / secs) as f32).min(100.0),
+        util: Some(((d(now.io_ms, prev.io_ms) / 10.0 / secs) as f32).min(100.0)),
         await_ms: (ops > 0.0).then(|| (service / ops) as f32),
-        queue: (d(now.weighted_ms, prev.weighted_ms) / 1000.0 / secs) as f32,
+        queue: Some((d(now.weighted_ms, prev.weighted_ms) / 1000.0 / secs) as f32),
     }
 }
 
@@ -2371,6 +2378,17 @@ impl Collector for ProcFs {
         let was_ctxt = stat.ctxt.and_then(|n| self.prev_ctxt.replace(n));
         let was_intr = stat.intr.and_then(|n| self.prev_intr.replace(n));
         let nfs = self.read_nfs(elapsed);
+        let hardware = if needs.wants(Source::Sensors) {
+            if self.hardware.is_none() {
+                self.hardware = super::sensors::Background::start(read_hardware());
+            }
+            self.hardware
+                .as_ref()
+                .and_then(super::sensors::Background::take)
+                .unwrap_or_default()
+        } else {
+            super::sensors::Hardware::default()
+        };
         Ok(Sample {
             at: now,
             nfs,
@@ -2424,7 +2442,35 @@ impl Collector for ProcFs {
             // From the per-core figures already collected, so the CPU half of
             // this costs no read at all.
             nodes,
+            temps: hardware.temps,
+            fans: hardware.fans,
+            power: hardware.power,
+            gpus: hardware.gpus,
         })
+    }
+}
+
+/// The hardware in one reading, from sysfs.
+///
+/// The paths are resolved here, on the collector's thread, because a test's
+/// fixture root is a property of the thread that set it.
+fn read_hardware() -> impl FnMut() -> super::sensors::Hardware + Send + 'static {
+    let sys = |p: &str| -> std::path::PathBuf {
+        AsRef::<std::path::Path>::as_ref(&at(std::path::Path::new(p))).to_path_buf()
+    };
+    let (hwmon, supply, drm) = (
+        sys("/sys/class/hwmon"),
+        sys("/sys/class/power_supply"),
+        sys("/sys/class/drm"),
+    );
+    move || {
+        let (temps, fans) = super::sensors::hwmon(&hwmon);
+        super::sensors::Hardware {
+            temps,
+            fans,
+            power: super::sensors::power_supply(&supply),
+            gpus: super::sensors::drm(&drm),
+        }
     }
 }
 
@@ -2831,13 +2877,17 @@ mod tests {
             &ctx(&pf),
         )
         .expect("the fixture did not parse");
-        assert_eq!(p.nice, Some(-5), "nice landed on the wrong field");
+        assert_eq!(p.nice, Some(-5).into(), "nice landed on the wrong field");
         assert_eq!(
             p.vsize,
-            Some(2_846_720_000),
+            Some(2_846_720_000).into(),
             "vsize landed on the wrong field"
         );
-        assert_eq!(p.threads, Some(8), "the fixture disagrees with the parser");
+        assert_eq!(
+            p.threads,
+            Some(8).into(),
+            "the fixture disagrees with the parser"
+        );
         // Cumulative counters carried forward, to become next sample's baseline.
         assert_eq!(seen_faults.get(&4021), Some(&(4210, 17)));
     }
@@ -3334,7 +3384,7 @@ mod tests {
         assert_eq!(p.ppid, 1);
         assert_eq!(
             p.threads,
-            Some(8),
+            Some(8).into(),
             "the thread count from /proc stat field 20"
         );
         assert_eq!(p.state, 'S');
@@ -3672,7 +3722,11 @@ mod tests {
         assert_eq!(d.read, 81_920, "read bytes/s");
         assert_eq!(d.write, 245_760, "write bytes/s");
         // 500ms busy in 2s of wall clock.
-        assert!((d.util - 25.0).abs() < 0.01, "util was {}", d.util);
+        assert!(
+            (d.util.unwrap() - 25.0).abs() < 0.01,
+            "util was {:?}",
+            d.util
+        );
     }
 
     #[test]
@@ -3699,7 +3753,7 @@ mod tests {
         let prev = DiskTimes::parse(&disk_line(0, 0, 0));
         let now = DiskTimes::parse(&disk_line(1, 1, 1100));
         let d = rates(&Arc::from("vda"), &prev, &now, 1.0);
-        assert_eq!(d.util, 100.0, "util ran past a full interval");
+        assert_eq!(d.util, Some(100.0), "util ran past a full interval");
     }
 
     #[test]
@@ -3805,7 +3859,7 @@ mod tests {
             },
         )
         .expect("our own stat did not parse");
-        assert_eq!(start_of(me), row.started);
+        assert_eq!(start_of(me), row.started.get());
         assert_eq!(start_of(i32::MAX), None);
     }
 
@@ -4274,12 +4328,16 @@ auto /net autofs rw,fd=7 0 0\n\
                 .find(|l| l.split_whitespace().nth(2) == Some(&*d.name))
                 .unwrap_or_else(|| panic!("device not in the file: {}", d.name));
             assert!(
-                (0.0..=100.0).contains(&d.util),
-                "{} util {}",
+                d.util.is_some_and(|u| (0.0..=100.0).contains(&u)),
+                "{} util {:?}",
                 d.name,
                 d.util
             );
-            assert!(d.queue >= 0.0, "{} negative queue", d.name);
+            assert!(
+                d.queue.is_some_and(|q| q >= 0.0),
+                "{} negative queue",
+                d.name
+            );
 
             // Every reported device has actually done something. This container
             // publishes forty-odd whole devices — `ram0..15`, `loop0..7`,
@@ -4859,7 +4917,11 @@ mod mangled {
             let p = parse_comm(comm).unwrap_or_else(|| panic!("{comm:?} did not parse"));
             assert_eq!(p.name.as_bytes(), comm, "the name was misread");
             assert_eq!(p.ppid, 1, "{comm:?} moved the fields after it");
-            assert_eq!(p.nice, Some(-5), "{comm:?} moved the fields after it");
+            assert_eq!(
+                p.nice,
+                Some(-5).into(),
+                "{comm:?} moved the fields after it"
+            );
         }
     }
 
@@ -4875,7 +4937,7 @@ mod mangled {
             let p = parse_comm(comm).unwrap_or_else(|| panic!("{comm:?} hid the process"));
             assert!(p.name.contains('\u{fffd}'), "{:?}", p.name);
             assert_eq!(p.ppid, 1);
-            assert_eq!(p.nice, Some(-5));
+            assert_eq!(p.nice, Some(-5).into());
         }
     }
 
@@ -5068,7 +5130,12 @@ mod fixtures {
             for p in &s.procs {
                 let has = tree.join(format!("proc/{}/smaps_rollup", p.pid)).is_file();
                 if !has {
-                    assert_eq!(p.pss, None, "{name}: pid {} has a PSS from nowhere", p.pid);
+                    assert_eq!(
+                        p.pss,
+                        None.into(),
+                        "{name}: pid {} has a PSS from nowhere",
+                        p.pid
+                    );
                 }
             }
         }

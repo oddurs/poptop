@@ -6,6 +6,7 @@
 //! possible — the process table you see at t-40s is the real one from t-40s,
 //! not an interpolation.
 
+use crate::persist::Opt;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -72,17 +73,17 @@ impl Default for ProcSample {
             user: Arc::from(""),
             cpu: 0.0,
             rss: 0,
-            threads: None,
+            threads: None.into(),
             state: '?',
-            started: None,
+            started: None.into(),
             cmd: None,
-            io: None,
+            io: None.into(),
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         }
     }
 }
@@ -177,7 +178,7 @@ pub struct NodeStat {
 // `every_reachable_record_has_a_schema` asserts rather than assumes.
 crate::persist::records! {
     MemStat, Stall, Pressure, FsStat, Link, NetStat, DiskStat, IoRates, ThreadSample,
-    CgroupStat, NodeStat, NfsMount, NfsStat, ProcSample, Sample
+    CgroupStat, NodeStat, NfsMount, NfsStat, Temp, Fan, Power, Gpu, ProcSample, Sample
 }
 
 // The wire order for each retained struct, listed beside it. The list cannot
@@ -196,7 +197,7 @@ impl ProcSample {
     /// different programs. Better a process with no history than a history
     /// belonging to something else.
     pub fn key(&self) -> Option<(i32, u64)> {
-        Some((self.pid, self.started?))
+        Some((self.pid, self.started.get()?))
     }
 
     /// Whether this is a kernel thread rather than a program.
@@ -465,6 +466,89 @@ pub struct NetStat {
 
 crate::persist::codec! { NetStat { links: Vec<Link>, errors: Option<u64>, drops: Option<u64>, retrans: Option<u64>, listen_drops: Option<u64> } }
 
+/// The hottest reading in one group of temperature sensors.
+///
+/// A group, not a sensor, because the sensors are not a reading anyone can
+/// use: the Mac this was written on publishes forty of them, labelled like
+/// `PMU tdie6`, and a Linux desktop a dozen split across four drivers. What a
+/// reader wants to know is how hot the CPU is, the GPU, the drives — so that is
+/// what is kept, with the name of the sensor that set it so the figure can be
+/// traced. Kept per group rather than per sensor for the log's sake too: forty
+/// temperatures a second is most of a day file.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Temp {
+    /// What the group is about: `cpu`, `gpu`, `storage`, `memory`, `battery`
+    /// or `board`. See [`crate::collect::sensors`].
+    pub group: Arc<str>,
+    /// Degrees Celsius.
+    pub celsius: f32,
+    /// The sensor the reading came from, as the platform names it.
+    pub sensor: Arc<str>,
+    /// Where the hardware says that sensor becomes critical, if it says.
+    pub crit: Option<f32>,
+}
+
+crate::persist::codec! { Temp { group: Arc<str>, celsius: f32, sensor: Arc<str>, crit: Option<f32> } }
+
+impl Temp {
+    /// How close to critical, as a percentage, for heat colouring. Against the
+    /// sensor's own critical point where it publishes one, and 100°C where it
+    /// does not — roughly where every CPU and drive made in the last decade
+    /// starts protecting itself.
+    pub fn heat(&self) -> f32 {
+        let crit = self.crit.filter(|c| *c > 0.0).unwrap_or(100.0);
+        (self.celsius / crit * 100.0).clamp(0.0, 100.0)
+    }
+}
+
+/// One fan's speed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fan {
+    /// As the platform names it: `cpu_fan`, `Processor Fan`, `thinkpad fan1`.
+    pub label: Arc<str>,
+    /// Revolutions a minute. Zero is a fan that is stopped, which on a machine
+    /// that spins its fans down when cool is a reading, not a fault.
+    pub rpm: u32,
+}
+
+crate::persist::codec! { Fan { label: Arc<str>, rpm: u32 } }
+
+/// The battery, on a machine that has one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Power {
+    /// Percent of full charge.
+    pub charge: f32,
+    /// `charging`, `discharging`, or `charged` — plugged in and not charging,
+    /// whether because it is full or because the OS is holding it below full
+    /// to spare the cell.
+    pub state: Arc<str>,
+    /// Watts leaving the battery: positive while it runs the machine, negative
+    /// while it is being charged. `None` where the platform does not say.
+    pub watts: Option<f32>,
+    /// The platform's own estimate of minutes to empty, or to full while
+    /// charging. `None` while it is still estimating.
+    pub minutes: Option<u32>,
+}
+
+crate::persist::codec! { Power { charge: f32, state: Arc<str>, watts: Option<f32>, minutes: Option<u32> } }
+
+/// One GPU's load.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Gpu {
+    /// As the platform names it: `Apple M4`, `card0`.
+    pub name: Arc<str>,
+    /// Percent of the interval the device was busy.
+    pub util: f32,
+    /// Bytes of memory in use by the GPU. On a Mac this is unified memory the
+    /// GPU has claimed, already inside the memory figure; on a discrete card,
+    /// its own VRAM.
+    pub mem_used: Option<u64>,
+    /// The card's own memory, where it has any.
+    pub mem_total: Option<u64>,
+}
+
+crate::persist::codec! { Gpu { name: Arc<str>, util: f32, mem_used: Option<u64>, mem_total: Option<u64> } }
+
 /// One NFS mount over the last interval.
 ///
 /// On a box whose storage is a remote filesystem, every disk figure poptop
@@ -633,7 +717,13 @@ pub struct DiskStat {
     /// Not a hard ceiling on modern hardware: an SSD that serves requests in
     /// parallel can be at 100% and still have capacity, which is why `queue`
     /// and `await` sit beside it rather than behind it.
-    pub util: f32,
+    ///
+    /// `None` where the platform does not publish it. macOS counts bytes,
+    /// operations and time spent servicing them, and not the time a device
+    /// had anything in flight — which is a different number whenever requests
+    /// overlap, so it is not derived from the others. Always present before
+    /// 0232, and read back from older recordings as present.
+    pub util: Option<f32>,
     /// Mean milliseconds a completed operation spent in the device, or `None`
     /// when none completed.
     ///
@@ -641,11 +731,14 @@ pub struct DiskStat {
     /// zero here would read as an infinitely fast disk, the most flattering
     /// possible lie about the figure most worth trusting.
     pub await_ms: Option<f32>,
-    /// Mean requests in flight across the interval.
-    pub queue: f32,
+    /// Mean requests in flight across the interval: time spent servicing
+    /// requests, summed over requests, divided by the interval — Little's law,
+    /// which is exactly what both platforms publish the parts of. `None` where
+    /// neither is published.
+    pub queue: Option<f32>,
 }
 
-crate::persist::codec! { DiskStat { name: Arc<str>, read: u64, write: u64, reads: u64, writes: u64, util: f32, await_ms: Option<f32>, queue: f32 } }
+crate::persist::codec! { DiskStat { name: Arc<str>, read: u64, write: u64, reads: u64, writes: u64, util: Option<f32>, await_ms: Option<f32>, queue: Option<f32> } }
 
 impl Sample {
     /// The filesystem closest to full, if any is known.
@@ -678,11 +771,18 @@ impl Sample {
     /// where the collector meant `nvme0n1`. A figure that names a device is
     /// read as "this is the disk poptop is watching", so which one it picks
     /// matters even when the number does not.
+    ///
+    /// Busiest by utilisation where the platform publishes it, and by bytes
+    /// moved where it does not — the one measure of load macOS gives.
     pub fn busiest_disk(&self) -> Option<&DiskStat> {
+        let load = |d: &DiskStat| {
+            d.util
+                .map_or(d.read.saturating_add(d.write) as f64, f64::from)
+        };
         let mut it = self.disks.as_ref()?.iter();
         let mut best = it.next()?;
         for d in it {
-            if d.util > best.util {
+            if load(d) > load(best) {
                 best = d;
             }
         }
@@ -760,13 +860,28 @@ impl MemStat {
 }
 
 /// Disk throughput for one process over one interval, in bytes per second.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct IoRates {
     pub read: u64,
     pub write: u64,
 }
 
 crate::persist::codec! { IoRates { read: u64, write: u64 } }
+
+/// Absent as both halves at their maximum, which no process reads or writes
+/// in a second.
+impl crate::persist::Absent for IoRates {
+    const NONE: IoRates = IoRates {
+        read: u64::MAX,
+        write: u64::MAX,
+    };
+    fn nearest(self) -> IoRates {
+        IoRates {
+            read: u64::MAX - 1,
+            ..self
+        }
+    }
+}
 
 /// One process as it appeared in a single sample.
 #[derive(Debug, Clone)]
@@ -798,7 +913,7 @@ pub struct ProcSample {
     /// Always known on Linux, where `/proc/<pid>/stat` publishes it for every
     /// process. Known on macOS for processes this user owns, which in practice
     /// is every process busy enough for the figure to matter.
-    pub threads: Option<u32>,
+    pub threads: Opt<u32>,
     pub state: char,
     /// An opaque token, unique to one run of one process on this machine.
     ///
@@ -817,7 +932,7 @@ pub struct ProcSample {
     /// compares equal to another zero, so two unrelated processes sharing a
     /// recycled pid would be spliced into one line — the failure this field
     /// exists to prevent. See [`ProcSample::key`].
-    pub started: Option<u64>,
+    pub started: Opt<u64>,
     /// The command line, as the process was invoked, arguments joined by
     /// spaces.
     ///
@@ -837,7 +952,7 @@ pub struct ProcSample {
     /// cases are told apart by [`Sample::io_collected`], and neither is ever
     /// rendered as a zero: a fabricated zero is indistinguishable from a
     /// genuinely idle process.
-    pub io: Option<IoRates>,
+    pub io: Opt<IoRates>,
     /// The container this process is in, as a twelve-character id.
     ///
     /// `None` means it is in no container — not that poptop could not tell.
@@ -846,7 +961,7 @@ pub struct ProcSample {
     /// anybody's permission.
     pub container: Option<Arc<str>>,
     /// Minor faults in the interval — pages found in memory. Common and cheap.
-    pub minflt: Option<u32>,
+    pub minflt: Opt<u32>,
     /// **Major** faults in the interval: pages fetched from disk.
     ///
     /// The one that answers "why is this slow". A process taking major faults
@@ -855,12 +970,12 @@ pub struct ProcSample {
     ///
     /// A rate over the interval like every other counter here, not the
     /// lifetime total `/proc` publishes.
-    pub majflt: Option<u32>,
+    pub majflt: Opt<u32>,
     /// Virtual size. Against `rss` it is how much of what a process has
     /// reserved it is actually touching.
-    pub vsize: Option<u64>,
+    pub vsize: Opt<u64>,
     /// Scheduling niceness, -20 to 19.
-    pub nice: Option<i32>,
+    pub nice: Opt<i32>,
     /// Proportional set size: the process's share of the pages it holds, with
     /// shared pages divided among the processes sharing them.
     ///
@@ -871,7 +986,7 @@ pub struct ProcSample {
     ///
     /// `None` unless asked for: it needs `smaps_rollup`, a second read per
     /// process, which is why atop gates its own behind a key.
-    pub pss: Option<u64>,
+    pub pss: Opt<u64>,
 }
 
 crate::persist::codec! { ThreadSample { pid: i32, tid: i32, name: Arc<str>, state: char, cpu: f32 } }
@@ -880,7 +995,7 @@ crate::persist::codec! { CgroupStat { path: Arc<str>, depth: u32, cpu: Option<f3
 
 crate::persist::codec! { NodeStat { id: u32, total: u64, free: u64, file: Option<u64>, dirty: Option<u64>, shmem: Option<u64>, cpu: Option<f32> } }
 
-crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Option<u32>, state: char, started: Option<u64>, cmd: Option<Arc<str>>, io: Option<IoRates>, container: Option<Arc<str>>, minflt: Option<u32>, majflt: Option<u32>, vsize: Option<u64>, nice: Option<i32>, pss: Option<u64> } }
+crate::persist::codec! { ProcSample { pid: i32, ppid: i32, name: Arc<str>, user: Arc<str>, cpu: f32, rss: u64, threads: Opt<u32>, state: char, started: Opt<u64>, cmd: Option<Arc<str>>, io: Opt<IoRates>, container: Option<Arc<str>>, minflt: Opt<u32>, majflt: Opt<u32>, vsize: Opt<u64>, nice: Opt<i32>, pss: Opt<u64> } }
 
 /// A complete snapshot of the machine at one instant.
 #[derive(Debug, Clone)]
@@ -1087,6 +1202,16 @@ pub struct Sample {
     /// say: a box with one node spends no space announcing that it has one, and
     /// the figures for it are the whole-machine figures already on screen.
     pub nodes: Option<Vec<NodeStat>>,
+    /// The hottest sensor in each group, hottest group first, or `None` where
+    /// the platform publishes no temperatures or they were not read.
+    pub temps: Option<Vec<Temp>>,
+    /// Every fan the platform reports, or `None` where it reports none.
+    pub fans: Option<Vec<Fan>>,
+    /// The battery, or `None` on a machine without one — never a battery at
+    /// zero, which is what a desktop Mac's registry claims to have.
+    pub power: Option<Power>,
+    /// Every GPU whose load the platform publishes, or `None` where none does.
+    pub gpus: Option<Vec<Gpu>>,
 }
 
 impl Sample {
@@ -1152,13 +1277,17 @@ impl Sample {
             exited: None,
             cgroups: None,
             nodes: None,
+            temps: None,
+            fans: None,
+            power: None,
+            gpus: None,
             nfs: None,
             notes: None,
         }
     }
 }
 
-crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat>, notes: Option<Vec<Arc<str>>> } }
+crate::persist::codec! { Sample { at: SystemTime, cpu_total: f32, cpu_per_core: Vec<f32>, iowait: Option<f32>, steal: Option<f32>, guest: Option<f32>, irq: Option<f32>, softirq: Option<f32>, ctxt: Option<u64>, intr: Option<u64>, running: Option<u32>, blocked: Option<u32>, mem: MemStat, load: [f64; 3], procs: Vec<ProcSample>, uptime: std::time::Duration, forks: Option<u64>, io_supported: bool, io_collected: bool, io_denied: usize, disks: Option<Vec<DiskStat>>, pressure: Option<Pressure>, clock_ceiling: Option<f32>, pgin: Option<u64>, pgout: Option<u64>, swin: Option<u64>, swout: Option<u64>, oom_kills: Option<u64>, net: Option<NetStat>, filesystems: Option<Vec<FsStat>>, tasks: Option<Vec<ThreadSample>>, exited: Option<Vec<ProcSample>>, cgroups: Option<Vec<CgroupStat>>, nodes: Option<Vec<NodeStat>>, nfs: Option<NfsStat>, notes: Option<Vec<Arc<str>>>, temps: Option<Vec<Temp>>, fans: Option<Vec<Fan>>, power: Option<Power>, gpus: Option<Vec<Gpu>> } }
 
 impl Sample {
     /// A zeroed sample. Test fixture only — the real path always starts from
@@ -1267,6 +1396,20 @@ mod tests {
     }
 
     #[test]
+    fn a_process_row_stays_inside_its_budget() {
+        // Six hundred of these a sample and six hundred samples a buffer: every
+        // eight bytes here is three megabytes on an ordinary laptop. It was 192
+        // bytes, and 144 once its optional fields stopped paying for padding
+        // around a presence bit (0235). A field that needs more is a decision,
+        // and this is where it gets made.
+        assert!(
+            std::mem::size_of::<ProcSample>() <= 144,
+            "a process row is {} bytes",
+            std::mem::size_of::<ProcSample>()
+        );
+    }
+
+    #[test]
     fn a_sample_that_knows_nothing_claims_nothing() {
         // `unknown()` is the base every collector defaults through, so a value
         // fabricated here is fabricated on every platform that stays quiet
@@ -1294,6 +1437,10 @@ mod tests {
             ("oom_kills", s.oom_kills.is_some()),
             ("net", s.net.is_some()),
             ("filesystems", s.filesystems.is_some()),
+            ("temps", s.temps.is_some()),
+            ("fans", s.fans.is_some()),
+            ("power", s.power.is_some()),
+            ("gpus", s.gpus.is_some()),
             ("mem.free", s.mem.free.is_some()),
             // Not an `Option`, but it is the flag that decides whether the IO
             // columns render at all. Defaulting it to `true` would put a zero
@@ -1379,18 +1526,18 @@ mod tests {
             user: Arc::from("root"),
             cpu: 0.0,
             rss: 0,
-            threads: Some(1),
+            threads: Some(1).into(),
             state: 'S',
-            started: Some(1),
+            started: Some(1).into(),
             cmd: None,
-            io: None,
+            io: None.into(),
 
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         };
         assert_eq!(p.command(), "[kworker/3:1]");
         p.cmd = Some(Arc::from("node server.js"));

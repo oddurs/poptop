@@ -1,0 +1,10 @@
+# Written by tests/corpus/write. Checked by store::corpus.
+commit=6dfa040ed76241b9d1b9c8f97e9ccab47dc60a8e
+subject=fix(linux): the compact process row in the /proc backend and taskstats
+format=15
+store_samples=1
+log_samples=2
+cores=10
+mem_total=8393289728
+written_from=1790053713
+written_to=1790053717

@@ -173,8 +173,9 @@ What works: both backends; the timeline with scrubbing, zoom and jumping to a
 timestamp (`b`); the process tree (`t`); grouping (`g`); the per-process history
 panel (`d`); sorting including by whatever is constrained (`S`); the query
 filter; per-process disk throughput; clock-ceiling reporting; NUMA nodes;
-cgroup v2 utilisation and pressure; NFS; processes that lived and died between
-two samples; configurable intervals; history across restarts (`store`) and a
+cgroup v2 utilisation and pressure; NFS; temperatures, fans, the battery and
+GPU load where the OS publishes them, and a Mac's disks; processes that lived
+and died between two samples; configurable intervals; history across restarts (`store`) and a
 daily log addressable by date (`log`, `--read`, `--days`), synced entry by
 entry, keeping the most recent `log-bytes` rather than the first of them and
 checkable from a script (`--verify`); a report over a period (`--report`);
@@ -187,11 +188,11 @@ Not there yet, and each for a stated reason rather than a shrug:
 
 - **Per-process network attribution.** Needs `/proc/net` inode matching or eBPF,
   and is its own project. atop reaches it through a separate `netatop` module.
-- **GPU and last-level cache.** Declined, with the reasoning in [what poptop
-  will read, and what it will
+- **NVIDIA GPUs and last-level cache.** Declined, with the reasoning in [what
+  poptop will read, and what it will
   not](docs/design/what-it-measures.md#what-poptop-will-read-and-what-it-will-not)
   — the first needs a vendor library or a daemon, the second a privileged
-  interface.
+  interface. AMD and Apple GPUs publish their load and are read.
 - **Infiniband.** Not declined on principle: `/sys/class/infiniband` publishes
   port counters to an ordinary reader, so it would qualify under the same rule.
   It is out on scope, and the machines that have it have fabric monitoring

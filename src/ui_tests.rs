@@ -46,17 +46,17 @@ fn proc_named(pid: i32, name: &str, cpu: f32, rss: u64) -> ProcSample {
         user: std::sync::Arc::from("root"),
         cpu,
         rss,
-        threads: Some(1),
+        threads: Some(1).into(),
         state: 'S',
-        started: Some(0),
+        started: Some(0).into(),
         cmd: None,
-        io: None,
+        io: None.into(),
         container: None,
-        minflt: None,
-        majflt: None,
-        vsize: None,
-        nice: None,
-        pss: None,
+        minflt: None.into(),
+        majflt: None.into(),
+        vsize: None.into(),
+        nice: None.into(),
+        pss: None.into(),
     }
 }
 
@@ -83,6 +83,10 @@ fn sample_at(cpu: f32, age_secs: u64) -> Sample {
         exited: None,
         cgroups: None,
         nodes: None,
+        temps: None,
+        fans: None,
+        power: None,
+        gpus: None,
         nfs: None,
         pressure: None,
         net: None,
@@ -1202,7 +1206,7 @@ fn a_process_with_no_start_time_is_never_even_asked_about() {
     let mut app = App::new(600);
     let mut s = sample(10.0);
     let mut p = proc_named(4823, "postgres", 20.0, 1 << 20);
-    p.started = None;
+    p.started = None.into();
     s.procs = vec![p];
     app.push(s);
     app.signals = true;
@@ -1800,7 +1804,8 @@ fn unreadable_processes_are_blank_not_zero() {
     s.procs[0].io = Some(crate::sample::IoRates {
         read: 2048,
         write: 0,
-    });
+    })
+    .into();
     // procs[1] and [2] stay None: readable by root only.
     s.io_denied = 2;
     app.push(s);
@@ -3540,19 +3545,19 @@ fn a_column_of_figures_shares_a_right_edge() {
         ProcSample {
             cpu: 103.4,
             rss: 6_500_000_000,
-            threads: Some(33),
+            threads: Some(33).into(),
             ..proc_named(81977, "aaa", 0.0, 0)
         },
         ProcSample {
             cpu: 21.3,
             rss: 62_800_000,
-            threads: Some(4),
+            threads: Some(4).into(),
             ..proc_named(5531, "bbb", 0.0, 0)
         },
         ProcSample {
             cpu: 6.1,
             rss: 5_400_000,
-            threads: Some(139),
+            threads: Some(139).into(),
             ..proc_named(1, "ccc", 0.0, 0)
         },
     ];
@@ -4319,7 +4324,7 @@ fn a_reused_pid_does_not_splice_two_processes_into_one_line() {
         s.procs = vec![
             ProcSample {
                 cpu,
-                started,
+                started: started.into(),
                 ..proc_named(4242, "recycled", 0.0, 1 << 20)
             },
             // A neighbour whose history moves, so the column is drawn: it is
@@ -4492,9 +4497,9 @@ fn with_disk(util: f32, await_ms: Option<f32>) -> Sample {
         write: 2 << 20,
         reads: 40,
         writes: 90,
-        util,
+        util: Some(util),
         await_ms,
-        queue: 4.5,
+        queue: Some(4.5),
     }]);
     s
 }
@@ -5017,9 +5022,9 @@ fn an_idle_machine_names_the_device_the_collector_meant() {
         write: 0,
         reads: 0,
         writes: 0,
-        util: 0.0,
+        util: Some(0.0),
         await_ms: None,
-        queue: 0.0,
+        queue: Some(0.0),
     };
     let mut s = sample(10.0);
     s.disks = Some(vec![idle("nvme0n1"), idle("loop3"), idle("sdb")]);
@@ -5038,9 +5043,9 @@ fn the_busiest_device_is_the_one_reported() {
         write: 0,
         reads: 1,
         writes: 1,
-        util,
+        util: Some(util),
         await_ms: Some(1.0),
-        queue: 0.0,
+        queue: Some(0.0),
     };
     let mut s = sample(10.0);
     s.disks = Some(vec![d("sda", 2.0), d("nvme0n1", 97.0), d("sdb", 40.0)]);
@@ -5085,8 +5090,8 @@ fn an_unknown_thread_count_is_a_dash_not_a_one() {
             .expect("no process row")
     };
 
-    let unknown = row(None);
-    let one = row(Some(1));
+    let unknown = row(None.into());
+    let one = row(Some(1).into());
     assert_ne!(
         unknown, one,
         "a process with no thread count rendered identically to one with a single thread"
@@ -5096,7 +5101,7 @@ fn an_unknown_thread_count_is_a_dash_not_a_one() {
         "an unknown thread count was not an em dash: {unknown:?}"
     );
     assert_eq!(
-        row(Some(36)).matches("36").count(),
+        row(Some(36).into()).matches("36").count(),
         1,
         "a real thread count went missing"
     );
@@ -5115,7 +5120,7 @@ fn a_pid_with_no_start_time_gets_no_history_rather_than_the_wrong_one() {
         s.procs = vec![
             ProcSample {
                 cpu,
-                started: None,
+                started: None.into(),
                 ..proc_named(4242, "unknowable", 0.0, 1 << 20)
             },
             // A process that does have an identity, and a history that moves.
@@ -5124,7 +5129,7 @@ fn a_pid_with_no_start_time_gets_no_history_rather_than_the_wrong_one() {
             // test would pass for the wrong reason, never having looked.
             ProcSample {
                 cpu,
-                started: Some(7),
+                started: Some(7).into(),
                 ..proc_named(4243, "knowable", 0.0, 1 << 20)
             },
         ];
@@ -5151,9 +5156,9 @@ fn thread_churn_does_not_credit_growth_across_a_pid_with_no_identity() {
     // new, which is the honest reading of "we cannot tell these apart".
     use crate::history::churn;
     let mut fat = threaded(4242, 0, 40);
-    fat.started = None;
+    fat.started = None.into();
     let mut thin = threaded(4242, 0, 1);
-    thin.started = None;
+    thin.started = None.into();
     let before = sample_with(Some(100), vec![fat]);
     let after = sample_with(Some(100), vec![thin]);
     let c = churn(&before, &after).unwrap();
@@ -5603,8 +5608,8 @@ fn sample_with(forks: Option<u64>, procs: Vec<ProcSample>) -> Sample {
 
 fn threaded(pid: i32, started: u64, threads: u32) -> ProcSample {
     ProcSample {
-        started: Some(started),
-        threads: Some(threads),
+        started: Some(started).into(),
+        threads: Some(threads).into(),
         ..proc_named(pid, "worker", 0.0, 0)
     }
 }
@@ -6783,7 +6788,8 @@ fn the_io_columns_drop_rather_than_squeezing_the_table() {
     s.procs[0].io = Some(crate::sample::IoRates {
         read: 2048,
         write: 4096,
-    });
+    })
+    .into();
     app.push(s);
     assert!(app.show_io, "the fixture is not testing what it claims");
 
@@ -6827,14 +6833,15 @@ fn no_width_and_no_view_can_squeeze_a_figure() {
     s.procs[0].io = Some(crate::sample::IoRates {
         read: 2048,
         write: 4096,
-    });
+    })
+    .into();
     // A figure whose truncation is unmistakable: every suffix of it is also a
     // plausible memory figure, which is exactly what makes the bug silent.
     s.procs[0].rss = 512 << 20;
     s.procs[0].cpu = 137.5;
-    s.procs[0].pss = Some(300 << 20);
-    s.procs[0].vsize = Some(4 << 30);
-    s.procs[0].majflt = Some(7);
+    s.procs[0].pss = Some(300 << 20).into();
+    s.procs[0].vsize = Some(4 << 30).into();
+    s.procs[0].majflt = Some(7).into();
     app.push(s);
 
     for view in View::ALL {
@@ -7744,7 +7751,8 @@ fn the_column_headers_name_the_columns_under_them() {
             io: Some(crate::sample::IoRates {
                 read: 1 << 20,
                 write: 1 << 21,
-            }),
+            })
+            .into(),
             // Varying, so the history column is drawn (0110).
             ..proc_named(101, "postgres", 20.0 + 15.0 * i as f32, 1 << 20)
         }];
@@ -7986,7 +7994,8 @@ fn the_columns_that_identify_a_process_are_adjacent() {
                 io: Some(crate::sample::IoRates {
                     read: 1 << 20,
                     write: 0,
-                }),
+                })
+                .into(),
                 user: std::sync::Arc::from("operator"),
                 cmd: Some(std::sync::Arc::from("node /srv/api/server.js")),
                 ..proc_named(4821, "node", 31.2, 1 << 30)
@@ -8205,17 +8214,17 @@ fn shuffling_history(app: &mut App) {
         s.procs = vec![
             ProcSample {
                 cpu: f * 10.0,
-                started: Some(1),
+                started: Some(1).into(),
                 ..proc_named(101, "postgres", 0.0, 1 << 20)
             },
             ProcSample {
                 cpu: 90.0 - f * 10.0,
-                started: Some(2),
+                started: Some(2).into(),
                 ..proc_named(102, "nginx", 0.0, 1 << 20)
             },
             ProcSample {
                 cpu: 45.0 - (f - 5.0).abs() * 5.0,
-                started: Some(3),
+                started: Some(3).into(),
                 ..proc_named(103, "redis", 0.0, 1 << 20)
             },
         ];
@@ -8287,13 +8296,13 @@ fn a_process_absent_at_the_cursor_is_stated_rather_than_swapped() {
     for i in 0..6 {
         let mut s = sample_at(50.0, 5 - i);
         s.procs = vec![ProcSample {
-            started: Some(1),
+            started: Some(1).into(),
             ..proc_named(101, "postgres", 20.0, 1 << 20)
         }];
         // The build only starts halfway through.
         if i >= 3 {
             s.procs.push(ProcSample {
-                started: Some(2),
+                started: Some(2).into(),
                 ..proc_named(102, "cargo", 90.0, 1 << 20)
             });
         }
@@ -8336,7 +8345,7 @@ fn following_a_process_does_not_follow_a_recycled_pid() {
     let mut app = App::new(60);
     let mut before = sample_at(50.0, 1);
     before.procs = vec![ProcSample {
-        started: Some(100),
+        started: Some(100).into(),
         ..proc_named(4821, "the-first-one", 20.0, 1 << 20)
     }];
     app.push(before);
@@ -8348,7 +8357,7 @@ fn following_a_process_does_not_follow_a_recycled_pid() {
     // Same pid, different process.
     let mut after = sample_at(50.0, 0);
     after.procs = vec![ProcSample {
-        started: Some(200),
+        started: Some(200).into(),
         ..proc_named(4821, "a-stranger", 20.0, 1 << 20)
     }];
     app.push(after);
@@ -8417,14 +8426,14 @@ fn the_viewport_holds_its_place_while_the_watched_process_is_absent() {
         let mut s = sample_at(50.0, 5 - i);
         s.procs = (0..40)
             .map(|n| ProcSample {
-                started: Some(n as u64 + 1),
+                started: Some(n as u64 + 1).into(),
                 ..proc_named(200 + n, &format!("worker{n:02}"), 40.0 - n as f32, 1 << 20)
             })
             .collect();
         // The one being watched only exists in the newest three samples.
         if i >= 3 {
             s.procs.push(ProcSample {
-                started: Some(999),
+                started: Some(999).into(),
                 ..proc_named(999, "latecomer", 0.5, 1 << 20)
             });
         }
@@ -8495,12 +8504,12 @@ fn the_absence_message_names_the_process_the_way_the_table_did() {
     for i in 0..4 {
         let mut s = sample_at(50.0, 3 - i);
         s.procs = vec![ProcSample {
-            started: Some(1),
+            started: Some(1).into(),
             ..proc_named(101, "postgres", 20.0, 1 << 20)
         }];
         if i >= 2 {
             s.procs.push(ProcSample {
-                started: Some(2),
+                started: Some(2).into(),
                 cmd: Some(std::sync::Arc::from("node /srv/api/server.js --port 3000")),
                 ..proc_named(102, "node", 30.0, 1 << 20)
             });
@@ -8664,7 +8673,8 @@ fn the_panel_names_the_constraint_but_never_applies_it() {
                 io: Some(crate::sample::IoRates {
                     read: (4 - i as u64) << 20,
                     write: 0,
-                }),
+                })
+                .into(),
                 ..proc_named(101 + i, &format!("worker{i}"), 20.0 - i as f32, 1 << 20)
             })
             .collect();
@@ -8782,18 +8792,19 @@ fn the_disk_sort_puts_unreadable_processes_last_not_among_the_idle() {
     use crate::app::Sort;
     let mut procs = [
         ProcSample {
-            io: None,
+            io: None.into(),
             ..proc_named(101, "unreadable", 1.0, 0)
         },
         ProcSample {
-            io: Some(crate::sample::IoRates { read: 0, write: 0 }),
+            io: Some(crate::sample::IoRates { read: 0, write: 0 }).into(),
             ..proc_named(102, "idle", 1.0, 0)
         },
         ProcSample {
             io: Some(crate::sample::IoRates {
                 read: 1 << 20,
                 write: 0,
-            }),
+            })
+            .into(),
             ..proc_named(103, "busy", 1.0, 0)
         },
     ];
@@ -8916,16 +8927,16 @@ fn worker_pool(app: &mut App, io: Option<crate::sample::IoRates>) {
             .map(|i| ProcSample {
                 cpu: 6.0 - i as f32,
                 rss: 100u64 << 20,
-                threads: Some(10),
-                io,
-                started: Some(i as u64 + 1),
+                threads: Some(10).into(),
+                io: io.into(),
+                started: Some(i as u64 + 1).into(),
                 cmd: Some(std::sync::Arc::from(format!("ruby /srv/app/worker{i}.rb"))),
                 ..proc_named(26622 + i, "ruby", 0.0, 0)
             })
             .collect();
         s.procs.push(ProcSample {
-            io,
-            started: Some(99),
+            io: io.into(),
+            started: Some(99).into(),
             cmd: Some(std::sync::Arc::from("node /srv/api/server.js")),
             ..proc_named(5531, "node", 31.2, 700 << 20)
         });
@@ -8957,7 +8968,7 @@ fn grouping_folds_a_worker_pool_into_one_row_that_sums() {
         group.proc.cpu
     );
     assert_eq!(group.proc.rss, 600 << 20, "memory did not sum");
-    assert_eq!(group.proc.threads, Some(60), "threads did not sum");
+    assert_eq!(group.proc.threads, Some(60).into(), "threads did not sum");
 
     // The count replaces the pid, because a group is not a process.
     let drawn = rows(&app, 110, 14);
@@ -8984,7 +8995,7 @@ fn owners_the_kernel_would_not_name_do_not_keep_the_user_column_open() {
         for _ in 0..App::CONSTANT_FOR {
             let mut s = sample(10.0);
             let mut hidden = proc_named(400, "trustd", 0.0, 0);
-            hidden.threads = None;
+            hidden.threads = None.into();
             hidden.user = std::sync::Arc::from(second);
             s.procs = vec![
                 ProcSample {
@@ -9041,7 +9052,7 @@ fn a_group_states_nothing_it_cannot_sum() {
     // No start time, so no identity — and therefore no sparkline. A group's
     // history is not the sum of its members': membership changes as processes
     // come and go, and a line through that is continuity that never happened.
-    assert_eq!(group.proc.started, None);
+    assert_eq!(group.proc.started, None.into());
     assert_eq!(group.proc.key(), None, "a group produced a history key");
 
     let drawn = rows(&app, 110, 14);
@@ -9070,7 +9081,7 @@ fn a_group_with_one_unreadable_member_reports_no_io_rather_than_a_short_total() 
     // — so `is_group()` alone also finds the lone `node`.
     let group = rows_data.iter().find(|r| r.count() > 1).unwrap();
     assert_eq!(
-        group.proc.io.map(|io| io.read),
+        group.proc.io.get().map(|io| io.read),
         Some(6 << 20),
         "readable members did not sum"
     );
@@ -9081,11 +9092,13 @@ fn a_group_with_one_unreadable_member_reports_no_io_rather_than_a_short_total() 
     s.io_collected = true;
     s.procs = (0..6)
         .map(|i| ProcSample {
-            io: (i > 0).then_some(crate::sample::IoRates {
-                read: 1 << 20,
-                write: 0,
-            }),
-            started: Some(i as u64 + 1),
+            io: (i > 0)
+                .then_some(crate::sample::IoRates {
+                    read: 1 << 20,
+                    write: 0,
+                })
+                .into(),
+            started: Some(i as u64 + 1).into(),
             ..proc_named(26622 + i, "ruby", 1.0, 1 << 20)
         })
         .collect();
@@ -9140,7 +9153,7 @@ fn a_group_can_be_followed_across_samples() {
     let mut s = sample(10.0);
     s.procs = (0..5)
         .map(|i| ProcSample {
-            started: Some(i as u64 + 1),
+            started: Some(i as u64 + 1).into(),
             ..proc_named(26622 + i, "ruby", 1.0, 1 << 20)
         })
         .collect();
@@ -9195,7 +9208,7 @@ fn a_group_of_mixed_owners_claims_neither() {
         s.procs = (0..6)
             .map(|i| ProcSample {
                 user: std::sync::Arc::from(if i < 3 { "alice" } else { "bob" }),
-                started: Some(i as u64 + 1),
+                started: Some(i as u64 + 1).into(),
                 ..proc_named(26622 + i, "ruby", 6.0 - i as f32, 100 << 20)
             })
             .collect();
@@ -9239,7 +9252,7 @@ fn a_group_shrinking_to_one_process_keeps_its_selection() {
         let mut s = sample(10.0);
         s.procs = (0..remaining)
             .map(|i| ProcSample {
-                started: Some(i as u64 + 1),
+                started: Some(i as u64 + 1).into(),
                 ..proc_named(26622 + i, "ruby", 1.0, 1 << 20)
             })
             .collect();
@@ -9296,7 +9309,7 @@ fn a_query_is_evaluated_at_the_cursor_not_against_the_live_sample() {
         let state = if i < 3 { 'D' } else { 'R' };
         s.procs = vec![ProcSample {
             state,
-            started: Some(1),
+            started: Some(1).into(),
             ..proc_named(101, "postgres", 20.0, 1 << 20)
         }];
         app.push(s);
@@ -9370,16 +9383,17 @@ fn a_query_finds_the_processes_a_header_figure_counts() {
             io: Some(crate::sample::IoRates {
                 read: 0,
                 write: 4 << 20,
-            }),
-            threads: Some(200),
-            started: Some(1),
+            })
+            .into(),
+            threads: Some(200).into(),
+            started: Some(1).into(),
             ..proc_named(101, "writer", 2.0, 1 << 30)
         },
         ProcSample {
             state: 'S',
-            io: Some(crate::sample::IoRates { read: 0, write: 0 }),
-            threads: Some(4),
-            started: Some(2),
+            io: Some(crate::sample::IoRates { read: 0, write: 0 }).into(),
+            threads: Some(4).into(),
+            started: Some(2).into(),
             ..proc_named(102, "idler", 1.0, 1 << 20)
         },
     ];
@@ -9532,12 +9546,13 @@ fn a_build_that_starts_and_finishes(app: &mut App) {
             s.procs.push(ProcSample {
                 cpu: 20.0 + (i - 12) as f32 * 2.5,
                 rss: (300 + (i - 12) * 40) << 20,
-                threads: Some(4 + (i as u32 - 12) / 3),
+                threads: Some(4 + (i as u32 - 12) / 3).into(),
                 io: Some(crate::sample::IoRates {
                     read: (i - 12) << 19,
                     write: 1 << 18,
-                }),
-                started: Some(2),
+                })
+                .into(),
+                started: Some(2).into(),
                 cmd: Some(std::sync::Arc::from("cargo build --release")),
                 ..proc_named(102, "cargo", 0.0, 0)
             });
@@ -9818,12 +9833,13 @@ fn a_process_row_carries_no_machine_thresholds() {
         let mut s = sample_at(i as f32 * 2.0, 39 - i);
         s.io_collected = true;
         s.procs = vec![ProcSample {
-            threads: Some(9),
+            threads: Some(9).into(),
             io: Some(crate::sample::IoRates {
                 read: 1 << 20,
                 write: 0,
-            }),
-            started: Some(1),
+            })
+            .into(),
+            started: Some(1).into(),
             cmd: Some(std::sync::Arc::from("cargo build --release")),
             ..proc_named(102, "cargo", 4.0 + i as f32, 200 << 20)
         }];
@@ -9861,7 +9877,7 @@ fn a_sampling_gap_is_not_reported_as_the_process_being_absent() {
         let ago = if i < 10 { 620 - i * 2 } else { 20 - i };
         let mut s = sample_at(50.0, ago as u64);
         s.procs = vec![ProcSample {
-            started: Some(1),
+            started: Some(1).into(),
             ..proc_named(101, "postgres", 4.0, 200 << 20)
         }];
         app.push(s);
@@ -9895,12 +9911,14 @@ fn a_figure_the_platform_would_not_give_is_a_gap_not_a_zero() {
         let mut s = sample_at(50.0, 19 - i);
         s.io_collected = true;
         s.procs = vec![ProcSample {
-            threads: (i > 0).then_some(8),
-            io: (i > 0).then_some(crate::sample::IoRates {
-                read: 1 << 20,
-                write: 0,
-            }),
-            started: Some(1),
+            threads: (i > 0).then_some(8).into(),
+            io: (i > 0)
+                .then_some(crate::sample::IoRates {
+                    read: 1 << 20,
+                    write: 0,
+                })
+                .into(),
+            started: Some(1).into(),
             ..proc_named(101, "postgres", 4.0, 200 << 20)
         }];
         app.push(s);
@@ -9936,7 +9954,7 @@ fn the_detail_title_gives_up_clauses_rather_than_being_cut() {
     for i in 0..20 {
         let mut s = sample_at(50.0, 19 - i);
         s.procs = vec![ProcSample {
-            started: Some(1),
+            started: Some(1).into(),
             cmd: Some(std::sync::Arc::from(
                 "/usr/local/lib/node_modules/thing/bin/serve.js --with --flags --and --more",
             )),
@@ -10253,7 +10271,7 @@ fn sample_with_threads() -> Sample {
     let mut s = sample(10.0);
     s.procs = vec![
         ProcSample {
-            threads: Some(3),
+            threads: Some(3).into(),
             ..proc_named(4021, "postgres", 40.0, 900 << 20)
         },
         proc_named(4200, "sshd", 0.5, 8 << 20),
@@ -10840,8 +10858,8 @@ fn asking_for_a_withheld_source_again_gets_it_back_in_one_press() {
 fn exited_proc(pid: i32, name: &str, cpu: f32, started: u64) -> ProcSample {
     ProcSample {
         state: 'X',
-        threads: None,
-        started: Some(started),
+        threads: None.into(),
+        started: Some(started).into(),
         ..proc_named(pid, name, cpu, 4 << 20)
     }
 }
@@ -10919,7 +10937,7 @@ fn a_process_that_was_already_running_is_not_credited_to_this_intervals_churn() 
     // A start time from long before this interval, and one the exited row has
     // to match exactly for the reconciliation to recognise it.
     before.procs = vec![ProcSample {
-        started: Some(12_345),
+        started: Some(12_345).into(),
         ..proc_named(4200, "sshd", 0.0, 1 << 20)
     }];
 
@@ -11071,11 +11089,11 @@ fn the_cgroup_walk_is_only_paid_for_while_the_view_is_open() {
 fn in_container(pid: i32, name: &str, cpu: f32, cid: Option<&str>) -> ProcSample {
     ProcSample {
         container: cid.map(std::sync::Arc::from),
-        minflt: None,
-        majflt: None,
-        vsize: None,
-        nice: None,
-        pss: None,
+        minflt: None.into(),
+        majflt: None.into(),
+        vsize: None.into(),
+        nice: None.into(),
+        pss: None.into(),
         ..proc_named(pid, name, cpu, 64 << 20)
     }
 }
@@ -11265,7 +11283,8 @@ fn the_disk_columns_are_reachable_on_a_narrow_terminal() {
         io: Some(crate::sample::IoRates {
             read: 5 << 20,
             write: 1 << 20,
-        }),
+        })
+        .into(),
         ..proc_named(4001, "postgres", 12.0, 64 << 20)
     }];
     app.push(s);
@@ -11546,9 +11565,9 @@ fn the_memory_view_shows_what_a_process_actually_costs() {
     let mut app = App::new(600);
     let mut s = sample(10.0);
     s.procs = vec![ProcSample {
-        pss: Some(300 << 20),
-        vsize: Some(4 << 30),
-        majflt: Some(1_200),
+        pss: Some(300 << 20).into(),
+        vsize: Some(4 << 30).into(),
+        majflt: Some(1_200).into(),
         ..proc_named(4001, "chrome", 12.0, 900 << 20)
     }];
     app.push(s);
@@ -11583,9 +11602,9 @@ fn a_field_the_platform_does_not_publish_is_a_dash_not_a_zero() {
     let mut s = sample(10.0);
     s.procs = vec![
         ProcSample {
-            pss: Some(300 << 20),
-            vsize: Some(4 << 30),
-            majflt: Some(7),
+            pss: Some(300 << 20).into(),
+            vsize: Some(4 << 30).into(),
+            majflt: Some(7).into(),
             ..proc_named(4002, "chrome", 1.0, 32 << 20)
         },
         proc_named(4001, "node", 12.0, 64 << 20),
@@ -11694,9 +11713,9 @@ fn the_memory_view_still_elides_the_command_rather_than_chopping_it() {
         cmd: Some(std::sync::Arc::from(
             "/usr/lib/chromium/chromium --type=renderer --enable-features=Vulkan --tail=marker",
         )),
-        pss: Some(300 << 20),
-        vsize: Some(4 << 30),
-        majflt: Some(3),
+        pss: Some(300 << 20).into(),
+        vsize: Some(4 << 30).into(),
+        majflt: Some(3).into(),
         ..proc_named(4001, "chromium", 12.0, 900 << 20)
     }];
     app.push(s);
@@ -11726,11 +11745,11 @@ fn a_grouped_row_does_not_borrow_one_members_growth() {
     let procs = |rss: u64| {
         vec![
             ProcSample {
-                started: None,
+                started: None.into(),
                 ..proc_named(4001, "node", 1.0, rss)
             },
             ProcSample {
-                started: None,
+                started: None.into(),
                 ..proc_named(4002, "node", 1.0, 10 << 20)
             },
         ]
@@ -14162,16 +14181,17 @@ fn show_inspector() {
             ProcSample {
                 cpu: if i == 30 { 190.0 } else { 88.4 },
                 rss: if i == 30 { 640 << 20 } else { 512 << 20 },
-                threads: Some(4),
-                nice: Some(0),
+                threads: Some(4).into(),
+                nice: Some(0).into(),
                 cmd: Some(std::sync::Arc::from(
                     "/usr/local/pgsql/bin/postgres -D /var/db/postgres",
                 )),
-                started: Some(2),
+                started: Some(2).into(),
                 io: Some(crate::sample::IoRates {
                     read: 1 << 20,
                     write: 0,
-                }),
+                })
+                .into(),
                 ..proc_named(824, "postgres", 0.0, 0)
             },
             proc_named(1190, "nginx", 12.5, 32 << 20),
@@ -14196,11 +14216,11 @@ fn one_process(app: &mut App) {
             ProcSample {
                 cpu: if i == 30 { 190.0 } else { 88.4 },
                 rss: if i == 30 { 640 << 20 } else { 512 << 20 },
-                threads: Some(4),
+                threads: Some(4).into(),
                 cmd: Some(std::sync::Arc::from(
                     "/usr/local/pgsql/bin/postgres -D /var/db/postgres",
                 )),
-                started: Some(2),
+                started: Some(2).into(),
                 ..proc_named(824, "postgres", 0.0, 0)
             },
             proc_named(1190, "nginx", 12.5, 32 << 20),
@@ -14606,20 +14626,21 @@ fn every_numeric_column_is_right_aligned_and_every_text_column_is_not() {
         ProcSample {
             cpu: 100.0,
             rss: 4 << 30,
-            threads: Some(128),
+            threads: Some(128).into(),
             io: Some(crate::sample::IoRates {
                 read: 900 << 20,
                 write: 7,
-            }),
-            started: Some(1),
+            })
+            .into(),
+            started: Some(1).into(),
             ..proc_named(999_999, "postgres", 0.0, 0)
         },
         ProcSample {
             cpu: 7.0,
             rss: 1 << 20,
-            threads: Some(2),
-            io: Some(crate::sample::IoRates { read: 3, write: 0 }),
-            started: Some(2),
+            threads: Some(2).into(),
+            io: Some(crate::sample::IoRates { read: 3, write: 0 }).into(),
+            started: Some(2).into(),
             ..proc_named(42, "sh", 0.0, 0)
         },
     ];
@@ -14690,7 +14711,7 @@ fn a_truncated_name_keeps_the_half_that_identifies_it() {
         cmd: Some(std::sync::Arc::from(
             "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (Renderer)",
         )),
-        started: Some(1),
+        started: Some(1).into(),
         ..proc_named(824, "Google Chrome H", 10.0, 1 << 20)
     }];
     app.push(s);
@@ -14810,8 +14831,8 @@ fn a_mixed_table(app: &mut App) {
     let mut s = sample(10.0);
     s.procs = (0..8)
         .map(|i| ProcSample {
-            threads: Some(if i < 4 { 8 } else { 2 }),
-            started: Some(i as u64),
+            threads: Some(if i < 4 { 8 } else { 2 }).into(),
+            started: Some(i as u64).into(),
             ..proc_named(
                 100 + i,
                 if i < 4 { "postgres" } else { "nginx" },
@@ -14975,13 +14996,13 @@ fn a_thread_total_nobody_can_supply_is_left_out_rather_than_dashed() {
     let mut s = sample(10.0);
     s.procs = vec![
         ProcSample {
-            threads: Some(4),
-            started: Some(1),
+            threads: Some(4).into(),
+            started: Some(1).into(),
             ..proc_named(100, "postgres", 10.0, 1 << 30)
         },
         ProcSample {
-            threads: None,
-            started: Some(2),
+            threads: None.into(),
+            started: Some(2).into(),
             ..proc_named(101, "opaque", 5.0, 1 << 28)
         },
     ];
@@ -15212,12 +15233,12 @@ fn a_jittery_pair(app: &mut App, samples: usize) {
         s.procs = vec![
             ProcSample {
                 cpu: if flip { 90.0 } else { 10.0 },
-                started: Some(1),
+                started: Some(1).into(),
                 ..proc_named(101, "spiky", 0.0, 1 << 30)
             },
             ProcSample {
                 cpu: 30.0,
-                started: Some(2),
+                started: Some(2).into(),
                 ..proc_named(102, "level", 0.0, 1 << 28)
             },
         ];
@@ -15288,8 +15309,8 @@ fn the_column_the_table_says_it_is_sorted_by_descends() {
                 let phase = (n + i * 3) % 7;
                 ProcSample {
                     cpu: 5.0 + i as f32 * 2.0 + phase as f32 * 1.5,
-                    started: Some(i as u64 + 1),
-                    threads: Some(1),
+                    started: Some(i as u64 + 1).into(),
+                    threads: Some(1).into(),
                     ..proc_named(100 + i, &format!("p{i}"), 0.0, 1 << 20)
                 }
             })
@@ -15333,7 +15354,7 @@ fn the_figure_follows_a_spike_while_it_runs() {
             let mut s = sample_at(10.0, (len - i) as u64);
             s.procs = vec![ProcSample {
                 cpu: if spike_at(i) { 90.0 } else { 5.0 },
-                started: Some(1),
+                started: Some(1).into(),
                 ..proc_named(42, "spiky", 0.0, 1 << 20)
             }];
             app.push(s);
@@ -15448,7 +15469,7 @@ fn a_process_absent_for_part_of_the_window_is_not_averaged_with_zeroes() {
         s.procs = if i >= 4 {
             vec![ProcSample {
                 cpu: 80.0,
-                started: Some(1),
+                started: Some(1).into(),
                 ..proc_named(101, "late", 0.0, 1 << 20)
             }]
         } else {
@@ -15581,7 +15602,7 @@ fn averaging_is_what_calms_the_order() {
             s.procs = vec![
                 ProcSample {
                     cpu: if i % 3 == 0 { 70.0 } else { 20.0 },
-                    started: Some(1),
+                    started: Some(1).into(),
                     ..proc_named(101, "noisy", 0.0, 1 << 20)
                 },
                 ProcSample {
@@ -15589,7 +15610,7 @@ fn averaging_is_what_calms_the_order() {
                     // 20 it sits at between spikes — so the raw figures cross
                     // on most samples and the averaged ones never do.
                     cpu: 25.0,
-                    started: Some(2),
+                    started: Some(2).into(),
                     ..proc_named(102, "level", 0.0, 1 << 20)
                 },
             ];
@@ -15627,7 +15648,7 @@ fn a_process_that_has_just_started_is_listed_at_once() {
     s.procs = vec![
         proc_named(101, "old", 5.0, 1 << 20),
         ProcSample {
-            started: Some(9),
+            started: Some(9).into(),
             ..proc_named(999, "brandnew", 50.0, 1 << 20)
         },
     ];
@@ -15655,7 +15676,7 @@ fn scrubbing_asks_about_the_moment_rather_than_the_boundary() {
         let mut s = sample_at(10.0, (12 - i) as u64);
         s.procs = vec![ProcSample {
             cpu: i as f32 * 10.0,
-            started: Some(1),
+            started: Some(1).into(),
             ..proc_named(101, "ramp", 0.0, 1 << 20)
         }];
         app.push(s);
@@ -15955,8 +15976,9 @@ fn the_summary_leads_with_whatever_the_tab_is_about() {
             io: Some(crate::sample::IoRates {
                 read: 1 << 20,
                 write: 2 << 20,
-            }),
-            started: Some(i as u64),
+            })
+            .into(),
+            started: Some(i as u64).into(),
             ..proc_named(100 + i, "postgres", 10.0, 1 << 30)
         })
         .collect();
@@ -15994,13 +16016,14 @@ fn a_disk_total_nobody_can_supply_falls_back_rather_than_lying() {
             io: Some(crate::sample::IoRates {
                 read: 1 << 20,
                 write: 0,
-            }),
-            started: Some(1),
+            })
+            .into(),
+            started: Some(1).into(),
             ..proc_named(100, "a", 10.0, 1 << 20)
         },
         ProcSample {
-            io: None,
-            started: Some(2),
+            io: None.into(),
+            started: Some(2).into(),
             ..proc_named(101, "b", 10.0, 1 << 20)
         },
     ];
@@ -16127,7 +16150,7 @@ fn a_process_the_kernel_would_not_describe_shows_dashes_not_zeros() {
     // `—`: an unreadable process is not an idle one.
     let mut s = sample(40.0);
     let mut hidden = proc_named(400, "trustd", 0.0, 0);
-    hidden.threads = None;
+    hidden.threads = None.into();
     hidden.user = std::sync::Arc::from("?");
     s.procs = vec![proc_named(42, "postgres", 3.0, 512 << 20), hidden];
     let mut app = App::new(60);
@@ -16387,25 +16410,25 @@ fn print_guide_frame() {
             ProcSample {
                 cpu: 30.3,
                 rss: 166 << 20,
-                threads: Some(12),
+                threads: Some(12).into(),
                 ..proc_named(96543, "node", 0.0, 0)
             },
             ProcSample {
                 cpu: 25.5,
                 rss: 172 << 20,
-                threads: Some(45),
+                threads: Some(45).into(),
                 ..proc_named(96556, "Google Chrome", 0.0, 0)
             },
             ProcSample {
                 cpu: 20.7,
                 rss: 437 << 20,
-                threads: Some(1),
+                threads: Some(1).into(),
                 ..proc_named(28117, "poptop", 0.0, 0)
             },
             ProcSample {
                 cpu: 16.9,
                 rss: 13 << 20,
-                threads: Some(12),
+                threads: Some(12).into(),
                 ..proc_named(86077, "rsst", 0.0, 0)
             },
         ];
@@ -16637,4 +16660,98 @@ fn a_zoomed_column_only_ever_fills_or_scrolls() {
         }
     }
     assert_eq!(scrolled, 2, "eight pushes at zoom 4 should start two slots");
+}
+
+/// The README machine with sensors: the die heating while it is busy and
+/// cooling while it is not, a drive, and a fan that follows the die.
+fn sensor_fixture(hot: bool) -> App {
+    let mut app = readme_fixture();
+    app.history.goto_live();
+    let mut samples: Vec<Sample> = app.history.iter().cloned().collect();
+    let mut t = 55.0_f32;
+    for s in &mut samples {
+        let target = if s.cpu_total > 50.0 { 82.0 } else { 52.0 };
+        t += (target - t) * 0.15;
+        let die = if hot { t + 16.0 } else { t };
+        s.temps = Some(vec![
+            crate::sample::Temp {
+                group: "cpu".into(),
+                celsius: die,
+                sensor: "coretemp Package id 0".into(),
+                crit: Some(100.0),
+            },
+            crate::sample::Temp {
+                group: "storage".into(),
+                celsius: 41.0,
+                sensor: "nvme Composite".into(),
+                crit: Some(84.85),
+            },
+        ]);
+        s.fans = Some(vec![crate::sample::Fan {
+            label: "cpu_fan".into(),
+            rpm: (1200.0 + (die - 50.0) * 60.0) as u32,
+        }]);
+        s.power = Some(crate::sample::Power {
+            charge: if hot { 14.0 } else { 83.0 },
+            state: if hot { "discharging" } else { "charging" }.into(),
+            watts: Some(if hot { 18.4 } else { -30.0 }),
+            minutes: None,
+        });
+        s.gpus = Some(vec![crate::sample::Gpu {
+            name: "Apple M4".into(),
+            util: if hot { 72.0 } else { s.cpu_total / 6.0 },
+            mem_used: Some(600 << 20),
+            mem_total: None,
+        }]);
+    }
+    let mut out = App::new(600);
+    for s in samples {
+        out.push(s);
+    }
+    out.theme = app.theme;
+    out
+}
+
+#[test]
+#[ignore = "prints the sensor frames; run with --ignored --nocapture"]
+fn print_sensor_frames() {
+    for (w, h, hot) in [
+        (80u16, 30u16, false),
+        (120, 30, false),
+        (160, 40, false),
+        (80, 30, true),
+    ] {
+        println!("--- {w}x{h}{}", if hot { " hot" } else { "" });
+        for l in rows(&sensor_fixture(hot), w, h) {
+            println!("{}", l.trim_end());
+        }
+    }
+}
+
+#[test]
+#[ignore = "times a frame over a full buffer; run with --ignored --nocapture --release"]
+fn time_a_full_frame() {
+    let mut app = App::new(601);
+    for i in (0..601).rev() {
+        let mut s = sample_at(20.0 + (i % 7) as f32, i as u64);
+        s.procs = (0..600)
+            .map(|p| ProcSample {
+                cpu: ((p * 7 + i as usize) % 13) as f32,
+                rss: (p as u64 + 1) << 20,
+                ..proc_named(p as i32 + 1, "worker", 0.0, 0)
+            })
+            .collect();
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    for _ in 0..3 {
+        term.draw(|f| ui::draw(f, &app)).unwrap();
+    }
+    let n = 30;
+    let t0 = std::time::Instant::now();
+    for _ in 0..n {
+        term.draw(|f| ui::draw(f, &app)).unwrap();
+    }
+    eprintln!("frame: {:?}", t0.elapsed() / n);
 }

@@ -131,7 +131,7 @@ impl Sort {
             // else — here it would quietly hide the busiest process on the box
             // from someone who had just asked to see it.
             Sort::Disk => {
-                let rate = |p: &ProcSample| p.io.map(|io| io.read + io.write);
+                let rate = |p: &ProcSample| p.io.get().map(|io| io.read + io.write);
                 // Written as `a` against `b` throughout. The first version
                 // matched on `(rate(b), rate(a))` to get the descending order
                 // for free and then got the `None` arms backwards, sorting
@@ -224,13 +224,13 @@ const BUDGET_STRIKES: u32 = 3;
 /// is not a smaller graph but a wrong one, and falls only once the peak has
 /// stayed under it for [`SETTLE`]. A burst no longer leaves a cliff behind it.
 ///
-/// Three slots, one per [`crate::ui::Unit`], doubled: the machine's panels and
+/// Four slots, one per [`crate::ui::Unit`], doubled: the machine's panels and
 /// one process's panels are different subjects and must not inherit each
 /// other's scale. Held in a `Cell` because drawing takes `&App` everywhere and
 /// this is the one fact about a frame that has to outlive it — a ceiling
 /// recomputed from scratch every frame is exactly the flicker being fixed.
 #[derive(Clone, Debug, Default)]
-pub struct HeldCeilings(std::cell::Cell<[(f32, Option<std::time::SystemTime>); 6]>);
+pub struct HeldCeilings(std::cell::Cell<[(f32, Option<std::time::SystemTime>); 8]>);
 
 /// How long a graph's ceiling stays up after the data stops needing it.
 ///
@@ -813,7 +813,11 @@ impl App {
             // value is that the record is there when you scrub back to the
             // spike — a ratchet would mean the burst you are looking for
             // happened before you thought to ask.
-            .with(Source::Exited);
+            .with(Source::Exited)
+            // Always, like exit records, and for the same reason: a
+            // temperature is worth having when it was being recorded before
+            // anyone thought to look.
+            .with(Source::Sensors);
         if self.io_ratchet {
             n = n.with(Source::Io);
         }
@@ -1010,7 +1014,7 @@ impl App {
         let now = self.history.current()?;
         now.procs
             .iter()
-            .find(|p| p.pid == *pid && p.started == *started)
+            .find(|p| p.pid == *pid && p.started.get() == *started)
             .cloned()
     }
 
@@ -1086,7 +1090,7 @@ impl App {
         if gap >= crate::history::gap_limit(self.interval) {
             return None;
         }
-        let key = |p: &&ProcSample| p.pid == pid && p.started == started;
+        let key = |p: &&ProcSample| p.pid == pid && p.started == started.into();
         let a = now.procs.iter().find(key)?.rss;
         let b = before.procs.iter().find(key)?.rss;
         Some(a as i64 - b as i64)
@@ -1465,7 +1469,7 @@ impl App {
                     // Neither has a view to turn off: exit records go into the
                     // table beside live rows, and the clock ceiling is a header
                     // figure. The withheld clause is what says they stopped.
-                    Source::Exited | Source::ClockPolicies => {}
+                    Source::Exited | Source::ClockPolicies | Source::Sensors => {}
                 }
                 self.withheld.push(worst);
             }
@@ -1586,7 +1590,7 @@ impl App {
                 Watched::Process { pid, started, .. } => s
                     .procs
                     .iter()
-                    .find(|p| p.pid == *pid && p.started == *started)
+                    .find(|p| p.pid == *pid && p.started.get() == *started)
                     .map(Member::of),
                 Watched::Group { name } => {
                     let mut it = s.procs.iter().filter(|p| *p.name == **name);
@@ -2046,7 +2050,7 @@ impl App {
             let age = (len - 1 - i) as f32;
             let w = 0.5_f32.powf(age / half_life);
             for p in s.procs.iter().chain(s.exited.as_deref().unwrap_or(&[])) {
-                sums.entry((p.pid, p.started)).or_default().add(p, w);
+                sums.entry((p.pid, p.started.get())).or_default().add(p, w);
             }
         }
         Smoothing {
@@ -2100,7 +2104,7 @@ impl App {
             Watched::Process { pid, started, .. } => sample
                 .procs
                 .iter()
-                .any(|p| p.pid == *pid && p.started == *started),
+                .any(|p| p.pid == *pid && p.started.get() == *started),
             // Through the *grouping's* key, not the process name. A group's
             // name is whatever it folds on — a username, a container id — so
             // matching it against `p.name` finds nothing the moment the key is
@@ -2248,13 +2252,13 @@ impl Smoothing {
     /// average to use.
     pub fn cpu(&self, p: &ProcSample) -> f32 {
         self.by_key
-            .get(&(p.pid, p.started))
+            .get(&(p.pid, p.started.get()))
             .map_or(p.cpu, |a| a.cpu)
     }
 
     pub fn rss(&self, p: &ProcSample) -> u64 {
         self.by_key
-            .get(&(p.pid, p.started))
+            .get(&(p.pid, p.started.get()))
             .map_or(p.rss, |a| a.rss)
     }
 
@@ -2273,7 +2277,7 @@ impl Watched {
         }
         Watched::Process {
             pid: row.proc.pid,
-            started: row.proc.started,
+            started: row.proc.started.get(),
             name: Arc::from(row.proc.command()),
         }
     }
@@ -2292,7 +2296,7 @@ impl Watched {
     /// into one.
     pub fn matches(&self, p: &crate::sample::ProcSample) -> bool {
         match self {
-            Watched::Process { pid, started, .. } => p.pid == *pid && p.started == *started,
+            Watched::Process { pid, started, .. } => p.pid == *pid && p.started.get() == *started,
             Watched::Group { name } => **name == *p.name,
         }
     }
@@ -2300,7 +2304,7 @@ impl Watched {
     fn is(&self, row: &TreeRow<'_>) -> bool {
         match self {
             Watched::Process { pid, started, .. } => {
-                !row.is_group() && *pid == row.proc.pid && *started == row.proc.started
+                !row.is_group() && *pid == row.proc.pid && *started == row.proc.started.get()
             }
             Watched::Group { name } => row.is_group() && **name == *row.proc.name,
         }
@@ -2403,7 +2407,7 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                 .iter()
                 .map(|p| p.io)
                 .try_fold(IoRates::default(), |acc, io| {
-                    io.map(|io| IoRates {
+                    io.get().map(|io| IoRates {
                         read: acc.read + io.read,
                         write: acc.write + io.write,
                     })
@@ -2444,11 +2448,15 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                     // `smaps_rollup`, a read per process and Linux only, which
                     // is why it is the memory view's column and not this one.
                     rss: members.iter().map(|p| p.rss).sum(),
-                    threads: members.iter().map(|p| p.threads).sum(),
+                    threads: members
+                        .iter()
+                        .map(|p| p.threads.get())
+                        .sum::<Option<u32>>()
+                        .into(),
                     state: '—',
-                    started: None,
+                    started: None.into(),
                     cmd: None,
-                    io,
+                    io: io.into(),
                     // Grouping by name, the members can be in different
                     // containers — or none — so there is no one answer and the
                     // column shows none. Grouping by container, every member
@@ -2466,18 +2474,18 @@ fn grouped<'a>(procs: &[&'a ProcSample], by: Grouping) -> Vec<TreeRow<'a>> {
                     // rates in a `u32`, and a name-group of hundreds of
                     // heavily-faulting processes overflows it — a panic in
                     // debug and a small wrong number in release.
-                    minflt: sum_rate(members, |p| p.minflt),
-                    majflt: sum_rate(members, |p| p.majflt),
-                    vsize: sum_of(members, |p| p.vsize),
+                    minflt: sum_rate(members, |p| p.minflt.get()).into(),
+                    majflt: sum_rate(members, |p| p.majflt.get()).into(),
+                    vsize: sum_of(members, |p| p.vsize.get()).into(),
                     nice: match members.iter().all(|p| p.nice == first.nice) {
                         true => first.nice,
-                        false => None,
+                        false => None.into(),
                     },
                     // Unlike RSS, this one sums *correctly*: a shared page is
                     // divided among the processes sharing it, so six renderers
                     // do not count it six times. It is the fix for the caveat
                     // the grouped RSS carries.
-                    pss: sum_of(members, |p| p.pss),
+                    pss: sum_of(members, |p| p.pss.get()).into(),
                 }),
                 prefix: String::new(),
                 context_only: false,
@@ -2526,16 +2534,16 @@ impl Member {
         Self {
             cpu: p.cpu,
             rss: p.rss,
-            threads: p.threads,
-            io: p.io.map(|io| io.read + io.write),
+            threads: p.threads.get(),
+            io: p.io.get().map(|io| io.read + io.write),
         }
     }
 
     fn add(&mut self, p: &ProcSample) {
         self.cpu += p.cpu;
         self.rss += p.rss;
-        self.threads = self.threads.zip(p.threads).map(|(a, b)| a + b);
-        self.io = self.io.zip(p.io).map(|(a, b)| a + b.read + b.write);
+        self.threads = self.threads.zip(p.threads.get()).map(|(a, b)| a + b);
+        self.io = self.io.zip(p.io.get()).map(|(a, b)| a + b.read + b.write);
     }
 }
 
@@ -2606,7 +2614,10 @@ pub fn constraint_of(s: &Sample) -> Option<Constraint> {
     // answers "why is this slow" rather than by size, which is why a disk with
     // no idle time outranks a busy CPU — the CPU being busy is often the
     // machine working, and the disk having nothing left is not.
-    if s.busiest_disk().is_some_and(|d| d.util >= DISK_CONSTRAINED) {
+    if s.busiest_disk()
+        .and_then(|d| d.util)
+        .is_some_and(|u| u >= DISK_CONSTRAINED)
+    {
         return Some(Constraint::Disk);
     }
     // Memory is deliberately not decided here. The only platform that reaches

@@ -305,7 +305,9 @@ fn schema_notes(
                 // misreading it — which is right, and silent, which is not: the
                 // column would just empty out. This is the case a downgrade
                 // hits after a metric changes precision.
-                Some(w) if w.hash != f.hash => retyped.push(&f.name),
+                Some(w) if w.hash != f.hash && !crate::persist::widens(&w.ty, &f.ty) => {
+                    retyped.push(&f.name)
+                }
                 Some(_) => {}
             }
         }
@@ -442,20 +444,21 @@ mod tests {
             user: Arc::from("oddurs"),
             cpu: 12.5,
             rss: 4 << 20,
-            threads: Some(3),
+            threads: Some(3).into(),
             state: 'S',
-            started: Some(987),
+            started: Some(987).into(),
             cmd: None,
             io: Some(IoRates {
                 read: 100,
                 write: 200,
-            }),
+            })
+            .into(),
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         }
     }
 
@@ -556,9 +559,9 @@ mod tests {
                     write: 3 << 20,
                     reads: 40,
                     writes: 120,
-                    util: 62.5,
+                    util: Some(62.5),
                     await_ms: Some(7.75),
-                    queue: 3.25,
+                    queue: Some(3.25),
                 },
                 DiskStat {
                     name: Arc::from("sdb"),
@@ -566,9 +569,9 @@ mod tests {
                     write: 0,
                     reads: 0,
                     writes: 0,
-                    util: 0.0,
+                    util: None,
                     await_ms: None,
-                    queue: 0.0,
+                    queue: None,
                 },
             ]),
             iowait: Some(61.25),
@@ -626,6 +629,37 @@ mod tests {
                     cpu: None,
                 },
             ]),
+            // A critical point on one and not the other, for the same reason.
+            temps: Some(vec![
+                crate::sample::Temp {
+                    group: "cpu".into(),
+                    celsius: 77.25,
+                    sensor: "Package id 0".into(),
+                    crit: Some(100.0),
+                },
+                crate::sample::Temp {
+                    group: "storage".into(),
+                    celsius: 41.0,
+                    sensor: "nvme Composite".into(),
+                    crit: None,
+                },
+            ]),
+            fans: Some(vec![crate::sample::Fan {
+                label: "cpu_fan".into(),
+                rpm: 2350,
+            }]),
+            power: Some(crate::sample::Power {
+                charge: 83.5,
+                state: "discharging".into(),
+                watts: Some(12.25),
+                minutes: None,
+            }),
+            gpus: Some(vec![crate::sample::Gpu {
+                name: "Apple M4".into(),
+                util: 18.0,
+                mem_used: Some(644_907_008),
+                mem_total: None,
+            }]),
             procs: (0..procs).map(|i| proc_of(i as i32, "postgres")).collect(),
             uptime: Duration::from_secs(90_000),
             forks: Some(4242),
@@ -669,6 +703,10 @@ mod tests {
         assert_eq!(a.net, b.net);
         assert_eq!(a.filesystems, b.filesystems);
         assert_eq!(a.nodes, b.nodes);
+        assert_eq!(a.temps, b.temps);
+        assert_eq!(a.fans, b.fans);
+        assert_eq!(a.power, b.power);
+        assert_eq!(a.gpus, b.gpus);
         assert_eq!(a.nfs, b.nfs);
         assert_eq!(a.procs.len(), b.procs.len());
         for (x, y) in a.procs.iter().zip(&b.procs) {
@@ -682,8 +720,8 @@ mod tests {
             assert_eq!(x.state, y.state);
             assert_eq!(x.started, y.started);
             assert_eq!(
-                x.io.map(|i| (i.read, i.write)),
-                y.io.map(|i| (i.read, i.write))
+                x.io.get().map(|i| (i.read, i.write)),
+                y.io.get().map(|i| (i.read, i.write))
             );
         }
     }
@@ -730,14 +768,15 @@ mod tests {
         // Restoring `1` for a process whose count was never known would put the
         // fabricated figure back on screen, one restart later.
         let mut s = sample_of(1.0, 2);
-        s.procs[0].threads = None;
-        s.procs[1].threads = Some(36);
+        s.procs[0].threads = None.into();
+        s.procs[1].threads = Some(36).into();
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(
-            back[0].procs[0].threads, None,
+            back[0].procs[0].threads,
+            None.into(),
             "a thread count was invented"
         );
-        assert_eq!(back[0].procs[1].threads, Some(36));
+        assert_eq!(back[0].procs[1].threads, Some(36).into());
     }
 
     #[test]
@@ -747,16 +786,17 @@ mod tests {
         // processes on a recycled pid get spliced into one line. A store that
         // flattened one into the other would reintroduce that on restore.
         let mut s = sample_of(1.0, 2);
-        s.procs[0].started = None;
-        s.procs[1].started = Some(0);
+        s.procs[0].started = None.into();
+        s.procs[1].started = Some(0).into();
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(
-            back[0].procs[0].started, None,
+            back[0].procs[0].started,
+            None.into(),
             "an unknown start time was invented"
         );
         assert_eq!(
             back[0].procs[1].started,
-            Some(0),
+            Some(0).into(),
             "a real zero was discarded"
         );
     }
@@ -784,7 +824,7 @@ mod tests {
         s.iowait = None;
         s.running = None;
         s.blocked = None;
-        s.procs[0].io = None;
+        s.procs[0].io = None.into();
         let back = decode(&encode(&[&s])).unwrap();
         assert_eq!(back[0].forks, None);
         assert_eq!(back[0].iowait, None);
@@ -942,7 +982,7 @@ mod tests {
         // the file's schema for that record type to know how wide each element
         // is. A scalar alone lets a broken `skip` pass.
         sample.1.push(Field {
-            name: "gpus".into(),
+            name: "tape_drives".into(),
             hash: <Option<Vec<DiskStat>> as Typed>::HASH,
             ty: <Option<Vec<DiskStat>> as Typed>::ty(),
         });
@@ -1093,7 +1133,7 @@ mod tests {
         assert_eq!(
             notes,
             vec![
-                "the stored history has fields this poptop does not read: cosmic_rays, gpus"
+                "the stored history has fields this poptop does not read: cosmic_rays, tape_drives"
                     .to_string()
             ],
             "the skipped field was not reported"
@@ -1545,6 +1585,10 @@ pub(crate) mod tests_support {
             exited: None,
             cgroups: None,
             nodes: None,
+            temps: None,
+            fans: None,
+            power: None,
+            gpus: None,
             nfs: None,
             procs: (0..procs)
                 .map(|i| ProcSample {
@@ -1554,18 +1598,18 @@ pub(crate) mod tests_support {
                     user: Arc::from(if i % 3 == 0 { "root" } else { "oddurs" }),
                     cpu: 1.0,
                     rss: 1 << 20,
-                    threads: Some(4),
+                    threads: Some(4).into(),
                     state: 'S',
-                    started: Some(i as u64),
+                    started: Some(i as u64).into(),
                     cmd: None,
-                    io: None,
+                    io: None.into(),
 
                     container: None,
-                    minflt: None,
-                    majflt: None,
-                    vsize: None,
-                    nice: None,
-                    pss: None,
+                    minflt: None.into(),
+                    majflt: None.into(),
+                    vsize: None.into(),
+                    nice: None.into(),
+                    pss: None.into(),
                 })
                 .collect(),
             uptime: Duration::from_secs(90_000),

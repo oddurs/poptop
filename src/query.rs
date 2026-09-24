@@ -216,7 +216,7 @@ impl Query {
                                 .iter()
                                 .filter(|t| t.pid == p.pid)
                                 .peekable();
-                            if mine.peek().is_none() && p.threads == Some(1) {
+                            if mine.peek().is_none() && p.threads == Some(1).into() {
                                 // A single-threaded process is not collected —
                                 // it *is* its only thread, so a row for it
                                 // would repeat the process one column narrower.
@@ -268,10 +268,10 @@ fn number_of(p: &ProcSample, f: Field) -> Option<f64> {
     Some(match f {
         Field::Cpu => p.cpu as f64,
         Field::Rss => p.rss as f64,
-        Field::Threads => p.threads? as f64,
+        Field::Threads => p.threads.get()? as f64,
         Field::Pid => p.pid as f64,
-        Field::Read => p.io?.read as f64,
-        Field::Write => p.io?.write as f64,
+        Field::Read => p.io.get()?.read as f64,
+        Field::Write => p.io.get()?.write as f64,
         Field::State | Field::Thread | Field::Container | Field::User | Field::Name => {
             return None;
         }
@@ -507,20 +507,21 @@ mod tests {
             user: Arc::from("deploy"),
             cpu: 12.5,
             rss: 512 << 20,
-            threads: Some(41),
+            threads: Some(41).into(),
             state: 'S',
-            started: Some(1),
+            started: Some(1).into(),
             cmd: Some(Arc::from("node /srv/api/server.js --port 3000")),
             io: Some(IoRates {
                 read: 2 << 20,
                 write: 512 << 10,
-            }),
+            })
+            .into(),
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         }
     }
 
@@ -583,12 +584,12 @@ mod tests {
         // not match `write > 1mb`, and it must not match `write < 1mb` either —
         // the same refusal the `—` in the column is making, one layer up.
         let mut p = proc("node");
-        p.io = None;
+        p.io = None.into();
         assert!(!keeps("write > 1mb", &p));
         assert!(!keeps("write < 1mb", &p));
         assert!(!keeps("read >= 0", &p));
         // …and a threads figure the platform would not give.
-        p.threads = None;
+        p.threads = None.into();
         assert!(!keeps("threads > 0", &p));
         assert!(!keeps("threads < 999", &p));
     }
@@ -663,17 +664,17 @@ mod review_tests {
             user: Arc::from(user),
             cpu: 12.5,
             rss: 512 << 20,
-            threads: Some(41),
+            threads: Some(41).into(),
             state,
-            started: Some(1),
+            started: Some(1).into(),
             cmd: Some(Arc::from(name)),
-            io: Some(IoRates { read: 0, write: 0 }),
+            io: Some(IoRates { read: 0, write: 0 }).into(),
             container: None,
-            minflt: None,
-            majflt: None,
-            vsize: None,
-            nice: None,
-            pss: None,
+            minflt: None.into(),
+            majflt: None.into(),
+            vsize: None.into(),
+            nice: None.into(),
+            pss: None.into(),
         }
     }
 

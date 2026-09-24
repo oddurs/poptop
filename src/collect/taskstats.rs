@@ -612,7 +612,7 @@ pub fn parse_exit(
         rss: hiwater_rss_kb.saturating_mul(1024),
         // Gone, and it was never one number: a task group's thread count over
         // its life is not something the exit record carries.
-        threads: None,
+        threads: None.into(),
         // `X` is what the kernel calls a dead task and what `ps` prints for
         // one. The table needs it to be visibly not a live row.
         state: 'X',
@@ -623,23 +623,23 @@ pub fn parse_exit(
         // impossible to match against the same process alive a moment earlier.
         // Every exit then read as newly created, and the churn reconciliation
         // saturated to zero on any box with ordinary turnover.
-        started: Some(boot.ticks_since_boot(btime)),
+        started: Some(boot.ticks_since_boot(btime)).into(),
         // The command line lives in the process's memory, which is gone.
         cmd: None,
         // The record carries lifetime byte totals, not a rate over this
         // interval, and the column is a rate. A total rendered there would read
         // as a rate and be wrong by however long the process lived.
-        io: None::<IoRates>,
+        io: None::<IoRates>.into(),
         // The cgroup file is gone with the process. Its container could be
         // recovered from the exit record's cgroup id on a kernel that carries
         // one, but this record does not — so `None` means "not knowable here"
         // and the column shows nothing rather than guessing.
         container: None,
-        minflt: None,
-        majflt: None,
-        vsize: None,
-        nice: None,
-        pss: None,
+        minflt: None.into(),
+        majflt: None.into(),
+        vsize: None.into(),
+        nice: None.into(),
+        pss: None.into(),
     })
 }
 
@@ -712,7 +712,8 @@ mod tests {
         assert_eq!(p.rss, 8 << 20, "hiwater_rss is in kilobytes");
         assert_eq!(p.state, 'X', "an exited row is not marked as one");
         assert_eq!(
-            p.threads, None,
+            p.threads,
+            None.into(),
             "an exit record has no thread count to give"
         );
         assert_eq!(p.cmd, None, "the command line dies with the process");
@@ -764,14 +765,14 @@ mod tests {
         let p = parse_exit(4021, &r, 1.0, BOOT, 0, &mut users).expect("no parse");
         assert_eq!(
             p.started,
-            Some(6_000),
+            Some(6_000).into(),
             "60 seconds after boot at 100 ticks a second is 6000 ticks"
         );
 
         // The key a live row would have carried for the same process.
         let live = ProcSample {
             pid: 4021,
-            started: Some(6_000),
+            started: Some(6_000).into(),
             ..Default::default()
         };
         assert_eq!(p.key(), live.key(), "the same process has two identities");

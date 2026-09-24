@@ -494,7 +494,7 @@ fn the_schema_is_json_on_stdout() {
 #[test]
 fn bench_times_every_collection_level() {
     let r = Home::new().run(&["--bench"]).ok();
-    assert_eq!(r.out.lines().count(), 6, "{}", r.out);
+    assert_eq!(r.out.lines().count(), 7, "{}", r.out);
     assert!(r.out.lines().all(|l| l.contains("/sample")), "{}", r.out);
 }
 

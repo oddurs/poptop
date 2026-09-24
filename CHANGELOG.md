@@ -16,7 +16,62 @@ process that wrote them:
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Temperatures and fans.** The hottest sensor in each group — CPU, GPU,
+  storage, memory, battery, board — from `hwmon` on Linux and the HID sensor
+  services on macOS, where forty sensors labelled like `PMU tdie6` become
+  three figures a person can read. `TEMP` in the header, beside `CPU` once it
+  is within fifteen degrees of critical; a `TEMP` row on the timeline when
+  there is room, drawn from 20°C rather than zero; `FAN` while a fan is
+  turning. Recorded, exported as `temps` and `fans` in `celsius` and `rpm`.
+  Schema change, compatible: two optional fields and two records (0231).
+- **Disks on macOS.** Throughput, operations, mean service time and mean queue
+  depth for each whole disk, from the storage drivers' own counters in the IO
+  registry. In the header as what the disk is moving each way, and on the
+  timeline as a byte rate for one named disk. macOS does not count
+  utilisation, so `DiskStat.util` — and `queue`, for symmetry — are optional
+  now. Schema change, compatible: a field that becomes optional reads every
+  older recording's value as present, which the store now does by rule rather
+  than skipping it (0232).
+- **The battery and the GPU.** Charge, which way it is going and at what
+  rate, from `/sys/class/power_supply` and the Mac's smart battery — absent
+  on a desktop, which a Mac's registry otherwise reports as a battery at zero.
+  GPU load from amdgpu's sysfs counters and the Apple GPU's own statistics.
+  Each is context in the header until it is news: `BAT` jumps to the front
+  once it is running the machine below a fifth, `GPU` beside `CPU` past half
+  load. A `GPU` row on the timeline, and both in `--once` and exports.
+  Schema change, compatible: two optional fields and two records (0233,
+  0234).
+
+### Performance
+
+- **Moving the pointer over poptop cost a fifth of a core.** Mouse capture
+  reports every motion, and each one redrew the whole screen for nothing:
+  100Hz of motion took 1.70s of CPU in ten seconds, and takes 0.18s now, which
+  is sampling alone. Presses, drags and the wheel still redraw.
+- **A process row is 144 bytes, not 192.** Most of poptop's memory is six
+  hundred samples of every process, and a quarter of each row was padding
+  around presence bits. Optional fields now spend one impossible value on
+  absence instead; the store, the log and exports are byte-for-byte unchanged
+  (0235).
+- **No sample waits for the hardware.** Sensors, the battery and the GPU are
+  read on a thread of their own, at most once a second, so a sample on a Mac
+  takes 4.5ms rather than the 46ms the sensor service makes a reader wait.
+
+### Fixed
+
+- **Keys waited for the sample.** Collection ran on the thread that reads
+  keys, so for as long as a sample took the screen froze and keys queued. It
+  runs on a thread of its own now, with the log writes, and the interface draws
+  a finished sample within a few milliseconds of it being ready (0229).
+- **Samples fell wherever poptop happened to start.** They land on wall-clock
+  multiples of the interval now — at one second, on the second — so two
+  poptops, a feed and the monitor beside it, and one day and the next all
+  sample the same instants. A clock that steps or slews costs one interval
+  slightly short or long, never a stall or a burst. The feed kept its own
+  schedule and restarted it from each wake-up, which drifted; it shares this
+  one (0230).
 
 ## [0.2.0] - 2026-09-20
 

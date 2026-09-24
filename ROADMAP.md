@@ -368,6 +368,22 @@ UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 
 - [x] `0216` The sorted column does not descend <sup>bug · p0 · ui</sup>
 
+## r9 — The machine under the processes
+
+`##########` 100% · 7 of 7 done
+
+Hardware and cadence sprint. poptop reads the kernel's accounting closely and
+
+### done
+
+- [x] `0229` Collection runs on the thread that reads keys <sup>bug · p0 · collect</sup>
+- [x] `0230` Samples land wherever poptop happened to start <sup>feature · p1 · collect</sup>
+- [x] `0231` Nothing says how hot the machine is <sup>feature · p1 · collect</sup>
+- [x] `0232` The disk panel is empty on macOS <sup>feature · p1 · collect</sup>
+- [x] `0233` Nothing says whether the machine is on battery <sup>feature · p2 · collect</sup>
+- [x] `0234` The GPU is invisible <sup>feature · p2 · collect</sup>
+- [x] `0235` poptop costs more than it should to watch the machine <sup>bug · p0 · collect · perf</sup>
+
 ## v0.2 — Cheap enough to run
 
 `##########` 100% · 11 of 11 done · due 2026-11-01

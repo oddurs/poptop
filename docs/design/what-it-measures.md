@@ -222,8 +222,9 @@ stopped answering is the one this reports on most loudly.
 ## What poptop will read, and what it will not
 
 atop reports four subsystems poptop does not: NFS, GPU, Infiniband and
-last-level cache. NFS is the one above. The other three are declined, and the
-reason is a rule rather than a shrug — poptop's whole position is that it starts
+last-level cache. NFS is the one above, and GPU load came in later where the
+OS publishes it. The rest are declined, and the reason is a rule rather than a
+shrug — poptop's whole position is that it starts
 on a machine you have just connected to, so anything it needs to be installed
 first is a thing it cannot rely on.
 
@@ -236,13 +237,18 @@ tool to work, and its absence shows as `—` rather than as a failure to start.
 By that rule:
 
 - **NFS** is in. Three world-readable files, no daemon, no library.
-- **GPU** is declined for now. Per-GPU and per-process utilisation needs NVML —
-  a vendor library, versioned against the driver, absent on the machines poptop
-  is for — or a daemon, which is what atop uses. There is no kernel interface
-  that reports it: `/sys/class/drm` publishes a `gpu_busy_percent` for AMD cards
-  and nothing comparable for NVIDIA, so building on it would report GPU load on
-  one vendor and silence on the other, which is worse than an honest gap. If it
-  is built it will be an optional source behind the rule above.
+- **GPU load** is in, where the OS publishes it (0234). Per-GPU and
+  per-process utilisation on NVIDIA needs NVML — a vendor library, versioned
+  against the driver, absent on the machines poptop is for — and that is still
+  declined. What changed is the reading of the objection to the rest. It was
+  that `/sys/class/drm` publishes `gpu_busy_percent` for AMD cards and nothing
+  comparable for NVIDIA, so poptop would report load on one vendor and silence
+  on the other. But poptop's silence is not a zero: a GPU that publishes no
+  load gets no figure and no row, exactly as a Mac gets no `WAIT`, and the
+  [platforms reference](../reference/platforms.md) says which GPUs publish.
+  An honest gap is still honest when something beside it is filled in. And
+  macOS publishes the Apple GPU's own utilisation to any user in the IO
+  registry, which covers every Mac poptop runs on.
 - **Infiniband** is declined. `/sys/class/infiniband` does publish port counters
   without the verbs stack, so this one is *possible* within the rule — it is out
   on scope rather than on principle, and the machines that have it are the

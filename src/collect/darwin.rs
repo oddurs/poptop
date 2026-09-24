@@ -5,7 +5,7 @@
 //! laptop; the `/proc` backend is the one to read for how any of it works.
 
 use super::procinfo::{self, Kinfo};
-use super::{Collector, Needs, Source};
+use super::{Collector, Needs, Source, iokit, sensors};
 
 /// Every optional source this backend reads.
 ///
@@ -13,13 +13,15 @@ use super::{Collector, Needs, Source};
 /// `task_threads` — which would — is not called here. Declared rather than left
 /// implicit, so `y` cannot start a collection that will never produce a row and
 /// the budget cannot give up something that was never costing anything.
-pub const SUPPORTED: &[Source] = &[Source::Io];
-use crate::sample::{IoRates, Link, MemStat, NetStat, ProcSample, Sample};
+pub const SUPPORTED: &[Source] = &[Source::Io, Source::Sensors];
+use crate::sample::{DiskStat, IoRates, Link, MemStat, NetStat, ProcSample, Sample};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use sysinfo::{CpuRefreshKind, Networks, ProcessesToUpdate, RefreshKind, System, Users};
+use sysinfo::{
+    Components, CpuRefreshKind, Networks, ProcessesToUpdate, RefreshKind, System, Users,
+};
 
 /// The fastest sysinfo can be sampled and still report the truth.
 ///
@@ -78,6 +80,14 @@ pub struct SysinfoCollector {
     /// When those counters were read, so a difference can be divided by
     /// something. Same reason as `net_at`.
     faults_at: Option<std::time::Instant>,
+    /// The sensors, the battery and the GPU, read on a thread of their own
+    /// once somebody asks for them. See [`sensors::Background`].
+    hardware: Option<sensors::Background>,
+    /// Each whole disk's cumulative counters at the last sample, and when, so
+    /// the next can report rates.
+    disks_prev: Option<(std::time::Instant, HashMap<String, iokit::DiskCounters>)>,
+    /// Interned disk names, for the reason `link_names` is.
+    disk_names: HashMap<String, Arc<str>>,
     /// pid -> (start time, command line). Keyed like `names`, and for the same
     /// reason.
     ///
@@ -106,6 +116,9 @@ impl SysinfoCollector {
             kinfo: Kinfo::probe(),
             faults: HashMap::new(),
             faults_at: None,
+            hardware: None,
+            disks_prev: None,
+            disk_names: HashMap::new(),
             cmds: HashMap::new(),
             tick: 0,
         })
@@ -127,6 +140,62 @@ fn everything_but_frequency() -> RefreshKind {
 
 impl Collector for SysinfoCollector {
     fn collect(&mut self, needs: Needs) -> io::Result<Sample> {
+        // When the reading began, as the `/proc` backend stamps it. Taken at
+        // the end, a sample on the second was stamped however long collection
+        // took past it — forty milliseconds and more once the sensors are read
+        // — and the schedule's alignment to the clock never showed.
+        let at = SystemTime::now();
+        let mut sample = self.collect_rest(needs, at)?;
+        if needs.wants(Source::Sensors) {
+            if self.hardware.is_none() {
+                self.hardware = sensors::Background::start(read_hardware());
+            }
+            if let Some(h) = self.hardware.as_ref().and_then(sensors::Background::take) {
+                sample.temps = h.temps;
+                sample.fans = h.fans;
+                sample.power = h.power;
+                sample.gpus = h.gpus;
+            }
+        }
+        Ok(sample)
+    }
+}
+
+/// A Mac's hardware in one reading: the HID temperature sensors through
+/// sysinfo, and the battery and GPU from the IO registry.
+///
+/// The sensors are listed once — a 50ms walk of the HID services — and
+/// refreshed on every later reading.
+fn read_hardware() -> impl FnMut() -> sensors::Hardware + Send + 'static {
+    let mut components: Option<Components> = None;
+    move || {
+        let c = match components.as_mut() {
+            Some(c) => {
+                c.refresh(false);
+                c
+            }
+            None => components.insert(Components::new_with_refreshed_list()),
+        };
+        let temps = sensors::hottest(c.iter().filter_map(|c| {
+            Some(sensors::Reading {
+                group: sensors::label_group(c.label())?,
+                sensor: c.label(),
+                celsius: c.temperature()?,
+                crit: c.critical(),
+            })
+        }));
+        sensors::Hardware {
+            temps: (!temps.is_empty()).then_some(temps),
+            fans: None,
+            power: iokit::battery(),
+            gpus: iokit::gpus(),
+        }
+    }
+}
+
+impl SysinfoCollector {
+    /// Everything but the hardware sensors.
+    fn collect_rest(&mut self, needs: Needs, at: SystemTime) -> io::Result<Sample> {
         // `System::new_with_specifics` has already refreshed by the time this runs, and
         // this call lands microseconds later — far inside the interval sysinfo
         // needs between CPU refreshes. So the first sample's CPU figures are
@@ -322,9 +391,9 @@ impl Collector for SysinfoCollector {
                     // sysinfo exposes tasks only on Linux, so this is read
                     // directly — a flat `1` beside a CPU figure of several
                     // hundred percent was the table contradicting itself.
-                    threads: task.map(|t| t.threads),
+                    threads: task.map(|t| t.threads).into(),
                     state: state_of(p.status(), task),
-                    started,
+                    started: started.into(),
                     // Free here: `refresh_processes` already reads `argv`, so
                     // unlike the `/proc` backend there is no extra syscall to
                     // pay for and nothing to cache against. Interned all the
@@ -345,15 +414,15 @@ impl Collector for SysinfoCollector {
                     // lifetime total rendered there would read as one (0103).
                     // A process this user may not read has no counters, and
                     // says so, as it does in every other column.
-                    minflt: minor,
-                    majflt: major,
+                    minflt: minor.into(),
+                    majflt: major.into(),
                     // From the same `proc_taskinfo` as the thread count.
                     // It was `None` here, on a note that sysinfo publishes no
                     // virtual size, until checking poptop against `ps` found
                     // the figure already in hand.
-                    vsize: task.map(|t| t.vsize),
-                    nice: None,
-                    pss: None,
+                    vsize: task.map(|t| t.vsize).into(),
+                    nice: None.into(),
+                    pss: None.into(),
                     io: needs
                         .wants(Source::Io)
                         .then(|| {
@@ -367,7 +436,8 @@ impl Collector for SysinfoCollector {
                                 write: d.written_bytes,
                             })
                         })
-                        .flatten(),
+                        .flatten()
+                        .into(),
                 }
             })
             .collect();
@@ -406,7 +476,7 @@ impl Collector for SysinfoCollector {
         // none of it" are opposite answers, and a fabricated zero would quietly
         // promise the table is complete.
         Ok(Sample {
-            at: SystemTime::now(),
+            at,
             cpu_total,
             cpu_per_core,
             mem: MemStat {
@@ -441,8 +511,56 @@ impl Collector for SysinfoCollector {
             io_denied,
             net: Some(net),
             filesystems: procinfo::filesystems(),
+            disks: self.read_disks(),
             ..Sample::unknown()
         })
+    }
+
+    /// Each whole disk's traffic since the last sample, busiest first.
+    ///
+    /// From the storage drivers' own counters in the IO registry: bytes,
+    /// operations and the time spent servicing them, which gives throughput,
+    /// IOPS, mean service time and mean queue depth. Not utilisation, which
+    /// macOS does not count — see [`DiskStat::util`].
+    ///
+    /// `None` on the first sample, which has nothing to difference against,
+    /// and wherever the registry has no disks.
+    fn read_disks(&mut self) -> Option<Vec<DiskStat>> {
+        let now = std::time::Instant::now();
+        let counters: HashMap<String, iokit::DiskCounters> = iokit::disks().into_iter().collect();
+        let prev = self.disks_prev.replace((now, counters.clone()));
+        let (then, before) = prev?;
+        let secs = now.duration_since(then).as_secs_f64();
+        if secs <= 0.0 || counters.is_empty() {
+            return None;
+        }
+        let mut out: Vec<DiskStat> = counters
+            .iter()
+            .filter_map(|(name, c)| {
+                // A disk that appeared since the last sample has no rate yet.
+                let b = before.get(name)?;
+                let d = |now: u64, then: u64| now.saturating_sub(then) as f64;
+                let ops = d(c.reads, b.reads) + d(c.writes, b.writes);
+                let busy_ms = d(c.busy_ns, b.busy_ns) / 1e6;
+                let name = self
+                    .disk_names
+                    .entry(name.clone())
+                    .or_insert_with(|| Arc::from(name.as_str()))
+                    .clone();
+                Some(DiskStat {
+                    name,
+                    read: (d(c.read_bytes, b.read_bytes) / secs) as u64,
+                    write: (d(c.write_bytes, b.write_bytes) / secs) as u64,
+                    reads: (d(c.reads, b.reads) / secs) as u64,
+                    writes: (d(c.writes, b.writes) / secs) as u64,
+                    util: None,
+                    await_ms: (ops > 0.0).then(|| (busy_ms / ops) as f32),
+                    queue: Some((busy_ms / 1000.0 / secs) as f32),
+                })
+            })
+            .collect();
+        out.sort_by_key(|d| std::cmp::Reverse(d.read.saturating_add(d.write)));
+        Some(out)
     }
 }
 
@@ -573,7 +691,7 @@ mod tests {
         let first = c.collect(Needs::default()).unwrap();
         assert_eq!(
             first.procs.iter().find(|p| p.pid == me).unwrap().minflt,
-            Some(0),
+            Some(0).into(),
             "a first sighting reported a lifetime total as an interval's rate"
         );
 
@@ -595,7 +713,7 @@ mod tests {
         let after = top_faults(me);
 
         let row = s.procs.iter().find(|p| p.pid == me).unwrap();
-        let minor = row.minflt.expect("no fault rate for our own process");
+        let minor = row.minflt.get().expect("no fault rate for our own process");
         assert!(
             row.majflt.is_some(),
             "no major fault rate for our own process"
@@ -617,8 +735,12 @@ mod tests {
         // A process this user cannot read has no counters, and says so.
         let theirs = s.procs.iter().find(|p| p.threads.is_none());
         if let Some(p) = theirs {
-            assert_eq!(p.minflt, None, "a fault rate for a process we cannot read");
-            assert_eq!(p.majflt, None);
+            assert_eq!(
+                p.minflt,
+                None.into(),
+                "a fault rate for a process we cannot read"
+            );
+            assert_eq!(p.majflt, None.into());
         }
     }
 

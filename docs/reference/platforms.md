@@ -31,12 +31,17 @@ publish (`src/collect/darwin.rs`).
 | Containers (cgroup v2) | yes | — |
 | Per-cgroup CPU and pressure (`C`) | cgroup v2 | — |
 | NUMA nodes | yes | — |
-| Disks and their saturation | yes | — |
+| Disks: throughput, IOPS, service time, queue depth | yes | yes |
+| Disk saturation (utilisation) | yes | — |
 | Filesystem capacity | yes | yes |
 | Network throughput | yes | yes |
 | Network errors, drops, retransmits | yes | errors only |
 | NFS client and server | yes | — |
 | CPU throttling | `cpufreq` | — |
+| Temperatures, hottest in each group | `hwmon` | the HID sensor services |
+| Fan speeds | `hwmon` | — |
+| Battery: charge, direction, draw | `power_supply` | the smart battery, in the IO registry |
+| GPU load | amdgpu, in `drm` | the accelerator's statistics, in the IO registry |
 
 ## What you can read without root
 
