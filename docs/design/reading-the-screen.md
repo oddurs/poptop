@@ -190,3 +190,41 @@ terminal clip whatever is rightmost — rightmost is not least useful. At sixty
 columns you still get all four of the figures above. `--once` reports the same
 three, because a script that reads only cpu and memory reads a stalled machine
 as an idle one.
+
+## Why the figures move, and what stops the rows dancing
+
+A process table read at one sample a second is mostly noise. A row's CPU swings
+from 3 to 40 and back, and — far worse for reading it — rows swap places while
+your eye is on them. Activity Monitor answers both by refreshing every five
+seconds. poptop keeps every second and averages instead.
+
+`--smooth=5s` averages each row over the last five seconds, ending at the
+moment on screen, weighted towards it: the newest sample is about a third of
+the figure, the oldest about a tenth. A spike moves the number on the second it
+starts and fades over the seconds after, so the table agrees with the graph
+under it.
+
+That weighting is most of it. A flat mean over the same window has two edges
+and both are visible: it answers late, and it answers *again* when the spike
+falls off the far end a whole window later — a step down to a number nothing
+caused, with no event under it. A weight that halves with age has neither.
+
+The ordering is over the same figure the row is showing. That sounds obvious
+and was briefly not the case: for a few hours the figure ended at the cursor
+and a second average ended on a beat, with the rows ordered by the second one,
+so that between beats the table could not change its mind about what went above
+what. It worked, and it put a column headed `▾CPU%` on screen reading 13.4,
+5.8, 3.5, 4.2, 3.9, 3.0, 6.6.
+
+A table is monotonic in the column it says it is sorted by. That contract
+outranks the calm, because a reader who can see the sort is wrong has no way
+left to tell which of the two numbers behind it to believe — and the calm was
+bought with exactly the trust that made the ordering worth having. So the
+ordering follows the figure, and the calm comes from the averaging: lengthen
+`--smooth` and the rows settle, because the numbers they are sorted by settle.
+
+What that gives up is honest. Two processes genuinely taking turns at 90% and
+10% will trade rows every second, because they are taking turns.
+
+The strip above the table says `avg 5s` whenever this is on, because a figure
+that is not the sample's own has to say so.

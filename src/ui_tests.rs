@@ -2515,10 +2515,13 @@ fn the_cursor_stays_over_its_own_column_once_the_gutter_exists() {
     let spc = app.glyphs.samples_per_cell();
     let slots = graph_w * spc;
     let zoom = crate::app::effective_zoom(app.zoom(), n, slots);
-    let shown = (slots * zoom).min(n);
+    let full = (slots * zoom).min(n);
+    let lead = crate::history::lead(app.history.ordinal(app.history.len()), zoom);
+    let over = (full + lead).saturating_sub(slots * zoom);
+    let shown = full - over;
     let dropped = app.history.len() - shown;
     let idx = app.history.cursor_index() - dropped;
-    let slot = crate::history::slot_of_index(idx, shown, zoom, slots);
+    let slot = crate::history::slot_of_index(idx, shown, zoom, lead, slots);
     let expected = gutter as u16 + (slot / spc) as u16;
 
     assert_eq!(
@@ -2851,13 +2854,16 @@ fn the_readout_never_pushes_the_marker_off_its_column() {
             let spc = app.glyphs.samples_per_cell();
             let slots = graph_w * spc;
             let zoom = crate::app::effective_zoom(app.zoom(), n, slots);
-            let shown = (slots * zoom).min(n);
+            let full = (slots * zoom).min(n);
+            let lead = crate::history::lead(app.history.ordinal(app.history.len()), zoom);
+            let over = (full + lead).saturating_sub(slots * zoom);
+            let shown = full - over;
             let dropped = app.history.len() - shown;
             if app.history.cursor_index() < dropped {
                 continue; // off-window: covered by its own test
             }
             let idx = app.history.cursor_index() - dropped;
-            let slot = crate::history::slot_of_index(idx, shown, zoom, slots);
+            let slot = crate::history::slot_of_index(idx, shown, zoom, lead, slots);
             let expected = m + gutter as u16 + (slot / spc) as u16;
 
             assert_eq!(
@@ -5341,7 +5347,7 @@ fn zooming_out_cannot_erase_a_gap() {
     for pos in 0..4 {
         let mut flags = vec![false; 8];
         flags[pos] = true;
-        let slots = crate::history::any_slots(&flags, 4, 2);
+        let slots = crate::history::any_slots(&flags, 4, 0, 2);
         assert_eq!(
             slots,
             vec![true, false],
@@ -12238,7 +12244,9 @@ fn the_sparkline_and_the_timeline_are_drawn_over_the_same_span() {
     app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
 
     let r = ui::timeline_rows_range(h);
-    let (start, shown, _) = ui::shown_window(
+    let ui::Shown {
+        start, len: shown, ..
+    } = ui::shown_window(
         &app,
         ratatui::layout::Rect::new(0, r.start, w, r.end - r.start),
     );
@@ -13099,7 +13107,9 @@ fn clicking_the_timeline_scrubs_to_that_moment() {
     let (w, h) = (100u16, 26u16);
     let r = ui::timeline_rows_range(h);
     let timeline = ratatui::layout::Rect::new(0, r.start, w, r.end - r.start);
-    let (start, shown, _) = ui::shown_window(&app, timeline);
+    let ui::Shown {
+        start, len: shown, ..
+    } = ui::shown_window(&app, timeline);
     assert!(shown > 4, "no window to click in");
 
     // The left edge of the graph is the oldest sample on screen.
@@ -15112,10 +15122,10 @@ fn an_uptime_is_the_same_width_on_its_ninth_day_and_its_tenth() {
 
 #[test]
 fn the_table_is_given_air_only_where_there_is_room_for_it() {
-    // Two columns either side of the rows. They are the first thing given up:
-    // at a hundred and four columns a deep tree of Chrome helpers needs every
-    // one of them, and a process elided to `…derer)` is a worse loss than a row
-    // that touches the edge.
+    // Air either side of the rows, and the first thing given up: a process
+    // elided to `…derer)` is a worse loss than a row that touches the edge.
+    // Measured against the narrowest terminal poptop works on, because that is
+    // what the margin spends — two columns of content per column of air.
     let mut app = App::new(600);
     let mut s = sample(10.0);
     s.procs = (0..4)
@@ -15133,7 +15143,7 @@ fn the_table_is_given_air_only_where_there_is_room_for_it() {
     };
     assert!(
         left_edge(150) > left_edge(104),
-        "a wide terminal is no more spacious than a cramped one"
+        "a terminal with room to spare is no more spacious than a cramped one"
     );
 
     // And the panel's own divider still spans the whole width: it is what says
@@ -15259,6 +15269,116 @@ fn the_rows_stop_swapping_places_under_your_eye() {
 }
 
 #[test]
+fn the_column_the_table_says_it_is_sorted_by_descends() {
+    // 0216. Smoothing was split so the figure could end at the cursor while
+    // the ordering ended on a beat — live numbers, calm rows. It put a column
+    // marked `▾CPU%` on screen reading 13.4, 5.8, 3.5, 4.2, 3.9, 3.0, 6.6.
+    //
+    // A table is monotonic in the column it says it is sorted by. Asked of the
+    // rows as drawn, not of the comparator: the bug was that two readings of
+    // one quantity were both on screen, and a comparator tested against its
+    // own key cannot see that.
+    let mut app = App::new(600);
+    for n in (0..40).rev() {
+        let mut s = sample_at(55.0, n as u64);
+        // Six processes whose CPU wanders — ordinary jitter, no pair
+        // contrived to trade places.
+        s.procs = (0..6)
+            .map(|i| {
+                let phase = (n + i * 3) % 7;
+                ProcSample {
+                    cpu: 5.0 + i as f32 * 2.0 + phase as f32 * 1.5,
+                    started: Some(i as u64 + 1),
+                    threads: Some(1),
+                    ..proc_named(100 + i, &format!("p{i}"), 0.0, 1 << 20)
+                }
+            })
+            .collect();
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+
+    for smooth in [1usize, 3, 5, 9] {
+        app.smooth = smooth;
+        for _ in 0..8 {
+            let sm = app.smoothing();
+            let shown: Vec<f32> = app
+                .visible_rows()
+                .iter()
+                .filter(|r| !r.is_thread())
+                .map(|r| sm.cpu(&r.proc))
+                .collect();
+            assert!(
+                shown.windows(2).all(|w| w[1] <= w[0] + 0.05),
+                "the sorted column does not descend at smooth={smooth}: {shown:?}"
+            );
+            app.history.scrub(-1);
+        }
+        app.history.goto_live();
+    }
+}
+
+#[test]
+fn the_figure_follows_a_spike_while_it_runs() {
+    // Ending the window on a beat bought calm with staleness: a
+    // process that ran at 90% for three seconds showed `5.0` for every one of
+    // them, because the block being averaged had closed before the spike
+    // began — and then showed `56.0` for five seconds after it was over, a
+    // figure it had at no point, under a graph drawing the spike at the second
+    // it happened.
+    let spike_at = |n: usize| (12..15).contains(&n);
+    let build = |len: usize| {
+        let mut app = App::new(600);
+        for i in 0..len {
+            let mut s = sample_at(10.0, (len - i) as u64);
+            s.procs = vec![ProcSample {
+                cpu: if spike_at(i) { 90.0 } else { 5.0 },
+                started: Some(1),
+                ..proc_named(42, "spiky", 0.0, 1 << 20)
+            }];
+            app.push(s);
+        }
+        app
+    };
+
+    let shown = |app: &App| {
+        let sm = app.smoothing();
+        sm.cpu(&app.history.current().unwrap().procs[0])
+    };
+
+    // While the spike is running the figure climbs with it, rather than
+    // waiting for the next beat to notice.
+    let during: Vec<f32> = (13..=15).map(|n| shown(&build(n))).collect();
+    assert!(
+        during[0] > 20.0,
+        "the spike is invisible on the second it starts: {during:?}"
+    );
+    assert!(
+        during[1] > during[0] && during[2] > during[1],
+        "the figure does not follow the spike while it runs: {during:?}"
+    );
+
+    // And once it is over the figure comes down, rather than reporting a
+    // number the process never had for a whole window afterwards.
+    let after: Vec<f32> = (16..=20).map(|n| shown(&build(n))).collect();
+    assert!(
+        after.windows(2).all(|w| w[1] < w[0]),
+        "the figure does not decay after the spike: {after:?}"
+    );
+    assert!(
+        after.last().unwrap() < &10.0,
+        "the figure is still elevated five samples after the spike: {after:?}"
+    );
+    // Never a figure outside what the process actually did.
+    for v in during.iter().chain(&after) {
+        assert!(
+            (5.0..=90.0).contains(v),
+            "the table showed {v}, which the process never had"
+        );
+    }
+}
+
+#[test]
 fn a_figure_is_the_average_of_the_window_ending_at_the_cursor() {
     // Ends at the cursor, not at the live edge: scrubbed to a moment, the table
     // shows what those processes were doing around it, which is the only
@@ -15275,11 +15395,34 @@ fn a_figure_is_the_average_of_the_window_ending_at_the_cursor() {
             .map(|r| sm.cpu(&r.proc))
             .expect("no such row")
     };
-    // Four samples alternating 90/10 average to 50 whichever end you start.
+    // Alternating 90/10, weighted towards now: the figure sits between the two
+    // and leans towards whichever the newest sample was. A flat mean would be
+    // 50 whichever end you start; this one is not, and that is the point — the
+    // newest sample is about a third of it.
+    let shown = cpu(&app, "spiky");
     assert!(
-        (cpu(&app, "spiky") - 50.0).abs() < 0.01,
-        "{}",
-        cpu(&app, "spiky")
+        (10.0..=90.0).contains(&shown),
+        "the figure is outside the range of the samples it averages: {shown}"
+    );
+    let newest = app
+        .history
+        .current()
+        .unwrap()
+        .procs
+        .iter()
+        .find(|p| &*p.name == "spiky")
+        .unwrap()
+        .cpu;
+    let leans_up = shown > 50.0;
+    assert_eq!(
+        leans_up,
+        newest > 50.0,
+        "the average does not lean towards the newest sample ({newest} -> {shown})"
+    );
+    // And it is an average, not the newest sample wearing a hat.
+    assert!(
+        (shown - newest).abs() > 5.0,
+        "the figure is the raw sample, so nothing is being averaged: {shown}"
     );
     // And the raw figure is still the raw figure.
     let raw = app
@@ -15407,13 +15550,18 @@ fn the_figure_on_the_row_is_the_one_the_ordering_used() {
 }
 
 #[test]
-fn the_order_holds_still_between_boundaries_and_moves_on_them() {
-    // Averaging alone only makes reordering less frequent — measured on a real
-    // machine at fifteen frames in fifteen. The calm comes from the averages
-    // ending on a boundary, so between one and the next nothing in the table
-    // can change its mind. Same measurement with this: three in fifteen.
-    let mut app = App::new(600);
-    app.smooth = 5;
+fn averaging_is_what_calms_the_order() {
+    // The claim that replaced `the_order_holds_still_between_boundaries_and_moves_on_them`.
+    //
+    // That test pinned a second average taken on a beat, which the ordering
+    // was done over so the rows could hold still while the figures stayed
+    // live. It bought calm with a column that did not descend (0216), so it
+    // is gone, and what is left has to carry the weight: the averaging itself
+    // is what stops rows trading places, and how much of it there is is a
+    // setting the reader already has.
+    //
+    // Measured against the same table with smoothing off, which is the only
+    // comparison that says the averaging is doing anything.
     let order = |app: &App| -> Vec<i32> {
         app.visible_rows()
             .iter()
@@ -15421,38 +15569,46 @@ fn the_order_holds_still_between_boundaries_and_moves_on_them() {
             .map(|r| r.proc.pid)
             .collect()
     };
-    // A pair that trades places every sample, so any un-quantised ordering
-    // changes on every push.
-    let mut seen = Vec::new();
-    for i in 0..15 {
-        let mut s = sample_at(50.0, (15 - i) as u64);
-        s.procs = vec![
-            ProcSample {
-                cpu: if i % 2 == 0 { 90.0 } else { 10.0 },
-                started: Some(1),
-                ..proc_named(101, "a", 0.0, 1 << 20)
-            },
-            ProcSample {
-                cpu: if i % 2 == 0 { 10.0 } else { 90.0 },
-                started: Some(2),
-                ..proc_named(102, "b", 0.0, 1 << 20)
-            },
-        ];
-        app.push(s);
-        seen.push(order(&app));
-    }
-    let flips = seen.windows(2).filter(|w| w[0] != w[1]).count();
-    assert!(
-        flips <= 15 / 5,
-        "the order changed {flips} times in fifteen samples, which is not calm"
-    );
+    let flips = |smooth: usize| {
+        let mut app = App::new(600);
+        app.smooth = smooth;
+        let mut seen = Vec::new();
+        for i in 0..15 {
+            let mut s = sample_at(50.0, (15 - i) as u64);
+            // Two processes a long way apart in the mean, one of them noisy
+            // enough to cross the other on a single sample. Real jitter, not
+            // a pair contrived to alternate.
+            s.procs = vec![
+                ProcSample {
+                    cpu: if i % 3 == 0 { 70.0 } else { 20.0 },
+                    started: Some(1),
+                    ..proc_named(101, "noisy", 0.0, 1 << 20)
+                },
+                ProcSample {
+                    // Below the noisy one's mean of about 37, and above the
+                    // 20 it sits at between spikes — so the raw figures cross
+                    // on most samples and the averaged ones never do.
+                    cpu: 25.0,
+                    started: Some(2),
+                    ..proc_named(102, "level", 0.0, 1 << 20)
+                },
+            ];
+            app.push(s);
+            seen.push(order(&app));
+        }
+        seen.windows(2).filter(|w| w[0] != w[1]).count()
+    };
 
-    // And it is not frozen: a process that takes over does eventually get to
-    // the top, within a window.
-    app.smooth = 1;
-    let live = order(&app);
-    app.smooth = 5;
-    assert!(!live.is_empty() && !order(&app).is_empty());
+    let raw = flips(1);
+    let averaged = flips(5);
+    assert!(
+        raw > 4,
+        "the fixture does not reorder without smoothing: {raw}"
+    );
+    assert!(
+        averaged * 2 <= raw,
+        "averaging did not calm the order: {averaged} flips against {raw} raw"
+    );
 }
 
 #[test]
@@ -15580,14 +15736,58 @@ fn each_density_is_roomier_than_the_one_below_it() {
 fn comfort_is_the_first_thing_a_small_terminal_gives_up() {
     // A process elided to `…derer)` is a worse loss than a row that touches the
     // edge, and a graph too short to read is a worse loss than a blank line.
+    // So every comfort is surrendered — but at the width and the height where
+    // it starts costing something, not at a round number.
+    //
+    // At the narrowest terminal poptop claims to work on there is nothing
+    // spare, and every density draws the same frame.
     for d in ui::Density::ALL {
-        assert_eq!(d.margin(80), 0, "{d:?} indented an eighty-column table");
-        assert_eq!(d.panel_gap(24), 0, "{d:?} spent a row on air at 24 rows");
+        assert_eq!(
+            d.margin(60),
+            0,
+            "{d:?} indented the narrowest table there is"
+        );
+        assert_eq!(
+            d.panel_gap(18),
+            0,
+            "{d:?} spent a row on air with none to spare"
+        );
     }
-    // And granted where there is room.
-    assert!(ui::Density::Spacious.margin(200) > ui::Density::Compact.margin(200));
+    // And granted as soon as there is room. The floor is measured and stays;
+    // the slope was the bug. At `/ 16` comfortable did not arrive until 120
+    // columns and spacious until 136, so everything between was flat.
+    for w in [110u16, 120, 140] {
+        assert_eq!(ui::Density::Compact.margin(w), 0, "compact indented at {w}");
+        assert_eq!(
+            ui::Density::Comfortable.margin(w),
+            1,
+            "comfortable is flat at {w}"
+        );
+        assert_eq!(
+            ui::Density::Spacious.margin(w),
+            2,
+            "spacious is flat at {w}"
+        );
+    }
+    // The floor is about the table, not about a terminal somebody once had.
+    let (floor, table) = ui::air_from_is_about_the_table();
+    assert!(
+        floor.abs_diff(table) <= 4,
+        "the air floor {floor} has drifted from what the table needs, {table}"
+    );
+
+    // Below it the vertical half does the work instead: the row between the
+    // table and the graphs. Eighty by twenty-four is the commonest terminal
+    // there is, and it used to miss out because the gate was thirty rows.
+    assert_eq!(ui::Density::Spacious.panel_gap(24), 1);
+    assert_eq!(ui::Density::Comfortable.panel_gap(24), 0);
     assert_eq!(ui::Density::Spacious.panel_gap(40), 1);
-    assert_eq!(ui::Density::Comfortable.panel_gap(40), 0);
+    // So an eighty-column terminal can still tell the three apart.
+    assert_ne!(
+        ui::Density::Compact.panel_gap(24),
+        ui::Density::Spacious.panel_gap(24),
+        "at eighty by twenty-four the setting does nothing at all"
+    );
 }
 
 #[test]
@@ -16178,17 +16378,6 @@ fn print_readme_frame() {
 }
 
 #[test]
-#[ignore = "prints the frame at a size; run with --ignored --nocapture"]
-fn print_frame_sizes() {
-    for (w, h) in [(80u16, 24u16), (60, 20), (100, 40), (46, 16), (120, 30)] {
-        println!("── {w}x{h} {}", "─".repeat(60));
-        for l in rows(&readme_fixture(), w, h) {
-            println!("|{}|", l.trim_end());
-        }
-    }
-}
-
-#[test]
 #[ignore = "prints the first-run guide's frame; run with --ignored --nocapture"]
 fn print_guide_frame() {
     let mut app = App::new(600);
@@ -16318,4 +16507,134 @@ fn a_hidden_column_is_not_drawn_and_its_width_goes_to_the_command() {
         command_at(&after) < command_at(&before),
         "the width did not go to the command:\n  {before}\n  {after}"
     );
+}
+
+#[test]
+#[ignore = "diagnostic: what density actually changes; --ignored --nocapture"]
+fn print_density_differences() {
+    for (w, h) in [(80u16, 24u16), (100, 30), (120, 40), (140, 40), (170, 45)] {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for d in ui::Density::ALL {
+            let mut app = readme_fixture();
+            app.density = d;
+            seen.push((d.label().to_string(), rows(&app, w, h).join("\n")));
+        }
+        let same01 = seen[0].1 == seen[1].1;
+        let same12 = seen[1].1 == seen[2].1;
+        println!("{w}x{h}: compact==comfortable? {same01}   comfortable==spacious? {same12}");
+    }
+}
+
+/// Height of each braille dot column in the timeline, left to right, data
+/// only.
+fn dot_columns(app: &App) -> Vec<u32> {
+    let (w, h) = (60u16, 14u16);
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| ui::draw_timeline_for_test(f, f.area(), app))
+        .unwrap();
+    let buf = term.backend().buffer();
+    // Height of each dot column, summed down the panel.
+    let mut out = vec![0u32; w as usize * 2];
+    for y in 0..h {
+        for x in 0..w {
+            let cell = &buf[(x, y)];
+            let c = cell.symbol().chars().next().unwrap_or(' ');
+            // Data only. The warn and critical rules are drawn in chrome at
+            // fixed places, a grid the data scrolls under, and counting
+            // them would report the grid standing still as the data moving.
+            if !('\u{2800}'..='\u{28ff}').contains(&c) || cell.fg == app.theme.chrome {
+                continue;
+            }
+            let bits = c as u32 - 0x2800;
+            let left = [0x40, 0x04, 0x02, 0x01]
+                .iter()
+                .filter(|&&d| bits & d != 0)
+                .count();
+            let right = [0x80, 0x20, 0x10, 0x08]
+                .iter()
+                .filter(|&&d| bits & d != 0)
+                .count();
+            out[x as usize * 2] += left as u32;
+            out[x as usize * 2 + 1] += right as u32;
+        }
+    }
+    out
+}
+
+#[test]
+fn a_drawn_column_only_ever_scrolls() {
+    // Every series stays in step when each sample owns one column of the
+    // picture from the moment it is drawn until it scrolls off. A braille cell
+    // was drawn as one bar at the peak of its two samples; cells are fixed
+    // pairs of positions and samples move one position a push, so each sample
+    // met a new neighbour every second and every cell was worked out again. A
+    // steady series looks the same however it is paired, so memory scrolled
+    // cleanly while CPU and the network — which vary — seemed to lag and then
+    // catch up, over and over.
+    //
+    // So: decode each frame into its dot columns, push one sample, and the new
+    // frame's columns must be the old ones moved one to the left, with only the
+    // newest column new.
+    let mut app = App::new(600);
+    // A series that varies every sample — the case that used to be redrawn
+    // under the reader.
+    let level = |i: usize| [10.0, 70.0, 25.0, 90.0, 40.0, 5.0][i % 6];
+    for i in 0..20 {
+        app.push(sample_at(level(i), (40 - i) as u64));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    let before = dot_columns(&app);
+    app.push(sample_at(level(20), 20));
+    let after = dot_columns(&app);
+
+    // Everything but the newest column is the previous frame, one to the left.
+    // The gutter and the rules sit at fixed positions and are left out by
+    // comparing only the columns that held ink on both sides.
+    let n = before.len();
+    let moved: Vec<(usize, u32, u32)> = (1..n - 1)
+        .filter(|&i| before[i] > 0 && after[i - 1] > 0)
+        .map(|i| (i, before[i], after[i - 1]))
+        .filter(|(_, b, a)| b != a)
+        .collect();
+    assert!(
+        moved.is_empty(),
+        "columns changed height instead of scrolling: {moved:?}"
+    );
+}
+
+#[test]
+fn a_zoomed_column_only_ever_fills_or_scrolls() {
+    // The same promise at zoom > 1, where a slot holds several samples. Slots
+    // used to be counted back from the newest sample, so every push moved every
+    // slot's boundary by one: each slot lost its oldest sample and gained its
+    // neighbour's, its peak changed, and the whole graph reshaped once a
+    // second. Cut on absolute positions instead, a push either adds to the
+    // newest column or starts a new one and scrolls the rest — never anything
+    // else.
+    let mut app = App::new(600);
+    let level = |i: usize| [10.0, 70.0, 25.0, 90.0, 40.0, 5.0, 60.0][i % 7];
+    for i in 0..500 {
+        app.push(sample_at(level(i), (1000 - i) as u64));
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    assert!(app.set_zoom(4), "zoom 4 is not a level");
+
+    let mut scrolled = 0;
+    for i in 500..508 {
+        let before = dot_columns(&app);
+        app.push(sample_at(level(i), (1000 - i) as u64));
+        let after = dot_columns(&app);
+        let n = before.len();
+        let inked = |i: usize, j: usize| before[i] > 0 && after[j] > 0;
+        let stayed = (0..n - 1).all(|i| !inked(i, i) || before[i] == after[i]);
+        let shifted = (1..n - 1).all(|i| !inked(i, i - 1) || before[i] == after[i - 1]);
+        assert!(
+            stayed || shifted,
+            "push {i}: finished columns changed height:\n {before:?}\n {after:?}"
+        );
+        if !stayed {
+            scrolled += 1;
+        }
+    }
+    assert_eq!(scrolled, 2, "eight pushes at zoom 4 should start two slots");
 }

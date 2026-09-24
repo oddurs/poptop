@@ -2521,7 +2521,13 @@ fn row_at(table: ratatui::layout::Rect, y: u16) -> Option<Action> {
 
 /// The sample under column `x` of the timeline.
 fn scrub_to(app: &App, timeline: ratatui::layout::Rect, x: u16) -> Option<Action> {
-    let (start, shown, zoom) = ui::shown_window(app, timeline);
+    let ui::Shown {
+        start,
+        len: shown,
+        zoom,
+        lead,
+        slots,
+    } = ui::shown_window(app, timeline);
     if shown == 0 {
         return None;
     }
@@ -2529,8 +2535,10 @@ fn scrub_to(app: &App, timeline: ratatui::layout::Rect, x: u16) -> Option<Action
     let cell = x.checked_sub(timeline.x + gutter)? as usize;
     let spc = app.glyphs.samples_per_cell();
     // The same two packings the drawing uses, run backwards: a cell is `spc`
-    // slots and a slot is `zoom` samples.
-    let at = start + (cell * spc * zoom).min(shown - 1);
+    // slots and a slot is `zoom` samples, cut from the right with the newest
+    // slot `lead` short.
+    let from_left = (shown + lead + cell * spc * zoom).saturating_sub(slots * zoom);
+    let at = start + from_left.min(shown - 1);
     Some(Action::ScrubTo(at))
 }
 

@@ -133,7 +133,7 @@ parsing records never has to parse prose.
 ```console
 $ poptop --schema | head -8
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "records": {
     "MemStat": [
       {"name": "total", "type": "integer", "unit": "bytes", "optional": false},

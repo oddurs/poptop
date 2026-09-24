@@ -100,6 +100,23 @@ impl Sort {
             // not among the idle — its zeros were never measured. Ahead of the
             // figures rather than folded into them, so it holds whether the
             // figure compared is the raw one or the average.
+            // The figure the row is *showing*, not a second reading of it.
+            //
+            // These sorted on a settled average for a few hours: the figure
+            // ended at the cursor and the ordering on a beat, so the table
+            // held still while the numbers stayed live. It put a column marked
+            // `▾CPU%` on screen reading 13.4, 5.8, 3.5, 4.2, 3.9, 3.0, 6.6 —
+            // sorted by a quantity that was not the one printed (0216).
+            //
+            // A table is monotonic in the column it says it is sorted by. That
+            // contract outranks the calm: a reader who can see the sort is
+            // wrong has no way left to tell which of the two numbers behind it
+            // to believe, and the calm was bought with the trust that made the
+            // ordering worth having.
+            //
+            // The calm now comes from the average itself, which is what a
+            // longer `--smooth` lengthens. Two processes genuinely taking
+            // turns will trade rows, and that is them taking turns.
             Sort::Cpu => a
                 .unmeasured()
                 .cmp(&b.unmeasured())
@@ -1935,32 +1952,34 @@ impl App {
     /// Ends *at the cursor*, not at the live edge: scrubbed to 14:32, the table
     /// shows what those processes were doing around 14:32, which is the only
     /// reading that agrees with the timeline beside it.
-    /// Where the averaging window ends.
+    /// Where the averaging window ends: at the cursor, always.
     ///
-    /// While live this is a *boundary* rather than the newest sample, so the
-    /// averages — and therefore the ordering — hold still between one boundary
-    /// and the next. That is where the calm comes from: averaging alone only
-    /// makes reordering less frequent, and Activity Monitor is restful because
-    /// it redraws every five seconds rather than because it means.
+    /// It used to end on a *boundary* while live — `at - (at % smooth)` — so
+    /// that the figures, and therefore the ordering, held still between one
+    /// boundary and the next. The calm was real and the price was not worth
+    /// it. With a five-second window a process that ran at 90% for three
+    /// seconds showed `5.0` throughout, because the block it was averaging had
+    /// ended before the spike began; then, once the spike was over, the table
+    /// read `56.0` for five seconds — a figure the process had at no point.
+    /// Five rows of a number that is not true, under a graph drawing the spike
+    /// at the second it happened.
     ///
-    /// The rows themselves still come from the newest sample. Quantising those
-    /// too was tried and is wrong: a process that had just started would not be
-    /// listed for five seconds, and "what is running now" is the question the
-    /// table exists to answer.
+    /// Staleness is the wrong price for calm, because calm is not what a stale
+    /// figure buys: what has to hold still is the *order*, and the order is
+    /// held still by averaging the value the ordering is over — which
+    /// `Sort::compare_with` does, on a key coarse enough that two rows a
+    /// breath apart do not trade places. The number itself is then free to be
+    /// live, and it is the number the reader is reading.
     ///
-    /// While scrubbing it is the cursor exactly. The reader is asking about a
-    /// particular moment, and quantising the answer would show them a different
-    /// one.
+    /// The rows themselves have always come from the newest sample. Quantising
+    /// those too was tried and is wrong for the same reason twice over: a
+    /// process that had just started would not be listed for five seconds, and
+    /// "what is running now" is the question the table exists to answer.
     fn table_index(&self) -> Option<usize> {
         if self.history.len() == 0 {
             return None;
         }
-        let at = self.history.cursor_index();
-        Some(if self.smooth > 1 && self.history.is_live() {
-            at - (at % self.smooth)
-        } else {
-            at
-        })
+        Some(self.history.cursor_index())
     }
 
     /// The averaging window in samples, for a span asked for in seconds.
@@ -1988,39 +2007,52 @@ impl App {
         if window <= 1 {
             return Smoothing::default();
         }
-        // While live, the window ends on a boundary rather than on the newest
-        // sample — so between one boundary and the next *nothing in the table
-        // changes*, which is where the calm actually comes from. Averaging
-        // alone only makes the reordering less frequent; Activity Monitor is
-        // restful because it redraws every five seconds, not because it means.
+        // One window, ending at the cursor — live or scrubbed, the figures
+        // describe the moment on screen and agree with the graph beside them.
         //
-        // While scrubbing it ends exactly at the cursor. Then the reader is
-        // asking about a particular moment, and quantising the answer would be
-        // showing them a different one.
+        // It was briefly two: this one, and a second ending on a beat that the
+        // ordering was done over, so the rows held still while the numbers
+        // stayed live. That is a real thing to want and this was the wrong way
+        // to buy it, because it put two readings of one quantity on screen at
+        // once — a column headed `▾CPU%` that did not descend (0216). What
+        // calms the order is the averaging itself, and how much of it there is
+        // is already a setting.
         let at = self.table_index().unwrap_or(0);
         let first = (at + 1).saturating_sub(window);
-        let mut sums: HashMap<(i32, Option<u64>), (f32, u64, u32)> = HashMap::new();
-        for s in self.history.iter().skip(first).take(at + 1 - first) {
+        let len = at + 1 - first;
+
+        // Weighted towards now, not a flat mean over the window.
+        //
+        // A flat mean has two edges and both are visible. It answers late — a
+        // spike is a fifth of the figure on the second it starts — and it
+        // answers *again* when the spike falls off the far end of the window,
+        // a whole window later, as a step down to a number nothing caused. The
+        // reader sees a change with no event under it.
+        //
+        // A weight that halves with age has neither edge. The newest sample is
+        // about a third of the figure, so a spike moves the number at once and
+        // visibly; the oldest is about a tenth, so its leaving moves it by
+        // almost nothing. The same span, spent on a curve instead of a wall:
+        // "the last five seconds, mostly the last two".
+        //
+        // Half-life is half the window, which is the only choice here that
+        // does not need a setting of its own: it keeps the span the reader
+        // asked for as the span that matters, and puts the weight where the
+        // question is.
+        let half_life = (window as f32 / 2.0).max(0.5);
+        let mut sums: HashMap<(i32, Option<u64>), Weighted> = HashMap::new();
+        for (i, s) in self.history.iter().skip(first).take(len).enumerate() {
+            // Age in samples, counted back from the newest in the window.
+            let age = (len - 1 - i) as f32;
+            let w = 0.5_f32.powf(age / half_life);
             for p in s.procs.iter().chain(s.exited.as_deref().unwrap_or(&[])) {
-                let e = sums.entry((p.pid, p.started)).or_default();
-                e.0 += p.cpu;
-                e.1 += p.rss;
-                e.2 += 1;
+                sums.entry((p.pid, p.started)).or_default().add(p, w);
             }
         }
         Smoothing {
             by_key: sums
                 .into_iter()
-                .map(|(k, (cpu, rss, n))| {
-                    let n = n.max(1);
-                    (
-                        k,
-                        Averaged {
-                            cpu: cpu / n as f32,
-                            rss: rss / u64::from(n),
-                        },
-                    )
-                })
+                .filter_map(|(k, acc)| Some((k, acc.finish()?)))
                 .collect(),
         }
     }
@@ -2171,6 +2203,38 @@ impl Blocked {
 #[derive(Default)]
 pub struct Smoothing {
     by_key: HashMap<(i32, Option<u64>), Averaged>,
+}
+
+/// One process's running total while [`App::smoothing`] folds the window.
+#[derive(Clone, Copy, Default)]
+struct Weighted {
+    cpu: f32,
+    rss: f64,
+    weight: f32,
+}
+
+impl Weighted {
+    fn add(&mut self, p: &ProcSample, w: f32) {
+        self.cpu += p.cpu * w;
+        self.rss += p.rss as f64 * f64::from(w);
+        self.weight += w;
+    }
+
+    /// The averages, or `None` for a process that collected no weight at all.
+    ///
+    /// Divided by the weight this process actually collected, not by the
+    /// window's. A process that was not running for three of the five samples
+    /// was not idle for them, and dividing by all five would report a figure
+    /// it never had.
+    fn finish(self) -> Option<Averaged> {
+        if self.weight <= 0.0 {
+            return None;
+        }
+        Some(Averaged {
+            cpu: self.cpu / self.weight,
+            rss: (self.rss / f64::from(self.weight)) as u64,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Default)]
