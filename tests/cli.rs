@@ -513,6 +513,32 @@ fn a_theme_check_exits_by_its_verdict() {
 }
 
 #[test]
+fn the_glyph_card_draws_every_set() {
+    // Font coverage cannot be queried, so the card is how a reader finds out
+    // what their font has. It has to name every set `--graph` takes, or it is
+    // a menu missing an item.
+    let home = Home::new();
+    let card = home.run(&["--check-glyphs"]).ok();
+    for set in ["braille", "sextant", "quadrant", "block", "line", "ascii"] {
+        assert!(
+            card.out.contains(set),
+            "{set} is not on the card:\n{}",
+            card.out
+        );
+    }
+    // And says what to do with what it shows.
+    assert!(card.out.contains("--graph="), "{}", card.out);
+    // Every set drew something: a row of blanks would mean the card itself is
+    // broken, which is the one thing it cannot be.
+    let drawn = card
+        .out
+        .lines()
+        .filter(|l| l.chars().any(|c| "⣿█▇🬭▐#-_".contains(c)))
+        .count();
+    assert!(drawn >= 6, "the card drew nothing:\n{}", card.out);
+}
+
+#[test]
 fn a_reader_that_goes_away_is_not_a_crash() {
     // `poptop --schema | head -c1`: the pipe closes under the writer. Rust
     // turns the write error into a panic unless it is handled.

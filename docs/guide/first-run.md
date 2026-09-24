@@ -77,6 +77,10 @@ graph and anchors its scale; the row under it says how much time is on screen
 and how much each column is worth. The dashed rules are `--warn` and
 `--critical`.
 
+If the graphs are boxes rather than marks, your font does not have the glyphs
+poptop defaults to. `poptop --check-glyphs` draws every set it can use — pick
+one that looks like a graph and set `graph = NAME`.
+
 **The footer** is the keys that fit. When some were dropped it ends with
 `? more`; `?` lists [all of them](../reference/keys.md).
 

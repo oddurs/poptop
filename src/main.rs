@@ -91,14 +91,18 @@ USAGE:
     poptop --bench    time 20 collection passes (development)
     poptop --check-theme NAME
                     measure a theme and say whether it is legible
+    poptop --check-glyphs
+                    draw every glyph set, to see which ones this font has
 
-    --graph=SET     how the timeline is drawn. `braille` (default) draws bars
-                    at four levels a cell, and two samples a cell in the table's
-                    sparkline; `block` resolves more — eight levels — with the
-                    eighths ramp; `line` draws the outline instead of filling
-                    under it; `ascii` needs no Unicode. `--glyphs` is the old
-                    name and still works. Falls back to ascii on a Linux
-                    console.
+    --graph=SET     how the timeline is drawn. `braille` (default) draws two
+                    samples a cell at four levels each, in dots; `sextant` and
+                    `quadrant` draw the same two samples in solid blocks, at
+                    three levels and two; `block` resolves eight levels but one
+                    sample a cell; `line` draws the outline instead of filling
+                    under it; `ascii` needs no Unicode. A font has to have the
+                    glyphs — `--check-glyphs` draws them all so you can see.
+                    `--glyphs` is the old name and still works. Falls back to
+                    ascii on a Linux console.
     --scale=WHERE   where the y-axis starts: zero (default) or fit. `fit`
                     reclaims the rows a high flat series wastes — memory at
                     72-85% spends most of a 0-100 panel on ink that never
@@ -446,6 +450,8 @@ enum Command {
     Help,
     Version,
     CheckTheme(String),
+    /// Draw every glyph set, so a reader can see which ones their font has.
+    CheckGlyphs,
 }
 
 /// A command line that cannot be run, and what to say about it. Always exit 2.
@@ -558,6 +564,7 @@ fn command(args: &[String]) -> Result<Command, Usage> {
             Some(name) => Command::CheckTheme(name.to_string()),
             None => return Err(Usage("--check-theme needs a theme name".into())),
         },
+        "--check-glyphs" => Command::CheckGlyphs,
         "--schema" => Command::Schema,
         "--config" => Command::Config,
         "--keys" => Command::Keys,
@@ -1237,6 +1244,10 @@ fn main() -> io::Result<()> {
             flush(&warnings);
             return check_theme(&name);
         }
+        Command::CheckGlyphs => {
+            flush(&warnings);
+            return check_glyphs();
+        }
         Command::Version => {
             flush(&warnings);
             outln!("poptop {}", env!("CARGO_PKG_VERSION"));
@@ -1603,6 +1614,83 @@ fn bench(collector: &mut impl Collector) -> io::Result<()> {
 /// The question is whether the *theme* is legible, which is a property of the
 /// colours it names rather than of the terminal that happens to be running the
 /// check.
+/// Every glyph set, drawing the same series, so a reader can see which ones
+/// their font has (0247).
+///
+/// Font coverage cannot be queried. A terminal draws a replacement box for a
+/// glyph it has no font for, and poptop cannot tell that from a glyph — so
+/// choosing a default for somebody is guessing with their screen. Colour had
+/// the same problem and answered it the same way: `--check-theme` prints what
+/// it measured and the reader decides.
+///
+/// Printed rather than drawn in a takeover, like `--check-theme`, so it can be
+/// piped into a file and read later.
+fn check_glyphs() -> io::Result<()> {
+    // A shape with something for every set to show: a climb, a spike, a flat
+    // stretch, and a fall. Twenty-four samples is twelve cells at the two
+    // samples a cell the timeline draws.
+    const SERIES: [f32; 24] = [
+        5.0, 10.0, 18.0, 30.0, 45.0, 62.0, 80.0, 95.0, 100.0, 70.0, 40.0, 42.0, 41.0, 43.0, 42.0,
+        44.0, 60.0, 85.0, 99.0, 90.0, 60.0, 30.0, 12.0, 4.0,
+    ];
+    const ROWS: usize = 3;
+    let scale = glyphs::Scale::zero(100.0);
+    outln!("poptop --check-glyphs");
+    outln!();
+    outln!("  Every set draws the same series. A row of boxes is a set this");
+    outln!("  font does not have; pick one that looks like a graph:");
+    outln!();
+    outln!("      graph = NAME          in the config file");
+    outln!("      poptop --graph=NAME   for one run");
+    outln!();
+    for set in [
+        glyphs::GlyphSet::Braille,
+        glyphs::GlyphSet::Sextant,
+        glyphs::GlyphSet::Quadrant,
+        glyphs::GlyphSet::Block,
+        glyphs::GlyphSet::Line,
+        glyphs::GlyphSet::Ascii,
+    ] {
+        let mark = if set.draws() == glyphs::Draw::Line {
+            plot::Mark::Stroke
+        } else {
+            plot::Mark::Area
+        };
+        let surface = set.surface_for(mark);
+        let (sub_cols, sub_rows) = surface.sub();
+        let mut rows = vec![String::new(); ROWS];
+        for cell in SERIES.chunks(2) {
+            let (first, last) = (cell[0], cell[cell.len() - 1]);
+            for (row, line) in rows.iter_mut().enumerate() {
+                let level = |v: f32| plot::levels_in_row(scale.frac(v), row, ROWS, sub_rows);
+                line.push(match mark {
+                    plot::Mark::Area if sub_cols >= 2 => surface.fill(&[level(first), level(last)]),
+                    plot::Mark::Area => surface.fill(&[level(first.max(last))]),
+                    plot::Mark::Stroke => surface.stroke(plot::Stroke {
+                        from: scale.frac(first),
+                        to: scale.frac(last),
+                        row,
+                        rows: ROWS,
+                    }),
+                });
+            }
+        }
+        let note = match surface.validate() {
+            Ok(()) => String::new(),
+            Err(why) => format!("   ({why})"),
+        };
+        for (i, line) in rows.iter().enumerate() {
+            let name = if i == 0 { set.name() } else { "" };
+            outln!("  {name:<9} {line}{}", if i == 0 { &note } else { "" });
+        }
+        outln!();
+    }
+    outln!("  braille, sextant and quadrant draw one sample a column, so a");
+    outln!("  sample keeps its own column as the graph scrolls. The rest draw");
+    outln!("  the peak of the two samples in the cell.");
+    Ok(())
+}
+
 fn check_theme(name: &str) -> io::Result<()> {
     let mut warnings = Vec::new();
     let (palette, overrides) =

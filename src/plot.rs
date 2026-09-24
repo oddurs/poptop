@@ -73,6 +73,61 @@ pub trait Surface: Sync {
     }
 
     fn name(&self) -> &'static str;
+
+    /// Every glyph this surface can put on the screen.
+    ///
+    /// Written down so it can be checked rather than trusted: a rule spelled
+    /// like the series is a reference nobody can find, and a glyph the
+    /// terminal draws two columns wide runs the graph past its panel.
+    fn alphabet(&self) -> Vec<char> {
+        let (w, h) = self.sub();
+        let mut out = Vec::new();
+        for a in 0..=h {
+            for b in 0..=h {
+                out.push(self.fill(&[a, b][..w.min(2)]));
+            }
+        }
+        for from in [0.0f32, 0.5, 1.0] {
+            for to in [0.0f32, 0.5, 1.0] {
+                for row in 0..3 {
+                    out.push(self.stroke(Stroke {
+                        from,
+                        to,
+                        row,
+                        rows: 3,
+                    }));
+                }
+            }
+        }
+        out.extend((1..=4).map(|k| self.rule(k)));
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Whether this surface can be drawn with, and what is wrong if it cannot.
+    ///
+    /// Every built-in passes, and the check still runs: a set is a table now,
+    /// and the tables a reader supplies (0262) come through the same door.
+    /// The failure names the glyph rather than the set, because "your set is
+    /// wrong" is not something anybody can act on.
+    fn validate(&self) -> Result<(), String> {
+        use unicode_width::UnicodeWidthStr as _;
+        for c in self.alphabet() {
+            let w = c.to_string().width();
+            if w != 1 {
+                return Err(format!(
+                    "{}: U+{:04X} is {w} columns wide, and a cell is one",
+                    self.name(),
+                    c as u32
+                ));
+            }
+        }
+        if !self.carries(Mark::Area) && !self.carries(Mark::Stroke) {
+            return Err(format!("{}: carries no marks", self.name()));
+        }
+        Ok(())
+    }
 }
 
 /// How far a value climbs into one row of a graph, in subcells.
@@ -474,33 +529,7 @@ pub fn box_glyph(from: f32, to: f32, row: usize, rows: usize) -> char {
 mod tests {
     use super::*;
 
-    /// Every glyph a surface can draw, for the width and collision checks the
-    /// chrome already runs on its own marks.
-    fn alphabet(s: &dyn Surface) -> Vec<char> {
-        let (w, h) = s.sub();
-        let mut out = Vec::new();
-        for a in 0..=h {
-            for b in 0..=h {
-                out.push(s.fill(&[a, b][..w.min(2)]));
-            }
-        }
-        for from in [0.0f32, 0.5, 1.0] {
-            for to in [0.0f32, 0.5, 1.0] {
-                for row in 0..3 {
-                    out.push(s.stroke(Stroke {
-                        from,
-                        to,
-                        row,
-                        rows: 3,
-                    }));
-                }
-            }
-        }
-        out.extend((1..=4).map(|k| s.rule(k)));
-        out
-    }
-
-    fn surfaces() -> Vec<&'static dyn Surface> {
+    pub fn surfaces() -> Vec<&'static dyn Surface> {
         vec![
             &BRAILLE_SURFACE,
             &SEXTANT_SURFACE,
@@ -512,19 +541,24 @@ mod tests {
     }
 
     #[test]
-    fn every_glyph_a_surface_draws_is_one_column_wide() {
-        // A glyph a terminal draws two columns wide runs the graph past its
-        // panel. This is the chrome's own rule, applied to the alphabets.
+    fn every_built_in_set_is_one_poptop_would_accept() {
+        // The same check a reader's own set will come through, run on the
+        // ones that ship: every glyph one column wide, and every set carrying
+        // something.
         for s in surfaces() {
-            for c in alphabet(s) {
-                use unicode_width::UnicodeWidthStr as _;
-                assert_eq!(
-                    c.to_string().width(),
-                    1,
-                    "{}: {c:?} (U+{:04X}) is not one column",
-                    s.name(),
-                    c as u32
-                );
+            s.validate().unwrap_or_else(|why| panic!("{why}"));
+        }
+    }
+
+    #[test]
+    fn a_rule_is_visible_and_is_not_the_blank() {
+        // The reference line is drawn only in cells the data does not reach,
+        // so a set may spell it like a bar of the same height — braille does,
+        // and the colour is what tells them apart. What it may not be is the
+        // empty cell, which would make the reference invisible.
+        for s in surfaces() {
+            for k in 1..=4 {
+                assert_ne!(s.rule(k), s.blank(), "{}", s.name());
             }
         }
     }

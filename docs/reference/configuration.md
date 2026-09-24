@@ -62,7 +62,7 @@ for every terminal that later reads the file.
 
 | Key / flag | Values | Default | What it does |
 |---|---|---|---|
-| `graph` | `braille`, `block`, `ascii`, `line` | `braille` | How the timeline is drawn. `line` traces the samples instead of filling under them. Falls back to `ascii` on a Linux console automatically. |
+| `graph` | `braille`, `sextant`, `quadrant`, `block`, `ascii`, `line` | `braille` | How the timeline is drawn. `braille`, `sextant` and `quadrant` draw one sample per half-cell, so a sample keeps its own column as the graph scrolls; `sextant` and `quadrant` fill solidly where braille is dots. `block` resolves eight levels but one sample a cell, and `line` traces instead of filling. A font has to have the glyphs: `poptop --check-glyphs` draws them all. Falls back to `ascii` on a Linux console automatically. |
 | `glyphs` | as `graph` | — | The older name for `graph`, from when the sets differed only in alphabet. Still read, so existing config files and `--help` examples keep working. |
 | `scale` | `zero`, `fit` | `zero` | Where the vertical axis starts. `fit` crops it to the data, which shows small movement and costs the comparison between one graph and the next. |
 | `density` | `compact`, `comfortable`, `spacious` | `comfortable` | How much air the layout takes: the margin either side of the content, the gap between columns, and whether panels are separated by a blank row. |

@@ -12372,6 +12372,44 @@ fn nothing_about_the_data_can_turn_the_bars_into_a_line() {
 }
 
 #[test]
+fn a_set_with_subcells_strokes_with_them() {
+    // A fitted axis is drawn as a stroke, and the stroke used to be box
+    // drawing in every set that had it: one level a row, so a rise across a
+    // cell was a corner and a shallow slope was a run of dashes. A set with
+    // subcells can do better — braille has eight of them to a cell — and
+    // now does, because a stroke is rasterized into coverage like any other
+    // mark (0248).
+    let mut app = App::new(600);
+    for i in 0..200 {
+        let mut s = sample_at(50.0, 200 - i);
+        let pct = 78.0 + ((i as f32) * 0.11).sin() * 6.0;
+        s.mem.used = ((pct / 100.0 * 16.0 * 1024.0) as u64) << 20;
+        app.push(s);
+    }
+    app.theme = Theme::new(Palette::Safe, Tier::TrueColor);
+    app.axis = crate::glyphs::Axis::Fit;
+    app.glyphs = crate::glyphs::GlyphSet::Braille;
+
+    let r = ui::timeline_rows_range(22);
+    let lines = render_lines(&app, 92, 22);
+    let band: String = lines[r.start as usize..r.end as usize]
+        .iter()
+        .skip_while(|l| !l.contains("MEM"))
+        .take(2)
+        .cloned()
+        .collect();
+    let braille = band
+        .chars()
+        .filter(|c| ('\u{2801}'..='\u{28ff}').contains(c))
+        .count();
+    let boxes = band.chars().filter(|c| "─│╭╮╰╯".contains(*c)).count();
+    assert!(
+        braille > boxes,
+        "the fitted panel is still drawn in box characters: {band:?}"
+    );
+}
+
+#[test]
 fn scale_fit_stops_a_high_flat_series_being_a_wall() {
     // A series between 72% and 85% on an axis pinned to zero puts 72 of its 100
     // points below the signal, and those rows are solid whatever the machine
