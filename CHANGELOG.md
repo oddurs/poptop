@@ -16,6 +16,33 @@ process that wrote them:
 
 ## [Unreleased]
 
+### Changed
+
+- **Structure is quiet, and each thing is said once.** On a 120×24 terminal —
+  the size most open at — ten of the twenty-four rows were furniture, and the
+  loudest ink on the screen was a full-width rule with a sentence inside it.
+  The panels paint grounds of their own, so where a terminal shows them the
+  band is the boundary and the rules are gone; where it does not — monochrome,
+  `surface = off` — they are drawn exactly as before. The table's heading is
+  one row where it was two, carrying the totals and whatever poptop has to say
+  about the rows; the count moved to the scope strip that was already stating
+  it (0220, 0223, 0237).
+- **The timeline's title moved onto its axis row**, which was already the line
+  about the span on screen: `39s shown of 10m00s · 1s/slot`. While the buffer
+  is filling that row says so, instead of printing the sentence across the
+  middle of a graph row (0239).
+- **One label for the history column at every ceiling.** It was `HIST ≤50%` on
+  a laptop and `≤1600%` on a server — two labels for one column, and on the
+  wide machines nothing saying the column was history. Past ten cores the scale
+  is said in cores (0238).
+- **The key bar leads with the keys that act now**: `Space live` first while
+  scrubbed back, the selection's keys only with a row selected. The width
+  ladder is unchanged and `?` still names every key (0241).
+- **One surface for everything that floats.** The key list, the inspector and
+  the menus take their box from the glyph set — rounded where it has the
+  glyphs, square under `--graph=ascii` — with the title in the top edge and the
+  dismissal in the bottom edge of each (0242).
+
 ### Added
 
 - **Temperatures and fans.** The hottest sensor in each group — CPU, GPU,

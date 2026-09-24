@@ -195,6 +195,19 @@ fn nice_step(rough: f32) -> f32 {
     m * magnitude
 }
 
+/// The characters one floating surface is drawn with.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxParts {
+    pub tl: char,
+    pub tr: char,
+    pub bl: char,
+    pub br: char,
+    pub h: char,
+    pub v: char,
+    pub tee_l: char,
+    pub tee_r: char,
+}
+
 impl GlyphSet {
     /// The names `graph` and `glyphs` accept.
     ///
@@ -462,6 +475,36 @@ impl GlyphSet {
     /// foreign the moment you see it, which is the point: a gap is a statement
     /// about the axis, not about the machine. A dot pattern here would be one
     /// more thing to tell apart from a low bar.
+    /// The box a floating surface is drawn with: corners, sides, edges.
+    ///
+    /// Rounded where the set has the glyphs for it. ASCII gets square corners
+    /// and looks deliberate — a box drawn with `+` and `-` on a terminal that
+    /// cannot show `╭` is a decision; one drawn with `?` is a bug (0242).
+    pub fn box_parts(self) -> BoxParts {
+        match self {
+            Self::Ascii => BoxParts {
+                tl: '+',
+                tr: '+',
+                bl: '+',
+                br: '+',
+                h: '-',
+                v: '|',
+                tee_l: '+',
+                tee_r: '+',
+            },
+            _ => BoxParts {
+                tl: '╭',
+                tr: '╮',
+                bl: '╰',
+                br: '╯',
+                h: '─',
+                v: '│',
+                tee_l: '├',
+                tee_r: '┤',
+            },
+        }
+    }
+
     pub fn gap_glyph(self) -> char {
         match self {
             Self::Ascii => ':',

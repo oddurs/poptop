@@ -2,12 +2,12 @@
 id: 223
 title: Chrome outweighs the table on the commonest terminal there is
 type: feature
-status: backlog
-milestone: r8
+status: done
+milestone: r10
 labels:
 - ui
 created: 2026-09-20
-updated: 2026-09-20
+updated: 2026-09-23
 priority: p1
 ---
 
@@ -54,6 +54,6 @@ Density is the other half: `spacious` should be what buys the third row, and
 
 ## Acceptance criteria
 
-- [ ] At 24 rows the table gets more rows than the chrome above and below it
-- [ ] Nothing that only one row says is lost to get there
-- [ ] `--density=compact` measurably buys process rows
+- [x] At 24 rows the table gets more rows than the chrome above and below it
+- [x] Nothing that only one row says is lost to get there
+- [x] `--density=compact` measurably buys process rows

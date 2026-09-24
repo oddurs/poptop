@@ -67,7 +67,7 @@ for every terminal that later reads the file.
 | `scale` | `zero`, `fit` | `zero` | Where the vertical axis starts. `fit` crops it to the data, which shows small movement and costs the comparison between one graph and the next. |
 | `density` | `compact`, `comfortable`, `spacious` | `comfortable` | How much air the layout takes: the margin either side of the content, the gap between columns, and whether panels are separated by a blank row. |
 | `mouse` | `on`, `off` | `on` | Whether poptop takes the mouse. While it has it, dragging selects time on the timeline rather than text — hold Shift for the terminal's own selection. |
-| `surface` | `auto`, `off` | `auto` | Whether the interface paints its own grounds. `auto` asks the terminal for its background first and builds the layers from it; `off` leaves every ground to the terminal. |
+| `surface` | `auto`, `off` | `auto` | Whether the interface paints its own grounds. `auto` asks the terminal for its background first and builds the layers from it; `off` leaves every ground to the terminal. With grounds, the step between the table's band and the timeline's is what separates them; without, each region is drawn with a rule instead, which costs the timeline a row. |
 | `smooth` | span | `0s` | How long each of the table's figures is averaged over, weighted towards now — the newest sample is about a third of the figure and the oldest about a tenth. The rows are ordered by the same figure they show, so a longer span is what settles them. Off by default: the figures are the sample's own. |
 | `color` | `auto`, `mono`, `16`, `256`, `true` | `auto` | Colour tier. `NO_COLOR` forces `mono`. |
 | `theme` | `safe`, `classic`, or a file name | `safe` | See [themes](themes.md). |

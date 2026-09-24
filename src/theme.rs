@@ -793,6 +793,16 @@ impl Theme {
         }
     }
 
+    /// Whether the panels have grounds of their own, so the bands of the
+    /// screen are visible without a rule drawn between them.
+    ///
+    /// False at the monochrome tier and wherever `surface = off` or the
+    /// terminal would not say what its background is. There the rules are the
+    /// only thing that separates one region from the next, and they stay.
+    pub fn paints_bands(&self) -> bool {
+        self.panel != Color::Reset
+    }
+
     pub fn chrome_style(&self) -> Style {
         if self.tier.has_color() {
             Style::default().fg(self.chrome)
