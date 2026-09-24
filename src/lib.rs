@@ -45,6 +45,7 @@ pub mod log;
 pub mod menu;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod persist;
+pub mod plot;
 #[cfg(all(feature = "fuzzing", not(test)))]
 pub mod query;
 #[cfg(all(feature = "fuzzing", not(test)))]

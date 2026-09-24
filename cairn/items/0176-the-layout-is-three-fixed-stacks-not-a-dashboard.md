@@ -3,9 +3,11 @@ id: 176
 title: The layout is three fixed stacks, not a dashboard
 type: feature
 status: backlog
-milestone: v5.0
+milestone: r13
+depends_on:
+- 253
 created: 2026-09-13
-updated: 2026-09-13
+updated: 2026-09-23
 priority: p0
 area: ui
 ---

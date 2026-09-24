@@ -1651,11 +1651,11 @@ mod tests {
         let bad = apply_one("glyphs", "crayon");
         assert_eq!(
             bad.as_flag(),
-            "--glyphs=crayon: expected block, braille, line or ascii"
+            "--glyphs=crayon: expected block, braille, sextant, quadrant, line or ascii"
         );
         assert_eq!(
             bad.to_string(),
-            "`glyphs`: expected block, braille, line or ascii, found `crayon`"
+            "`glyphs`: expected block, braille, sextant, quadrant, line or ascii, found `crayon`"
         );
     }
 

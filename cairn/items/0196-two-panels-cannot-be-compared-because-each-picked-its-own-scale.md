@@ -3,13 +3,13 @@ id: 196
 title: Two panels cannot be compared because each picked its own scale
 type: feature
 status: backlog
-milestone: v3.5
-created: 2026-09-14
-updated: 2026-09-14
-priority: p1
-area: ui
+milestone: r12
 depends_on:
 - 190
+created: 2026-09-14
+updated: 2026-09-23
+priority: p1
+area: ui
 ---
 
 ## Problem

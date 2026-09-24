@@ -105,7 +105,7 @@ What makes atop something a fleet depends on rather than something you run:
 
 ## v5.0 — It explains
 
-`··········` 0% · 0 of 7 done · due 2028-01-01
+`··········` 0% · 0 of 4 done · due 2028-01-01
 
 poptop can show you any instant and it makes you do the joining. The buffer
 
@@ -113,11 +113,8 @@ poptop can show you any instant and it makes you do the joining. The buffer
 
 - [ ] `0166` The timeline fills, where it should draw a line <sup>bug · p0</sup>
 - [ ] `0167` Nothing says why the worst moment was the worst <sup>feature · p0</sup>
-- [ ] `0168` Two moments cannot be compared <sup>feature · p1</sup>
 - [ ] `0169` Nothing knows what normal looks like for this machine <sup>feature · p1</sup>
 - [ ] `0170` A finding cannot leave the terminal it was found in <sup>feature · p2</sup>
-- [ ] `0176` The layout is three fixed stacks, not a dashboard <sup>feature · p0</sup>
-- [ ] `0177` Nothing can be zoomed into <sup>feature · p0</sup>
 
 ## v5.1 — It knows why
 
@@ -315,19 +312,14 @@ UI sprint, from a critique of the process table alone: the 0.2.0 build on a
 
 ## v3.5 — Graphs that spend every row on something that varies
 
-`··········` 0% · 0 of 7 done
+`··········` 0% · 0 of 2 done
 
 A graph is best when three things are true of it, in this order:
 
 ### backlog
 
-- [ ] `0190` A graph pinned to zero wastes the panel on a high flat series <sup>bug · p0</sup>
-- [ ] `0191` Zooming out hides volatility behind the peak <sup>feature · p1</sup>
-- [ ] `0192` A character cell is eight levels and a pixel is one <sup>feature · p2</sup>
 - [ ] `0193` The graph knows what caused the spike and does not say <sup>feature · p1</sup>
-- [ ] `0194` One graph for fourteen cores <sup>feature · p2</sup>
 - [ ] `0195` A range can be looked at but not selected <sup>feature · p2</sup>
-- [ ] `0196` Two panels cannot be compared because each picked its own scale <sup>feature · p1</sup>
 
 ## v3.6 — A terminal program that works like a program
 
@@ -397,6 +389,78 @@ UI sprint. Not new features and not the table's columns — r8 has those. This
 - [x] `0239` The buffer explains itself across the middle of a graph <sup>bug · p2 · ui</sup>
 - [x] `0241` The key bar says everything, always <sup>feature · p2 · ui</sup>
 - [x] `0242` The overlays are sharp where the rest is soft <sup>feature · p3 · ui</sup>
+
+## r11 — The engine draws, the surface fits
+
+`#########·` 83% · 5 of 6 done
+
+The first of five milestones behind one idea: **poptop rasterizes into subcell
+
+### backlog
+
+- [ ] `0263` The octant table needs Unicode data poptop cannot see <sup>feature · p2 · ui · graph</sup>
+
+### done
+
+- [x] `0244` Every glyph set means new drawing code <sup>chore · p0 · ui · graph</sup>
+- [x] `0245` A filled area is drawn with dots <sup>feature · p0 · ui · graph</sup>
+- [x] `0246` A glyph set is code, and a set is all or nothing <sup>feature · p1 · ui · graph</sup>
+- [x] `0247` Nothing says whether this font has the glyphs <sup>feature · p1 · ui · graph</sup>
+- [x] `0248` A line is drawn with corners, not with coverage <sup>bug · p2 · ui · graph</sup>
+
+## r12 — A column that says what it is hiding
+
+`··········` 0% · 0 of 6 done
+
+The second milestone: what a graph draws, and what it is allowed to leave out.
+
+### backlog
+
+- [ ] `0190` A graph pinned to zero wastes the panel on a high flat series <sup>bug · p0</sup>
+- [ ] `0191` Zooming out hides volatility behind the peak <sup>feature · p1</sup>
+- [ ] `0194` One graph for fourteen cores <sup>feature · p2</sup>
+- [ ] `0196` Two panels cannot be compared because each picked its own scale <sup>feature · p1</sup>
+- [ ] `0250` There is one window because there is one graph <sup>feature · p1 · ui · graph</sup>
+- [ ] `0251` Memory is one number where it is four <sup>feature · p2 · ui · graph</sup>
+
+## r13 — A dashboard, not three stacks
+
+`··········` 0% · 0 of 6 done
+
+The third milestone, and the one the first two are for: a layout that can hold
+
+### backlog
+
+- [ ] `0168` Two moments cannot be compared <sup>feature · p1</sup>
+- [ ] `0176` The layout is three fixed stacks, not a dashboard <sup>feature · p0</sup>
+- [ ] `0177` Nothing can be zoomed into <sup>feature · p0</sup>
+- [ ] `0253` A tile does not know how to be small <sup>feature · p0 · ui</sup>
+- [ ] `0254` Every tile is about the machine <sup>feature · p1 · ui</sup>
+- [ ] `0255` A layout cannot be saved, named or shared <sup>feature · p1 · ui</sup>
+
+## r14 — Pixels where the terminal has them
+
+`··········` 0% · 0 of 4 done
+
+The fourth milestone, and the first that depends on something outside poptop.
+
+### backlog
+
+- [ ] `0192` A character cell is eight levels and a pixel is one <sup>feature · p1</sup>
+- [ ] `0257` poptop cannot tell what the terminal can draw <sup>feature · p0 · ui · graph</sup>
+- [ ] `0258` The rule for what poptop draws is not written down <sup>docs · p0 · ui · graph</sup>
+- [ ] `0259` A pixel graph costs bandwidth nobody budgeted <sup>feature · p2 · ui · graph</sup>
+
+## r15 — Bring your own glyphs
+
+`··········` 0% · 0 of 2 done
+
+The last milestone, and the smallest: the sets themselves become something a
+
+### backlog
+
+- [ ] `0261` A reader with a patched font gets nothing for it <sup>feature · p1 · ui · graph</sup>
+- [ ] `0262` A glyph set cannot be written without a compiler <sup>feature · p2 · ui · graph</sup>
 
 ## v0.2 — Cheap enough to run
 
