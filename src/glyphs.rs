@@ -23,6 +23,14 @@ pub enum GlyphSet {
     Line,
     /// Pure ASCII. One sample per cell; the pair is merged by taking the peak.
     Ascii,
+    /// Sextants — a 2×3 cell from Symbols for Legacy Computing. Braille's
+    /// width at three levels a column, and *solid*: braille is dots with gaps
+    /// between them, which is what makes a filled area read as texture rather
+    /// than as a surface (0245).
+    Sextant,
+    /// Quadrants — a 2×2 cell. Coarser than the rest and in every font that
+    /// draws a terminal, so it is the solid fill a machine can always manage.
+    Quadrant,
 }
 
 /// Whether a set fills the area under a value or outlines it.
@@ -219,12 +227,14 @@ impl GlyphSet {
             "block" => Some(Self::Block),
             "line" => Some(Self::Line),
             "ascii" => Some(Self::Ascii),
+            "sextant" => Some(Self::Sextant),
+            "quadrant" => Some(Self::Quadrant),
             _ => None,
         }
     }
 
     /// Every name, for an error message that lists what it would have taken.
-    pub const NAMES: &'static str = "block, braille, line or ascii";
+    pub const NAMES: &'static str = "block, braille, sextant, quadrant, line or ascii";
 
     /// The name [`GlyphSet::parse`] takes, for writing a config back out.
     ///
@@ -237,6 +247,43 @@ impl GlyphSet {
             Self::Block => "block",
             Self::Ascii => "ascii",
             Self::Line => "line",
+            Self::Sextant => "sextant",
+            Self::Quadrant => "quadrant",
+        }
+    }
+
+    /// The surface this set draws with: its subcell geometry and its alphabet.
+    ///
+    /// Every drawing decision is made through this. A set is a name a reader
+    /// types and a table the engine fits glyphs from; nothing that draws
+    /// branches on which one it is (0244).
+    pub fn surface(self) -> &'static dyn crate::plot::Surface {
+        match self {
+            Self::Braille => &crate::plot::BRAILLE_SURFACE,
+            Self::Block => &crate::plot::BLOCK_SURFACE,
+            Self::Ascii => &crate::plot::ASCII_SURFACE,
+            Self::Line => &crate::plot::LINE_SURFACE,
+            Self::Sextant => &crate::plot::SEXTANT_SURFACE,
+            Self::Quadrant => &crate::plot::QUADRANT_SURFACE,
+        }
+    }
+
+    /// The surface a mark is actually drawn with.
+    ///
+    /// A set that cannot carry a mark hands it to one that can, rather than
+    /// drawing it wrong: box drawing has no part-height forms, so a set built
+    /// on it carries strokes and leaves areas to the ramp below (0246). The
+    /// fitted axis is the case that exercises it — see [`Scale`].
+    pub fn surface_for(self, mark: crate::plot::Mark) -> &'static dyn crate::plot::Surface {
+        let s = self.surface();
+        if s.carries(mark) {
+            return s;
+        }
+        match mark {
+            // Ascii has no box drawing and keeps its own marks throughout.
+            crate::plot::Mark::Stroke if self == Self::Ascii => &crate::plot::ASCII_SURFACE,
+            crate::plot::Mark::Stroke => &crate::plot::LINE_SURFACE,
+            crate::plot::Mark::Area => &crate::plot::BLOCK_SURFACE,
         }
     }
 
@@ -247,9 +294,10 @@ impl GlyphSet {
     /// fastest. `Line` draws the outline instead, for the case where a series
     /// is high and flat and the fill would be a wall.
     pub fn draws(self) -> Draw {
-        match self {
-            Self::Block | Self::Ascii | Self::Braille => Draw::Bars,
-            Self::Line => Draw::Line,
+        if self.surface().carries(crate::plot::Mark::Area) {
+            Draw::Bars
+        } else {
+            Draw::Line
         }
     }
 
@@ -260,13 +308,7 @@ impl GlyphSet {
     /// rows, and spends the difference on width instead: two samples a cell
     /// against the block set's one. Ascii has `_ - ‾` and little else.
     pub fn sub_rows(self) -> usize {
-        match self {
-            Self::Block => 8,
-            Self::Braille => 4,
-            Self::Ascii => 3,
-            // Box drawing has no part-height forms, so a cell is one level.
-            Self::Line => 1,
-        }
+        self.surface().sub().1
     }
 
     /// Whether this set draws each half of a cell from its own sample.
@@ -283,34 +325,15 @@ impl GlyphSet {
     /// as one bar at its peak and step a cell every other sample, which is the
     /// trade their alphabets make.
     pub fn pairs_in_a_cell(self) -> bool {
-        matches!(self, Self::Braille)
+        self.surface().sub().0 > 1
     }
 
     /// One cell of a bar, given how much of this row the value fills.
     ///
     /// `level` runs 0 (nothing) to [`sub_rows`] (the whole cell).
     pub fn bar(self, level: usize) -> char {
-        let k = level.min(self.sub_rows());
-        match self {
-            Self::Block => [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][k],
-            Self::Ascii => [' ', '_', '-', '#'][k],
-            Self::Braille => {
-                // Both dot columns at one level. What the timeline draws is the
-                // paired form, `glyph` below, one sample to a column — see
-                // `pairs_in_a_cell` for why. This stays for a cell that has only
-                // one value to show at full width.
-                const UP: [u8; 4] = [0x40 | 0x80, 0x04 | 0x20, 0x02 | 0x10, 0x01 | 0x08];
-                let bits = UP[..k].iter().fold(0u8, |acc, d| acc | d);
-                char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' ')
-            }
-            Self::Line => {
-                if k > 0 {
-                    '─'
-                } else {
-                    ' '
-                }
-            }
-        }
+        // Both subcolumns at one level: a bar is the full width of its cell.
+        self.surface().fill(&[level, level])
     }
 
     /// The character this set draws an empty cell with.
@@ -414,13 +437,27 @@ impl GlyphSet {
 
     /// The glyph for a pair of levels, each `0..=4`.
     pub fn glyph(self, left: usize, right: usize) -> char {
-        let (l, r) = (left.min(4), right.min(4));
+        let paired = self.paired();
+        let h = paired.sub().1;
+        // The five levels this API speaks, rescaled to whatever the surface
+        // carrying the pair has. Any presence keeps a level, as everywhere
+        // else here.
+        let to = |k: usize| (k.min(Self::LEVELS - 1) * h).div_ceil(Self::LEVELS - 1);
+        paired.fill(&[to(left), to(right)])
+    }
+
+    /// The surface that carries two samples in one cell.
+    ///
+    /// A set with two subcolumns carries its own pair. One without borrows the
+    /// nearest surface that can: the block elements pair as quadrants, which
+    /// is the form they have for it, and the sets with no subcells at all fall
+    /// to the coarse ascii pair.
+    fn paired(self) -> &'static dyn crate::plot::Surface {
         match self {
-            Self::Braille => braille(l, r),
-            Self::Block => BLOCK[l * Self::LEVELS + r],
-            // No sub-cell resolution: show the peak so a spike is never hidden
-            // by the sample next to it.
-            Self::Line | Self::Ascii => ASCII[l.max(r)],
+            Self::Braille => &crate::plot::BRAILLE_SURFACE,
+            Self::Sextant => &crate::plot::SEXTANT_SURFACE,
+            Self::Block | Self::Quadrant => &crate::plot::QUADRANT_SURFACE,
+            Self::Ascii | Self::Line => &crate::plot::ASCII_PAIRED,
         }
     }
 
@@ -448,25 +485,7 @@ impl GlyphSet {
     }
 
     pub fn rule_glyph(self, level: usize) -> char {
-        let k = level.clamp(1, 4);
-        match self {
-            Self::Braille => {
-                char::from_u32(0x2800 + (LEFT_DOTS[k - 1] | RIGHT_DOTS[k - 1])).unwrap_or(' ')
-            }
-            Self::Block => '─',
-            // Dashed, not `─`: that is the Line set's own stroke, so a solid
-            // rule would be the same character the series draws — a reference
-            // line indistinguishable from data at every colour tier.
-            // Dashed, not `─`: that is the Line set's own stroke, so a solid
-            // rule would be the same character the series draws — a reference
-            // line indistinguishable from data at every colour tier.
-            Self::Line => '┄',
-            // `~`, which is the only mark left. Ascii draws values with
-            // ` _ - # . : = |` across its bar and its sparkline, and a rule
-            // spelled like any of them is a rule that reads as a sample — the
-            // collision the Line set had, and older.
-            Self::Ascii => '~',
-        }
+        self.surface().rule(level)
     }
 
     /// The seam drawn where time is missing from the buffer.
@@ -585,65 +604,6 @@ pub fn box_glyph(from: f32, to: f32, row: usize, rows: usize) -> char {
     }
 }
 
-/// How much of one row a bar reaches, in sub-rows.
-///
-/// `frac` is where the value sits on the graph's [`Scale`] — 0.0 at the floor,
-/// 1.0 at the ceiling. `row` counts from the top and `rows` is the height, so
-/// the band this row covers is known; the answer is how far into it it climbs.
-/// Zero means the bar is entirely below this row, `sub` that it is entirely
-/// above.
-///
-/// A value with *any* presence in the row lights at least one sub-row. Rounding
-/// it away would draw a running machine as a blank cell, which is the one thing
-/// this graph must never say.
-pub fn fill_in_row(frac: f32, row: usize, rows: usize, sub: usize) -> usize {
-    if rows == 0 || sub == 0 || row >= rows {
-        return 0;
-    }
-    let top = (rows * sub) as f32;
-    let height = if frac.is_finite() {
-        (frac * top).clamp(0.0, top)
-    } else {
-        0.0
-    };
-    let floor = ((rows - 1 - row) * sub) as f32;
-    if height <= floor {
-        return 0;
-    }
-    ((height - floor).ceil() as usize).min(sub)
-}
-
-/// Braille cells are `U+2800` plus a dot bitmask:
-///
-/// ```text
-///   dot1 0x01   dot4 0x08
-///   dot2 0x02   dot5 0x10
-///   dot3 0x04   dot6 0x20
-///   dot7 0x40   dot8 0x80
-/// ```
-///
-/// Bars fill upward from the bottom, so level N lights the lowest N dots of its
-/// column. Deriving this beats transcribing a 25-entry table: the rule is one
-/// line and it is impossible to get a single entry subtly wrong.
-fn braille(left: usize, right: usize) -> char {
-    char::from_u32(0x2800 + braille_bits(left, right)).unwrap_or(' ')
-}
-
-/// Bottom-up dot order for each braille column.
-const LEFT_DOTS: [u32; 4] = [0x40, 0x04, 0x02, 0x01];
-const RIGHT_DOTS: [u32; 4] = [0x80, 0x20, 0x10, 0x08];
-
-fn braille_bits(left: usize, right: usize) -> u32 {
-    let mut bits = 0;
-    for dot in LEFT_DOTS.iter().take(left) {
-        bits |= dot;
-    }
-    for dot in RIGHT_DOTS.iter().take(right) {
-        bits |= dot;
-    }
-    bits
-}
-
 /// Which row of a `rows`-tall graph holds `pct`, and the dot height `1..=4`
 /// the rule sits at within that row.
 ///
@@ -675,19 +635,6 @@ pub fn rule_position(scale: Scale, pct: f32, rows: usize) -> Option<(usize, usiz
     }
     None
 }
-
-/// Quadrant blocks, `left * 5 + right`. Levels 1-2 are the lower half and 3-4
-/// the full height, so this set carries two levels per sample rather than four.
-#[rustfmt::skip]
-const BLOCK: [char; 25] = [
-    ' ', '▗', '▗', '▐', '▐',
-    '▖', '▄', '▄', '▟', '▟',
-    '▖', '▄', '▄', '▟', '▟',
-    '▌', '▙', '▙', '█', '█',
-    '▌', '▙', '▙', '█', '█',
-];
-
-const ASCII: [char; 5] = [' ', '.', ':', '|', '#'];
 
 /// Left-to-right eighths, for a horizontal bar.
 const EIGHTHS: [char; 8] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
@@ -884,14 +831,14 @@ mod tests {
     #[test]
     fn braille_matches_the_known_encoding() {
         // Spot-checked against btop's hand-written table (btop_draw.cpp:90).
-        assert_eq!(braille(0, 0), '\u{2800}');
-        assert_eq!(braille(0, 1), '⢀');
-        assert_eq!(braille(1, 0), '⡀');
-        assert_eq!(braille(1, 1), '⣀');
-        assert_eq!(braille(2, 2), '⣤');
-        assert_eq!(braille(4, 4), '⣿');
-        assert_eq!(braille(4, 0), '⡇');
-        assert_eq!(braille(0, 4), '⢸');
+        assert_eq!(GlyphSet::Braille.glyph(0, 0), '\u{2800}');
+        assert_eq!(GlyphSet::Braille.glyph(0, 1), '⢀');
+        assert_eq!(GlyphSet::Braille.glyph(1, 0), '⡀');
+        assert_eq!(GlyphSet::Braille.glyph(1, 1), '⣀');
+        assert_eq!(GlyphSet::Braille.glyph(2, 2), '⣤');
+        assert_eq!(GlyphSet::Braille.glyph(4, 4), '⣿');
+        assert_eq!(GlyphSet::Braille.glyph(4, 0), '⡇');
+        assert_eq!(GlyphSet::Braille.glyph(0, 4), '⢸');
     }
 
     #[test]
@@ -910,10 +857,16 @@ mod tests {
         // A taller bar must never render as a shorter glyph, which is the way a
         // hand-written table goes wrong.
         for l in 1..GlyphSet::LEVELS {
-            let prev = braille(l - 1, 0) as u32;
-            assert!(braille(l, 0) as u32 > prev, "left level {l} did not grow");
-            let prev = braille(0, l - 1) as u32;
-            assert!(braille(0, l) as u32 > prev, "right level {l} did not grow");
+            let prev = GlyphSet::Braille.glyph(l - 1, 0) as u32;
+            assert!(
+                GlyphSet::Braille.glyph(l, 0) as u32 > prev,
+                "left level {l} did not grow"
+            );
+            let prev = GlyphSet::Braille.glyph(0, l - 1) as u32;
+            assert!(
+                GlyphSet::Braille.glyph(0, l) as u32 > prev,
+                "right level {l} did not grow"
+            );
         }
     }
 
@@ -969,7 +922,8 @@ mod tests {
     fn the_rule_spans_both_halves_of_a_braille_cell() {
         // A mark on one column only would read as a speck, not a line.
         let bits = GlyphSet::Braille.rule_glyph(1) as u32 - 0x2800;
-        assert_eq!(bits, LEFT_DOTS[0] | RIGHT_DOTS[0]);
+        // The two bottom dots, one in each column: `⣀`.
+        assert_eq!(bits, 0x40 | 0x80);
     }
 
     #[test]
@@ -1177,7 +1131,12 @@ mod composition_tests {
                     // The bottom row of a three-row graph, so the whole sweep
                     // lands inside one cell.
                     let v = k as f32 / 100.0 * (100.0 / 3.0);
-                    set.bar(fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub))
+                    set.bar(crate::plot::levels_in_row(
+                        Scale::zero(100.0).frac(v),
+                        2,
+                        3,
+                        sub,
+                    ))
                 })
                 .collect();
             assert_eq!(
@@ -1225,19 +1184,27 @@ mod composition_tests {
             let sub = set.sub_rows();
             for v in [0.001f32, 0.01, 0.1, 1.0] {
                 assert_eq!(
-                    fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub),
+                    crate::plot::levels_in_row(Scale::zero(100.0).frac(v), 2, 3, sub),
                     1,
                     "{set:?} drew {v}% as {} sub-rows",
-                    fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub)
+                    crate::plot::levels_in_row(Scale::zero(100.0).frac(v), 2, 3, sub)
                 );
                 assert_ne!(
-                    set.bar(fill_in_row(Scale::zero(100.0).frac(v), 2, 3, sub)),
+                    set.bar(crate::plot::levels_in_row(
+                        Scale::zero(100.0).frac(v),
+                        2,
+                        3,
+                        sub
+                    )),
                     ' '
                 );
             }
             // And an actual zero still draws nothing, or the distinction the
             // case above protects would be lost from the other side.
-            assert_eq!(fill_in_row(Scale::zero(100.0).frac(0.0), 2, 3, sub), 0);
+            assert_eq!(
+                crate::plot::levels_in_row(Scale::zero(100.0).frac(0.0), 2, 3, sub),
+                0
+            );
         }
     }
     #[test]

@@ -6,6 +6,7 @@
 use crate::app::{self, App};
 use crate::glyphs::{self, GlyphSet};
 use crate::history;
+use crate::plot;
 use crate::sample::{IoRates, NetStat, Sample};
 use crate::theme::Theme;
 use ratatui::prelude::*;
@@ -3234,52 +3235,44 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // of 84 — the classic misleading chart. A line encodes change, for
             // which a fitted axis is standard and honest, and the gutter states
             // the floor either way.
-            let draws = if scale.fitted {
-                glyphs::Draw::Line
+            let mark = if scale.fitted || set.draws() == glyphs::Draw::Line {
+                plot::Mark::Stroke
             } else {
-                set.draws()
+                plot::Mark::Area
             };
-            let glyph = match draws {
-                // One sample to a dot column, each filled to its own height.
-                //
-                // Not one bar at the cell's peak, which is what this did. A
-                // cell is a fixed pair of positions and samples move one
-                // position left on every push, so each sample met a different
-                // neighbour every second and every cell's peak was worked out
-                // again. A steady series is the same whichever way it is
-                // paired, so memory scrolled cleanly; a series that varies was
-                // redrawn across the whole panel on every sample, and CPU and
-                // the network seemed to lag and catch up. Nothing was late —
-                // the picture was being re-aggregated under the reader.
-                //
-                // With one sample to a column nothing is ever re-aggregated.
-                // The graph is a strip that scrolls by one column a sample,
-                // every series in step, and the only column that changes is
-                // the newest.
-                glyphs::Draw::Bars if set.pairs_in_a_cell() => {
+            // The surface this mark is drawn with, and the only thing this
+            // function asks about the set. Nothing here branches on which set
+            // it is: a cell is coverage, and the surface fits a glyph to it
+            // (0244).
+            let surface = set.surface_for(mark);
+            let (sub_cols, sub_rows) = surface.sub();
+            let glyph = match mark {
+                plot::Mark::Area => {
                     let level = |v: Option<f32>| {
                         v.map_or(0, |v| {
-                            glyphs::fill_in_row(scale.frac(v), row, rows, set.sub_rows())
+                            plot::levels_in_row(scale.frac(v), row, rows, sub_rows)
                         })
                     };
-                    set.glyph(
-                        level(cell.first().copied().flatten()),
-                        level(cell.get(1).copied().flatten()),
-                    )
+                    // One sample to a subcolumn where the surface has them, so
+                    // a sample owns a column from the moment it is drawn until
+                    // it scrolls off and the only column that changes is the
+                    // newest. Where it has one, the cell is the peak of what
+                    // it holds, which is what its alphabet can say.
+                    if sub_cols >= 2 {
+                        surface.fill(&[
+                            level(cell.first().copied().flatten()),
+                            level(cell.get(1).copied().flatten()),
+                        ])
+                    } else {
+                        surface.fill(&[level(Some(here))])
+                    }
                 }
-                // A bar from the baseline to the value. Every cell below the
-                // value is full, the cell the value lands in is part-full, and
-                // everything above is empty — the shape a sparkline has always
-                // had, read as height rather than traced as a path.
-                glyphs::Draw::Bars => set.bar(glyphs::fill_in_row(
-                    scale.frac(here),
+                plot::Mark::Stroke => surface.stroke(plot::Stroke {
+                    from: scale.frac(here),
+                    to: scale.frac(next),
                     row,
                     rows,
-                    set.sub_rows(),
-                )),
-                // Box drawing needs the direction of travel to pick a corner,
-                // which a height cannot carry.
-                glyphs::Draw::Line => set.line(scale.frac(here), scale.frac(next), row, rows),
+                }),
             };
             // Colour is identity here, not magnitude — see `Theme::series_style`.
             // The threshold rules now carry "is this bad", which is what the
@@ -3306,17 +3299,13 @@ fn glyph_row(g: GraphRow, theme: &Theme) -> Line<'static> {
             // marks across a panel is both however wide the panel is.
             let cells = values.len().div_ceil(spc.max(1));
             let every = (cells / 10).clamp(4, 24);
-            // The alphabet in force is a function of the set *and* the form,
-            // and both of these questions are asked of it: which character
-            // means "empty", and which one means "a reference line". A fitted
-            // braille panel is drawn in box characters, whose empty is a space
-            // — while braille's own is `U+2800`, so asking the set alone said
-            // no cell was ever empty and no rule was ever drawn.
-            let alphabet = set.drawn_as(draws);
+            // Which character means "empty" and which means "a reference
+            // line" are questions for the surface that drew the cell: a fitted
+            // braille panel is drawn in another surface's characters, and
+            // asking the set said no cell was ever empty.
             match rule_level {
-                Some(lvl) if glyph == alphabet.blank() && i % every == 0 => {
-                    let mark = alphabet.rule_glyph(lvl);
-                    Span::styled(mark.to_string(), theme.chrome_style())
+                Some(lvl) if glyph == surface.blank() && i % every == 0 => {
+                    Span::styled(surface.rule(lvl).to_string(), theme.chrome_style())
                 }
                 _ => Span::styled(glyph.to_string(), theme.series_style(series)),
             }

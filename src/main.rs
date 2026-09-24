@@ -24,6 +24,7 @@ mod log;
 mod mangle;
 mod menu;
 mod persist;
+mod plot;
 mod query;
 mod report;
 mod sample;
